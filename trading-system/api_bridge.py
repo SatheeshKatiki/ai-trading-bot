@@ -21,6 +21,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
 @app.get("/api/history")
 async def get_history(
     symbol: str = Query(..., description="The stock ticker (e.g., RELIANCE, TCS)"),
@@ -114,6 +118,33 @@ async def get_backtest(
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/equity-data")
+async def get_equity_data(symbol: str = "NIFTY"):
+    """Returns real price action data mapped as equity data for the dashboard."""
+    try:
+        broker = BrokerFactory.get_active_broker()
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=2) # Last 2 days to ensure data
+        data = broker.get_historical_data(symbol, start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'), "15 Min")
+        
+        if not data:
+            return []
+            
+        df = pd.DataFrame(data)
+        df.columns = [c.lower() for c in df.columns]
+        
+        trend_data = []
+        for i in range(len(df)):
+            current_time = df['datetime'].iloc[i].split(' ')[1][:5] if 'datetime' in df.columns else "00:00"
+            trend_data.append({
+                "name": current_time,
+                "value": float(df['close'].iloc[i])
+            })
+        return trend_data
+    except Exception as e:
+        print(f"Error in /equity-data: {e}")
+        return []
 
 @app.get("/api/signals")
 async def get_signals(

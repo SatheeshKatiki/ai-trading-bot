@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useState, useEffect } from "react";
 import { 
   BarChart2, 
   Play, 
@@ -33,6 +34,27 @@ const menuItems = [
 
 export default function Sidebar() {
   const pathname = usePathname();
+  const [isConnected, setIsConnected] = useState(false);
+
+  useEffect(() => {
+    const checkHealth = async () => {
+      try {
+        const res = await fetch('http://localhost:8000/health');
+        const data = await res.json();
+        if (data && data.status === "ok") {
+          setIsConnected(true);
+        } else {
+          setIsConnected(false);
+        }
+      } catch (error) {
+        setIsConnected(false);
+      }
+    };
+
+    checkHealth();
+    const interval = setInterval(checkHealth, 5000); // Check every 5 seconds
+    return () => clearInterval(interval);
+  }, []);
 
   return (
     <div className="w-64 h-full bg-card/50 backdrop-blur-xl border-r border-border/50 flex flex-col">
@@ -70,10 +92,10 @@ export default function Sidebar() {
       <div className="p-4 border-t border-border/50 flex flex-col gap-2">
         <div className="flex items-center justify-between p-3 rounded-lg bg-muted/30">
           <div className="flex items-center gap-2">
-            <div className="w-2 h-2 rounded-full bg-success"></div>
+            <div className={`w-2 h-2 rounded-full ${isConnected ? "bg-success" : "bg-destructive"}`}></div>
             <span className="text-xs font-medium text-foreground">Broker: Fyers</span>
           </div>
-          <span className="text-xs text-muted-foreground">Connected</span>
+          <span className="text-xs text-muted-foreground">{isConnected ? "Connected" : "Disconnected"}</span>
         </div>
         
       </div>

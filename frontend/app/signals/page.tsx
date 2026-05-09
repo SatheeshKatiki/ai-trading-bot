@@ -35,6 +35,7 @@ export default function Signals() {
   const [trendData, setTrendData] = useState<any[]>([]);
   const [signals, setSignals] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchSignals = async () => {
@@ -48,10 +49,15 @@ export default function Signals() {
           setBias(data.bias);
           setTrendData(data.trendData);
           setSignals(data.signals);
+          setError(null);
+        } else if (data && data.error) {
+          setError(data.error);
         }
-        setIsLoading(false);
       } catch (error) {
         console.error("Failed to fetch signals:", error);
+        setError("Failed to connect to the Python Bridge. Please ensure the backend is running.");
+      } finally {
+        setIsLoading(false);
       }
     };
 
@@ -143,6 +149,10 @@ export default function Signals() {
               {isLoading ? (
                 <div className="p-6 glass-card rounded-xl border border-border/20 text-center text-muted-foreground">
                   Loading active signals...
+                </div>
+              ) : error ? (
+                <div className="p-6 glass-card rounded-xl border border-destructive/20 text-center text-destructive">
+                  {error}
                 </div>
               ) : signals.length === 0 ? (
                 <div className="p-6 glass-card rounded-xl border border-border/20 text-center text-muted-foreground">
