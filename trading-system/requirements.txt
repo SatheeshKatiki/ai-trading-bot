@@ -1,0 +1,30 @@
+# Core dependencies
+numpy>=1.24.0
+pandas>=2.0.0
+scikit-learn>=1.3.0
+xgboost>=2.0.0
+streamlit>=1.30.0
+requests>=2.31.0
+python-dotenv>=1.0.0
+fastapi>=0.100.0
+uvicorn>=0.22.0
+yfinance>=0.2.36           # for AI model training data download
+
+# Credential encryption (strongly recommended)
+cryptography>=41.0.0
+
+# Broker APIs — install only the broker(s) you use
+fyers-api==1.0.9          # Fyers
+# kiteconnect>=5.0.1      # Zerodha Kite  (uncomment to install)
+# smartapi-python>=1.3.9  # Angel One     (uncomment to install)
+# pyotp>=2.9.0            # TOTP for Angel One (uncomment to install)
+
+# Plotting
+matplotlib>=3.8.0
+plotly>=5.0.0
+
+# Async & websockets
+websockets>=12.0
+
+# Logging
+loguru>=0.7.0

@@ -1,0 +1,16 @@
+[Unit]
+Description=AI Intraday Trading Bot
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/trading-system
+# Use a virtual environment python executable if available
+ExecStart=/usr/bin/python3 -m trading_bot.main
+Restart=always
+RestartSec=10
+EnvironmentFile=/opt/trading-system/.env
+
+[Install]
+WantedBy=multi-user.target

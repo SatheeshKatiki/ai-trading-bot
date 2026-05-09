@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  # The Live Trading Bot Process
+  trading-bot:
+    build: 
+      context: ..
+      dockerfile: deployment/Dockerfile
+    container_name: ai_trading_bot
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    volumes:
+      - ../state.json:/app/state.json
+      - ../models:/app/models
+      - ../logs:/app/logs
+    command: python -m trading_bot.main
+
+  # The Streamlit Dashboard
+  dashboard:
+    build:
+      context: ..
+      dockerfile: deployment/Dockerfile
+    container_name: ai_trading_dashboard
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    ports:
+      - "8501:8501"
+    volumes:
+      - ../state.json:/app/state.json
+      - ../data:/app/data
+    command: streamlit run dashboard/app.py --server.port=8501 --server.address=0.0.0.0

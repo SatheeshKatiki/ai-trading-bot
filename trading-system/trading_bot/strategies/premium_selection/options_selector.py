@@ -1,0 +1,187 @@
+"""Options Selector — ATM/ITM Strike, Expiry, and Lot Size Engine.
+
+Selects the correct option contract for execution:
+  - Instrument: NIFTY, BANKNIFTY, SENSEX
+  - Strike: ATM or slight ITM (high liquidity)
+  - Expiry: nearest weekly expiry (Thursday for NIFTY/BANKNIFTY)
+  - Symbol: builds the exact Fyers-compatible option symbol string
+  - Lot size: enforced per instrument
+"""
+from __future__ import annotations
+from dataclasses import dataclass
+from datetime import date, timedelta
+from typing import Literal
+
+
+# ──────────────────────────────────────────────
+# Instrument configuration registry
+# ──────────────────────────────────────────────
+INSTRUMENT_CONFIG = {
+    "NIFTY": {
+        "lot_size": 25,
+        "strike_step": 50,
+        "expiry_day": 3,        # Thursday (0=Mon, 3=Thu)
+        "exchange": "NSE",
+        "index": True,
+    },
+    "BANKNIFTY": {
+        "lot_size": 15,
+        "strike_step": 100,
+        "expiry_day": 2,        # Wednesday
+        "exchange": "NSE",
+        "index": True,
+    },
+    "SENSEX": {
+        "lot_size": 10,
+        "strike_step": 100,
+        "expiry_day": 4,        # Friday
+        "exchange": "BSE",
+        "index": True,
+    },
+    "FINNIFTY": {
+        "lot_size": 40,
+        "strike_step": 50,
+        "expiry_day": 1,        # Tuesday
+        "exchange": "NSE",
+        "index": True,
+    },
+}
+
+
+@dataclass
+class OptionContract:
+    """Represents a selected option contract."""
+    instrument: str
+    strike: int
+    option_type: Literal["CE", "PE"]
+    expiry: date
+    lot_size: int
+    symbol: str                 # Fyers-compatible symbol string
+    itm_offset: int = 0        # 0 = ATM, 1 = 1 strike ITM, etc.
+
+    @property
+    def is_call(self) -> bool:
+        return self.option_type == "CE"
+
+    @property
+    def is_put(self) -> bool:
+        return self.option_type == "PE"
+
+
+def _next_expiry(instrument: str, from_date: date | None = None) -> date:
+    """Find the next weekly expiry date for the given instrument."""
+    cfg = INSTRUMENT_CONFIG.get(instrument.upper(), INSTRUMENT_CONFIG["NIFTY"])
+    expiry_weekday = cfg["expiry_day"]
+    today = from_date or date.today()
+
+    # Find next occurrence of expiry_weekday
+    days_ahead = expiry_weekday - today.weekday()
+    if days_ahead <= 0:     # Target day already passed this week
+        days_ahead += 7
+    return today + timedelta(days=days_ahead)
+
+
+def _round_to_strike(price: float, step: int) -> int:
+    """Round price to nearest strike step."""
+    return int(round(price / step) * step)
+
+
+def _build_symbol(instrument: str, expiry: date, strike: int, option_type: str) -> str:
+    """
+    Build Fyers-compatible option symbol.
+
+    Format: NSE:NIFTY{YY}{MMM}{DD}{STRIKE}{CE/PE}
+    Example: NSE:NIFTY25MAY2222400CE
+    """
+    cfg = INSTRUMENT_CONFIG.get(instrument.upper(), INSTRUMENT_CONFIG["NIFTY"])
+    exchange = cfg["exchange"]
+
+    yy  = expiry.strftime("%y")          # e.g. "25"
+    mon = expiry.strftime("%b").upper()  # e.g. "MAY"
+    dd  = expiry.strftime("%d")          # e.g. "22"
+
+    return f"{exchange}:{instrument.upper()}{yy}{mon}{dd}{strike}{option_type}"
+
+
+def select_option(
+    instrument: str,
+    spot_price: float,
+    direction: Literal["CE", "PE"],
+    itm_strikes: int = 0,
+    from_date: date | None = None,
+) -> OptionContract:
+    """
+    Select the best option contract for the given direction.
+
+    Parameters
+    ----------
+    instrument  : "NIFTY", "BANKNIFTY", "SENSEX", etc.
+    spot_price  : current underlying spot price
+    direction   : "CE" for Call, "PE" for Put
+    itm_strikes : 0 = ATM, 1 = 1 strike ITM (recommended for liquidity), 2 = 2 strikes ITM
+    from_date   : override today's date (for backtesting)
+
+    Returns
+    -------
+    OptionContract with all details needed to place the order.
+    """
+    cfg = INSTRUMENT_CONFIG.get(instrument.upper(), INSTRUMENT_CONFIG["NIFTY"])
+    step = cfg["strike_step"]
+    lot_size = cfg["lot_size"]
+
+    # ATM strike
+    atm_strike = _round_to_strike(spot_price, step)
+
+    # Apply ITM offset: for CE → go lower (ITM call), for PE → go higher (ITM put)
+    if direction == "CE":
+        strike = atm_strike - (itm_strikes * step)
+    else:
+        strike = atm_strike + (itm_strikes * step)
+
+    expiry = _next_expiry(instrument.upper(), from_date)
+    symbol = _build_symbol(instrument, expiry, strike, direction)
+
+    return OptionContract(
+        instrument=instrument.upper(),
+        strike=strike,
+        option_type=direction,
+        expiry=expiry,
+        lot_size=lot_size,
+        symbol=symbol,
+        itm_offset=itm_strikes,
+    )
+
+
+def get_lot_size(instrument: str) -> int:
+    """Return lot size for the given instrument."""
+    return INSTRUMENT_CONFIG.get(instrument.upper(), {}).get("lot_size", 25)
+
+
+def calculate_lots(
+    capital: float,
+    option_premium: float,
+    instrument: str,
+    risk_pct: float = 0.02,
+) -> int:
+    """
+    Calculate how many lots to buy given available capital and risk constraint.
+
+    Parameters
+    ----------
+    capital        : available trading capital
+    option_premium : LTP of the option contract
+    instrument     : instrument name
+    risk_pct       : maximum % of capital to risk on this trade
+
+    Returns
+    -------
+    int: number of lots (minimum 1)
+    """
+    lot_size = get_lot_size(instrument)
+    cost_per_lot = option_premium * lot_size
+    if cost_per_lot <= 0:
+        return 1
+
+    max_capital_to_risk = capital * risk_pct
+    lots = int(max_capital_to_risk / cost_per_lot)
+    return max(1, lots)

@@ -1,0 +1,11 @@
+{
+    "timeframe": "5 Min",
+    "ema_fast": 9,
+    "ema_slow": 21,
+    "rsi_window": 14,
+    "rsi_buy": 45,
+    "rsi_sell": 45,
+    "target_pct": 1.0,
+    "stoploss_pct": 0.5,
+    "live_trading_mode": false
+}
