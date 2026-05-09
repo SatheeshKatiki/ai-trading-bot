@@ -126,18 +126,48 @@ export default function AIFiltersTab({ settings, setSettings }: AIFiltersTabProp
             <h3 className="font-display font-extrabold text-base text-white">Feature Weights</h3>
           </div>
           
-          <div className="space-y-3 mt-4">
-            <div className="flex justify-between text-xs font-bold">
-              <span className="text-gray-400">Technical Indicators</span>
-              <span className="text-white">40%</span>
+          <div className="space-y-4 mt-4">
+            <div className="space-y-1.5">
+              <div className="flex justify-between text-xs font-bold uppercase tracking-wider">
+                <span className="text-gray-400">Technical Indicators</span>
+                <span className="text-[#ff9f43] font-extrabold text-sm">{settings.weight_tech_indicators || 40}%</span>
+              </div>
+              <input 
+                type="range" 
+                min="0" 
+                max="100" 
+                value={settings.weight_tech_indicators || 40}
+                onChange={(e) => updateSetting("weight_tech_indicators", parseInt(e.target.value))}
+                className="w-full accent-[#ff9f43]" 
+              />
             </div>
-            <div className="flex justify-between text-xs font-bold">
-              <span className="text-gray-400">Order Flow</span>
-              <span className="text-white">30%</span>
+            <div className="space-y-1.5">
+              <div className="flex justify-between text-xs font-bold uppercase tracking-wider">
+                <span className="text-gray-400">Order Flow</span>
+                <span className="text-[#ff9f43] font-extrabold text-sm">{settings.weight_order_flow || 30}%</span>
+              </div>
+              <input 
+                type="range" 
+                min="0" 
+                max="100" 
+                value={settings.weight_order_flow || 30}
+                onChange={(e) => updateSetting("weight_order_flow", parseInt(e.target.value))}
+                className="w-full accent-[#ff9f43]" 
+              />
             </div>
-            <div className="flex justify-between text-xs font-bold">
-              <span className="text-gray-400">Sentiment Analysis</span>
-              <span className="text-white">30%</span>
+            <div className="space-y-1.5">
+              <div className="flex justify-between text-xs font-bold uppercase tracking-wider">
+                <span className="text-gray-400">Sentiment Analysis</span>
+                <span className="text-[#ff9f43] font-extrabold text-sm">{settings.weight_sentiment || 30}%</span>
+              </div>
+              <input 
+                type="range" 
+                min="0" 
+                max="100" 
+                value={settings.weight_sentiment || 30}
+                onChange={(e) => updateSetting("weight_sentiment", parseInt(e.target.value))}
+                className="w-full accent-[#ff9f43]" 
+              />
             </div>
           </div>
         </div>

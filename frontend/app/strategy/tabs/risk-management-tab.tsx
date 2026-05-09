@@ -4,7 +4,7 @@ import { ShieldCheck, Target, Clock, Zap, AlertTriangle } from "lucide-react";
 import { useState } from "react";
 
 export default function RiskManagementTab({ settings, setSettings }: { settings: any, setSettings: (s: any) => void }) {
-  const [stopLossType, setStopLossType] = useState("Percentage");
+  const stopLossType = settings.stop_loss_type || "Percentage";
 
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -27,7 +27,7 @@ export default function RiskManagementTab({ settings, setSettings }: { settings:
                 {["Points", "Amount", "Percentage"].map((type) => (
                   <button
                     key={type}
-                    onClick={() => setStopLossType(type)}
+                    onClick={() => setSettings({...settings, stop_loss_type: type})}
                     className={`flex-1 py-2 text-xs font-bold rounded-md transition-all ${
                       stopLossType === type 
                         ? "bg-[#ef4444] text-white shadow-lg shadow-red-500/20" 
@@ -46,10 +46,21 @@ export default function RiskManagementTab({ settings, setSettings }: { settings:
               </label>
               <input 
                 type="number" 
-                value={stopLossType === "Percentage" ? (settings.stoploss_pct || 1.8) : stopLossType === "Points" ? "20" : "5000"} 
+                value={
+                  stopLossType === "Percentage" 
+                    ? (settings.stoploss_pct || 1.8) 
+                    : stopLossType === "Points" 
+                      ? (settings.stop_loss_points || 20) 
+                      : (settings.stop_loss_amount || 5000)
+                } 
                 onChange={(e) => {
+                  const val = parseFloat(e.target.value);
                   if (stopLossType === "Percentage") {
-                    setSettings({...settings, stoploss_pct: parseFloat(e.target.value)});
+                    setSettings({...settings, stoploss_pct: val});
+                  } else if (stopLossType === "Points") {
+                    setSettings({...settings, stop_loss_points: val});
+                  } else if (stopLossType === "Amount") {
+                    setSettings({...settings, stop_loss_amount: val});
                   }
                 }}
                 className="w-full bg-[#151c2c] border border-[#242e42] rounded-lg px-3 py-2.5 text-sm font-bold text-white focus:outline-none focus:ring-2 focus:ring-[#ef4444]" 
@@ -60,8 +71,11 @@ export default function RiskManagementTab({ settings, setSettings }: { settings:
 
         <div className="flex justify-between items-center pt-3 border-t border-[#1f293d]/50">
           <span className="text-xs font-bold text-white uppercase tracking-wider">Option Premium Stop</span>
-          <button className="w-12 h-6 rounded-full bg-[#ef4444] p-0.5 transition-colors shadow-lg shadow-red-500/20">
-            <div className="w-5 h-5 rounded-full bg-white translate-x-6 transition-transform"></div>
+          <button 
+            onClick={() => setSettings({...settings, option_premium_stop: !settings.option_premium_stop})}
+            className={`w-12 h-6 rounded-full p-0.5 transition-colors shadow-lg ${settings.option_premium_stop ? 'bg-[#ef4444] shadow-red-500/20' : 'bg-[#151c2c] border border-[#242e42]'}`}
+          >
+            <div className={`w-5 h-5 rounded-full bg-white transition-transform ${settings.option_premium_stop ? 'translate-x-6' : 'translate-x-0'}`}></div>
           </button>
         </div>
       </div>
@@ -79,20 +93,33 @@ export default function RiskManagementTab({ settings, setSettings }: { settings:
           <div className="space-y-4 mt-4">
             <div>
               <label className="text-xs font-bold text-gray-400 block mb-1.5 uppercase tracking-wider">Max Hold Time (Minutes)</label>
-              <input type="number" defaultValue="30" className="w-full bg-[#151c2c] border border-[#242e42] rounded-lg px-3 py-2.5 text-sm font-bold text-white focus:outline-none focus:ring-2 focus:ring-[#f59e0b]" />
+              <input 
+                type="number" 
+                value={settings.max_hold_time || 30} 
+                onChange={(e) => setSettings({...settings, max_hold_time: parseInt(e.target.value)})}
+                className="w-full bg-[#151c2c] border border-[#242e42] rounded-lg px-3 py-2.5 text-sm font-bold text-white focus:outline-none focus:ring-2 focus:ring-[#f59e0b]" 
+              />
               <p className="text-[10px] text-gray-500 mt-1">Option buyers lose edge if price stalls. Hard exit after time limit.</p>
             </div>
             <div>
               <label className="text-xs font-bold text-gray-400 block mb-1.5 uppercase tracking-wider">Breakeven Trigger (Min)</label>
-              <input type="number" defaultValue="10" className="w-full bg-[#151c2c] border border-[#242e42] rounded-lg px-3 py-2.5 text-sm font-bold text-white focus:outline-none focus:ring-2 focus:ring-[#f59e0b]" />
+              <input 
+                type="number" 
+                value={settings.breakeven_trigger || 10} 
+                onChange={(e) => setSettings({...settings, breakeven_trigger: parseInt(e.target.value)})}
+                className="w-full bg-[#151c2c] border border-[#242e42] rounded-lg px-3 py-2.5 text-sm font-bold text-white focus:outline-none focus:ring-2 focus:ring-[#f59e0b]" 
+              />
             </div>
           </div>
         </div>
 
         <div className="flex justify-between items-center pt-3 border-t border-[#1f293d]/50">
           <span className="text-xs font-bold text-white uppercase tracking-wider">Time-Based Exit</span>
-          <button className="w-12 h-6 rounded-full bg-[#f59e0b] p-0.5 transition-colors shadow-lg shadow-amber-500/20">
-            <div className="w-5 h-5 rounded-full bg-white translate-x-6 transition-transform"></div>
+          <button 
+            onClick={() => setSettings({...settings, time_based_exit: !settings.time_based_exit})}
+            className={`w-12 h-6 rounded-full p-0.5 transition-colors shadow-lg ${settings.time_based_exit ? 'bg-[#f59e0b] shadow-amber-500/20' : 'bg-[#151c2c] border border-[#242e42]'}`}
+          >
+            <div className={`w-5 h-5 rounded-full bg-white transition-transform ${settings.time_based_exit ? 'translate-x-6' : 'translate-x-0'}`}></div>
           </button>
         </div>
       </div>
@@ -119,7 +146,11 @@ export default function RiskManagementTab({ settings, setSettings }: { settings:
             </div>
             <div>
               <label className="text-xs font-bold text-gray-400 block mb-1.5 uppercase tracking-wider">Trailing Trigger</label>
-              <select className="w-full bg-[#151c2c] border border-[#242e42] rounded-lg px-3 py-2.5 text-sm font-bold text-white focus:outline-none focus:ring-2 focus:ring-[#10b981]">
+              <select 
+                value={settings.trailing_trigger || "At Target 1"}
+                onChange={(e) => setSettings({...settings, trailing_trigger: e.target.value})}
+                className="w-full bg-[#151c2c] border border-[#242e42] rounded-lg px-3 py-2.5 text-sm font-bold text-white focus:outline-none focus:ring-2 focus:ring-[#10b981]"
+              >
                 <option>At Target 1</option>
                 <option>Immediate</option>
               </select>
