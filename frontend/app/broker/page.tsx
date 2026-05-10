@@ -40,6 +40,7 @@ export default function BrokerSettings() {
   // New state for showing the success message only after an active click
   const [showSuccessMessage, setShowSuccessMessage] = useState(false);
   const [isMounted, setIsMounted] = useState(false);
+  const [realBalance, setRealBalance] = useState<number | null>(null);
 
   // Persist state across refreshes safely in Next.js
   useEffect(() => {
@@ -50,13 +51,25 @@ export default function BrokerSettings() {
     }
   }, []);
 
-  const handleTestConnection = () => {
+  const handleTestConnection = async () => {
     setIsTesting(true);
     setTestResult(null);
-    setTimeout(() => {
+    setRealBalance(null);
+    try {
+      const response = await fetch("http://127.0.0.1:8000/api/test_connection");
+      const data = await response.json();
+      if (response.ok && data.status === "success") {
+        setTestResult("success");
+        setRealBalance(data.balance);
+      } else {
+        setTestResult("error");
+      }
+    } catch (error) {
+      console.error("Test connection failed:", error);
+      setTestResult("error");
+    } finally {
       setIsTesting(false);
-      setTestResult("success");
-    }, 2000);
+    }
   };
 
   const handleSave = () => {
@@ -261,7 +274,14 @@ export default function BrokerSettings() {
                   {testResult === "success" && (
                     <div className="p-3 rounded-lg bg-success/10 border border-success/20 flex items-center gap-2 text-[#4ade80] text-sm font-medium">
                       <Check className="w-4 h-4" />
-                      Connection successful! Fetched balance: ₹45,200.00
+                      Connection successful! Fetched balance: ₹{realBalance !== null ? realBalance.toLocaleString() : "0.00"}
+                    </div>
+                  )}
+
+                  {testResult === "error" && (
+                    <div className="p-3 rounded-lg bg-destructive/10 border border-destructive/20 flex items-center gap-2 text-[#ef4444] text-sm font-medium">
+                      <X className="w-4 h-4" />
+                      Connection failed! Please check credentials or log in via terminal.
                     </div>
                   )}
                 </div>

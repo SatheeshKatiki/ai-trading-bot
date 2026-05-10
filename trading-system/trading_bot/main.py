@@ -65,30 +65,24 @@ registry.register("ema_rsi",      ema_rsi_signals)
 registry.register("enhanced_ai",  enhanced_signals)
 registry.register("premium",      premium_signals)
 
+from trading_bot.strategies.institutional_ema_strategy import generate_signals as institutional_signals
+registry.register("institutional_ema", institutional_signals)
+
 # Path to the shared settings file written by the Streamlit dashboard
 _SETTINGS_PATH = Path(__file__).resolve().parents[1] / "settings.json"
 
 # ------------------------------------------------------------------
-# Settings cache: avoids disk I/O on every tick
+# Settings cache: avoids disk I/O on every tick (checks mtime instead)
 # ------------------------------------------------------------------
 _settings_cache: dict = {}
 _settings_last_mtime: float = 0.0
-_settings_last_check: float = 0.0
-_SETTINGS_TTL: float = 1.0   # Check for changes at most once per second
 
 
 def _load_settings() -> dict:
     """Read settings from disk, using an in-memory cache that checks for file modifications."""
     import os
-    import time as _time
-    global _settings_cache, _settings_last_mtime, _settings_last_check
+    global _settings_cache, _settings_last_mtime
     
-    now = _time.time()
-    # Avoid too many system calls by checking at most once per second
-    if _settings_cache and (now - _settings_last_check) < _SETTINGS_TTL:
-        return _settings_cache
-        
-    _settings_last_check = now
     
     defaults = {
         "active_strategy": "ema_rsi",

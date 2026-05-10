@@ -24,22 +24,11 @@ import {
   ResponsiveContainer 
 } from "recharts";
 
-// Fallback data for the chart if backend has no historical curve yet
-const fallbackCurve = [
-  { name: "09:15", value: 100000 },
-  { name: "10:00", value: 102000 },
-  { name: "11:00", value: 101500 },
-  { name: "12:00", value: 104000 },
-  { name: "13:00", value: 103500 },
-  { name: "14:00", value: 106000 },
-  { name: "15:00", value: 105500 },
-];
-
 export default function Dashboard() {
   const [equity, setEquity] = useState(100000.0);
   const [pnl, setPnl] = useState(0.0);
   const [trades, setTrades] = useState<any[]>([]);
-  const [curve, setCurve] = useState(fallbackCurve);
+  const [curve, setCurve] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   // Fetch live state from the API route we created
@@ -160,21 +149,21 @@ export default function Dashboard() {
                   <AreaChart data={curve}>
                     <defs>
                       <linearGradient id="colorValue" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#00E676" stopOpacity={0.2}/>
-                        <stop offset="95%" stopColor="#00E676" stopOpacity={0}/>
+                        <stop offset="5%" stopColor="#ff4d4d" stopOpacity={0.2}/>
+                        <stop offset="95%" stopColor="#ff4d4d" stopOpacity={0}/>
                       </linearGradient>
                     </defs>
-                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
-                    <XAxis dataKey="name" stroke="rgba(255,255,255,0.3)" fontSize={11} />
-                    <YAxis stroke="rgba(255,255,255,0.3)" fontSize={11} domain={['dataMin - 1000', 'dataMax + 1000']} />
+                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                    <XAxis dataKey="name" stroke="hsl(var(--muted-foreground))" fontSize={11} />
+                    <YAxis stroke="hsl(var(--muted-foreground))" fontSize={11} domain={['dataMin - 1000', 'dataMax + 1000']} />
                     <Tooltip 
-                      contentStyle={{ backgroundColor: "#090a0f", borderColor: "rgba(255,255,255,0.1)", borderRadius: "8px" }}
-                      labelStyle={{ color: "rgba(255,255,255,0.5)" }}
+                      contentStyle={{ backgroundColor: "hsl(var(--background))", borderColor: "hsl(var(--border))", borderRadius: "8px" }}
+                      labelStyle={{ color: "hsl(var(--foreground))" }}
                     />
                     <Area 
                       type="monotone" 
                       dataKey="value" 
-                      stroke="#00E676" 
+                      stroke="#ff4d4d" 
                       strokeWidth={2}
                       fillOpacity={1} 
                       fill="url(#colorValue)" 

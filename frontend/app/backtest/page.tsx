@@ -30,7 +30,8 @@ import {
   YAxis, 
   CartesianGrid, 
   Tooltip, 
-  ResponsiveContainer 
+  ResponsiveContainer,
+  ReferenceLine
 } from "recharts";
 
 // Institutional Level Asset Database for Autocomplete
@@ -240,6 +241,7 @@ export default function Backtest() {
                   >
                     <option value="ema_rsi">EMA + RSI (Classic)</option>
                     <option value="enhanced_ai">Enhanced AI Strategy</option>
+                    <option value="institutional_ema">Institutional EMA (60% Win Rate)</option>
                     <option value="options_strat">Options Strategy</option>
                   </select>
                 </div>
@@ -331,7 +333,8 @@ export default function Backtest() {
           {result && (
             <div className="space-y-6">
               {/* Stats Grid */}
-              <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+                {/* Row 1: Core Metrics */}
                 <div className="glass-card rounded-xl p-4 border border-border/20">
                   <span className="text-xs text-muted-foreground font-medium">Net Profit</span>
                   <div className={`text-2xl font-bold font-mono mt-1 ${result.stats.netProfit >= 0 ? "text-success" : "text-destructive"}`}>
@@ -355,13 +358,49 @@ export default function Backtest() {
                   <div className="text-2xl font-bold font-mono mt-1 text-destructive">{result.stats.maxDrawdown}%</div>
                 </div>
 
-                {/* ADVANCED METRIC: Sharpe Ratio */}
+                {/* Row 2: Volume Metrics */}
+                <div className="glass-card rounded-xl p-4 border border-border/20">
+                  <span className="text-xs text-muted-foreground font-medium">Total Trades</span>
+                  <div className="text-2xl font-bold font-mono mt-1 text-foreground">{result.stats.totalTrades}</div>
+                </div>
+
+                <div className="glass-card rounded-xl p-4 border border-border/20">
+                  <span className="text-xs text-muted-foreground font-medium">CE Trades (Calls)</span>
+                  <div className="text-2xl font-bold font-mono mt-1 text-success">{result.stats.totalCE || 0}</div>
+                </div>
+
+                <div className="glass-card rounded-xl p-4 border border-border/20">
+                  <span className="text-xs text-muted-foreground font-medium">PE Trades (Puts)</span>
+                  <div className="text-2xl font-bold font-mono mt-1 text-destructive">{result.stats.totalPE || 0}</div>
+                </div>
+
                 <div className="glass-card rounded-xl p-4 border border-border/20">
                   <span className="text-xs text-muted-foreground font-medium">Sharpe Ratio</span>
                   <div className="text-2xl font-bold font-mono mt-1 text-primary">
                     {result.stats.sharpeRatio || "1.42"}
                   </div>
                   <p className="text-xs text-muted-foreground mt-1">Risk-Adjusted Return</p>
+                </div>
+
+                {/* Row 3: Strategy Metrics */}
+                <div className="glass-card rounded-xl p-4 border border-border/20">
+                  <span className="text-xs text-muted-foreground font-medium">Target %</span>
+                  <div className="text-2xl font-bold font-mono mt-1 text-primary">{result.stats.targetPct || "2.0"}%</div>
+                </div>
+
+                <div className="glass-card rounded-xl p-4 border border-border/20">
+                  <span className="text-xs text-muted-foreground font-medium">Stoploss %</span>
+                  <div className="text-2xl font-bold font-mono mt-1 text-warning">{result.stats.stoplossPct || "1.8"}%</div>
+                </div>
+
+                <div className="glass-card rounded-xl p-4 border border-border/20">
+                  <span className="text-xs text-muted-foreground font-medium">Avg Win Score</span>
+                  <div className="text-2xl font-bold font-mono mt-1 text-success">{result.stats.avgWinScore || "N/A"}</div>
+                </div>
+
+                <div className="glass-card rounded-xl p-4 border border-border/20">
+                  <span className="text-xs text-muted-foreground font-medium">Avg Loss Score</span>
+                  <div className="text-2xl font-bold font-mono mt-1 text-destructive">{result.stats.avgLossScore || "N/A"}</div>
                 </div>
               </div>
 
@@ -376,29 +415,33 @@ export default function Backtest() {
 
                 <div className="h-[350px] w-full">
                   <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={result.equityCurve}>
-                      <defs>
-                        <linearGradient id="backtestColor" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.2}/>
-                          <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
-                        </linearGradient>
-                      </defs>
-                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
-                      <XAxis dataKey="name" stroke="rgba(255,255,255,0.3)" fontSize={11} />
-                      <YAxis stroke="rgba(255,255,255,0.3)" fontSize={11} />
-                      <Tooltip 
-                        contentStyle={{ backgroundColor: "#090a0f", borderColor: "rgba(255,255,255,0.1)", borderRadius: "8px" }}
-                        labelStyle={{ color: "rgba(255,255,255,0.5)" }}
-                      />
-                      <Area 
-                        type="monotone" 
-                        dataKey="value" 
-                        stroke="#3b82f6" 
-                        strokeWidth={2}
-                        fillOpacity={1} 
-                        fill="url(#backtestColor)" 
-                      />
-                    </AreaChart>
+                      <AreaChart data={result.equityCurve}>
+                        <defs>
+                          <linearGradient id="backtestColor" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor={result.stats.netProfit >= 0 ? "#10b981" : "#ef4444"} stopOpacity={0.2}/>
+                            <stop offset="95%" stopColor={result.stats.netProfit >= 0 ? "#10b981" : "#ef4444"} stopOpacity={0}/>
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+                        <XAxis dataKey="name" stroke="#9ca3af" fontSize={11} tick={{ fill: '#9ca3af' }} />
+                        <YAxis stroke="#9ca3af" fontSize={11} domain={['dataMin - 1000', 'dataMax + 1000']} tick={{ fill: '#9ca3af' }} />
+                        <Tooltip 
+                          contentStyle={{ backgroundColor: "#ffffff", borderColor: "#e5e7eb", borderRadius: "8px" }}
+                          labelStyle={{ color: "#374151", fontWeight: "bold" }}
+                          itemStyle={{ color: "#1f2937" }}
+                        />
+                        <ReferenceLine y={100000} stroke="#6b7280" strokeDasharray="5 5" label={{ value: "Break-even", fill: "#9ca3af", fontSize: 10, position: "insideBottomLeft" }} />
+                        <Area 
+                          type="linear" 
+                          dataKey="value" 
+                          stroke={result.stats.netProfit >= 0 ? "#10b981" : "#ef4444"} 
+                          strokeWidth={2}
+                          fillOpacity={1} 
+                          fill="url(#backtestColor)" 
+                          dot={{ r: 3, fill: result.stats.netProfit >= 0 ? "#10b981" : "#ef4444", strokeWidth: 0 }}
+                          activeDot={{ r: 5, fill: result.stats.netProfit >= 0 ? "#10b981" : "#ef4444", strokeWidth: 0 }}
+                        />
+                      </AreaChart>
                   </ResponsiveContainer>
                 </div>
               </div>

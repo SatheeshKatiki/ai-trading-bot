@@ -164,7 +164,8 @@ class Backtester:
         }
 
 def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital: float = 100000.0,
-                           slippage_bps: float = 2.0, commission_per_trade: float = 20.0, multiplier: int = 10) -> dict:
+                           slippage_bps: float = 2.0, commission_per_trade: float = 20.0, multiplier: int = 10,
+                           target_pct: float = 2.0, stoploss_pct: float = 1.0, **kwargs) -> dict:
     """Run a detailed backtest with shorting, slippage, and commission."""
     trades = []
     position = None
@@ -183,16 +184,58 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
         # Exit condition
         if position is not None:
             is_long = position["type"] == "BUY"
-            should_exit = (is_long and signal == -1) or (not is_long and signal == 1) or (i == len(df) - 1)
+            
+            # Smart Stop Loss (Dynamic Exit based on Supertrend)
+            has_st = 'st_direction' in df.columns
+            smart_stop_loss = False
+            if is_long:
+                if has_st and df['st_direction'].iloc[i] == -1:
+                    smart_stop_loss = True
+            else:
+                if has_st and df['st_direction'].iloc[i] == 1:
+                    smart_stop_loss = True
+                    
+            # Exit Logic
+            entry_price = position["entry"]
+            pnl_pct = (current_price - entry_price) / entry_price * 100 if is_long else (entry_price - current_price) / entry_price * 100
+            
+            current_sl_pct = position.get("sl_pct", stoploss_pct)
+            
+            stoploss_hit = pnl_pct <= -current_sl_pct
+            
+            # Track if targets were hit (for partial profits if enabled)
+            if pnl_pct >= current_sl_pct:
+                position["t1_hit"] = True
+            if pnl_pct >= (current_sl_pct * 2):
+                position["t2_hit"] = True
+                
+            should_exit = (is_long and signal == -1) or (not is_long and signal == 1) or (i == len(df) - 1) or stoploss_hit
             
             if should_exit:
                 exit_price = apply_slippage(current_price, "SELL" if is_long else "BUY")
                 
-                if is_long:
-                    pnl = (exit_price - position["entry"]) * multiplier - commission_per_trade
+                # Base PnL for 100% position
+                base_pnl = (exit_price - entry_price) * multiplier if is_long else (entry_price - exit_price) * multiplier
+                
+                # Calculate PnL (Partial Profits vs Full Run)
+                pnl = 0
+                if kwargs.get("enable_partial_profits", False):
+                    rem_weight = 1.0
+                    # 30% at 1:1
+                    if position.get("t1_hit", False):
+                        pnl += (entry_price * (current_sl_pct / 100)) * multiplier * 0.3
+                        rem_weight -= 0.3
+                    # 30% at 1:2
+                    if position.get("t2_hit", False):
+                        pnl += (entry_price * (current_sl_pct * 2 / 100)) * multiplier * 0.3
+                        rem_weight -= 0.3
+                    # Remaining 40%
+                    pnl += base_pnl * rem_weight
                 else:
-                    pnl = (position["entry"] - exit_price) * multiplier - commission_per_trade
+                    pnl = base_pnl
                     
+                pnl -= commission_per_trade
+                
                 capital += pnl
                 trades.append({
                     "id": f"T-{len(trades) + 1}",
@@ -200,19 +243,44 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
                     "entry": position["entry"],
                     "exit": exit_price,
                     "pnl": pnl,
-                    "time": position["time"]
+                    "time": position["time"],
+                    "score": position.get("score", 0)
                 })
                 position = None
                 
         # Entry condition
         if position is None:
-            if signal == 1:
+            if signal == 1 and (i == 0 or signals.iloc[i-1] != 1):
                 entry_price = apply_slippage(current_price, "BUY")
-                position = {"type": "BUY", "entry": entry_price, "time": current_time}
+                
+                # Dynamic SL/Target based on ATR (Optional) or Custom SL
+                if 'custom_sl_pct' in df.columns and df['custom_sl_pct'].iloc[i] > 0:
+                    current_sl_pct = df['custom_sl_pct'].iloc[i]
+                elif kwargs.get("enable_dynamic_atr_sl", False):
+                    atr = df['atr'].iloc[i] if 'atr' in df.columns else entry_price * 0.005
+                    current_sl_pct = (atr * 1.5) / entry_price * 100
+                else:
+                    current_sl_pct = stoploss_pct
+                
+                score = df['call_score'].iloc[i] if 'call_score' in df.columns else 0
+                
+                position = {"type": "BUY", "entry": entry_price, "time": current_time, "sl_pct": current_sl_pct, "score": score}
                 capital -= commission_per_trade
-            elif signal == -1:
+            elif signal == -1 and (i == 0 or signals.iloc[i-1] != -1):
                 entry_price = apply_slippage(current_price, "SELL")
-                position = {"type": "SELL", "entry": entry_price, "time": current_time}
+                
+                # Dynamic SL/Target based on ATR (Optional) or Custom SL
+                if 'custom_sl_pct' in df.columns and df['custom_sl_pct'].iloc[i] > 0:
+                    current_sl_pct = df['custom_sl_pct'].iloc[i]
+                elif kwargs.get("enable_dynamic_atr_sl", False):
+                    atr = df['atr'].iloc[i] if 'atr' in df.columns else entry_price * 0.005
+                    current_sl_pct = (atr * 1.5) / entry_price * 100
+                else:
+                    current_sl_pct = stoploss_pct
+                
+                score = df['put_score'].iloc[i] if 'put_score' in df.columns else 0
+                
+                position = {"type": "SELL", "entry": entry_price, "time": current_time, "sl_pct": current_sl_pct, "score": score}
                 capital -= commission_per_trade
                 
         if i % max(1, len(df) // 20) == 0:
@@ -222,13 +290,35 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
     pnl_series = pd.Series([t["pnl"] for t in trades]) if trades else pd.Series([], dtype=float)
     total_pnl = capital - initial_capital
     winning_trades = [t for t in trades if t["pnl"] > 0]
+    losing_trades = [t for t in trades if t["pnl"] <= 0]
     
+    avg_win_score = sum([t["score"] for t in winning_trades]) / len(winning_trades) if winning_trades else 0
+    avg_loss_score = sum([t["score"] for t in losing_trades]) / len(losing_trades) if losing_trades else 0
+    
+    total_profit = sum([t["pnl"] for t in winning_trades])
+    total_loss = abs(sum([t["pnl"] for t in losing_trades]))
+    profit_factor = round(total_profit / total_loss, 2) if total_loss > 0 else (round(total_profit, 2) if total_profit > 0 else 1.0)
+    
+    # Calculate Max Drawdown
+    peak = initial_capital
+    max_dd = 0
+    current_cap = initial_capital
+    for t in trades:
+        current_cap += t["pnl"]
+        if current_cap > peak:
+            peak = current_cap
+        dd = (peak - current_cap) / peak * 100
+        if dd > max_dd:
+            max_dd = dd
+            
     stats = {
-        "profitFactor": 2.15 if total_pnl >= 0 else 0.85,
+        "profitFactor": profit_factor,
         "winRate": f"{(len(winning_trades) / len(trades) * 100):.1f}" if trades else "0.0",
         "totalTrades": len(trades),
-        "maxDrawdown": -1.5 if total_pnl >= 0 else -5.2,
-        "netProfit": total_pnl
+        "maxDrawdown": -round(max_dd, 2),
+        "netProfit": total_pnl,
+        "avgWinScore": f"{avg_win_score:.1f}",
+        "avgLossScore": f"{avg_loss_score:.1f}"
     }
     
     return {

@@ -1,49 +1,40 @@
 import { NextResponse } from 'next/server';
-import fs from 'fs';
-import path from 'path';
 
-// Force dynamic rendering
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
   try {
-    const filePath = path.join(process.cwd(), '..', 'trading-system', 'settings.json');
-    
-    if (!fs.existsSync(filePath)) {
-      return NextResponse.json({ error: 'Settings file not found' }, { status: 404 });
+    const res = await fetch('http://localhost:8000/api/settings');
+    if (!res.ok) {
+      const text = await res.text();
+      return NextResponse.json({ error: `Server error: ${text}` }, { status: res.status });
     }
-    
-    const fileContent = fs.readFileSync(filePath, 'utf8');
-    const data = JSON.parse(fileContent);
-    
+    const data = await res.json();
     return NextResponse.json(data);
   } catch (error) {
-    console.error('Failed to read settings file:', error);
-    return NextResponse.json({ error: 'Failed to read settings file' }, { status: 500 });
+    console.error("Error in settings GET proxy:", error);
+    return NextResponse.json({ error: "Failed to connect to backend" }, { status: 500 });
   }
 }
 
 export async function POST(request: Request) {
   try {
-    const data = await request.json();
-    const filePath = path.join(process.cwd(), '..', 'trading-system', 'settings.json');
+    const body = await request.json();
+    const res = await fetch('http://localhost:8000/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
     
-    // Read existing settings to merge
-    let existingData = {};
-    if (fs.existsSync(filePath)) {
-      const fileContent = fs.readFileSync(filePath, 'utf8');
-      existingData = JSON.parse(fileContent);
+    if (!res.ok) {
+      const data = await res.json();
+      return NextResponse.json(data, { status: res.status });
     }
     
-    // Merge new data with existing data
-    const updatedData = { ...existingData, ...data };
-    
-    // Save back to file with pretty print
-    fs.writeFileSync(filePath, JSON.stringify(updatedData, null, 4));
-    
-    return NextResponse.json({ success: true, message: 'Settings saved successfully' });
+    const data = await res.json();
+    return NextResponse.json(data);
   } catch (error) {
-    console.error('Failed to save settings:', error);
-    return NextResponse.json({ error: 'Failed to save settings' }, { status: 500 });
+    console.error("Error in settings POST proxy:", error);
+    return NextResponse.json({ error: "Failed to connect to backend" }, { status: 500 });
   }
 }

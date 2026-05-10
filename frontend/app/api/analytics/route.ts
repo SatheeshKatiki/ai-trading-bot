@@ -3,71 +3,135 @@ import fs from 'fs';
 import path from 'path';
 
 export async function GET() {
-  const filePath = path.join(process.cwd(), '..', 'trading-system', 'data', 'NSEI_1min.csv');
+  const filePath = path.join(process.cwd(), '..', 'trading-system', 'backtest_results.json');
   
   try {
-    let netProfit = 0;
-    let isPositive = true;
+    if (!fs.existsSync(filePath)) {
+      // Return empty data if file doesn't exist
+      return NextResponse.json({
+        stats: {
+          profitFactor: 0,
+          expectancy: 0,
+          winRate: 0,
+          maxDrawdown: 0,
+          totalTrades: 0,
+          winningTrades: 0
+        },
+        winLossData: [],
+        dayOfWeekData: [],
+        expectancyData: [],
+        streaks: {
+          winning: { count: 0, value: 0 },
+          losing: { count: 0, value: 0 },
+          avgRatio: 0
+        }
+      });
+    }
     
-    if (fs.existsSync(filePath)) {
-      const fileContent = fs.readFileSync(filePath, 'utf8');
-      const lines = fileContent.split('\n');
-      
-      if (lines.length > 2) {
-        const firstLine = lines[1].split(',');
-        const lastLine = lines[lines.length - 2].split(','); // -2 because of empty line at end
+    const fileContent = fs.readFileSync(filePath, 'utf8');
+    const data = JSON.parse(fileContent);
+    const trades = data.trades || [];
+    const stats = data.stats || {};
+    
+    // Calculate Win/Loss Data
+    const winningTrades = trades.filter((t: any) => t.pnl > 0);
+    const losingTrades = trades.filter((t: any) => t.pnl <= 0);
+    
+    const winLossData = [
+      { name: "Winning Trades", value: trades.length > 0 ? Math.round((winningTrades.length / trades.length) * 100) : 0 },
+      { name: "Losing Trades", value: trades.length > 0 ? Math.round((losingTrades.length / trades.length) * 100) : 0 },
+    ];
+    
+    // Calculate Day of Week Data
+    const dayMap: { [key: string]: number } = { "Mon": 0, "Tue": 0, "Wed": 0, "Thu": 0, "Fri": 0 };
+    trades.forEach((t: any) => {
+      if (t.time) {
+        // Try to parse time, handle formats like "14:20" or full datetime
+        let day = "Mon";
+        try {
+          if (t.time.includes('-')) {
+            const date = new Date(t.time);
+            day = date.toLocaleDateString('en-US', { weekday: 'short' });
+          } else {
+            // If just time "14:20", we don't know the day, default to Mon or skip
+            day = "Wed"; // Default to middle of week for dummy times if any
+          }
+        } catch (e) {
+          day = "Wed";
+        }
         
-        if (firstLine.length >= 2 && lastLine.length >= 2) {
-          const firstClose = parseFloat(firstLine[1]);
-          const lastClose = parseFloat(lastLine[1]);
-          
-          netProfit = (lastClose - firstClose) * 10;
-          isPositive = netProfit >= 0;
+        if (dayMap[day] !== undefined) {
+          dayMap[day] += t.pnl;
         }
       }
-    }
-
-    const winLossData = [
-      { name: "Winning Trades", value: isPositive ? 68 : 45 },
-      { name: "Losing Trades", value: isPositive ? 32 : 55 },
-    ];
-
-    const dayOfWeekData = [
-      { day: "Mon", pnl: isPositive ? 4500 : -1000 },
-      { day: "Tue", pnl: isPositive ? 2000 : -2000 },
-      { day: "Wed", pnl: isPositive ? 8500 : 3000 },
-      { day: "Thu", pnl: isPositive ? 6200 : -500 },
-      { day: "Fri", pnl: isPositive ? -1000 : -4000 },
-    ];
-
-    const expectancyData = [
-      { trade: 1, val: 0.5 },
-      { trade: 5, val: 0.8 },
-      { trade: 10, val: 1.2 },
-      { trade: 15, val: 1.1 },
-      { trade: 20, val: isPositive ? 1.8 : 0.5 },
-    ];
-
-    const stats = {
-      profitFactor: isPositive ? 2.45 : 0.85,
-      expectancy: Math.round(netProfit / 20) || 1850,
-      winRate: isPositive ? 68.0 : 45.0,
-      maxDrawdown: isPositive ? -5.4 : -12.4,
-      totalTrades: 200,
-      winningTrades: isPositive ? 136 : 90
-    };
-
+    });
+    
+    const dayOfWeekData = Object.keys(dayMap).map(day => ({
+      day,
+      pnl: Math.round(dayMap[day])
+    }));
+    
+    // Calculate Expectancy Growth
+    let cumulativePnl = 0;
+    const expectancyData = trades.map((t: any, index: number) => {
+      cumulativePnl += t.pnl;
+      return {
+        trade: index + 1,
+        val: Math.round(cumulativePnl / (index + 1))
+      };
+    });
+    
+    // Calculate Streaks
+    let currentWinStreak = 0;
+    let maxWinStreak = 0;
+    let winStreakValue = 0;
+    let maxWinStreakValue = 0;
+    
+    let currentLossStreak = 0;
+    let maxLossStreak = 0;
+    let lossStreakValue = 0;
+    let maxLossStreakValue = 0;
+    
+    trades.forEach((t: any) => {
+      if (t.pnl > 0) {
+        currentWinStreak++;
+        winStreakValue += t.pnl;
+        if (currentWinStreak > maxWinStreak) {
+          maxWinStreak = currentWinStreak;
+          maxWinStreakValue = winStreakValue;
+        }
+        currentLossStreak = 0;
+        lossStreakValue = 0;
+      } else {
+        currentLossStreak++;
+        lossStreakValue += t.pnl;
+        if (currentLossStreak > maxLossStreak) {
+          maxLossStreak = currentLossStreak;
+          maxLossStreakValue = lossStreakValue;
+        }
+        currentWinStreak = 0;
+        winStreakValue = 0;
+      }
+    });
+    
     const streaks = {
-      winning: { count: isPositive ? 8 : 4, value: isPositive ? 24500 : 10000 },
-      losing: { count: isPositive ? 3 : 6, value: isPositive ? 6200 : 15000 },
-      avgRatio: isPositive ? 1.8 : 0.9
+      winning: { count: maxWinStreak, value: Math.round(maxWinStreakValue) },
+      losing: { count: maxLossStreak, value: Math.round(maxLossStreakValue) },
+      avgRatio: losingTrades.length > 0 ? Math.round((winningTrades.length / losingTrades.length) * 10) / 10 : winningTrades.length
     };
-
+    
     return NextResponse.json({
-      stats,
+      stats: {
+        profitFactor: stats.profitFactor || 0,
+        expectancy: trades.length > 0 ? Math.round(cumulativePnl / trades.length) : 0,
+        winRate: parseFloat(stats.winRate) || 0,
+        maxDrawdown: stats.maxDrawdown || 0,
+        totalTrades: trades.length,
+        winningTrades: winningTrades.length
+      },
       winLossData,
       dayOfWeekData,
-      expectancyData,
+      expectancyData: expectancyData.slice(-20), // Show last 20 for chart clarity
       streaks
     });
     

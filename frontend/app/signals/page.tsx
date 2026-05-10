@@ -3,26 +3,26 @@
 import Sidebar from "@/components/sidebar";
 import Header from "@/components/header";
 import { useState, useEffect } from "react";
-import { 
-  Brain, 
-  TrendingUp, 
-  TrendingDown, 
-  Clock, 
-  Zap, 
-  Shield, 
+import {
+  Brain,
+  TrendingUp,
+  TrendingDown,
+  Clock,
+  Zap,
+  Shield,
   Target,
   ArrowUpRight,
   ArrowDownRight,
   Activity,
   BarChart2
 } from "lucide-react";
-import { 
-  AreaChart, 
-  Area, 
-  XAxis, 
-  YAxis, 
-  CartesianGrid, 
-  Tooltip, 
+import {
+  AreaChart,
+  Area,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
   ResponsiveContainer,
   LineChart,
   Line
@@ -42,7 +42,7 @@ export default function Signals() {
       try {
         const res = await fetch('/api/signals');
         const data = await res.json();
-        
+
         if (data && !data.error) {
           setConfidence(data.confidence);
           setStatus(data.status);
@@ -63,17 +63,17 @@ export default function Signals() {
 
     fetchSignals();
     const interval = setInterval(fetchSignals, 10000); // Refresh every 10 seconds
-    
+
     return () => clearInterval(interval);
   }, []);
 
   return (
     <div className="flex h-screen bg-background text-foreground">
       <Sidebar />
-      
+
       <div className="flex-1 flex flex-col overflow-hidden">
         <Header />
-        
+
         <main className="flex-1 overflow-y-auto p-6 space-y-6">
           {/* Header */}
           <div>
@@ -89,12 +89,56 @@ export default function Signals() {
                 <h3 className="font-display font-bold text-lg text-foreground">AI Confidence</h3>
                 <Brain className="w-5 h-5 text-primary" />
               </div>
-              
+
               <div className="flex flex-col items-center justify-center space-y-2">
                 <div className="relative w-40 h-40">
-                  {/* Semi-circle gauge simulation */}
-                  <div className="absolute inset-0 rounded-full border-4 border-muted/30"></div>
-                  <div className="absolute inset-0 rounded-full border-4 border-primary border-t-transparent border-r-transparent transform rotate-[45deg]"></div>
+                  <svg className="w-full h-full" viewBox="0 0 100 100">
+                    <defs>
+                      <linearGradient id="gaugeColor" x1="50" y1="95" x2="50" y2="5" gradientUnits="userSpaceOnUse">
+                        <stop offset="0%" stopColor="#fc0808e3" /> {/* Red at bottom */}
+                        <stop offset="50%" stopColor="#f1750aff" /> {/* Yellow in middle */}
+                        <stop offset="100%" stopColor="#22c55eff" /> {/* Green at top */}
+                      </linearGradient>
+                      <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+                        <feGaussianBlur stdDeviation="3" result="blur" />
+                        <feComposite in="SourceGraphic" in2="blur" operator="over" />
+                      </filter>
+                    </defs>
+                    {/* Background circle */}
+                    <circle
+                      cx="50"
+                      cy="50"
+                      r="45"
+                      fill="none"
+                      stroke="hsl(var(--muted))"
+                      strokeWidth="6"
+                    />
+
+                    {/* Active Gauge (Continuous with full gradient) */}
+                    <circle
+                      cx="50"
+                      cy="50"
+                      r="45"
+                      fill="none"
+                      stroke="url(#gaugeColor)"
+                      strokeWidth="6"
+                      strokeDasharray="282.74"
+                      strokeDashoffset={282.74 * (1 - confidence / 100)}
+                      strokeLinecap="round"
+                      transform="rotate(-90 50 50)"
+                      className="transition-all duration-1000 ease-in-out"
+                    />
+
+                    {/* Glowing Pointer Dot at the end */}
+                    <circle
+                      cx={50 + 45 * Math.cos((confidence * 3.6 - 90) * Math.PI / 180)}
+                      cy={50 + 45 * Math.sin((confidence * 3.6 - 90) * Math.PI / 180)}
+                      r="5"
+                      fill="#fff"
+                      filter="url(#glow)"
+                      className="transition-all duration-1000 ease-in-out"
+                    />
+                  </svg>
                   <div className="absolute inset-0 flex flex-col items-center justify-center">
                     <span className="font-display font-bold text-4xl text-foreground">{confidence}%</span>
                     <span className="text-xs font-medium text-success">{status}</span>
@@ -116,27 +160,30 @@ export default function Signals() {
                   <span className="text-xs text-muted-foreground">Scale: 0-100</span>
                 </div>
               </div>
-              
+
               <div className="h-56 w-full">
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={trendData}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
-                    <XAxis dataKey="name" stroke="rgba(255,255,255,0.3)" fontSize={11} />
-                    <YAxis stroke="rgba(255,255,255,0.3)" fontSize={11} domain={[0, 100]} />
-                    <Tooltip 
-                      contentStyle={{ backgroundColor: "#090a0f", borderColor: "rgba(255,255,255,0.1)", borderRadius: "8px" }}
-                      labelStyle={{ color: "rgba(255,255,255,0.5)" }}
+                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                    <XAxis dataKey="name" stroke="hsl(var(--muted-foreground))" fontSize={11} />
+                    <YAxis stroke="hsl(var(--muted-foreground))" fontSize={11} domain={[0, 100]} />
+                    <Tooltip
+                      contentStyle={{ backgroundColor: "hsl(var(--background))", borderColor: "hsl(var(--border))", borderRadius: "8px" }}
+                      labelStyle={{ color: "hsl(var(--foreground))" }}
                     />
-                    <Line 
-                      type="monotone" 
-                      dataKey="value" 
-                      stroke="#8b5cf6" 
+                    <Line
+                      type="monotone"
+                      dataKey="value"
+                      stroke="#ff4d4d"
                       strokeWidth={3}
-                      dot={{ r: 4, fill: "#8b5cf6", strokeWidth: 0 }}
-                      activeDot={{ r: 6, fill: "#8b5cf6", strokeWidth: 0 }}
+                      dot={{ r: 4, fill: "#ff4d4d", strokeWidth: 0 }}
+                      activeDot={{ r: 6, fill: "#ff4d4d", strokeWidth: 0 }}
                     />
                   </LineChart>
                 </ResponsiveContainer>
+              </div>
+              <div className="mt-2">
+                <p className="text-xs text-muted-foreground">[ Identifies trend continuations and potential reversals. Helps in timing entries and exits based on conviction. ]</p>
               </div>
             </div>
           </div>
@@ -144,7 +191,7 @@ export default function Signals() {
           {/* Signals Grid */}
           <div>
             <h3 className="font-display font-bold text-lg text-foreground mb-4">Live Generation Feed</h3>
-            
+
             <div className="grid grid-cols-1 gap-6">
               {isLoading ? (
                 <div className="p-6 glass-card rounded-xl border border-border/20 text-center text-muted-foreground">
@@ -164,21 +211,19 @@ export default function Signals() {
                     <div className="flex flex-col md:flex-row justify-between gap-4">
                       {/* Signal Badge & Symbol */}
                       <div className="flex items-start gap-4">
-                        <div className={`w-12 h-12 rounded-lg flex items-center justify-center ${
-                          signal.bias === "BUY" ? "bg-success/10 text-success" : 
+                        <div className={`w-12 h-12 rounded-lg flex items-center justify-center ${signal.bias === "BUY" ? "bg-success/10 text-success" :
                           signal.bias === "SELL" ? "bg-destructive/10 text-destructive" : "bg-muted/50 text-muted-foreground"
-                        }`}>
-                          {signal.bias === "BUY" ? <TrendingUp className="w-6 h-6" /> : 
-                           signal.bias === "SELL" ? <TrendingDown className="w-6 h-6" /> : <Clock className="w-6 h-6" />}
+                          }`}>
+                          {signal.bias === "BUY" ? <TrendingUp className="w-6 h-6" /> :
+                            signal.bias === "SELL" ? <TrendingDown className="w-6 h-6" /> : <Clock className="w-6 h-6" />}
                         </div>
-                        
+
                         <div>
                           <div className="flex items-center gap-2">
                             <h4 className="font-display font-bold text-lg text-foreground">{signal.symbol}</h4>
-                            <span className={`text-xs font-bold px-2 py-0.5 rounded ${
-                              signal.bias === "BUY" ? "bg-success/10 text-success" : 
+                            <span className={`text-xs font-bold px-2 py-0.5 rounded ${signal.bias === "BUY" ? "bg-success/10 text-success" :
                               signal.bias === "SELL" ? "bg-destructive/10 text-destructive" : "bg-muted/50 text-muted-foreground"
-                            }`}>
+                              }`}>
                               {signal.type}
                             </span>
                           </div>
@@ -194,11 +239,10 @@ export default function Signals() {
                         <span className="text-xs text-muted-foreground font-medium">AI Confidence</span>
                         <div className="flex items-center gap-2">
                           <div className="w-32 bg-muted/30 h-2 rounded-full overflow-hidden">
-                            <div 
-                              className={`h-full rounded-full ${
-                                signal.confidence > 75 ? "bg-success" : 
+                            <div
+                              className={`h-full rounded-full ${signal.confidence > 75 ? "bg-success" :
                                 signal.confidence > 50 ? "bg-warning" : "bg-muted-foreground"
-                              }`} 
+                                }`}
                               style={{ width: `${signal.confidence}%` }}
                             ></div>
                           </div>

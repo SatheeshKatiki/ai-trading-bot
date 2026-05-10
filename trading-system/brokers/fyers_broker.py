@@ -86,7 +86,11 @@ class FyersBroker(BaseBroker):
             return False
 
         try:
-            from fyers_api import fyersModel   # type: ignore[import]
+            try:
+                from fyers_apiv3 import fyersModel
+            except ImportError:
+                from fyers_api import fyersModel   # type: ignore[import]
+                
             self._fyers_model = fyersModel.FyersModel(
                 client_id=self.credentials.get("client_id", ""),
                 token=token,
@@ -105,14 +109,29 @@ class FyersBroker(BaseBroker):
         if self.paper_mode:
             return None
         try:
-            from fyers_api import fyersModel   # type: ignore[import]
-            session = fyersModel.SessionModel(
-                client_id=self.credentials.get("client_id", ""),
-                secret_key=self.credentials.get("secret_key", ""),
-                redirect_uri=self.credentials.get("redirect_uri", "https://localhost"),
-                response_type="code",
-                grant_type="authorization_code",
-            )
+            try:
+                from fyers_apiv3 import fyersModel
+            except ImportError:
+                from fyers_api import fyersModel   # type: ignore[import]
+                
+            try:
+                session = fyersModel.SessionModel(
+                    client_id=self.credentials.get("client_id", ""),
+                    secret_key=self.credentials.get("secret_key", ""),
+                    redirect_uri=self.credentials.get("redirect_uri", "https://localhost"),
+                    response_type="code",
+                    grant_type="authorization_code",
+                )
+            except AttributeError:
+                # Fallback for versions where SessionModel is in the session module
+                from fyers_api import session as fyers_session
+                session = fyers_session.SessionModel(
+                    client_id=self.credentials.get("client_id", ""),
+                    secret_key=self.credentials.get("secret_key", ""),
+                    redirect_uri=self.credentials.get("redirect_uri", "https://localhost"),
+                    response_type="code",
+                    grant_type="authorization_code",
+                )
             return session.generate_authcode()
         except Exception as exc:
             logger.error("Could not generate Fyers login URL: %s", exc)
@@ -121,14 +140,28 @@ class FyersBroker(BaseBroker):
     def complete_login(self, auth_code: str) -> bool:
         """Exchange the auth code for an access token and cache it."""
         try:
-            from fyers_api import fyersModel   # type: ignore[import]
-            session = fyersModel.SessionModel(
-                client_id=self.credentials.get("client_id", ""),
-                secret_key=self.credentials.get("secret_key", ""),
-                redirect_uri=self.credentials.get("redirect_uri", "https://localhost"),
-                response_type="code",
-                grant_type="authorization_code",
-            )
+            try:
+                from fyers_apiv3 import fyersModel
+            except ImportError:
+                from fyers_api import fyersModel   # type: ignore[import]
+                
+            try:
+                session = fyersModel.SessionModel(
+                    client_id=self.credentials.get("client_id", ""),
+                    secret_key=self.credentials.get("secret_key", ""),
+                    redirect_uri=self.credentials.get("redirect_uri", "https://localhost"),
+                    response_type="code",
+                    grant_type="authorization_code",
+                )
+            except AttributeError:
+                from fyers_api import session as fyers_session
+                session = fyers_session.SessionModel(
+                    client_id=self.credentials.get("client_id", ""),
+                    secret_key=self.credentials.get("secret_key", ""),
+                    redirect_uri=self.credentials.get("redirect_uri", "https://localhost"),
+                    response_type="code",
+                    grant_type="authorization_code",
+                )
             session.set_token(auth_code)
             resp  = session.generate_token()
             token = resp.get("access_token", "")
@@ -331,6 +364,79 @@ class FyersBroker(BaseBroker):
                 f"Fyers get_market_data failed: {exc}", broker_id=self.BROKER_ID
             ) from exc
 
+    def get_historical_data(
+        self, 
+        symbol: str, 
+        start_date: str, 
+        end_date: str, 
+        timeframe: str = "5 Min"
+    ) -> List[Dict[str, Any]]:
+        """Fetch historical data from Fyers API."""
+        from datetime import datetime
+        
+        if self.paper_mode or not self._fyers_model:
+            self.logger.warning("Fyers: paper mode or not authenticated — cannot fetch historical data from Fyers.")
+            return []
+            
+        try:
+            # Map timeframe string to Fyers resolution
+            resolution = "5"
+            if timeframe == "1 Min": resolution = "1"
+            elif timeframe == "3 Min": resolution = "3"
+            elif timeframe == "5 Min": resolution = "5"
+            elif timeframe == "15 Min": resolution = "15"
+            elif timeframe == "30 Min": resolution = "30"
+            elif timeframe == "1 Hour": resolution = "60"
+            elif timeframe == "1 Day": resolution = "D"
+            # Map short symbols to Fyers format
+            if symbol == "NIFTY":
+                symbol = "NSE:NIFTY50-INDEX"
+            elif symbol == "BANKNIFTY":
+                symbol = "NSE:NIFTYBANK-INDEX"
+            elif symbol == "RELIANCE":
+                symbol = "NSE:RELIANCE-EQ"
+            elif symbol == "TCS":
+                symbol = "NSE:TCS-EQ"
+            elif symbol == "INFY":
+                symbol = "NSE:INFY-EQ"
+            elif ":" not in symbol:
+                symbol = f"NSE:{symbol}-EQ"
+                
+            data = {
+                "symbol": symbol,
+                "resolution": resolution,
+                "date_format": "1",
+                "range_from": start_date,
+                "range_to": end_date,
+                "cont_flag": "1"
+            }
+            
+            resp = self._fyers_model.history(data)
+            
+            if resp.get("s") != "ok":
+                raise MarketDataError(
+                    f"Fyers history API failed: {resp.get('message', 'Unknown error')}",
+                    broker_id=self.BROKER_ID
+                )
+                
+            candles = resp.get("candles", [])
+            result = []
+            for c in candles:
+                # Fyers returns [timestamp, open, high, low, close, volume]
+                result.append({
+                    "datetime": datetime.fromtimestamp(c[0]).strftime('%Y-%m-%d %H:%M:%S') if isinstance(c[0], int) else c[0],
+                    "open": float(c[1]),
+                    "high": float(c[2]),
+                    "low": float(c[3]),
+                    "close": float(c[4]),
+                    "volume": int(c[5])
+                })
+            return result
+        except Exception as exc:
+            raise MarketDataError(
+                f"Fyers get_historical_data failed: {exc}", broker_id=self.BROKER_ID
+            ) from exc
+
     # ------------------------------------------------------------------
     # Streaming
     # ------------------------------------------------------------------
@@ -352,6 +458,10 @@ class FyersBroker(BaseBroker):
     # Cleanup
     # ------------------------------------------------------------------
 
+    def close(self) -> None:
+        self._fyers_model = None
+        self._authenticated = False
+        logger.debug("FyersBroker.close() called.")
     def close(self) -> None:
         self._fyers_model = None
         self._authenticated = False

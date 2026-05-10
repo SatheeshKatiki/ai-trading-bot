@@ -7,8 +7,18 @@ import os
 
 # Import the Broker Factory to make the API broker-agnostic!
 from brokers import BrokerFactory
-# Import the actual strategy signal generator
-from trading_bot.strategies.ema_rsi_strategy import generate_signals
+# Import the Strategy Registry to support multiple strategies
+from trading_bot.strategies.registry import registry
+from trading_bot.strategies.ema_rsi_strategy import generate_signals as ema_rsi_signals
+from trading_bot.strategies.enhanced_ai_strategy import generate_signals as enhanced_signals
+from trading_bot.strategies.premium_selection import generate_signals as premium_signals
+from trading_bot.strategies.institutional_ema_strategy import generate_signals as institutional_signals
+
+# Register strategies for the API
+registry.register("ema_rsi",      ema_rsi_signals)
+registry.register("enhanced_ai",  enhanced_signals)
+registry.register("premium",      premium_signals)
+registry.register("institutional_ema", institutional_signals)
 
 app = FastAPI(title="Broker Terminal Data Bridge & Backtester")
 
@@ -85,15 +95,27 @@ async def get_backtest(
         # Lowercase columns for the strategy
         df.columns = [c.lower() for c in df.columns]
         
-        # Generate Signals using Python Strategy
-        signals = generate_signals(
-            df, 
-            ema_fast=ema_fast, 
-            ema_slow=ema_slow, 
-            rsi_window=rsi_window, 
-            rsi_buy_thresh=rsi_buy, 
-            rsi_sell_thresh=rsi_sell
-        )
+        # Generate Signals using Python Strategy via Registry
+        try:
+            signals = registry.run_strategy(
+                strategy, 
+                df, 
+                ema_fast=ema_fast, 
+                ema_slow=ema_slow, 
+                rsi_window=rsi_window, 
+                rsi_buy_thresh=rsi_buy, 
+                rsi_sell_thresh=rsi_sell
+            )
+        except ValueError:
+            # Fallback to default if strategy not found
+            signals = ema_rsi_signals(
+                df, 
+                ema_fast=ema_fast, 
+                ema_slow=ema_slow, 
+                rsi_window=rsi_window, 
+                rsi_buy_thresh=rsi_buy, 
+                rsi_sell_thresh=rsi_sell
+            )
         
         # Use the formal backtesting engine function for institutional accuracy
         from backtesting_engine.run import run_intraday_backtest
@@ -107,6 +129,35 @@ async def get_backtest(
             multiplier=10
         )
         
+        # Save results for analytics!
+        backtest_output = {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "strategy": strategy,
+            "stats": results["stats"],
+            "equityCurve": results["equityCurve"],
+            "trades": results["trades"]
+        }
+        with open("backtest_results.json", "w") as f:
+            json.dump(backtest_output, f, indent=4)
+            
+        # Read settings for target and stoploss
+        settings = {}
+        if os.path.exists("settings.json"):
+            with open("settings.json", "r") as f:
+                settings = json.load(f)
+                
+        # Calculate extra stats
+        trades = results["trades"]
+        call_trades = [t for t in trades if t['type'] == 'BUY']
+        put_trades = [t for t in trades if t['type'] == 'SELL']
+        
+        # Add to stats
+        results["stats"]["targetPct"] = settings.get("target_pct", 2.0)
+        results["stats"]["stoplossPct"] = settings.get("stoploss_pct", 1.8)
+        results["stats"]["totalCE"] = len(call_trades)
+        results["stats"]["totalPE"] = len(put_trades)
+            
         return {
             "symbol": symbol,
             "timeframe": timeframe,
@@ -175,66 +226,269 @@ async def get_signals(
         rsi_window = settings.get("rsi_window", 14)
         rsi_buy = settings.get("rsi_buy", 55)
         rsi_sell = settings.get("rsi_sell", 45)
-        
-        # Generate Signals
-        signals = generate_signals(
-            df, 
-            ema_fast=ema_fast, 
-            ema_slow=ema_slow, 
-            rsi_window=rsi_window, 
-            rsi_buy_thresh=rsi_buy, 
-            rsi_sell_thresh=rsi_sell
+        # Generate Signals via Registry using institutional_ema!
+        signals = registry.run_strategy(
+            "institutional_ema", 
+            df
         )
         
-        last_signal = int(signals.iloc[-1])
+        # Read scores from dataframe
+        call_scores = df['call_score'] if 'call_score' in df.columns else pd.Series(0, index=df.index)
+        put_scores = df['put_score'] if 'put_score' in df.columns else pd.Series(0, index=df.index)
+        
+        last_call_score = int(call_scores.iloc[-1]) if len(call_scores) > 0 else 0
+        last_put_score = int(put_scores.iloc[-1]) if len(put_scores) > 0 else 0
+        
+        confidence = max(last_call_score, last_put_score)
         
         bias = "NEUTRAL"
-        confidence = 50
         status = "Scanning..."
         
-        if last_signal == 1:
+        if last_call_score >= 75:
             bias = "BUY"
-            confidence = 85
-            status = "Strong Bullish Trend Detected"
-        elif last_signal == -1:
+            status = "Institutional Call Buy Setup"
+        elif last_put_score >= 75:
             bias = "SELL"
-            confidence = 85
-            status = "Bearish Momentum Detected"
+            status = "Institutional Put Buy Setup"
         else:
-            price_change = df['close'].iloc[-1] - df['close'].iloc[-5] if len(df) >= 5 else 0
-            if price_change > 0:
+            if last_call_score > last_put_score:
                 bias = "BULLISH"
-                confidence = 65
                 status = "Mild Bullish Bias"
             else:
                 bias = "BEARISH"
-                confidence = 65
                 status = "Mild Bearish Bias"
                 
+        # Generate trendData using the max score of each candle!
         trend_data = []
-        for i in range(max(0, len(df) - 10), len(df)):
+        for i in range(max(0, len(df) - 20), len(df)):
             current_time = df['datetime'].iloc[i].split(' ')[1][:5] if 'datetime' in df.columns else "00:00"
+            score = int(max(call_scores.iloc[i], put_scores.iloc[i]))
             trend_data.append({
                 "name": current_time,
-                "value": float(df['close'].iloc[i])
+                "value": score
             })
             
+        # Generate real signals list from the last 5 days data!
+        real_signals = []
+        for i in range(len(df)):
+            if signals.iloc[i] == 1:
+                current_time = df['datetime'].iloc[i].split(' ')[1][:5] if 'datetime' in df.columns else "00:00"
+                real_signals.append({
+                    "symbol": symbol,
+                    "type": "CALL BUY",
+                    "bias": "BUY",
+                    "strength": "Strong" if call_scores.iloc[i] > 85 else "Moderate",
+                    "confidence": int(call_scores.iloc[i]),
+                    "time": current_time,
+                    "reason": f"Institutional crossover with score {int(call_scores.iloc[i])}"
+                })
+            elif signals.iloc[i] == -1:
+                current_time = df['datetime'].iloc[i].split(' ')[1][:5] if 'datetime' in df.columns else "00:00"
+                real_signals.append({
+                    "symbol": symbol,
+                    "type": "PUT BUY",
+                    "bias": "SELL",
+                    "strength": "Strong" if put_scores.iloc[i] > 85 else "Moderate",
+                    "confidence": int(put_scores.iloc[i]),
+                    "time": current_time,
+                    "reason": f"Institutional crossover with score {int(put_scores.iloc[i])}"
+                })
+                
         return {
             "confidence": confidence,
             "status": status,
             "bias": f"{bias} Bias Detected",
             "trendData": trend_data,
-            "signals": [
-                {
-                    "symbol": symbol,
-                    "type": "Intraday",
-                    "bias": bias,
-                    "strength": "Strong" if confidence > 70 else "Moderate",
-                    "confidence": confidence,
-                    "time": "Just Now",
-                    "reason": f"Live strategy analysis on {symbol} shows {status.lower()}."
-                }
-            ]
+            "signals": real_signals[-10:][::-1] # Reverse to show latest first!
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/test_connection")
+async def test_connection():
+    """Tests connection to the active broker and returns the balance."""
+    try:
+        broker = BrokerFactory.get_active_broker()
+        # Try to authenticate
+        is_auth = broker.authenticate()
+        if not is_auth:
+            raise HTTPException(status_code=401, detail="Broker not authenticated. Please log in first.")
+            
+        balance = broker.get_balance()
+        
+        # Balance is a namedtuple or object with available_cash
+        avail = balance.available_cash if hasattr(balance, 'available_cash') else 0.0
+        
+        return {
+            "status": "success",
+            "broker": broker.DISPLAY_NAME,
+            "balance": avail
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/settings")
+async def get_settings():
+    try:
+        import os
+        import json
+        settings = {}
+        if os.path.exists("settings.json"):
+            with open("settings.json", "r") as f:
+                settings = json.load(f)
+                
+        # Load secure credentials and merge
+        from brokers.credentials import load_credentials
+        creds = load_credentials("fyers")
+        settings.update(creds)
+        
+        return settings
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/settings")
+async def save_settings(new_settings: dict):
+    try:
+        import os
+        import json
+        
+        # Extract credential fields
+        creds = {}
+        for key in ["fyers_user_id", "fyers_pin", "fyers_totp_key"]:
+            if key in new_settings:
+                creds[key] = new_settings.pop(key)
+                
+        # Validate credentials if provided
+        if "fyers_pin" in creds and creds["fyers_pin"]:
+            if not (creds["fyers_pin"].isdigit() and len(creds["fyers_pin"]) == 4):
+                raise HTTPException(status_code=400, detail="MPIN must be exactly 4 digits!")
+                
+        if "fyers_totp_key" in creds and creds["fyers_totp_key"]:
+            import base64
+            try:
+                key = creds["fyers_totp_key"].replace(" ", "").upper()
+                # Add padding if missing
+                missing_padding = len(key) % 8
+                if missing_padding:
+                    key += '=' * (8 - missing_padding)
+                base64.b32decode(key)
+            except Exception:
+                raise HTTPException(status_code=400, detail="Invalid TOTP Secret Key! Must be a valid Base32 string.")
+                
+        if "fyers_user_id" in creds and creds["fyers_user_id"]:
+            if len(creds["fyers_user_id"]) < 3:
+                raise HTTPException(status_code=400, detail="Client ID is too short!")
+
+        # Save credentials securely (Encrypted and Signed)
+        if creds:
+            from brokers.credentials import load_credentials, save_credentials
+            import subprocess
+            import sys
+            
+            # Load existing credentials to backup
+            backup_creds = load_credentials("fyers")
+            
+            # Merge and save new ones
+            existing_creds = dict(backup_creds)
+            existing_creds.update(creds)
+            save_credentials("fyers", existing_creds)
+            
+            # Test the connection with new credentials
+            process = subprocess.run(
+                [sys.executable, "scripts/automated_login.py"],
+                capture_output=True,
+                text=True,
+                check=False,
+                cwd=os.getcwd()
+            )
+            
+            if process.returncode != 0:
+                # Revert to backup if failed!
+                save_credentials("fyers", backup_creds)
+                raise HTTPException(status_code=400, detail="Incorrect credentials or unable to login. Please check your details.")
+            
+        # Save remaining settings to settings.json
+            
+        # Save remaining settings to settings.json
+        existing = {}
+        if os.path.exists("settings.json"):
+            with open("settings.json", "r") as f:
+                existing = json.load(f)
+                
+        # Remove any existing plain text credentials from settings.json
+        for key in ["fyers_user_id", "fyers_pin", "fyers_totp_key"]:
+            if key in existing:
+                existing.pop(key)
+                
+        existing.update(new_settings)
+        
+        with open("settings.json", "w") as f:
+            json.dump(existing, f, indent=4)
+            
+        return {"status": "success", "message": "Settings saved successfully (Credentials Encrypted)!"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/bot/test_login")
+async def test_login():
+    import subprocess
+    import sys
+    import os
+    
+    try:
+        process = subprocess.run(
+            [sys.executable, "scripts/automated_login.py"],
+            capture_output=True,
+            text=True,
+            check=False,
+            cwd=os.getcwd()
+        )
+        
+        if process.returncode == 0:
+            return {
+                "status": "success",
+                "message": "Login successful! Credentials are correct."
+            }
+        else:
+            return {
+                "status": "error",
+                "message": "Incorrect credentials or unable to login. Please check your details."
+            }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/bot/start")
+async def start_bot():
+    import subprocess
+    import sys
+    import os
+    
+    try:
+        # Run automated login first
+        login_process = subprocess.run(
+            [sys.executable, "scripts/automated_login.py"],
+            capture_output=True,
+            text=True,
+            check=False,
+            cwd=os.getcwd()
+        )
+        
+        if login_process.returncode != 0:
+            return {
+                "status": "error",
+                "message": f"Login failed: {login_process.stderr or login_process.stdout}"
+            }
+            
+        # Start bot as background process
+        process = subprocess.Popen(
+            [sys.executable, "-m", "trading_bot.main"],
+            cwd=os.getcwd()
+        )
+        
+        return {
+            "status": "success",
+            "message": "Bot started successfully!",
+            "pid": process.pid
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

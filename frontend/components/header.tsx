@@ -109,7 +109,7 @@ export default function Header() {
 
             {/* Autocomplete Suggestions */}
             {showSuggestions && suggestions.length > 0 && (
-              <div className="absolute z-50 mt-2 w-72 max-h-60 bg-[#111318] border border-border/50 rounded-lg shadow-xl overflow-y-auto backdrop-blur-xl">
+              <div className="absolute z-50 mt-2 w-72 max-h-60 bg-background border border-border/50 rounded-lg shadow-xl overflow-y-auto backdrop-blur-xl">
                 {suggestions.map((asset) => (
                   <button
                     key={asset.symbol}
@@ -117,7 +117,7 @@ export default function Header() {
                     className="w-full text-left px-4 py-2.5 text-sm hover:bg-muted transition-colors flex justify-between items-center"
                   >
                     <div>
-                      <span className="font-bold text-white">{asset.symbol}</span>
+                      <span className="font-bold text-foreground">{asset.symbol}</span>
                       <span className="text-xs text-muted-foreground ml-2">{asset.name}</span>
                     </div>
                     <span className={`text-xs px-1.5 py-0.5 rounded ${asset.type === 'Index' ? 'bg-primary/20 text-primary' : 'bg-success/20 text-success'}`}>
@@ -159,9 +159,9 @@ export default function Header() {
 
           {/* User Dropdown Menu */}
           {isUserMenuOpen && (
-            <div className="absolute right-0 mt-2 w-56 bg-[#111318] border border-border/50 rounded-lg shadow-xl overflow-hidden z-50 backdrop-blur-xl">
+            <div className="absolute right-0 mt-2 w-56 bg-background border border-border/50 rounded-lg shadow-xl overflow-hidden z-50 backdrop-blur-xl">
               <div className="px-4 py-3 border-b border-border/50">
-                <p className="text-sm font-bold text-white">Trader X</p>
+                <p className="text-sm font-bold text-foreground">Trader X</p>
                 <p className="text-xs text-muted-foreground">trader@pro.com</p>
               </div>
               <div className="py-1">

@@ -59,7 +59,7 @@ export default function Sidebar() {
   return (
     <div className="w-64 h-full bg-card/50 backdrop-blur-xl border-r border-border/50 flex flex-col">
       <div className="p-6 flex items-center gap-3 border-b border-border/50">
-        <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center">
+        <div className="w-8 h-8 rounded-lg bg-[#ff4d4d] flex items-center justify-center">
           <TrendingUp className="w-5 h-5 text-primary-foreground" />
         </div>
         <div>
@@ -78,7 +78,7 @@ export default function Sidebar() {
               className={clsx(
                 "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200",
                 isActive 
-                  ? "bg-primary/10 text-primary" 
+                  ? "bg-[#ff4d4d]/10 text-[#ff4d4d]" 
                   : "text-muted-foreground hover:bg-muted/50 hover:text-foreground"
               )}
             >
