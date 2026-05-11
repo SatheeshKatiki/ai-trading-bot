@@ -179,8 +179,8 @@ def render_sidebar_settings():
     }
 
     st.sidebar.markdown("**Risk Management**")
-    target_pct = st.sidebar.slider("Target %", 0.1, 5.0, current_settings.get("target_pct", 1.0), 0.1)
-    stoploss_pct = st.sidebar.slider("Stoploss %", 0.1, 5.0, current_settings.get("stoploss_pct", 0.5), 0.1)
+    target_pct = st.sidebar.slider("Target %", 0.1, 5.0, float(current_settings.get("target_pct", 1.0)), 0.1)
+    stoploss_pct = st.sidebar.slider("Stoploss %", 0.1, 5.0, float(current_settings.get("stoploss_pct", 0.5)), 0.1)
     trailing_sl = st.sidebar.toggle("Trailing Stoploss", value=current_settings.get("trailing_sl", False))
     max_trades_per_day = st.sidebar.slider("Max Trades/Day", 1, 20, current_settings.get("max_trades_per_day", 4), 1)
 

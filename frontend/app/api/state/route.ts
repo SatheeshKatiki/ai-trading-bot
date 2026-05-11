@@ -7,8 +7,17 @@ export const dynamic = 'force-dynamic';
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
-    const symbol = searchParams.get('symbol') || 'NIFTY';
-    const timeframe = searchParams.get('timeframe') || '15 Min'; // Read requested timeframe!
+    const rawSymbol = searchParams.get('symbol') || 'NIFTY';
+    const timeframe = searchParams.get('timeframe') || '15 Min';
+    const isLive = searchParams.get('live') === 'true';
+    
+    // Map short symbols to Fyers specific symbols for data fetching
+    let symbol = rawSymbol;
+    if (rawSymbol === 'NIFTY') {
+      symbol = 'NSE:NIFTY50-INDEX';
+    } else if (rawSymbol === 'BANKNIFTY') {
+      symbol = 'NSE:NIFTYBANK-INDEX';
+    }
     
     // 1. Read static state
     const filePath = path.join(process.cwd(), '..', 'trading-system', 'state.json');
@@ -21,6 +30,47 @@ export async function GET(request: Request) {
     if (fs.existsSync(filePath)) {
       const fileContent = fs.readFileSync(filePath, 'utf8');
       baseState = JSON.parse(fileContent);
+    }
+
+    // 1.5 Fetch real funds from Fyers via Python API Bridge if in live mode
+    let fundsData = null;
+    if (isLive) {
+      try {
+        const fundsRes = await fetch("http://localhost:8000/api/funds");
+        if (fundsRes.ok) {
+          fundsData = await fundsRes.json();
+        } else {
+          console.error("Failed to fetch funds from Python bridge");
+        }
+      } catch (e) {
+        console.error("Failed to fetch funds from Python bridge:", e);
+      }
+    }
+
+    // 1.6 Fetch AI Signals/Confidence from Python bridge
+    let signalsData = null;
+    try {
+      const signalsRes = await fetch(`http://localhost:8000/api/signals?symbol=${rawSymbol}`);
+      if (signalsRes.ok) {
+        signalsData = await signalsRes.json();
+      } else {
+        console.error("Failed to fetch signals from Python bridge");
+      }
+    } catch (e) {
+      console.error("Failed to fetch signals from Python bridge:", e);
+    }
+
+    // 1.7 Fetch real-time quote (LTP) from Python bridge
+    let quoteData = null;
+    try {
+      const quoteRes = await fetch(`http://localhost:8000/api/quote?symbol=${symbol}`);
+      if (quoteRes.ok) {
+        quoteData = await quoteRes.json();
+      } else {
+        console.error("Failed to fetch quote from Python bridge");
+      }
+    } catch (e) {
+      console.error("Failed to fetch quote from Python bridge:", e);
     }
     
     // 2. Fetch dynamic chart data from the Python API Bridge
@@ -69,10 +119,30 @@ export async function GET(request: Request) {
           const lastDateStr = lastCandle.datetime.split(' ')[0];
           const todayCandles = rawData.filter((c: any) => c.datetime.startsWith(lastDateStr));
           
-          if (todayCandles.length > 0) {
+          // Calculate change percent relative to previous day's close (Standard Broker Method)
+          const dates = Array.from(new Set(rawData.map((c: any) => c.datetime.split(' ')[0]))).sort();
+          if (dates.length >= 2) {
+            const prevDate = dates[dates.length - 2];
+            const prevDayCandles = rawData.filter((c: any) => c.datetime.startsWith(prevDate));
+            if (prevDayCandles.length > 0) {
+              const prevClose = prevDayCandles[prevDayCandles.length - 1].close;
+              changePercent = ((currentPrice - prevClose) / prevClose) * 100;
+            }
+          } else if (todayCandles.length > 0) {
             const dayOpen = todayCandles[0].open;
             changePercent = ((currentPrice - dayOpen) / dayOpen) * 100;
           }
+        }
+      }
+      
+      // Override with real-time quote if available (Institutional Accuracy)
+      if (quoteData && quoteData.d && quoteData.d.length > 0) {
+        const quote = quoteData.d[0].v;
+        if (quote.lp) {
+          currentPrice = quote.lp;
+        }
+        if (quote.chp) {
+          changePercent = quote.chp;
         }
       }
     } catch (e) {
@@ -89,7 +159,9 @@ export async function GET(request: Request) {
       chartData,
       currentSymbol: symbol,
       currentPrice,
-      changePercent
+      changePercent,
+      fundsData,
+      signalsData
     });
     
   } catch (error) {

@@ -145,11 +145,22 @@ class BrokerFactory:
 
         broker_class = cls._registry[broker_id]
         credentials  = load_credentials(broker_id)
-        paper_mode   = not bool(credentials)
+        
+        # Read settings to check live_trading_mode
+        live_trading_mode = False
+        if _SETTINGS_FILE.is_file():
+            try:
+                data = json.loads(_SETTINGS_FILE.read_text(encoding="utf-8"))
+                live_trading_mode = data.get("live_trading_mode", False)
+            except Exception:
+                pass
+                
+        # Paper mode is active if live trading is disabled OR credentials are missing
+        paper_mode = not live_trading_mode or not bool(credentials)
 
         if paper_mode:
             logger.warning(
-                "BrokerFactory: no credentials for '%s' — starting in PAPER mode.", broker_id
+                "BrokerFactory: Paper mode active (live_trading_mode=False or missing credentials)."
             )
 
         instance = broker_class(credentials=credentials, paper_mode=paper_mode)

@@ -14,7 +14,7 @@ yfinance>=0.2.36           # for AI model training data download
 cryptography>=41.0.0
 
 # Broker APIs — install only the broker(s) you use
-fyers-api==1.0.9          # Fyers
+fyers-apiv3          # Fyers API v3
 # kiteconnect>=5.0.1      # Zerodha Kite  (uncomment to install)
 # smartapi-python>=1.3.9  # Angel One     (uncomment to install)
 # pyotp>=2.9.0            # TOTP for Angel One (uncomment to install)

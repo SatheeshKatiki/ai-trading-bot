@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 # Resolve the project root (two levels up from this file)
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _STATE_FILE    = _PROJECT_ROOT / "state.json"
 
 # Flush interval for equity-only updates (seconds).

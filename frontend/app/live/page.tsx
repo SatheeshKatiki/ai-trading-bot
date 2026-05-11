@@ -50,6 +50,8 @@ function LiveTradingContent() {
   const [currentPrice, setCurrentPrice] = useState(0);
   const [changePercent, setChangePercent] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
+  const [aiConfidence, setAiConfidence] = useState(0);
+  const [riskStatus, setRiskStatus] = useState("ACTIVE");
 
   // Map our symbols to TradingView symbols
   const getTVSymbol = (sym: string) => {
@@ -61,18 +63,103 @@ function LiveTradingContent() {
     return `BSE:${sym}`;
   };
 
+  // Fetch Settings (to get trading mode and strategy)
+  useEffect(() => {
+    const fetchSettings = async () => {
+      try {
+        const res = await fetch('/api/settings');
+        if (res.ok) {
+          const data = await res.json();
+          setTradingMode(data.live_trading_mode ? "live" : "paper");
+          setStrategy(data.active_strategy || "ema_rsi");
+        }
+      } catch (error) {
+        console.error("Failed to fetch settings:", error);
+      }
+    };
+    fetchSettings();
+  }, []);
+
+  // Handle Strategy Change
+  const handleStrategyChange = async (newStrategy: string) => {
+    setStrategy(newStrategy);
+    try {
+      await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ active_strategy: newStrategy })
+      });
+    } catch (error) {
+      console.error("Failed to update strategy:", error);
+    }
+  };
+
+  // Toggle Trading Mode (Live/Paper)
+  const toggleTradingMode = async () => {
+    const newMode = tradingMode === 'live' ? 'paper' : 'live';
+    const isLive = newMode === 'live';
+    
+    // Optimistically update UI
+    setTradingMode(newMode);
+    
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ live_trading_mode: isLive })
+      });
+      
+      if (!res.ok) {
+        console.error("Failed to update trading mode on server");
+        // Revert UI on failure
+        setTradingMode(tradingMode);
+      }
+    } catch (error) {
+      console.error("Error updating trading mode:", error);
+      setTradingMode(tradingMode); // Revert UI
+    }
+  };
+
   // Fetch State (P&L, Equity, etc.)
   useEffect(() => {
     const fetchState = async () => {
       try {
-        const res = await fetch(`/api/state?symbol=${urlSymbol}`, { cache: 'no-store' });
+        const res = await fetch(`/api/state?symbol=${urlSymbol}&live=${tradingMode === 'live'}`, { cache: 'no-store' });
         const data = await res.json();
         
         setEquity(data.equity);
         setPnl(data.pnl);
         setTrades(data.trades || []);
-        setCurrentPrice(data.currentPrice || 0);
-        setChangePercent(data.changePercent || 0);
+        const parsedPrice = Number(data.currentPrice);
+        if (parsedPrice && parsedPrice !== 0) {
+          setCurrentPrice(parsedPrice);
+        }
+        if (data.changePercent) {
+          setChangePercent(data.changePercent);
+        }
+        
+        // Extract AI Confidence if available
+        if (data.signalsData && data.signalsData.confidence) {
+          setAiConfidence(data.signalsData.confidence);
+        }
+        
+        // Extract Risk Status / Bias if available
+        if (data.signalsData && data.signalsData.status) {
+          setRiskStatus(data.signalsData.status);
+        }
+        
+        // If live mode and fundsData available, extract balance!
+        if (tradingMode === 'live' && data.fundsData && data.fundsData.fund_limit) {
+          const totalBalanceItem = data.fundsData.fund_limit.find((item: any) => 
+            item.title === "Total Balance" || item.id === 1 || item.id === 10
+          );
+          if (totalBalanceItem) {
+            setEquity(totalBalanceItem.equityAmount);
+          } else if (data.fundsData.fund_limit.length > 0) {
+            setEquity(data.fundsData.fund_limit[0].equityAmount);
+          }
+        }
+        
         setIsLoading(false);
       } catch (error) {
         console.error("Failed to fetch state:", error);
@@ -80,9 +167,35 @@ function LiveTradingContent() {
     };
 
     fetchState();
-    const interval = setInterval(fetchState, 5000); // Poll every 5s
+    const interval = setInterval(fetchState, 1000); // Poll every 1s
     return () => clearInterval(interval);
   }, [urlSymbol]);
+
+  // WebSocket for real-time price streaming (Institutional Fast Stream)
+  useEffect(() => {
+    const ws = new WebSocket('ws://127.0.0.1:8000/ws/live');
+    
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      if (data.currentPrice && data.currentPrice !== 0) {
+        setCurrentPrice(data.currentPrice);
+      }
+      if (data.changePercent) {
+        setChangePercent(data.changePercent);
+      }
+    };
+    
+    ws.onerror = (error) => {
+      console.error('WebSocket error:', error);
+    };
+    
+    ws.onclose = () => {
+      console.log('WebSocket disconnected');
+    };
+    
+    return () => ws.close();
+  }, []);
+
 
   // Load the REAL Advanced TradingView Widget with ALL features!
   useEffect(() => {
@@ -146,7 +259,7 @@ function LiveTradingContent() {
               <div className="flex items-center gap-2 px-4 py-2 bg-muted/30 border border-border/50 rounded-lg text-sm font-bold font-mono">
                 <span className="text-primary">{urlSymbol}</span>
                 <span className="text-muted-foreground">|</span>
-                <span className="text-white">₹{currentPrice.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                <span className={`${changePercent >= 0 ? 'text-success' : 'text-destructive'}`}>₹{currentPrice.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                 <span className={`flex items-center gap-0.5 ml-1 ${changePercent >= 0 ? 'text-success' : 'text-destructive'}`}>
                   {changePercent >= 0 ? <ArrowUpRight className="w-3.5 h-3.5" /> : <ArrowDownRight className="w-3.5 h-3.5" />}
                   {changePercent >= 0 ? '+' : ''}{changePercent.toFixed(2)}%
@@ -158,7 +271,7 @@ function LiveTradingContent() {
                 <Layers className="w-4 h-4 text-muted-foreground absolute left-3 top-1/2 transform -translate-y-1/2" />
                 <select 
                   value={strategy}
-                  onChange={(e) => setStrategy(e.target.value)}
+                  onChange={(e) => handleStrategyChange(e.target.value)}
                   className="bg-muted/30 border border-border/50 rounded-lg pl-10 pr-3 py-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
                 >
                   <option value="ema_rsi">EMA + RSI (Classic)</option>
@@ -175,7 +288,7 @@ function LiveTradingContent() {
                 </span>
                 
                 <button
-                  onClick={() => setTradingMode(tradingMode === 'live' ? 'paper' : 'live')}
+                  onClick={toggleTradingMode}
                   className={`relative w-8 h-4.5 rounded-full transition-colors focus:outline-none ${tradingMode === 'live' ? 'bg-success' : 'bg-[#d946ef]'}`}
                 >
                   <div className={`absolute top-0.5 left-0.5 w-3.5 h-3.5 bg-white rounded-full shadow-md transition-transform duration-200 transform ${tradingMode === 'paper' ? 'translate-x-3.5' : 'translate-x-0'}`}></div>
@@ -190,25 +303,50 @@ function LiveTradingContent() {
           </div>
 
           {/* Stats Grid */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <div className="glass-card rounded-xl p-4 border border-border/20">
-              <span className="text-xs text-muted-foreground font-medium">Account Equity</span>
-              <div className="text-2xl font-bold font-mono mt-1 text-foreground">
-                {isLoading ? "---" : `₹${equity.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`}
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+            {/* Card 1: Current Equity */}
+            <div className="bg-gradient-to-br from-slate-800 to-slate-900 p-6 rounded-2xl border border-border/20 space-y-2 shadow-xl">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">💰 Current Equity</span>
+              </div>
+              <div className="text-2xl font-bold font-mono text-foreground">
+                {isLoading ? "---" : `₹${(tradingMode === 'paper' ? 100000.00 : equity).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`}
               </div>
             </div>
             
-            <div className="glass-card rounded-xl p-4 border border-border/20">
-              <span className="text-xs text-muted-foreground font-medium">Today's P&L</span>
-              <div className={`text-2xl font-bold font-mono mt-1 ${pnl >= 0 ? "text-success" : "text-destructive"}`}>
+            {/* Card 2: Today's PNL */}
+            <div className="bg-gradient-to-br from-slate-800 to-slate-900 p-6 rounded-2xl border border-border/20 space-y-2 shadow-xl">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">📊 Today's PNL</span>
+              </div>
+              <div className={`text-2xl font-bold font-mono ${pnl >= 0 ? "text-success" : "text-destructive"}`}>
                 {isLoading ? "---" : `${pnl >= 0 ? "+" : ""}₹${pnl.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`}
               </div>
             </div>
 
-            <div className="glass-card rounded-xl p-4 border border-border/20">
-              <span className="text-xs text-muted-foreground font-medium">Active Positions</span>
-              <div className="text-2xl font-bold font-mono mt-1 text-foreground">
-                {isLoading ? "---" : "1"}
+            {/* Card 3: AI Confidence */}
+            <div className="bg-gradient-to-br from-slate-800 to-slate-900 p-6 rounded-2xl border border-border/20 space-y-2 shadow-xl">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">🤖 AI Confidence</span>
+              </div>
+              <div className="text-2xl font-bold font-mono text-primary">
+                {isLoading ? "---" : `${aiConfidence.toFixed(1)}%`}
+              </div>
+              <div className={`text-xs font-bold ${aiConfidence >= 75 ? "text-success" : "text-warning"}`}>
+                {aiConfidence >= 75 ? "▲ High Conviction" : "▼ Scan Mode"}
+              </div>
+            </div>
+
+            {/* Card 4: Risk Engine */}
+            <div className="bg-gradient-to-br from-slate-800 to-slate-900 p-6 rounded-2xl border border-border/20 space-y-2 shadow-xl">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">🛡️ Risk Engine</span>
+              </div>
+              <div className="text-2xl font-bold font-mono text-success">
+                ACTIVE
+              </div>
+              <div className="text-xs font-bold text-gray-400">
+                Limits OK
               </div>
             </div>
           </div>

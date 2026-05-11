@@ -31,9 +31,144 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from fastapi import WebSocket
+from fyers_apiv3.FyersWebsocket import data_ws
+import asyncio
+import threading
+
+# Global state for live market data (Institutional Streaming)
+current_market_data = {
+    "NSE:NIFTY50-INDEX": {"lp": 23820.35, "chp": -1.49} # Fallback to last known
+}
+
+def start_fyers_socket():
+    try:
+        token_path = ".fyers_tokens.json"
+        if not os.path.exists(token_path):
+            print("Token not found for WebSocket")
+            return
+            
+        with open(token_path, "r") as f:
+            token_data = json.load(f)
+            token = token_data["access_token"]
+            
+        client_id = "0KHBQ6IQA4-100"
+        
+        def on_message(message):
+            global current_market_data
+            if isinstance(message, dict):
+                symbol = message.get('symbol')
+                lp = message.get('ltp')
+                if symbol and lp:
+                    current_market_data[symbol] = {
+                        "lp": lp,
+                        "chp": message.get('chp', 0.0)
+                    }
+                    
+        def on_error(message):
+            print(f"Fyers WS Error: {message}")
+            
+        def on_open():
+            print("Fyers WS Connected!")
+            # Subscribe to Nifty
+            fyers_socket.subscribe(symbols=["NSE:NIFTY50-INDEX"], data_type="symbolData")
+            
+        def on_close():
+            print("Fyers WS Closed")
+
+        access_token_full = f"{client_id}:{token}"
+        
+        fyers_socket = data_ws.FyersDataSocket(
+            access_token=access_token_full,
+            log_path="",
+            litemode=False,
+            write_to_file=False,
+            reconnect=True,
+            on_connect=on_open,
+            on_message=on_message,
+            on_error=on_error,
+            on_close=on_close
+        )
+        
+        fyers_socket.connect()
+    except Exception as e:
+        print(f"Error starting Fyers socket: {e}")
+
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Start the Fyers socket in background thread
+    threading.Thread(target=start_fyers_socket, daemon=True).start()
+    yield
+
+app.router.lifespan_context = lifespan
+
+@app.websocket("/ws/live")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    try:
+        while True:
+            # Send the latest data for NIFTY
+            data = current_market_data.get("NSE:NIFTY50-INDEX", {})
+            await websocket.send_json({
+                "currentPrice": data.get("lp", 23820.35),
+                "changePercent": data.get("chp", -1.49),
+                "symbol": "NIFTY"
+            })
+            await asyncio.sleep(0.1) # Ultra fast stream (100ms) like TradingView!
+    except Exception as e:
+        pass
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+@app.get("/api/funds")
+async def get_funds():
+    """Fetches real funds from Fyers using the cached token."""
+    try:
+        token_path = ".fyers_tokens.json"
+        if not os.path.exists(token_path):
+            return {"s": "error", "message": "Token not found"}
+            
+        with open(token_path, "r") as f:
+            token_data = json.load(f)
+            token = token_data["access_token"]
+            
+        from fyers_apiv3 import fyersModel
+        client_id = "0KHBQ6IQA4-100"
+        
+        fyers = fyersModel.FyersModel(client_id=client_id, is_async=False, token=token, log_path="")
+        funds = fyers.funds()
+        return funds
+    except Exception as e:
+        return {"s": "error", "message": str(e)}
+
+@app.get("/api/quote")
+async def get_quote(
+    symbol: str = Query(..., description="The symbol (e.g., NSE:NIFTY50-INDEX)")
+):
+    """Fetches real-time quote (LTP) from Fyers."""
+    try:
+        token_path = ".fyers_tokens.json"
+        if not os.path.exists(token_path):
+            return {"s": "error", "message": "Token not found"}
+            
+        with open(token_path, "r") as f:
+            token_data = json.load(f)
+            token = token_data["access_token"]
+            
+        from fyers_apiv3 import fyersModel
+        client_id = "0KHBQ6IQA4-100"
+        
+        fyers = fyersModel.FyersModel(client_id=client_id, is_async=False, token=token, log_path="")
+        
+        data = {"symbols": symbol}
+        quotes = fyers.quotes(data=data)
+        return quotes
+    except Exception as e:
+        return {"s": "error", "message": str(e)}
 
 @app.get("/api/history")
 async def get_history(

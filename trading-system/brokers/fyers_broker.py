@@ -76,6 +76,21 @@ class FyersBroker(BaseBroker):
         if self.paper_mode:
             self._authenticated = True
             logger.info("Fyers: paper mode — skipping real authentication.")
+            
+            # Initialize model for data fetching in paper mode if token exists!
+            token = self._load_cached_token()
+            if token:
+                try:
+                    from fyers_apiv3 import fyersModel
+                except ImportError:
+                    from fyers_api import fyersModel
+                    
+                self._fyers_model = fyersModel.FyersModel(
+                    client_id=self.credentials.get("client_id", ""),
+                    token=token,
+                    log_path="",
+                )
+                logger.info("Fyers: Initialized model in paper mode for data fetching.")
             return True
 
         token = self.credentials.get("access_token") or self._load_cached_token()
@@ -374,8 +389,8 @@ class FyersBroker(BaseBroker):
         """Fetch historical data from Fyers API."""
         from datetime import datetime
         
-        if self.paper_mode or not self._fyers_model:
-            self.logger.warning("Fyers: paper mode or not authenticated — cannot fetch historical data from Fyers.")
+        if not self._fyers_model:
+            self.logger.warning("Fyers: not authenticated — cannot fetch historical data from Fyers.")
             return []
             
         try:

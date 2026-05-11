@@ -18,7 +18,7 @@ export default function StrategyTab({ settings, setSettings }: StrategyTabProps)
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
 
       {/* Box 1: Entry Conditions */}
-      <div className="bg-gradient-to-br from-slate-800 to-slate-900 p-6 rounded-2xl border border-[#4f46e5]/20 space-y-5 h-[400px] flex flex-col justify-between shadow-xl hover:shadow-indigo-500/5 transition-all duration-300">
+      <div className="bg-gradient-to-br from-slate-800 to-slate-900 p-6 rounded-2xl border border-[#4f46e5]/20 space-y-5 h-[400px] flex flex-col justify-between shadow-xl hover:shadow-indigo-500/10 hover:border-[#4f46e5]/40 transition-all duration-300">
         <div>
           <div className="flex items-center gap-3 border-b border-border pb-3">
             <div className="p-2.5 bg-[#4f46e5]/20 rounded-xl text-[#4f46e5] shadow-lg shadow-indigo-500/10">
@@ -58,7 +58,7 @@ export default function StrategyTab({ settings, setSettings }: StrategyTabProps)
           <span className="text-xs font-bold text-foreground uppercase tracking-wider">Strict Entry Mode</span>
           <button
             onClick={() => updateSetting("strict_entry_mode", !settings.strict_entry_mode)}
-            className={`w-12 h-6 rounded-full p-0.5 transition-colors shadow-lg ${settings.strict_entry_mode ? 'bg-[#ff4d4d] shadow-red-500/20' : 'bg-muted border border-border'}`}
+            className={`w-12 h-6 rounded-full p-0.5 transition-colors shadow-lg ${settings.strict_entry_mode ? 'bg-[#4f46e5] shadow-indigo-500/30' : 'bg-muted border border-border'}`}
           >
             <div className={`w-5 h-5 rounded-full bg-white transition-transform ${settings.strict_entry_mode ? 'translate-x-6' : 'translate-x-0'}`}></div>
           </button>
@@ -66,7 +66,7 @@ export default function StrategyTab({ settings, setSettings }: StrategyTabProps)
       </div>
 
       {/* Box 2: Exit Conditions */}
-      <div className="bg-gradient-to-br from-slate-800 to-slate-900 p-6 rounded-2xl border border-[#ec4899]/20 space-y-5 h-[400px] flex flex-col justify-between shadow-xl hover:shadow-pink-500/5 transition-all duration-300">
+      <div className="bg-gradient-to-br from-slate-800 to-slate-900 p-6 rounded-2xl border border-[#ec4899]/20 space-y-5 h-[400px] flex flex-col justify-between shadow-xl hover:shadow-pink-500/10 hover:border-[#ec4899]/40 transition-all duration-300">
         <div>
           <div className="flex items-center gap-3 border-b border-border pb-3">
             <div className="p-2.5 bg-[#ec4899]/20 rounded-xl text-[#ec4899] shadow-lg shadow-pink-500/10">
@@ -107,7 +107,7 @@ export default function StrategyTab({ settings, setSettings }: StrategyTabProps)
           <span className="text-xs font-bold text-foreground uppercase tracking-wider">Enable Auto-Exit</span>
           <button
             onClick={() => updateSetting("enable_auto_exit", !settings.enable_auto_exit)}
-            className={`w-12 h-6 rounded-full p-0.5 transition-colors shadow-lg ${settings.enable_auto_exit ? 'bg-[#ff4d4d] shadow-red-500/20' : 'bg-muted border border-border'}`}
+            className={`w-12 h-6 rounded-full p-0.5 transition-colors shadow-lg ${settings.enable_auto_exit ? 'bg-[#ec4899] shadow-pink-500/30' : 'bg-muted border border-border'}`}
           >
             <div className={`w-5 h-5 rounded-full bg-white transition-transform ${settings.enable_auto_exit ? 'translate-x-6' : 'translate-x-0'}`}></div>
           </button>
@@ -115,7 +115,7 @@ export default function StrategyTab({ settings, setSettings }: StrategyTabProps)
       </div>
 
       {/* Box 3: Position Sizing & Pyramiding */}
-      <div className="bg-gradient-to-br from-slate-800 to-slate-900 p-6 rounded-2xl border border-[#3b82f6]/20 space-y-5 h-[400px] flex flex-col justify-between shadow-xl hover:shadow-blue-500/5 transition-all duration-300">
+      <div className="bg-gradient-to-br from-slate-800 to-slate-900 p-6 rounded-2xl border border-[#3b82f6]/20 space-y-5 h-[400px] flex flex-col justify-between shadow-xl hover:shadow-blue-500/10 hover:border-[#3b82f6]/40 transition-all duration-300">
         <div>
           <div className="flex items-center gap-3 border-b border-border pb-3">
             <div className="p-2.5 bg-[#3b82f6]/20 rounded-xl text-[#3b82f6] shadow-lg shadow-blue-500/10">
@@ -162,7 +162,7 @@ export default function StrategyTab({ settings, setSettings }: StrategyTabProps)
           <span className="text-xs font-bold text-foreground uppercase tracking-wider">Allow Pyramiding</span>
           <button
             onClick={() => updateSetting("allow_pyramiding", !settings.allow_pyramiding)}
-            className={`w-12 h-6 rounded-full p-0.5 transition-colors shadow-lg ${settings.allow_pyramiding ? 'bg-[#ff4d4d] shadow-red-500/20' : 'bg-muted border border-border'}`}
+            className={`w-12 h-6 rounded-full p-0.5 transition-colors shadow-lg ${settings.allow_pyramiding ? 'bg-[#3b82f6] shadow-blue-500/30' : 'bg-muted border border-border'}`}
           >
             <div className={`w-5 h-5 rounded-full bg-white transition-transform ${settings.allow_pyramiding ? 'translate-x-6' : 'translate-x-0'}`}></div>
           </button>
@@ -170,7 +170,7 @@ export default function StrategyTab({ settings, setSettings }: StrategyTabProps)
       </div>
 
       {/* Box 4: Time Filters */}
-      <div className="bg-gradient-to-br from-slate-800 to-slate-900 p-6 rounded-2xl border border-[#06b6d4]/20 space-y-5 h-[400px] flex flex-col justify-between shadow-xl hover:shadow-cyan-500/5 transition-all duration-300">
+      <div className="bg-gradient-to-br from-slate-800 to-slate-900 p-6 rounded-2xl border border-[#06b6d4]/20 space-y-5 h-[400px] flex flex-col justify-between shadow-xl hover:shadow-cyan-500/10 hover:border-[#06b6d4]/40 transition-all duration-300">
         <div>
           <div className="flex items-center gap-3 border-b border-border pb-3">
             <div className="p-2.5 bg-[#06b6d4]/20 rounded-xl text-[#06b6d4] shadow-lg shadow-cyan-500/10">
@@ -230,7 +230,7 @@ export default function StrategyTab({ settings, setSettings }: StrategyTabProps)
           <span className="text-xs font-bold text-foreground uppercase tracking-wider">Intraday Square-off</span>
           <button
             onClick={() => updateSetting("intraday_square_off", !settings.intraday_square_off)}
-            className={`w-12 h-6 rounded-full p-0.5 transition-colors shadow-lg ${settings.intraday_square_off ? 'bg-[#ff4d4d] shadow-red-500/20' : 'bg-muted border border-border'}`}
+            className={`w-12 h-6 rounded-full p-0.5 transition-colors shadow-lg ${settings.intraday_square_off ? 'bg-[#06b6d4] shadow-cyan-500/30' : 'bg-muted border border-border'}`}
           >
             <div className={`w-5 h-5 rounded-full bg-white transition-transform ${settings.intraday_square_off ? 'translate-x-6' : 'translate-x-0'}`}></div>
           </button>

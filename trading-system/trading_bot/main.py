@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import sys
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -26,6 +27,9 @@ from pathlib import Path
 from typing import Dict, List
 
 import pandas as pd
+
+# Add parent directory to sys.path to find 'shared' module
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from shared.config import CONFIG
 from shared.state import update_equity, record_trade
