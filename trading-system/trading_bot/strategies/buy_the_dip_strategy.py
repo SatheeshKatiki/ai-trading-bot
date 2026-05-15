@@ -1,6 +1,8 @@
 import pandas as pd
 import numpy as np
 
+STRATEGY_NAME = "buy_the_dip"
+
 def generate_signals(df: pd.DataFrame, **kwargs) -> pd.Series:
     """Buy the Dip / Mean Reversion Strategy."""
     signals = pd.Series(0, index=df.index)

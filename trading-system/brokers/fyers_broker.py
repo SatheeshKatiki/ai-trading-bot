@@ -386,8 +386,8 @@ class FyersBroker(BaseBroker):
         end_date: str, 
         timeframe: str = "5 Min"
     ) -> List[Dict[str, Any]]:
-        """Fetch historical data from Fyers API."""
-        from datetime import datetime
+        """Fetch historical data from Fyers API with automatic pagination for large ranges (1+ years)."""
+        from datetime import datetime, timedelta
         
         if not self._fyers_model:
             self.logger.warning("Fyers: not authenticated — cannot fetch historical data from Fyers.")
@@ -403,6 +403,9 @@ class FyersBroker(BaseBroker):
             elif timeframe == "30 Min": resolution = "30"
             elif timeframe == "1 Hour": resolution = "60"
             elif timeframe == "1 Day": resolution = "D"
+            elif timeframe == "1 Week": resolution = "W"
+            elif timeframe == "1 Month": resolution = "M"
+            
             # Map short symbols to Fyers format
             if symbol == "NIFTY":
                 symbol = "NSE:NIFTY50-INDEX"
@@ -417,26 +420,44 @@ class FyersBroker(BaseBroker):
             elif ":" not in symbol:
                 symbol = f"NSE:{symbol}-EQ"
                 
-            data = {
-                "symbol": symbol,
-                "resolution": resolution,
-                "date_format": "1",
-                "range_from": start_date,
-                "range_to": end_date,
-                "cont_flag": "1"
-            }
+            start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+            end_dt = datetime.strptime(end_date, '%Y-%m-%d')
             
-            resp = self._fyers_model.history(data)
+            all_candles = []
+            current_start = start_dt
             
-            if resp.get("s") != "ok":
-                raise MarketDataError(
-                    f"Fyers history API failed: {resp.get('message', 'Unknown error')}",
-                    broker_id=self.BROKER_ID
-                )
+            # Fyers limits intraday data to 100 days per request. We chunk it.
+            while current_start <= end_dt:
+                current_end = current_start + timedelta(days=99)
+                if current_end > end_dt:
+                    current_end = end_dt
+                    
+                data = {
+                    "symbol": symbol,
+                    "resolution": resolution,
+                    "date_format": "1",
+                    "range_from": current_start.strftime('%Y-%m-%d'),
+                    "range_to": current_end.strftime('%Y-%m-%d'),
+                    "cont_flag": "1"
+                }
                 
-            candles = resp.get("candles", [])
+                resp = self._fyers_model.history(data)
+                
+                if resp.get("s") != "ok":
+                    if "No data available" in str(resp):
+                        pass # Ignore empty chunks
+                    else:
+                        logger.warning(f"Fyers history API chunk failed: {resp.get('message', 'Unknown error')}")
+                else:
+                    all_candles.extend(resp.get("candles", []))
+                    
+                current_start = current_end + timedelta(days=1)
+                # Sleep briefly to avoid API rate limits
+                import time
+                time.sleep(0.1)
+                
             result = []
-            for c in candles:
+            for c in all_candles:
                 # Fyers returns [timestamp, open, high, low, close, volume]
                 result.append({
                     "datetime": datetime.fromtimestamp(c[0]).strftime('%Y-%m-%d %H:%M:%S') if isinstance(c[0], int) else c[0],
@@ -461,13 +482,38 @@ class FyersBroker(BaseBroker):
         symbols: List[str],
         on_tick: Callable[[Dict[str, Any]], Awaitable[None]],
     ) -> None:
-        if self.paper_mode:
-            logger.info("Fyers [PAPER]: synthetic tick stream for %s", symbols)
-            await self._synthetic_stream(symbols, on_tick)
-            return
-        # Real Fyers websocket — bridge event-based SDK to async callback
-        logger.warning("Fyers live websocket not yet wired — using synthetic stream.")
-        await self._synthetic_stream(symbols, on_tick)
+        logger.info("Fyers: Connecting to API Bridge WebSocket for real market data...")
+        import websockets
+        import json
+        import os
+        os.environ["NO_PROXY"] = "localhost,127.0.0.1"
+        
+        try:
+            async with websockets.connect("ws://127.0.0.1:8000/ws/live") as ws:
+                logger.info("Connected to API Bridge WebSocket!")
+                while True:
+                    data = await ws.recv()
+                    msg = json.loads(data)
+                    
+                    for sym, val in msg.items():
+                        long_sym = sym
+                        if sym == "NIFTY":
+                            long_sym = "NSE:NIFTY50-INDEX"
+                        elif sym == "BANKNIFTY":
+                            long_sym = "NSE:NIFTYBANK-INDEX"
+                        elif sym == "SENSEX":
+                            long_sym = "BSE:SENSEX-INDEX"
+                        elif sym == "RELIANCE":
+                            long_sym = "NSE:RELIANCE-EQ"
+                        elif ":" not in sym:
+                            long_sym = f"NSE:{sym}-EQ"
+                            
+                        if long_sym in symbols:
+                            import time
+                            await on_tick({"symbol": long_sym, "ltp": val["lp"], "timestamp": int(time.time()), "volume": 0})
+                            
+        except Exception as e:
+            logger.error("Failed to connect or stream from API Bridge WebSocket: %s", e)
 
     # ------------------------------------------------------------------
     # Cleanup

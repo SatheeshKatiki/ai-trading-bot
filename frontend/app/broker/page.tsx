@@ -88,6 +88,25 @@ export default function BrokerSettings() {
     if (type === "secret") setSecretKey(value);
   };
 
+  const handleBrokerLogin = async () => {
+    try {
+      const res = await fetch('/api/broker-login'); // GET method we added
+      if (res.ok) {
+        const data = await res.json();
+        if (data.url) {
+          window.open(data.url, '_blank');
+        } else {
+          alert("Failed to get login URL");
+        }
+      } else {
+        alert("Failed to connect to backend");
+      }
+    } catch (error) {
+      console.error("Failed to start broker login:", error);
+      alert("Error starting login");
+    }
+  };
+
   // High standard dynamic instructions based on selected broker
   const getInstructions = () => {
     switch (selectedBroker) {
@@ -237,6 +256,14 @@ export default function BrokerSettings() {
                   )}
 
                   <div className="flex flex-col md:flex-row gap-3 pt-2">
+                    <button 
+                      onClick={handleBrokerLogin}
+                      className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 text-white hover:from-emerald-700 hover:to-teal-700 rounded-lg text-sm font-medium transition-colors shadow-lg shadow-emerald-900/20"
+                    >
+                      <Shield className="w-4 h-4" />
+                      Login to Fyers
+                    </button>
+
                     <button 
                       onClick={handleTestConnection}
                       className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-muted/50 hover:bg-muted/70 border border-border/50 rounded-lg text-sm font-medium transition-colors"

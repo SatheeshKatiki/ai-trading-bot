@@ -77,10 +77,17 @@ class BrokerFactory:
         Reads the active broker ID from ``settings.json``.
         If no broker is configured, falls back to FyersBroker in paper mode.
         """
-        if cls._active is not None:
-            return cls._active
-
         broker_id = cls._read_active_broker_id()
+        live_mode = cls._read_live_mode()
+
+        if cls._active is not None:
+            # If broker_id or live_mode has changed, refresh!
+            if cls._active.BROKER_ID != broker_id or cls._active.paper_mode == live_mode:
+                logger.info("BrokerFactory: configuration changed, refreshing active broker.")
+                cls.close_active()
+            else:
+                return cls._active
+
         cls._active = cls._create(broker_id)
         return cls._active
 
@@ -191,6 +198,17 @@ class BrokerFactory:
             except Exception:
                 pass
         return "fyers"
+
+    @classmethod
+    def _read_live_mode(cls) -> bool:
+        """Read live_trading_mode from settings.json, defaulting to False."""
+        if _SETTINGS_FILE.is_file():
+            try:
+                data = json.loads(_SETTINGS_FILE.read_text(encoding="utf-8"))
+                return data.get("live_trading_mode", False)
+            except Exception:
+                pass
+        return False
 
     @classmethod
     def _write_active_broker_id(cls, broker_id: str) -> None:

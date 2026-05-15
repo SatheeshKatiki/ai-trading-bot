@@ -49,6 +49,7 @@ export default function StrategySettings() {
   const [selectedStrategy, setSelectedStrategy] = useState("ema_rsi");
   const [showSaveConfirm, setShowSaveConfirm] = useState(false);
   const [toast, setToast] = useState<{ message: string, type: 'success' | 'error' } | null>(null);
+  const [strategyParams, setStrategyParams] = useState<any>({});
 
   useEffect(() => {
     if (toast) {
@@ -57,11 +58,13 @@ export default function StrategySettings() {
     }
   }, [toast]);
 
-  const strategies = [
-    { id: "ema_rsi", name: "EMA RSI Strategy" },
+  const [strategies, setStrategies] = useState([
+    { id: "ema_rsi", name: "EMA + RSI (Classic)" },
     { id: "enhanced_ai", name: "Enhanced AI Strategy" },
-    { id: "premium", name: "Premium Strategy" },
-  ];
+    { id: "institutional_ema", name: "Institutional EMA" },
+    { id: "advanced_ai", name: "Advanced AI/ML" },
+    { id: "premium", name: "Premium Options Alpha" },
+  ]);
 
   const defaultSettings: Record<string, any> = {
     ema_rsi: {
@@ -114,9 +117,47 @@ export default function StrategySettings() {
       .catch(err => console.error('Failed to fetch settings:', err));
   };
 
+  const loadStrategies = () => {
+    fetch('/api/strategies')
+      .then(res => res.json())
+      .then(data => {
+        if (data.strategies) {
+          const strategyNames: Record<string, string> = {
+            "ema_rsi": "EMA + RSI (Classic)",
+            "enhanced_ai": "Enhanced AI Strategy",
+            "premium": "Premium Options Alpha",
+            "institutional_ema": "Institutional EMA",
+            "advanced_ai": "Advanced AI/ML"
+          };
+          
+          const mapped = data.strategies.map((id: string) => ({
+            id: id,
+            name: strategyNames[id] || id.split('_').map((word: string) => word.charAt(0).toUpperCase() + word.slice(1)).join(' ')
+          }));
+          setStrategies(mapped);
+        }
+      })
+      .catch(err => console.error('Failed to fetch strategies:', err));
+  };
+
   useEffect(() => {
     loadSettings();
+    loadStrategies();
   }, []);
+
+  useEffect(() => {
+    const activeStrat = settings.active_strategy || selectedStrategy;
+    if (activeStrat) {
+      fetch(`/api/strategy/parameters?name=${activeStrat}`)
+        .then(res => res.json())
+        .then(data => {
+          if (data.parameters) {
+            setStrategyParams(data.parameters);
+          }
+        })
+        .catch(err => console.error('Failed to fetch strategy parameters:', err));
+    }
+  }, [settings.active_strategy, selectedStrategy]);
 
   const handleSave = () => {
     setShowSaveConfirm(true);
@@ -343,8 +384,11 @@ export default function StrategySettings() {
                               onChange={(e) => setSettings({ ...settings, active_strategy: e.target.value })}
                               className="w-full bg-background border border-border rounded-lg px-3 py-2.5 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all"
                             >
-                              <option value="ema_rsi">EMA + RSI Momentum</option>
-                              <option value="breakout">Breakout Strategy</option>
+                              <option value="ema_rsi">EMA + RSI (Classic)</option>
+                              <option value="enhanced_ai">Enhanced AI Strategy</option>
+                              <option value="institutional_ema">Institutional EMA</option>
+                              <option value="advanced_ai">Advanced AI/ML</option>
+                              <option value="premium">Premium Options Alpha</option>
                             </select>
                           </div>
                           <div>
@@ -354,10 +398,14 @@ export default function StrategySettings() {
                               onChange={(e) => setSettings({ ...settings, timeframe: e.target.value })}
                               className="w-full bg-background border border-border rounded-lg px-3 py-2.5 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all"
                             >
-                              <option>1 Min</option>
-                              <option>5 Min</option>
-                              <option>15 Min</option>
-                              <option>1 Hour</option>
+                              <option value="1 Min">1 Min</option>
+                              <option value="3 Min">3 Min</option>
+                              <option value="5 Min">5 Min</option>
+                              <option value="15 Min">15 Min</option>
+                              <option value="30 Min">30 Min</option>
+                              <option value="1 Hour">1 Hour</option>
+                              <option value="1 Week">1 Week</option>
+                              <option value="1 Month">1 Month</option>
                             </select>
                           </div>
                         </div>
@@ -441,56 +489,38 @@ export default function StrategySettings() {
 
                   {/* === COLUMN 2 === */}
                   <div className="space-y-6">
-                    {/* EMA Settings */}
+                    {/* Strategy Parameters */}
                     <div className="bg-gradient-to-br from-slate-800 to-slate-900 p-6 rounded-2xl border border-[#3b82f6]/20 space-y-5 h-[420px] flex flex-col justify-between shadow-xl hover:shadow-blue-500/5 transition-all duration-300">
                       <div>
                         <div className="flex items-center gap-3 border-b border-border pb-3">
                           <div className="p-2.5 bg-[#3b82f6]/20 rounded-xl text-[#3b82f6] shadow-lg shadow-blue-500/10">
-                            <LineChart className="w-5 h-5" />
+                            <Sliders className="w-5 h-5" />
                           </div>
-                          <h3 className="font-display font-extrabold text-base text-foreground">EMA Settings</h3>
+                          <h3 className="font-display font-extrabold text-base text-foreground">Strategy Parameters</h3>
                         </div>
 
-                        <div className="space-y-4 mt-4">
-                          <div>
-                            <label className="text-xs font-bold text-gray-400 block mb-1.5 uppercase tracking-wider">EMA Fast</label>
-                            <input
-                              type="number"
-                              value={settings.ema_fast || 9}
-                              onChange={(e) => setSettings({ ...settings, ema_fast: parseInt(e.target.value) })}
-                              className="w-full bg-background border border-border rounded-lg px-3 py-2.5 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all"
-                            />
-                          </div>
-                          <div>
-                            <label className="text-xs font-bold text-gray-400 block mb-1.5 uppercase tracking-wider">EMA Slow</label>
-                            <input
-                              type="number"
-                              value={settings.ema_slow || 21}
-                              onChange={(e) => setSettings({ ...settings, ema_slow: parseInt(e.target.value) })}
-                              className="w-full bg-background border border-border rounded-lg px-3 py-2.5 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all"
-                            />
-                          </div>
-                          <div className="space-y-1.5">
-                            <div className="flex justify-between text-xs font-bold uppercase tracking-wider">
-                              <span className="text-gray-400">Crossover Sensitivity</span>
-                              <span className="text-[#3b82f6] font-extrabold text-sm">{crossoverSensitivity}%</span>
-                            </div>
-                            <CustomSlider
-                              min={10}
-                              max={100}
-                              value={crossoverSensitivity}
-                              onChange={setCrossoverSensitivity}
-                            />
-                          </div>
+                        <div className="space-y-4 mt-4 overflow-y-auto max-h-[250px]">
+                          {Object.keys(strategyParams).length > 0 ? (
+                            Object.keys(strategyParams).map((paramName) => (
+                              <div key={paramName}>
+                                <label className="text-xs font-bold text-gray-400 block mb-1.5 uppercase tracking-wider">{paramName.replace(/_/g, ' ')}</label>
+                                <input
+                                  type="text"
+                                  value={settings[paramName] !== undefined ? settings[paramName] : strategyParams[paramName].default}
+                                  onChange={(e) => setSettings({ ...settings, [paramName]: e.target.value })}
+                                  className="w-full bg-background border border-border rounded-lg px-3 py-2.5 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all"
+                                />
+                              </div>
+                            ))
+                          ) : (
+                            <p className="text-sm text-gray-500">No parameters found for this strategy.</p>
+                          )}
                         </div>
                       </div>
 
                       <div className="flex justify-between items-center pt-3 border-t border-border">
-                        <span className="text-xs font-bold text-foreground uppercase tracking-wider">Enable EMA Filter</span>
-                        <CustomSwitch
-                          checked={settings.enable_ema_filter || false}
-                          onChange={(checked) => setSettings({ ...settings, enable_ema_filter: checked })}
-                        />
+                        <span className="text-xs font-bold text-foreground uppercase tracking-wider">Auto-discovered</span>
+                        <Zap className="w-4 h-4 text-emerald-500" />
                       </div>
                     </div>
 

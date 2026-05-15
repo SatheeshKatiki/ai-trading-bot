@@ -92,19 +92,19 @@ export default function CustomDatePicker({ label, value, onChange }: CustomDateP
     <div 
       ref={popoverRef}
       style={{ top: coords.top + 8, left: coords.left }}
-      className="absolute z-[9999] p-4 bg-[#1e222b] border border-border/50 rounded-xl shadow-2xl w-[280px]"
+      className="absolute z-[9999] p-4 bg-popover border border-border/50 rounded-xl shadow-2xl w-[280px]"
     >
       {/* Header */}
       <div className="flex items-center justify-between mb-4">
-        <h4 className="text-sm font-bold text-white">
+        <h4 className="text-sm font-bold text-foreground">
           {months[currentMonth.getMonth()]} {currentMonth.getFullYear()}
         </h4>
         <div className="flex gap-1">
           <button onClick={() => changeMonth(-1)} className="p-1.5 hover:bg-muted rounded-md transition-colors">
-            <ChevronLeft className="w-4 h-4 text-white" />
+            <ChevronLeft className="w-4 h-4 text-foreground" />
           </button>
           <button onClick={() => changeMonth(1)} className="p-1.5 hover:bg-muted rounded-md transition-colors">
-            <ChevronRight className="w-4 h-4 text-white" />
+            <ChevronRight className="w-4 h-4 text-foreground" />
           </button>
         </div>
       </div>
@@ -131,10 +131,10 @@ export default function CustomDatePicker({ label, value, onChange }: CustomDateP
               onClick={() => handleDateSelect(day)}
               className={`h-8 text-xs font-bold rounded-md transition-colors flex items-center justify-center ${
                 isSelected 
-                  ? "bg-primary text-white" 
+                  ? "bg-primary text-primary-foreground" 
                   : isToday
                     ? "border border-primary text-primary hover:bg-primary/10"
-                    : "text-white hover:bg-muted"
+                    : "text-foreground hover:bg-muted"
               }`}
             >
               {day}

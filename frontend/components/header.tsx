@@ -74,7 +74,7 @@ export default function Header() {
     const params = new URLSearchParams(window.location.search);
     params.set('symbol', asset.symbol);
     
-    router.push(`${pathname}?${params.toString()}`);
+    window.location.href = `${pathname}?${params.toString()}`;
   };
 
   // ADVANCED SEARCH: Allow user to press Enter to search for ANY symbol!
@@ -86,7 +86,7 @@ export default function Header() {
       const params = new URLSearchParams(window.location.search);
       params.set('symbol', sym);
       
-      router.push(`${pathname}?${params.toString()}`);
+      window.location.href = `${pathname}?${params.toString()}`;
     }
   };
 

@@ -36,8 +36,6 @@ from shared.state import update_equity, record_trade
 # Broker layer — broker-agnostic: trading logic never imports vendor SDKs directly
 from brokers import BrokerFactory, OrderRequest, OrderSide
 from trading_bot.strategies.registry import registry
-from trading_bot.strategies.ema_rsi_strategy import generate_signals as ema_rsi_signals
-from trading_bot.strategies.enhanced_ai_strategy import generate_signals as enhanced_signals
 from trading_bot.strategies.premium_selection import (
     PremiumSignalEngine, PremiumSignal, generate_signals as premium_signals
 )
@@ -64,13 +62,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Register all available strategies
-registry.register("ema_rsi",      ema_rsi_signals)
-registry.register("enhanced_ai",  enhanced_signals)
-registry.register("premium",      premium_signals)
-
-from trading_bot.strategies.institutional_ema_strategy import generate_signals as institutional_signals
-registry.register("institutional_ema", institutional_signals)
+# Register strategies that are not auto-discovered (e.g., from subpackages)
+registry.register("premium", premium_signals)
 
 # Path to the shared settings file written by the Streamlit dashboard
 _SETTINGS_PATH = Path(__file__).resolve().parents[1] / "settings.json"
@@ -335,6 +328,10 @@ async def run_live_bot(symbols: List[str]) -> None:
                         latest_signal = signals.iloc[-1]
                         entry_symbol  = s
                         lot_size      = 1
+                        
+                        if strategy_name == "institutional_ema" and 'custom_sl_pct' in df.columns:
+                            sl_pct = df['custom_sl_pct'].iloc[-1] / 100.0
+                            logger.info(f"Using custom SL%% from strategy: {sl_pct*100:.2f}%%")
 
                     if latest_signal == 0:
                         continue

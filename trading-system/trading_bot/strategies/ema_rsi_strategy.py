@@ -25,6 +25,8 @@ from shared.indicators import ema, rsi
 # Type alias for readability
 DataFrame = pd.DataFrame
 
+STRATEGY_NAME = "ema_rsi"
+
 
 def _volume_filter(df: DataFrame, lookback: int = 20) -> pd.Series:
     """Return a boolean mask where volume exceeds its ``lookback``-period average.

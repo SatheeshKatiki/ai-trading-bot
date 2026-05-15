@@ -22,7 +22,7 @@ def main():
     secret_key = creds.get("secret_key")
     redirect_uri = "http://127.0.0.1:8080" # Forced to match the one used!
     
-    auth_code = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhcHBfaWQiOiIwS0hCUTZJUUE0IiwidXVpZCI6ImI2ZmZlZTVkNDQ5NjQ4YzNhZTc0MGNkMGU0YThlZDMxIiwiaXBBZGRyIjoiIiwibm9uY2UiOiIiLCJzY29wZSI6IiIsImRpc3BsYXlfbmFtZSI6IllLMTcxOTAiLCJvbXMiOiJLMSIsImhzbV9rZXkiOiI4ODQ1YjBmZmNlNGZmOTY2NzE0ZmU5ZGZmMzVhNGFlZTJmZGU2MTM3YjVkN2FkOWE1MzNmYzY3OCIsImlzRGRwaUVuYWJsZWQiOiJOIiwiaXNNdGZFbmFibGVkIjoiTiIsImF1ZCI6IltcImQ6MVwiLFwiZDoyXCIsXCJ4OjBcIixcIng6MVwiLFwieDoyXCJdIiwiZXhwIjoxNzc4NTAzODU5LCJpYXQiOjE3Nzg0NzM4NTksImlzcyI6ImFwaS5sb2dpbi5meWVycy5pbiIsIm5iZiI6MTc3ODQ3Mzg1OSwic3ViIjoiYXV0aF9jb2RlIn0.CQYCyb-G2ZQGFjkhvsOOT-RjXX8Z_fDug6VO_w8xr0U"
+    auth_code = input("Please paste the 'auth_code' from the URL bar: ").strip()
     
     session = fyersModel.SessionModel(
         client_id=client_id,

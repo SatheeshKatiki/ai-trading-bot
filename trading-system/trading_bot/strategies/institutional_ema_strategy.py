@@ -14,6 +14,8 @@ from typing import Dict, Any
 
 from shared.indicators import ema, rsi, macd, smc_features, supertrend
 
+STRATEGY_NAME = "institutional_ema"
+
 # ---------------------------------------------------------------------------
 # Helper Indicators
 # ---------------------------------------------------------------------------
@@ -134,10 +136,12 @@ def generate_signals(
         if col not in df.columns:
             df[col] = smc_df[col]
     
-    # Check if we have volume data (Yahoo Finance lacks volume for indices)
-    has_volume = df['volume'].sum() > 0
+    # Check if we have volume data (Yahoo Finance/Brokers lack volume for indices)
+    # Require at least 20% of candles to have >0 volume to consider it valid volume data
+    volume_ratio = (df['volume'] > 0).mean()
+    has_volume = volume_ratio > 0.2
     if not has_volume:
-        print("[WARNING] No volume data detected (common with Yahoo Finance NIFTY). Bypassing Volume & VWAP filters for testing.")
+        print("[WARNING] Sparse or no volume data detected. Bypassing Volume & VWAP filters for testing.")
     
     # Debug counters for CALL
     counts = {
@@ -154,205 +158,163 @@ def generate_signals(
     }
     
     # 2. Signal Generation
-    for i in range(2, len(df)):
-        if pd.isna(df['ema_21'].iloc[i]) or pd.isna(df['adx'].iloc[i]):
-            continue
-            
-        # Time Filter: No entries before 09:30 AM and after 03:00 PM
-        # Also Lunch Break (12:00 to 13:30)
-        time_str = "00:00"
-        if 'datetime' in df.columns:
-            time_str = df['datetime'].iloc[i].split(' ')[1][:5]
-        else:
-            current_time_str = str(df.index[i])
-            if ' ' in current_time_str:
-                time_str = current_time_str.split(' ')[1][:5]
-            else:
-                time_str = current_time_str[:5]
-                
-        try:
-            parts = time_str.split(':')
-            minutes = int(parts[0]) * 60 + int(parts[1])
-            
-            # Strict Time Filters:
-            # 09:45 = 585 minutes
-            # 11:30 = 690 minutes
-            # 13:30 = 810 minutes
-            # 14:30 = 870 minutes
-            
-            is_lunch = (minutes >= 690 and minutes < 810)
-            
-            # Only trade between 09:45 AM and 02:30 PM, and skip lunch!
-            if minutes < 585 or minutes >= 870 or is_lunch:
-                continue
-        except Exception as e:
-            # If parsing fails, default to skip just to be safe
-            continue
-            
-        counts['total_candles'] += 1
-            
-        close = df['close'].iloc[i]
-        open_p = df['open'].iloc[i]
-        high = df['high'].iloc[i]
-        low = df['low'].iloc[i]
+    # 2. Vectorized Signal Generation
+    score_call = pd.Series(0, index=df.index)
+    score_put = pd.Series(0, index=df.index)
+    
+    # --- CALL Conditions ---
+    # 1. EMA Trend
+    c_ema_call_cross = (df['ema_9'] > df['ema_21']) & (df['ema_9'].shift(1) <= df['ema_21'].shift(1))
+    ema_dist = df['ema_9'] - df['ema_21']
+    c_ema_accel_call = (ema_dist > ema_dist.shift(1)) & (ema_dist > 0)
+    
+    score_call[c_ema_call_cross] += 25
+    score_call[~c_ema_call_cross & c_ema_accel_call] += 15
+    score_call[~c_ema_call_cross & ~c_ema_accel_call & (df['ema_9'] > df['ema_21'])] += 10
+    
+    # 2. Breakout
+    c_breakout_call = (df['close'] > df['swing_high'].shift(1))
+    if has_volume:
+        c_breakout_call = c_breakout_call & (df['volume'] > df['volume_sma'] * 1.2)
+    score_call[c_breakout_call] += 20
+    
+    # 3. Pullback
+    c_pullback_call = (df['low'] <= df['ema_9']) & (df['close'] > df['ema_9']) & (df['close'] > df['open'])
+    score_call[c_pullback_call] += 20
+    
+    # 4. RSI
+    c_rsi_call = (df['rsi'] > df['rsi_ema']) & (df['rsi'] > 50)
+    score_call[c_rsi_call] += 15
+    
+    # 5. MACD
+    c_macd_call = (df['macd'] > df['macd_signal']) & (df['macd_hist'] > 0)
+    score_call[c_macd_call] += 15
+    
+    # 6. VWAP
+    if has_volume:
+        c_vwap_call = df['close'] > df['vwap']
+        score_call[c_vwap_call] += 10
+    else:
+        score_call += 10
         
-        # Conditions for CALL (CE)
-        # 1. Mandatory Conditions (Must pass if enabled)
-        mandatory_call = True
-        if kwargs.get("enable_ema_filter", True):
-            mandatory_call = mandatory_call and (df['ema_9'].iloc[i] > df['ema_21'].iloc[i])
-        if kwargs.get("enable_volume_filter", True):
-            mandatory_call = mandatory_call and (df['volume'].iloc[i] > df['volume_sma'].iloc[i])
-            
-        # 2. Scoring Components
-        score_call = 0
+    # 7. ADX
+    adx_thresh = kwargs.get("adx_threshold", 20)
+    c_adx_call = (df['adx'] > adx_thresh) & (df['plus_di'] > df['minus_di'])
+    score_call[c_adx_call] += 10
+    
+    # 8. Volume
+    if has_volume:
+        c_vol_call = df['volume'] > df['volume_sma']
+        score_call[c_vol_call] += 10
+    else:
+        score_call += 10
         
-        # EMA Trend / Crossover (25 points max)
-        c_ema_call = (df['ema_9'].iloc[i] > df['ema_21'].iloc[i]) and (df['ema_9'].iloc[i-1] <= df['ema_21'].iloc[i-1])
-        ema_dist = df['ema_9'].iloc[i] - df['ema_21'].iloc[i]
-        ema_dist_prev = df['ema_9'].iloc[i-1] - df['ema_21'].iloc[i-1]
-        c_ema_accel_call = ema_dist > ema_dist_prev and ema_dist > 0
+    # 9. SMC
+    c_smc_call = (df['bos_bullish'].rolling(5).max() > 0) | (df['bullish_fvg'].rolling(5).max() > 0)
+    score_call[c_smc_call] += 10
+    
+    # 10. Candle Strength
+    candle_body = df['close'] - df['open']
+    upper_wick = df['high'] - df['close']
+    c_candle_call = (candle_body > 0) & (upper_wick < candle_body * 0.3)
+    score_call[c_candle_call] += 5
+    
+    # --- PUT Conditions ---
+    # 1. EMA Trend
+    c_ema_put_cross = (df['ema_9'] < df['ema_21']) & (df['ema_9'].shift(1) >= df['ema_21'].shift(1))
+    ema_dist_put = df['ema_21'] - df['ema_9']
+    c_ema_accel_put = (ema_dist_put > ema_dist_put.shift(1)) & (ema_dist_put > 0)
+    
+    score_put[c_ema_put_cross] += 25
+    score_put[~c_ema_put_cross & c_ema_accel_put] += 15
+    score_put[~c_ema_put_cross & ~c_ema_accel_put & (df['ema_9'] < df['ema_21'])] += 10
+    
+    # 2. Breakout
+    c_breakout_put = (df['close'] < df['swing_low'].shift(1))
+    if has_volume:
+        c_breakout_put = c_breakout_put & (df['volume'] > df['volume_sma'] * 1.2)
+    score_put[c_breakout_put] += 20
+    
+    # 3. Pullback
+    c_pullback_put = (df['high'] >= df['ema_9']) & (df['close'] < df['ema_9']) & (df['close'] < df['open'])
+    score_put[c_pullback_put] += 20
+    
+    # 4. RSI
+    c_rsi_put = (df['rsi'] < df['rsi_ema']) & (df['rsi'] < 50)
+    score_put[c_rsi_put] += 15
+    
+    # 5. MACD
+    c_macd_put = (df['macd'] < df['macd_signal']) & (df['macd_hist'] < 0)
+    score_put[c_macd_put] += 15
+    
+    # 6. VWAP
+    if has_volume:
+        c_vwap_put = df['close'] < df['vwap']
+        score_put[c_vwap_put] += 10
+    else:
+        score_put += 10
         
-        if c_ema_call: score_call += 25
-        elif c_ema_accel_call: score_call += 15 # Accelerating
-        elif df['ema_9'].iloc[i] > df['ema_21'].iloc[i]: score_call += 10 # State only
+    # 7. ADX
+    c_adx_put = (df['adx'] > 25) & (df['minus_di'] > df['plus_di'])
+    score_put[c_adx_put] += 10
+    
+    # 8. Volume
+    if has_volume:
+        c_vol_put = df['volume'] > df['volume_sma']
+        score_put[c_vol_put] += 10
+    else:
+        score_put += 10
         
-        # Breakout Confirmation (20 points)
-        c_breakout_call = (close > df['swing_high'].iloc[i-1]) and (df['volume'].iloc[i] > df['volume_sma'].iloc[i] * 1.2) if has_volume else (close > df['swing_high'].iloc[i-1])
-        if c_breakout_call: score_call += 20
+    # 9. SMC
+    c_smc_put = (df['bos_bearish'].rolling(5).max() > 0) | (df['bearish_fvg'].rolling(5).max() > 0)
+    score_put[c_smc_put] += 10
+    
+    # 10. Candle Strength
+    lower_wick = df['open'] - df['low']
+    c_candle_put = (candle_body < 0) & (lower_wick < abs(candle_body) * 0.3)
+    score_put[c_candle_put] += 5
+    
+    # Normalize scores
+    df['call_score'] = (score_call / 140 * 100).astype(int)
+    df['put_score'] = (score_put / 140 * 100).astype(int)
+    
+    # Dynamic Threshold
+    threshold = pd.Series(75, index=df.index)
+    threshold[df['adx'] > 25] = kwargs.get("score_threshold_trending", 75)
+    threshold[df['adx'] < 20] = kwargs.get("score_threshold_sideways", 80)
+    
+    # Mandatory Filters
+    mandatory_call = pd.Series(True, index=df.index)
+    if kwargs.get("enable_ema_filter", True):
+        mandatory_call = mandatory_call & (df['ema_9'] > df['ema_21'])
+    if kwargs.get("enable_volume_filter", True) and has_volume:
+        mandatory_call = mandatory_call & (df['volume'] > df['volume_sma'])
         
-        # Pullback Continuation (20 points)
-        c_pullback_call = (low <= df['ema_9'].iloc[i]) and (close > df['ema_9'].iloc[i]) and (close > open_p)
-        if c_pullback_call: score_call += 20
+    mandatory_put = pd.Series(True, index=df.index)
+    if kwargs.get("enable_ema_filter", True):
+        mandatory_put = mandatory_put & (df['ema_9'] < df['ema_21'])
+    if kwargs.get("enable_volume_filter", True) and has_volume:
+        mandatory_put = mandatory_put & (df['volume'] > df['volume_sma'])
         
-        # RSI Momentum (15 points)
-        c_rsi_call = (df['rsi'].iloc[i] > df['rsi_ema'].iloc[i]) and (df['rsi'].iloc[i] > 50)
-        if c_rsi_call: score_call += 15
+    # Generate Signals
+    signals[(df['call_score'] >= threshold) & mandatory_call] = 1
+    signals[(df['put_score'] >= threshold) & mandatory_put] = -1
+    
+    # Time Filters (Vectorized)
+    if 'datetime' in df.columns:
+        df['datetime_dt'] = pd.to_datetime(df['datetime'])
+        minutes = df['datetime_dt'].dt.hour * 60 + df['datetime_dt'].dt.minute
+        is_lunch = (minutes >= 690) & (minutes < 810)
+        valid_time = (minutes >= 585) & (minutes < 870) & ~is_lunch
+        signals[~valid_time] = 0
         
-        # MACD Momentum (15 points)
-        c_macd_call = (df['macd'].iloc[i] > df['macd_signal'].iloc[i]) and (df['macd_hist'].iloc[i] > 0)
-        if c_macd_call: score_call += 15
-        
-        # VWAP Alignment (10 points)
-        c_vwap_call = (close > df['vwap'].iloc[i]) if has_volume else True
-        if c_vwap_call: score_call += 10
-        
-        # ADX Strength (10 points)
-        adx_thresh = kwargs.get("adx_threshold", 20)
-        c_adx_call = (df['adx'].iloc[i] > adx_thresh) and (df['plus_di'].iloc[i] > df['minus_di'].iloc[i])
-        if c_adx_call: score_call += 10
-        
-        # Volume Confirmation (10 points)
-        c_vol_call = (df['volume'].iloc[i] > df['volume_sma'].iloc[i]) if has_volume else True
-        if c_vol_call: score_call += 10
-        
-        # SMC Confirmation (10 points) - Look back 5 candles for footprint
-        lookback = 5
-        start_idx = max(0, i - lookback)
-        c_smc_call = df['bos_bullish'].iloc[start_idx:i+1].any() or df['bullish_fvg'].iloc[start_idx:i+1].any()
-        if c_smc_call: score_call += 10
-        
-        # Candle Strength (5 points)
-        candle_body = close - open_p
-        upper_wick = high - close
-        c_candle_call = candle_body > 0 and (upper_wick < candle_body * 0.3)
-        if c_candle_call: score_call += 5
-        
-        # -------------------------------------------------------------------
-        # Conditions for PUT (PE)
-        # 1. Mandatory Conditions
-        mandatory_put = True
-        if kwargs.get("enable_ema_filter", True):
-            mandatory_put = mandatory_put and (df['ema_9'].iloc[i] < df['ema_21'].iloc[i])
-        if kwargs.get("enable_volume_filter", True):
-            mandatory_put = mandatory_put and (df['volume'].iloc[i] > df['volume_sma'].iloc[i])
-            
-        # 2. Scoring Components
-        score_put = 0
-        
-        # EMA Trend / Crossover (25 points max)
-        c_ema_put = (df['ema_9'].iloc[i] < df['ema_21'].iloc[i]) and (df['ema_9'].iloc[i-1] >= df['ema_21'].iloc[i-1])
-        ema_dist_put = df['ema_21'].iloc[i] - df['ema_9'].iloc[i]
-        ema_dist_prev_put = df['ema_21'].iloc[i-1] - df['ema_9'].iloc[i-1]
-        c_ema_accel_put = ema_dist_put > ema_dist_prev_put and ema_dist_put > 0
-        
-        if c_ema_put: score_put += 25
-        elif c_ema_accel_put: score_put += 15 # Accelerating
-        elif df['ema_9'].iloc[i] < df['ema_21'].iloc[i]: score_put += 10 # State only
-        
-        # Breakout Confirmation (20 points)
-        c_breakout_put = (close < df['swing_low'].iloc[i-1]) and (df['volume'].iloc[i] > df['volume_sma'].iloc[i] * 1.2) if has_volume else (close < df['swing_low'].iloc[i-1])
-        if c_breakout_put: score_put += 20
-        
-        # Pullback Continuation (20 points)
-        c_pullback_put = (high >= df['ema_9'].iloc[i]) and (close < df['ema_9'].iloc[i]) and (close < open_p)
-        if c_pullback_put: score_put += 20
-        
-        # RSI Momentum (15 points)
-        c_rsi_put = (df['rsi'].iloc[i] < df['rsi_ema'].iloc[i]) and (df['rsi'].iloc[i] < 50)
-        if c_rsi_put: score_put += 15
-        
-        # MACD Momentum (15 points)
-        c_macd_put = (df['macd'].iloc[i] < df['macd_signal'].iloc[i]) and (df['macd_hist'].iloc[i] < 0)
-        if c_macd_put: score_put += 15
-        
-        # VWAP Alignment (10 points)
-        c_vwap_put = (close < df['vwap'].iloc[i]) if has_volume else True
-        if c_vwap_put: score_put += 10
-        
-        # ADX Strength (10 points)
-        c_adx_put = (df['adx'].iloc[i] > 25) and (df['minus_di'].iloc[i] > df['plus_di'].iloc[i])
-        if c_adx_put: score_put += 10
-        
-        # Volume Confirmation (10 points)
-        c_vol_put = (df['volume'].iloc[i] > df['volume_sma'].iloc[i]) if has_volume else True
-        if c_vol_put: score_put += 10
-        
-        # SMC Confirmation (10 points) - Look back 5 candles for footprint
-        c_smc_put = df['bos_bearish'].iloc[start_idx:i+1].any() or df['bearish_fvg'].iloc[start_idx:i+1].any()
-        if c_smc_put: score_put += 10
-        
-        # Candle Strength (5 points)
-        lower_wick = open_p - low
-        c_candle_put = candle_body < 0 and (lower_wick < abs(candle_body) * 0.3)
-        if c_candle_put: score_put += 5
-        
-        # Normalize scores to 100 (Total possible points was 140)
-        score_call = int((score_call / 140) * 100)
-        score_put = int((score_put / 140) * 100)
-        
-        # Market Regime Detection & Adaptive Thresholds
-        adx_val = df['adx'].iloc[i]
-        if adx_val > 25:
-            # Trending market: Use baseline threshold (no more 65)
-            threshold = kwargs.get("score_threshold_trending", 75)
-        elif adx_val < 20:
-            # Sideways market: Be more defensive
-            threshold = kwargs.get("score_threshold_sideways", 80)
-        else:
-            # Normal market
-            threshold = kwargs.get("score_threshold", 75)
-            
-        # Set custom SL based on swings if entering
-        if score_call >= threshold and mandatory_call:
-            sl_dist = close - df['swing_low'].iloc[i]
-            df.loc[df.index[i], 'custom_sl_pct'] = max(0.2, (sl_dist / close * 100))
-        elif score_put >= threshold and mandatory_put:
-            sl_dist = df['swing_high'].iloc[i] - close
-            df.loc[df.index[i], 'custom_sl_pct'] = max(0.2, (sl_dist / close * 100))
-        
-        # Save scores for analytics
-        df.loc[df.index[i], 'call_score'] = score_call
-        df.loc[df.index[i], 'put_score'] = score_put
-        
-        # Generate Signals
-        if score_call >= threshold and mandatory_call:
-            signals.iloc[i] = 1
-        elif score_put >= threshold and mandatory_put:
-            signals.iloc[i] = -1
-        
-        # End of loop iteration
-        pass
+    # Custom SL calculation (Vectorized)
+    sl_dist_call = df['close'] - df['swing_low']
+    df['custom_sl_pct'] = 0.2 # Default min
+    df.loc[(df['call_score'] >= threshold) & mandatory_call, 'custom_sl_pct'] = (sl_dist_call / df['close'] * 100).clip(lower=0.2)
+    
+    sl_dist_put = df['swing_high'] - df['close']
+    df.loc[(df['put_score'] >= threshold) & mandatory_put, 'custom_sl_pct'] = (sl_dist_put / df['close'] * 100).clip(lower=0.2)
             
     print("\n=== [DEBUG] CALL Signal Filters Breakdown ===")
     print(f"Analyzed Candles: {counts['total_candles']}")

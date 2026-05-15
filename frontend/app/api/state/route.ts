@@ -4,6 +4,19 @@ import path from 'path';
 
 export const dynamic = 'force-dynamic';
 
+async function fetchWithTimeout(url: string, timeout = 2000) {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeout);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    clearTimeout(id);
+    return response.ok ? await response.json() : null;
+  } catch (error) {
+    clearTimeout(id);
+    return null;
+  }
+}
+
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
@@ -11,88 +24,68 @@ export async function GET(request: Request) {
     const timeframe = searchParams.get('timeframe') || '15 Min';
     const isLive = searchParams.get('live') === 'true';
     
+    let chartData: any[] = [];
+    let currentPrice = 0;
+    let changePercent = 0;
+    let fundsData: any = null;
+    let signalsData: any = null;
+    let quoteData: any = null;
+    
     // Map short symbols to Fyers specific symbols for data fetching
     let symbol = rawSymbol;
     if (rawSymbol === 'NIFTY') {
       symbol = 'NSE:NIFTY50-INDEX';
     } else if (rawSymbol === 'BANKNIFTY') {
       symbol = 'NSE:NIFTYBANK-INDEX';
+    } else if (rawSymbol === 'SENSEX') {
+      symbol = 'BSE:SENSEX-INDEX';
+    } else if (!rawSymbol.includes(':')) {
+      // Default to NSE stock if no exchange prefix
+      symbol = `NSE:${rawSymbol}-EQ`;
     }
     
-    // 1. Read static state
-    const filePath = path.join(process.cwd(), '..', 'trading-system', 'state.json');
+    // 1. Read state from Python API Bridge
     let baseState = { 
       equity: 100000.0, 
       pnl: 0.0, 
       trades: [] 
     };
     
-    if (fs.existsSync(filePath)) {
-      const fileContent = fs.readFileSync(filePath, 'utf8');
-      baseState = JSON.parse(fileContent);
-    }
-
-    // 1.5 Fetch real funds from Fyers via Python API Bridge if in live mode
-    let fundsData = null;
-    if (isLive) {
-      try {
-        const fundsRes = await fetch("http://localhost:8000/api/funds");
-        if (fundsRes.ok) {
-          fundsData = await fundsRes.json();
-        } else {
-          console.error("Failed to fetch funds from Python bridge");
-        }
-      } catch (e) {
-        console.error("Failed to fetch funds from Python bridge:", e);
-      }
-    }
-
-    // 1.6 Fetch AI Signals/Confidence from Python bridge
-    let signalsData = null;
     try {
-      const signalsRes = await fetch(`http://localhost:8000/api/signals?symbol=${rawSymbol}`);
-      if (signalsRes.ok) {
-        signalsData = await signalsRes.json();
+      // Fetch all data in parallel to reduce loading time
+      const end = new Date();
+      const start = new Date();
+      start.setDate(end.getDate() - 5);
+      const startDate = start.toISOString().split('T')[0];
+      const endDate = end.toISOString().split('T')[0];
+      const pythonApiUrl = `http://localhost:8000/api/history?symbol=${symbol}&start_date=${startDate}&end_date=${endDate}&timeframe=${timeframe}`;
+
+      const fetchPromises = [];
+      
+      // 1. State
+      fetchPromises.push(fetchWithTimeout("http://localhost:8000/api/state"));
+      // 2. Funds
+      if (isLive) {
+        fetchPromises.push(fetchWithTimeout("http://localhost:8000/api/funds"));
       } else {
-        console.error("Failed to fetch signals from Python bridge");
+        fetchPromises.push(Promise.resolve(null));
       }
-    } catch (e) {
-      console.error("Failed to fetch signals from Python bridge:", e);
-    }
+      // 3. Signals
+      fetchPromises.push(fetchWithTimeout(`http://localhost:8000/api/signals?symbol=${rawSymbol}`, 5000));
+      // 4. Quote
+      fetchPromises.push(fetchWithTimeout(`http://localhost:8000/api/quote?symbol=${symbol}`));
+      // 5. History
+      fetchPromises.push(fetchWithTimeout(pythonApiUrl, 3000));
 
-    // 1.7 Fetch real-time quote (LTP) from Python bridge
-    let quoteData = null;
-    try {
-      const quoteRes = await fetch(`http://localhost:8000/api/quote?symbol=${symbol}`);
-      if (quoteRes.ok) {
-        quoteData = await quoteRes.json();
-      } else {
-        console.error("Failed to fetch quote from Python bridge");
-      }
-    } catch (e) {
-      console.error("Failed to fetch quote from Python bridge:", e);
-    }
-    
-    // 2. Fetch dynamic chart data from the Python API Bridge
-    const end = new Date();
-    const start = new Date();
-    start.setDate(end.getDate() - 5);
-    
-    const startDate = start.toISOString().split('T')[0];
-    const endDate = end.toISOString().split('T')[0];
-    
-    // Pass the requested timeframe to the Python bridge!
-    const pythonApiUrl = `http://localhost:8000/api/history?symbol=${symbol}&start_date=${startDate}&end_date=${endDate}&timeframe=${timeframe}`;
-    
-    let chartData: any[] = [];
-    let currentPrice = 0;
-    let changePercent = 0;
-    
-    try {
-      const response = await fetch(pythonApiUrl);
-      if (response.ok) {
-        const bridgeResult = await response.json();
-        const rawData = bridgeResult.data;
+      const [resState, resFunds, resSignals, resQuote, resHistory] = await Promise.all(fetchPromises);
+
+      if (resState) baseState = resState;
+      fundsData = resFunds;
+      signalsData = resSignals;
+      quoteData = resQuote;
+      
+      if (resHistory && resHistory.data) {
+        const rawData = resHistory.data;
         
         if (rawData && rawData.length > 0) {
           chartData = rawData.map((item: any) => {
@@ -166,6 +159,9 @@ export async function GET(request: Request) {
     
   } catch (error) {
     console.error('Failed to process state request:', error);
-    return NextResponse.json({ error: 'Failed to process state' }, { status: 500 });
+    return NextResponse.json({ 
+      error: 'Failed to process state', 
+      message: error instanceof Error ? error.message : String(error) 
+    }, { status: 500 });
   }
 }

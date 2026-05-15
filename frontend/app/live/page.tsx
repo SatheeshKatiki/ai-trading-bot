@@ -18,6 +18,7 @@ import {
   Briefcase
 } from "lucide-react";
 import { useSearchParams } from "next/navigation";
+import { motion, AnimatePresence } from "framer-motion";
 
 declare global {
   interface Window {
@@ -40,11 +41,23 @@ export default function LiveTrading() {
 
 function LiveTradingContent() {
   const searchParams = useSearchParams();
-  const urlSymbol = searchParams.get('symbol') || 'NIFTY';
+  const urlSymbol = searchParams.get('symbol') || 'SENSEX';
 
   const [strategy, setStrategy] = useState("ema_rsi");
-  const [tradingMode, setTradingMode] = useState("live"); // 'live' or 'paper'
+  const [timeframe, setTimeframe] = useState("5 Min");
+  const [tradingMode, setTradingMode] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('tradingMode');
+      return saved || "paper"; // Default to paper (safer!)
+    }
+    return "paper";
+  });
   const [equity, setEquity] = useState(100000.00);
+  const [tickerData, setTickerData] = useState({
+    NIFTY: { lp: 23820.35, chp: -1.49 },
+    SENSEX: { lp: 76015.28, chp: -1.70 },
+    BANKNIFTY: { lp: 51000.00, chp: 0.0 }
+  });
   const [pnl, setPnl] = useState(0.00);
   const [trades, setTrades] = useState<any[]>([]);
   const [currentPrice, setCurrentPrice] = useState(0);
@@ -52,6 +65,49 @@ function LiveTradingContent() {
   const [isLoading, setIsLoading] = useState(true);
   const [aiConfidence, setAiConfidence] = useState(0);
   const [riskStatus, setRiskStatus] = useState("ACTIVE");
+  const [isWsConnected, setIsWsConnected] = useState(false);
+  const [notifications, setNotifications] = useState<any[]>([]);
+  const prevTradesRef = useRef<any[]>([]);
+
+  const addNotification = (message: string, type: 'success' | 'danger' | 'warning' | 'info') => {
+    const id = Date.now();
+    setNotifications(prev => [...prev, { id, message, type }]);
+    setTimeout(() => {
+      setNotifications(prev => prev.filter(n => n.id !== id));
+    }, 5000);
+  };
+
+  // Detect new trades and trigger notifications
+  useEffect(() => {
+    if (trades.length > prevTradesRef.current.length) {
+      // New trade found!
+      const newTrades = trades.filter(t => !prevTradesRef.current.some(pt => pt.id === t.id));
+      newTrades.forEach(t => {
+        let message = "";
+        let type: 'success' | 'danger' | 'warning' | 'info' = 'info';
+        
+        if (t.side === 'BUY') {
+          message = `🟢 BUY Order Executed: ${t.symbol} @ ₹${t.price.toFixed(2)}`;
+          type = 'success';
+        } else if (t.side === 'SELL') {
+          message = `🔴 SELL Order Executed: ${t.symbol} @ ₹${t.price.toFixed(2)}`;
+          type = 'danger';
+        } else if (t.status === 'Target') {
+          message = `🎯 Target Hit: ${t.symbol} @ ₹${t.price.toFixed(2)}`;
+          type = 'success';
+        } else if (t.status === 'SL') {
+          message = `🛡️ Stop Loss Hit: ${t.symbol} @ ₹${t.price.toFixed(2)}`;
+          type = 'warning';
+        } else {
+          message = `🔔 Trade Update: ${t.symbol} status is ${t.status}`;
+          type = 'info';
+        }
+        
+        addNotification(message, type);
+      });
+    }
+    prevTradesRef.current = trades;
+  }, [trades]);
 
   // Map our symbols to TradingView symbols
   const getTVSymbol = (sym: string) => {
@@ -59,8 +115,8 @@ function LiveTradingContent() {
     if (sym === "NIFTY") return "NSE:NIFTY";
     if (sym === "BANKNIFTY") return "NSE:BANKNIFTY";
     if (sym === "FINNIFTY") return "NSE:FINNIFTY";
-    // Fallback to BSE to see if it bypasses blocks
-    return `BSE:${sym}`;
+    // Default to NSE for stocks if not a recognized index
+    return `NSE:${sym}`;
   };
 
   // Fetch Settings (to get trading mode and strategy)
@@ -70,7 +126,11 @@ function LiveTradingContent() {
         const res = await fetch('/api/settings');
         if (res.ok) {
           const data = await res.json();
-          setTradingMode(data.live_trading_mode ? "live" : "paper");
+          const mode = data.live_trading_mode ? "live" : "paper";
+          setTradingMode(mode);
+          if (typeof window !== 'undefined') {
+            localStorage.setItem('tradingMode', mode);
+          }
           setStrategy(data.active_strategy || "ema_rsi");
         }
       } catch (error) {
@@ -93,7 +153,7 @@ function LiveTradingContent() {
       console.error("Failed to update strategy:", error);
     }
   };
-
+  
   // Toggle Trading Mode (Live/Paper)
   const toggleTradingMode = async () => {
     const newMode = tradingMode === 'live' ? 'paper' : 'live';
@@ -101,6 +161,9 @@ function LiveTradingContent() {
     
     // Optimistically update UI
     setTradingMode(newMode);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('tradingMode', newMode);
+    }
     
     try {
       const res = await fetch('/api/settings', {
@@ -131,11 +194,15 @@ function LiveTradingContent() {
         setPnl(data.pnl);
         setTrades(data.trades || []);
         const parsedPrice = Number(data.currentPrice);
-        if (parsedPrice && parsedPrice !== 0) {
-          setCurrentPrice(parsedPrice);
-        }
-        if (data.changePercent) {
-          setChangePercent(data.changePercent);
+        // Optimization: If WebSocket is connected, let it handle live price updates.
+        // If WebSocket is disconnected or price is 0 (initial load), update from polling!
+        if (!isWsConnected || currentPrice === 0) {
+          if (parsedPrice && parsedPrice !== 0) {
+            setCurrentPrice(parsedPrice);
+          }
+          if (data.changePercent) {
+            setChangePercent(data.changePercent);
+          }
         }
         
         // Extract AI Confidence if available
@@ -148,21 +215,11 @@ function LiveTradingContent() {
           setRiskStatus(data.signalsData.status);
         }
         
-        // If live mode and fundsData available, extract balance!
-        if (tradingMode === 'live' && data.fundsData && data.fundsData.fund_limit) {
-          const totalBalanceItem = data.fundsData.fund_limit.find((item: any) => 
-            item.title === "Total Balance" || item.id === 1 || item.id === 10
-          );
-          if (totalBalanceItem) {
-            setEquity(totalBalanceItem.equityAmount);
-          } else if (data.fundsData.fund_limit.length > 0) {
-            setEquity(data.fundsData.fund_limit[0].equityAmount);
-          }
-        }
-        
+        // Equity is now handled directly by the backend in data.equity
         setIsLoading(false);
       } catch (error) {
         console.error("Failed to fetch state:", error);
+        setIsLoading(false); // Ensure loading stops on error
       }
     };
 
@@ -173,15 +230,41 @@ function LiveTradingContent() {
 
   // WebSocket for real-time price streaming (Institutional Fast Stream)
   useEffect(() => {
-    const ws = new WebSocket('ws://127.0.0.1:8000/ws/live');
+    const ws = new WebSocket(`ws://${window.location.hostname}:8000/ws/live`);
+    
+    ws.onopen = () => {
+      console.log("WebSocket Connected");
+      setIsWsConnected(true);
+    };
+    
+    ws.onclose = () => {
+      console.log("WebSocket Disconnected");
+      setIsWsConnected(false);
+    };
     
     ws.onmessage = (event) => {
       const data = JSON.parse(event.data);
-      if (data.currentPrice && data.currentPrice !== 0) {
-        setCurrentPrice(data.currentPrice);
-      }
-      if (data.changePercent) {
-        setChangePercent(data.changePercent);
+      if (data.NIFTY) {
+        setTickerData(prev => {
+          if (prev.NIFTY.lp === data.NIFTY.lp && 
+              prev.SENSEX.lp === data.SENSEX.lp && 
+              prev.BANKNIFTY.lp === data.BANKNIFTY.lp) {
+            return prev; // Optimization: Don't re-render if data is same
+          }
+          return data;
+        });
+        
+        // Also update the selected symbol's price in the header if it matches
+        const selectedData = data[urlSymbol];
+        if (selectedData) {
+          setCurrentPrice(prev => prev === selectedData.lp ? prev : selectedData.lp);
+          setChangePercent(prev => prev === selectedData.chp ? prev : selectedData.chp);
+        }
+        
+        // Update trades from WebSocket
+        if (data.trades) {
+          setTrades(data.trades);
+        }
       }
     };
     
@@ -194,7 +277,7 @@ function LiveTradingContent() {
     };
     
     return () => ws.close();
-  }, []);
+  }, [urlSymbol]);
 
 
   // Load the REAL Advanced TradingView Widget with ALL features!
@@ -208,7 +291,7 @@ function LiveTradingContent() {
           "width": "100%",
           "height": 450,
           "symbol": tvSymbol,
-          "interval": "5",
+          "interval": "D",
           "timezone": "Asia/Kolkata",
           "theme": "dark",
           "style": "1",
@@ -247,6 +330,39 @@ function LiveTradingContent() {
         <Header />
         
         <main className="flex-1 overflow-y-auto p-6 space-y-6">
+          {/* Ticker Tape & Broker Login Row */}
+          <div className="flex justify-between items-center gap-4">
+            {/* Ticker Tape */}
+            <div className="flex-1 flex items-center gap-6 px-4 py-2 bg-muted/20 border border-border/50 rounded-lg text-xs font-mono overflow-x-auto">
+              <span className="text-muted-foreground font-bold uppercase tracking-wider">Indices:</span>
+              {/* NIFTY */}
+              <div className="flex items-center gap-1.5 flex-shrink-0">
+                <span className="font-bold text-foreground">NIFTY</span>
+                <span className={tickerData.NIFTY.chp >= 0 ? 'text-success' : 'text-destructive'}>₹{(tickerData.NIFTY.lp ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                <span className={`text-xs ${tickerData.NIFTY.chp >= 0 ? 'text-success' : 'text-destructive'}`}>
+                  {tickerData.NIFTY.chp >= 0 ? '+' : ''}{tickerData.NIFTY.chp.toFixed(2)}%
+                </span>
+              </div>
+              {/* SENSEX */}
+              <div className="flex items-center gap-1.5 flex-shrink-0">
+                <span className="font-bold text-foreground">SENSEX</span>
+                <span className={tickerData.SENSEX.chp >= 0 ? 'text-success' : 'text-destructive'}>₹{(tickerData.SENSEX.lp ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                <span className={`text-xs ${tickerData.SENSEX.chp >= 0 ? 'text-success' : 'text-destructive'}`}>
+                  {tickerData.SENSEX.chp >= 0 ? '+' : ''}{tickerData.SENSEX.chp.toFixed(2)}%
+                </span>
+              </div>
+              {/* BANKNIFTY */}
+              <div className="flex items-center gap-1.5 flex-shrink-0">
+                <span className="font-bold text-foreground">BANKNIFTY</span>
+                <span className={tickerData.BANKNIFTY.chp >= 0 ? 'text-success' : 'text-destructive'}>₹{(tickerData.BANKNIFTY.lp ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                <span className={`text-xs ${tickerData.BANKNIFTY.chp >= 0 ? 'text-success' : 'text-destructive'}`}>
+                  {tickerData.BANKNIFTY.chp >= 0 ? '+' : ''}{tickerData.BANKNIFTY.chp.toFixed(2)}%
+                </span>
+              </div>
+            </div>
+
+          </div>
+
           {/* Header */}
           <div className="flex justify-between items-center">
             <div>
@@ -259,7 +375,7 @@ function LiveTradingContent() {
               <div className="flex items-center gap-2 px-4 py-2 bg-muted/30 border border-border/50 rounded-lg text-sm font-bold font-mono">
                 <span className="text-primary">{urlSymbol}</span>
                 <span className="text-muted-foreground">|</span>
-                <span className={`${changePercent >= 0 ? 'text-success' : 'text-destructive'}`}>₹{currentPrice.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                <span className={`${changePercent >= 0 ? 'text-success' : 'text-destructive'}`}>₹{(currentPrice ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                 <span className={`flex items-center gap-0.5 ml-1 ${changePercent >= 0 ? 'text-success' : 'text-destructive'}`}>
                   {changePercent >= 0 ? <ArrowUpRight className="w-3.5 h-3.5" /> : <ArrowDownRight className="w-3.5 h-3.5" />}
                   {changePercent >= 0 ? '+' : ''}{changePercent.toFixed(2)}%
@@ -276,29 +392,49 @@ function LiveTradingContent() {
                 >
                   <option value="ema_rsi">EMA + RSI (Classic)</option>
                   <option value="enhanced_ai">Enhanced AI Strategy</option>
-                  <option value="options_strat">Options Strategy</option>
+                  <option value="institutional_ema">Institutional EMA</option>
+                  <option value="advanced_ai">Advanced AI/ML</option>
+                  <option value="premium">Premium Options Alpha</option>
                 </select>
               </div>
-
-              {/* Toggle Switch */}
-              <div className="flex items-center gap-2 bg-muted/20 px-3 py-1.5 rounded-lg border border-border/10">
-                <span className={`text-xs font-bold flex items-center gap-1 transition-colors ${tradingMode === 'live' ? 'text-success' : 'text-muted-foreground/40'}`}>
-                  <Globe className="w-3.5 h-3.5" />
-                  Live
-                </span>
-                
-                <button
-                  onClick={toggleTradingMode}
-                  className={`relative w-8 h-4.5 rounded-full transition-colors focus:outline-none ${tradingMode === 'live' ? 'bg-success' : 'bg-[#d946ef]'}`}
+              
+              {/* Timeframe Selector */}
+              <div className="relative">
+                <Clock className="w-4 h-4 text-muted-foreground absolute left-3 top-1/2 transform -translate-y-1/2" />
+                <select 
+                  value={timeframe}
+                  onChange={(e) => setTimeframe(e.target.value)}
+                  className="bg-muted/30 border border-border/50 rounded-lg pl-10 pr-3 py-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
                 >
-                  <div className={`absolute top-0.5 left-0.5 w-3.5 h-3.5 bg-white rounded-full shadow-md transition-transform duration-200 transform ${tradingMode === 'paper' ? 'translate-x-3.5' : 'translate-x-0'}`}></div>
-                </button>
-                
-                <span className={`text-xs font-bold flex items-center gap-1 transition-colors ${tradingMode === 'paper' ? 'text-[#d946ef]' : 'text-muted-foreground/40'}`}>
-                  <Briefcase className="w-3.5 h-3.5" />
-                  Paper
-                </span>
+                  <option value="1 Min">1 Min</option>
+                  <option value="3 Min">3 Min</option>
+                  <option value="5 Min">5 Min</option>
+                  <option value="15 Min">15 Min</option>
+                  <option value="30 Min">30 Min</option>
+                  <option value="1 Hour">1 Hour</option>
+                  <option value="1 Week">1 Week</option>
+                  <option value="1 Month">1 Month</option>
+                </select>
               </div>
+                {/* Toggle Switch */}
+                <div className="flex items-center gap-2 bg-muted/20 px-3 py-1.5 rounded-lg border border-border/10">
+                  <span className={`text-xs font-bold flex items-center gap-1 transition-colors ${tradingMode === 'live' ? 'text-success' : 'text-muted-foreground/40'}`}>
+                    <Globe className="w-3.5 h-3.5" />
+                    Live
+                  </span>
+                  
+                  <button
+                    onClick={toggleTradingMode}
+                    className={`relative w-8 h-4.5 rounded-full transition-colors focus:outline-none ${tradingMode === 'live' ? 'bg-success' : 'bg-[#d946ef]'}`}
+                  >
+                    <div className={`absolute top-0.5 left-0.5 w-3.5 h-3.5 bg-white rounded-full shadow-md transition-transform duration-200 transform ${tradingMode === 'paper' ? 'translate-x-3.5' : 'translate-x-0'}`}></div>
+                  </button>
+                  
+                  <span className={`text-xs font-bold flex items-center gap-1 transition-colors ${tradingMode === 'paper' ? 'text-[#d946ef]' : 'text-muted-foreground/40'}`}>
+                    <Briefcase className="w-3.5 h-3.5" />
+                    Paper
+                  </span>
+                </div>
             </div>
           </div>
 
@@ -310,7 +446,7 @@ function LiveTradingContent() {
                 <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">💰 Current Equity</span>
               </div>
               <div className="text-2xl font-bold font-mono text-foreground">
-                {isLoading ? "---" : `₹${(tradingMode === 'paper' ? 100000.00 : equity).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`}
+                {isLoading ? "---" : `₹${(equity || 100000.00).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`}
               </div>
             </div>
             
@@ -320,20 +456,61 @@ function LiveTradingContent() {
                 <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">📊 Today's PNL</span>
               </div>
               <div className={`text-2xl font-bold font-mono ${pnl >= 0 ? "text-success" : "text-destructive"}`}>
-                {isLoading ? "---" : `${pnl >= 0 ? "+" : ""}₹${pnl.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`}
+                {isLoading ? "---" : `${pnl >= 0 ? "+" : ""}₹${(pnl ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`}
               </div>
             </div>
 
             {/* Card 3: AI Confidence */}
-            <div className="bg-gradient-to-br from-slate-800 to-slate-900 p-6 rounded-2xl border border-border/20 space-y-2 shadow-xl">
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">🤖 AI Confidence</span>
+            <div className="bg-gradient-to-br from-slate-800 to-slate-900 p-6 rounded-2xl border border-border/20 shadow-xl flex items-center justify-between">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">🤖 AI Confidence</span>
+                </div>
+                <div className={`text-sm font-bold ${aiConfidence >= 75 ? "text-success" : aiConfidence >= 50 ? "text-warning" : "text-destructive"}`}>
+                  {aiConfidence >= 75 ? "High Conviction" : aiConfidence >= 50 ? "Mild Bias" : "Scan Mode"}
+                </div>
+                <div className="text-xs text-gray-500">
+                  Based on AI Strategy
+                </div>
               </div>
-              <div className="text-2xl font-bold font-mono text-primary">
-                {isLoading ? "---" : `${aiConfidence.toFixed(1)}%`}
-              </div>
-              <div className={`text-xs font-bold ${aiConfidence >= 75 ? "text-success" : "text-warning"}`}>
-                {aiConfidence >= 75 ? "▲ High Conviction" : "▼ Scan Mode"}
+              
+              {/* Smart Circle */}
+              <div className="relative w-16 h-16">
+                <svg className="w-full h-full transform -rotate-90" viewBox="0 0 100 100">
+                  <defs>
+                    <linearGradient id="aiGradient" x1="0%" y1="100%" x2="100%" y2="0%">
+                      <stop offset="0%" stopColor="#EF4444" /> {/* Red */}
+                      <stop offset="50%" stopColor="#F59E0B" /> {/* Yellow */}
+                      <stop offset="100%" stopColor="#10B981" /> {/* Green */}
+                    </linearGradient>
+                  </defs>
+                  {/* Background Circle (with opacity) */}
+                  <circle
+                    className={`${aiConfidence >= 75 ? "text-success" : aiConfidence >= 50 ? "text-warning" : "text-destructive"} stroke-current opacity-20`}
+                    strokeWidth="10"
+                    cx="50"
+                    cy="50"
+                    r="40"
+                    fill="transparent"
+                  ></circle>
+                  {/* Progress Circle */}
+                  <circle
+                    stroke="url(#aiGradient)"
+                    strokeWidth="10"
+                    strokeDasharray="251.2"
+                    strokeDashoffset={251.2 - (251.2 * aiConfidence) / 100}
+                    strokeLinecap="round"
+                    cx="50"
+                    cy="50"
+                    r="40"
+                    fill="transparent"
+                    className="transition-all duration-500"
+                  ></circle>
+                </svg>
+                {/* Number in center */}
+                <div className={`absolute inset-0 flex items-center justify-center text-sm font-bold font-mono ${aiConfidence >= 75 ? "text-success" : aiConfidence >= 50 ? "text-warning" : "text-destructive"}`}>
+                  {isLoading ? "---" : `${aiConfidence.toFixed(0)}%`}
+                </div>
               </div>
             </div>
 
@@ -409,6 +586,30 @@ function LiveTradingContent() {
             </div>
           </div>
         </main>
+      </div>
+
+      {/* Live Notifications */}
+      <div className="fixed top-4 right-4 z-50 space-y-2">
+        <AnimatePresence>
+          {notifications.map(n => (
+            <motion.div
+              key={n.id}
+              initial={{ opacity: 0, x: 50 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 50 }}
+              className={`p-4 rounded-lg shadow-lg flex items-center gap-2 text-white font-medium ${
+                n.type === 'success' ? 'bg-emerald-600' :
+                n.type === 'danger' ? 'bg-red-600' :
+                n.type === 'warning' ? 'bg-amber-600' : 'bg-blue-600'
+              }`}
+            >
+              {n.type === 'success' ? <TrendingUp className="w-5 h-5" /> :
+               n.type === 'danger' ? <TrendingDown className="w-5 h-5" /> :
+               n.type === 'warning' ? <Shield className="w-5 h-5" /> : <Clock className="w-5 h-5" />}
+              {n.message}
+            </motion.div>
+          ))}
+        </AnimatePresence>
       </div>
     </div>
   );

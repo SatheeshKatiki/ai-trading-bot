@@ -21,7 +21,7 @@ def main():
     secret_key = creds.get("secret_key")
     
     # Use the exact Redirect URL from your dashboard
-    redirect_uri = "https://127.0.0.1:8080"
+    redirect_uri = "http://127.0.0.1:8080"
     
     if not client_id or not secret_key:
         print("Error: Missing Client ID or Secret Key in saved credentials.")

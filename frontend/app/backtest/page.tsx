@@ -59,9 +59,10 @@ export default function Backtest() {
   const [selectedAssetName, setSelectedAssetName] = useState("NIFTY 50");
   const [timeframe, setTimeframe] = useState("1 Min");
   const [strategy, setStrategy] = useState("ema_rsi");
-  const [startDate, setStartDate] = useState("2026-05-04");
-  const [endDate, setEndDate] = useState("2026-05-06");
+  const [startDate, setStartDate] = useState("2025-05-16");
+  const [endDate, setEndDate] = useState("2026-05-16");
   const [datePreset, setDatePreset] = useState("all_data");
+  const [initialCapital, setInitialCapital] = useState("100000");
   const [isLoading, setIsLoading] = useState(false);
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState("");
@@ -125,19 +126,25 @@ export default function Backtest() {
 
   const handlePresetChange = (preset: string) => {
     setDatePreset(preset);
-    const end = new Date("2026-05-06");
-    const start = new Date("2026-05-06");
+    
+    if (preset === "custom") return; // Do not overwrite user dates when clicking custom
+    
+    // Calculate dates dynamically based on current date
+    const today = new Date();
+    const endDateStr = today.toISOString().split('T')[0];
+    setEndDate(endDateStr);
     
     if (preset === "today") {
-      setStartDate("2026-05-06");
-      setEndDate("2026-05-06");
+      setStartDate(endDateStr);
     } else if (preset === "last_3_days") {
-      start.setDate(end.getDate() - 2);
+      const start = new Date(today);
+      start.setDate(today.getDate() - 2);
       setStartDate(start.toISOString().split('T')[0]);
-      setEndDate("2026-05-06");
     } else if (preset === "all_data") {
-      setStartDate("2026-05-04");
-      setEndDate("2026-05-06");
+      // Set to 1 year ago (365 days) for maximum robust backtesting
+      const start = new Date(today);
+      start.setDate(today.getDate() - 365);
+      setStartDate(start.toISOString().split('T')[0]);
     }
   };
 
@@ -147,7 +154,7 @@ export default function Backtest() {
     setError("");
     
     try {
-      const res = await fetch(`/api/backtest?symbol=${symbol}&timeframe=${timeframe}&strategy=${strategy}&startDate=${startDate}&endDate=${endDate}`, { cache: 'no-store' });
+      const res = await fetch(`/api/backtest?symbol=${symbol}&timeframe=${timeframe}&strategy=${strategy}&startDate=${startDate}&endDate=${endDate}&initialCapital=${initialCapital}`, { cache: 'no-store' });
       const data = await res.json();
       
       if (data.error) {
@@ -191,7 +198,7 @@ export default function Backtest() {
             </h3>
             
             {/* Dynamic grid columns based on visibility of date pickers */}
-            <div className={`grid grid-cols-1 ${datePreset === "custom" ? "md:grid-cols-6" : "md:grid-cols-4"} gap-4 items-end transition-all`}>
+            <div className={`grid grid-cols-1 ${datePreset === "custom" ? "md:grid-cols-7" : "md:grid-cols-5"} gap-4 items-end transition-all`}>
               {/* Institutional Level Search Box */}
               <div className="relative" ref={searchRef}>
                 <label className="text-xs font-medium text-muted-foreground block mb-1.5">Search Stocks & Indices</label>
@@ -210,7 +217,7 @@ export default function Backtest() {
 
                 {/* Autocomplete Suggestions */}
                 {showSuggestions && suggestions.length > 0 && (
-                  <div className="absolute z-50 mt-2 w-full max-h-60 bg-[#111318] border border-border/50 rounded-lg shadow-xl overflow-y-auto backdrop-blur-xl">
+                  <div className="absolute z-50 mt-2 w-full max-h-60 bg-background border border-border/50 rounded-lg shadow-xl overflow-y-auto backdrop-blur-xl">
                     {suggestions.map((asset) => (
                       <button
                         key={asset.symbol}
@@ -218,7 +225,7 @@ export default function Backtest() {
                         className="w-full text-left px-4 py-2.5 text-sm hover:bg-muted transition-colors flex justify-between items-center"
                       >
                         <div>
-                          <span className="font-bold text-white">{asset.symbol}</span>
+                          <span className="font-bold text-foreground">{asset.symbol}</span>
                           <span className="text-xs text-muted-foreground ml-2">{asset.name}</span>
                         </div>
                         <span className={`text-xs px-1.5 py-0.5 rounded ${asset.type === 'Index' ? 'bg-primary/20 text-primary' : 'bg-success/20 text-success'}`}>
@@ -228,6 +235,25 @@ export default function Backtest() {
                     ))}
                   </div>
                 )}
+              </div>
+
+              <div>
+                <label className="text-xs font-medium text-muted-foreground block mb-1.5">Initial Capital</label>
+                <div className="relative">
+                  <Briefcase className="w-4 h-4 text-muted-foreground absolute left-3 top-1/2 transform -translate-y-1/2" />
+                  <select 
+                    value={initialCapital}
+                    onChange={(e) => setInitialCapital(e.target.value)}
+                    className="w-full bg-muted/30 border border-border/50 rounded-lg pl-10 pr-3 py-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary appearance-none"
+                  >
+                    <option value="10000">₹ 10,000</option>
+                    <option value="25000">₹ 25,000</option>
+                    <option value="50000">₹ 50,000</option>
+                    <option value="100000">₹ 1,00,000</option>
+                    <option value="500000">₹ 5,00,000</option>
+                    <option value="1000000">₹ 10,00,000</option>
+                  </select>
+                </div>
               </div>
 
               <div>
@@ -241,8 +267,9 @@ export default function Backtest() {
                   >
                     <option value="ema_rsi">EMA + RSI (Classic)</option>
                     <option value="enhanced_ai">Enhanced AI Strategy</option>
-                    <option value="institutional_ema">Institutional EMA (60% Win Rate)</option>
-                    <option value="options_strat">Options Strategy</option>
+                    <option value="institutional_ema">Institutional EMA</option>
+                    <option value="advanced_ai">Advanced AI/ML</option>
+                    <option value="premium">Premium Options Alpha</option>
                   </select>
                 </div>
               </div>
@@ -258,6 +285,10 @@ export default function Backtest() {
                   <option value="3 Min">3 Min</option>
                   <option value="5 Min">5 Min</option>
                   <option value="15 Min">15 Min</option>
+                  <option value="30 Min">30 Min</option>
+                  <option value="1 Hour">1 Hour</option>
+                  <option value="1 Week">1 Week</option>
+                  <option value="1 Month">1 Month</option>
                 </select>
               </div>
 
@@ -271,7 +302,7 @@ export default function Backtest() {
                     onChange={(e) => handlePresetChange(e.target.value)}
                     className="w-full bg-muted/30 border border-border/50 rounded-lg pl-10 pr-3 py-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
                   >
-                    <option value="custom">Custom Range</option>
+                    <option value="custom">Custom Date Range</option>
                     <option value="today">Today (Last Data Day)</option>
                     <option value="last_3_days">Last 3 Days</option>
                     <option value="all_data">All Available Data</option>
@@ -377,12 +408,28 @@ export default function Backtest() {
                 <div className="glass-card rounded-xl p-4 border border-border/20">
                   <span className="text-xs text-muted-foreground font-medium">Sharpe Ratio</span>
                   <div className="text-2xl font-bold font-mono mt-1 text-primary">
-                    {result.stats.sharpeRatio || "1.42"}
+                    {result.stats.sharpeRatio !== undefined ? result.stats.sharpeRatio : "N/A"}
                   </div>
                   <p className="text-xs text-muted-foreground mt-1">Risk-Adjusted Return</p>
                 </div>
 
                 {/* Row 3: Strategy Metrics */}
+                <div className="glass-card rounded-xl p-4 border border-border/20">
+                  <span className="text-xs text-muted-foreground font-medium">Sortino Ratio</span>
+                  <div className="text-2xl font-bold font-mono mt-1 text-primary">
+                    {result.stats.sortinoRatio !== undefined ? result.stats.sortinoRatio : "N/A"}
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1">Downside Risk Return</p>
+                </div>
+
+                <div className="glass-card rounded-xl p-4 border border-border/20">
+                  <span className="text-xs text-muted-foreground font-medium">Expectancy</span>
+                  <div className={`text-2xl font-bold font-mono mt-1 ${result.stats.expectancy >= 0 ? "text-success" : "text-destructive"}`}>
+                    {result.stats.expectancy >= 0 ? "+" : ""}₹{result.stats.expectancy !== undefined ? result.stats.expectancy : 0}
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1">Avg PnL per Trade</p>
+                </div>
+
                 <div className="glass-card rounded-xl p-4 border border-border/20">
                   <span className="text-xs text-muted-foreground font-medium">Target %</span>
                   <div className="text-2xl font-bold font-mono mt-1 text-primary">{result.stats.targetPct || "2.0"}%</div>
@@ -391,16 +438,6 @@ export default function Backtest() {
                 <div className="glass-card rounded-xl p-4 border border-border/20">
                   <span className="text-xs text-muted-foreground font-medium">Stoploss %</span>
                   <div className="text-2xl font-bold font-mono mt-1 text-warning">{result.stats.stoplossPct || "1.8"}%</div>
-                </div>
-
-                <div className="glass-card rounded-xl p-4 border border-border/20">
-                  <span className="text-xs text-muted-foreground font-medium">Avg Win Score</span>
-                  <div className="text-2xl font-bold font-mono mt-1 text-success">{result.stats.avgWinScore || "N/A"}</div>
-                </div>
-
-                <div className="glass-card rounded-xl p-4 border border-border/20">
-                  <span className="text-xs text-muted-foreground font-medium">Avg Loss Score</span>
-                  <div className="text-2xl font-bold font-mono mt-1 text-destructive">{result.stats.avgLossScore || "N/A"}</div>
                 </div>
               </div>
 

@@ -23,39 +23,45 @@ def supertrend(df: pd.DataFrame, period: int = 10, multiplier: float = 3.0) -> p
     df["basic_lb"] = df["hl2"] - (multiplier * df["atr"])
     
     # Initialize bands
-    df["final_ub"] = 0.0
-    df["final_lb"] = 0.0
-    df["supertrend"] = 0.0
-    df["direction"] = 1
+    final_ub = np.zeros(len(df))
+    final_lb = np.zeros(len(df))
+    supertrend_arr = np.zeros(len(df))
+    direction = np.ones(len(df), dtype=int)
+    
+    basic_ub = df["basic_ub"].to_numpy()
+    basic_lb = df["basic_lb"].to_numpy()
+    close_arr = close.to_numpy()
     
     # Iterate to calculate final bands and direction
     for i in range(1, len(df)):
         # Final Upper Band
-        if df["basic_ub"].iloc[i] < df["final_ub"].iloc[i-1] or close.iloc[i-1] > df["final_ub"].iloc[i-1]:
-            df.loc[df.index[i], "final_ub"] = df["basic_ub"].iloc[i]
+        if basic_ub[i] < final_ub[i-1] or close_arr[i-1] > final_ub[i-1]:
+            final_ub[i] = basic_ub[i]
         else:
-            df.loc[df.index[i], "final_ub"] = df["final_ub"].iloc[i-1]
+            final_ub[i] = final_ub[i-1]
             
         # Final Lower Band
-        if df["basic_lb"].iloc[i] > df["final_lb"].iloc[i-1] or close.iloc[i-1] < df["final_lb"].iloc[i-1]:
-            df.loc[df.index[i], "final_lb"] = df["basic_lb"].iloc[i]
+        if basic_lb[i] > final_lb[i-1] or close_arr[i-1] < final_lb[i-1]:
+            final_lb[i] = basic_lb[i]
         else:
-            df.loc[df.index[i], "final_lb"] = df["final_lb"].iloc[i-1]
+            final_lb[i] = final_lb[i-1]
             
         # Supertrend and Direction
-        if df["supertrend"].iloc[i-1] == df["final_ub"].iloc[i-1]:
-            if close.iloc[i] > df["final_ub"].iloc[i]:
-                df.loc[df.index[i], "supertrend"] = df["final_lb"].iloc[i]
-                df.loc[df.index[i], "direction"] = 1
+        if supertrend_arr[i-1] == final_ub[i-1]:
+            if close_arr[i] > final_ub[i]:
+                supertrend_arr[i] = final_lb[i]
+                direction[i] = 1
             else:
-                df.loc[df.index[i], "supertrend"] = df["final_ub"].iloc[i]
-                df.loc[df.index[i], "direction"] = -1
+                supertrend_arr[i] = final_ub[i]
+                direction[i] = -1
         else:
-            if close.iloc[i] < df["final_lb"].iloc[i]:
-                df.loc[df.index[i], "supertrend"] = df["final_ub"].iloc[i]
-                df.loc[df.index[i], "direction"] = -1
+            if close_arr[i] < final_lb[i]:
+                supertrend_arr[i] = final_ub[i]
+                direction[i] = -1
             else:
-                df.loc[df.index[i], "supertrend"] = df["final_lb"].iloc[i]
-                df.loc[df.index[i], "direction"] = 1
+                supertrend_arr[i] = final_lb[i]
+                direction[i] = 1
                 
+    df["supertrend"] = supertrend_arr
+    df["direction"] = direction
     return df[["supertrend", "direction"]]
