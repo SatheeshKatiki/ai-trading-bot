@@ -186,3 +186,68 @@ body {
   backdrop-filter: blur(10px);
   border: 1px solid rgba(255, 255, 255, 0.05);
 }
+
+/* Institutional Terminal Animations */
+@keyframes marquee {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+
+.animate-marquee {
+  animation: marquee 30s linear infinite;
+}
+
+.animate-marquee:hover {
+  animation-play-state: paused;
+}
+
+/* ─── Personalization: Accent Color Transitions ───────────────────── */
+/* Allow the --primary CSS variable to animate smoothly when changed via JS */
+:root {
+  transition: --primary 0.3s ease;
+}
+
+/* Polyfill for browsers that don't support custom property transitions */
+* {
+  transition: background-color 0.2s ease, border-color 0.2s ease, color 0.15s ease;
+}
+
+/* ─── Personalization: Spacious Layout Mode ───────────────────────── */
+.spacious-mode main {
+  padding: 2rem !important;
+}
+.spacious-mode .glass-card {
+  padding: 2rem !important;
+}
+.spacious-mode .space-y-4 > * + * {
+  margin-top: 1.5rem !important;
+}
+.spacious-mode .gap-4 {
+  gap: 1.5rem !important;
+}
+
+/* ─── Personalization: No-Glass Mode (Flat UI) ────────────────────── */
+.no-glass .glass-card,
+.no-glass .glass {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  background: var(--card) !important;
+  border: 1px solid var(--border) !important;
+}
+
+/* ─── Scrollbar Styling ───────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--muted-foreground);
+  border-radius: 9999px;
+  opacity: 0.4;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--primary);
+}

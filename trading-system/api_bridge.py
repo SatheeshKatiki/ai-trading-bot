@@ -5,6 +5,7 @@ import pandas as pd
 import numpy as np
 import json
 import os
+import time
 
 def convert_numpy_types(obj):
     import math
@@ -65,6 +66,13 @@ current_market_data = {
     "NSE:NIFTYBANK-INDEX": {"lp": 51000.00, "chp": 0.0}
 }
 fyers_socket_instance = None # Global instance for dynamic subscription
+
+# Global Engine State
+engine_state = {
+    "is_active": False,
+    "last_start_time": None,
+    "mode": "Live"
+}
 
 def format_broker_symbol(symbol: str) -> str:
     """
@@ -240,6 +248,79 @@ async def websocket_endpoint(websocket: WebSocket):
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+@app.post("/api/panic-exit")
+async def panic_exit():
+    """Nuclear Option: Immediately cancels all orders and squares off all positions."""
+    try:
+        broker = BrokerFactory.get_active_broker()
+        if not broker.authenticate():
+            raise HTTPException(status_code=401, detail="Broker not authenticated")
+            
+        print("!!! PANIC EXIT TRIGGERED !!!")
+        
+        # 1. Cancel all pending orders
+        pending_orders = broker.get_orders()
+        cancelled_count = 0
+        for order in pending_orders:
+            if order.status in ["OPEN", "PENDING", "PARTIALLY_FILLED"]:
+                broker.cancel_order(order.id)
+                cancelled_count += 1
+                
+        # 2. Square off all active positions
+        positions = broker.get_positions()
+        closed_count = 0
+        for pos in positions:
+            if pos.quantity != 0:
+                # Opposite side market order
+                side = "SELL" if pos.quantity > 0 else "BUY"
+                qty = abs(pos.quantity)
+                broker.place_order(
+                    symbol=pos.symbol,
+                    side=side,
+                    quantity=qty,
+                    order_type="MARKET",
+                    product="INTRADAY"
+                )
+                closed_count += 1
+        
+        # 3. Log the nuclear event
+        log_file = "fyersApi.log"
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(log_file, "a") as f:
+            f.write(f"\n[{timestamp}] !!! PANIC EXIT EXECUTED !!! Cancelled: {cancelled_count}, Closed: {closed_count}\n")
+            
+        return {
+            "status": "success",
+            "message": "Panic Exit Executed Successfully",
+            "cancelled": cancelled_count,
+            "closed": closed_count
+        }
+    except Exception as e:
+        print(f"Panic Exit Failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/engine/status")
+async def get_engine_status():
+    return engine_state
+
+@app.post("/api/engine/toggle")
+async def toggle_engine():
+    global engine_state
+    engine_state["is_active"] = not engine_state["is_active"]
+    if engine_state["is_active"]:
+        engine_state["last_start_time"] = datetime.now().isoformat()
+        print(">>> TRADING ENGINE STARTED <<<")
+    else:
+        print("<<< TRADING ENGINE STOPPED >>>")
+    
+    # Log the event
+    log_file = "fyersApi.log"
+    status = "STARTED" if engine_state["is_active"] else "STOPPED"
+    with open(log_file, "a") as f:
+        f.write(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] SYSTEM: Trading Engine {status}\n")
+        
+    return engine_state
 
 @app.get("/api/funds")
 async def get_funds():
@@ -689,6 +770,38 @@ async def get_state(live: bool = Query(False)):
         return state
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/positions")
+async def get_positions():
+    """Fetches active positions from the current broker."""
+    try:
+        from dataclasses import asdict
+        broker = BrokerFactory.get_active_broker()
+        if not broker.authenticate():
+            return {"status": "error", "message": "Broker not authenticated", "positions": []}
+            
+        positions = [asdict(p) for p in broker.get_positions()]
+        return {"status": "success", "positions": positions}
+    except Exception as e:
+        # Return empty list instead of 500 for better UI stability
+        return {"status": "error", "message": str(e), "positions": []}
+
+@app.get("/api/logs")
+async def get_logs(lines: int = Query(20)):
+    """Reads the last N lines from the primary log file."""
+    try:
+        import os
+        log_file = "fyersApi.log"
+        if not os.path.exists(log_file):
+            return {"logs": ["Log file not found."]}
+            
+        with open(log_file, "r") as f:
+            # Simple way to get last N lines
+            all_lines = f.readlines()
+            last_lines = all_lines[-lines:] if len(all_lines) > lines else all_lines
+            return {"logs": [line.strip() for line in last_lines]}
+    except Exception as e:
+        return {"logs": [f"Error reading logs: {str(e)}"]}
 
 @app.get("/api/strategies")
 async def get_strategies():

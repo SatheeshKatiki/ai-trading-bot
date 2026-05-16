@@ -24,6 +24,8 @@ const INDIAN_MARKET_ASSETS = [
   { symbol: "TATASTEEL", name: "Tata Steel Ltd.", type: "Stock" },
 ];
 
+import Link from "next/link";
+
 export default function Header() {
   const router = useRouter();
   const pathname = usePathname();
@@ -74,7 +76,7 @@ export default function Header() {
     const params = new URLSearchParams(window.location.search);
     params.set('symbol', asset.symbol);
     
-    window.location.href = `${pathname}?${params.toString()}`;
+    router.push(`${pathname}?${params.toString()}`);
   };
 
   // ADVANCED SEARCH: Allow user to press Enter to search for ANY symbol!
@@ -86,7 +88,7 @@ export default function Header() {
       const params = new URLSearchParams(window.location.search);
       params.set('symbol', sym);
       
-      window.location.href = `${pathname}?${params.toString()}`;
+      router.push(`${pathname}?${params.toString()}`);
     }
   };
 
@@ -132,9 +134,14 @@ export default function Header() {
       </div>
 
       <div className="flex items-center gap-4">
-        <button className="p-2 rounded-lg hover:bg-muted/50 transition-colors duration-200 text-muted-foreground hover:text-foreground">
-          <BookOpen className="w-5 h-5" />
-        </button>
+        <Link href="/journal">
+          <button 
+            title="Trading Journal" 
+            className="group p-2 rounded-lg hover:bg-muted/50 transition-all duration-300 hover:scale-110 active:scale-95 text-muted-foreground hover:text-foreground"
+          >
+            <BookOpen className="w-5 h-5 group-hover:rotate-12 transition-transform duration-300" />
+          </button>
+        </Link>
         <button className="p-2 rounded-lg hover:bg-muted/50 transition-colors duration-200 text-muted-foreground hover:text-foreground relative">
           <Bell className="w-5 h-5" />
           <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-destructive rounded-full"></span>

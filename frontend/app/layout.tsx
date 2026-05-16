@@ -18,6 +18,9 @@ export const metadata: Metadata = {
   description: "Premium AI-powered trading platform for Indian markets",
 };
 
+import { ThemeProvider } from "@/components/theme-provider";
+import { Toaster } from "sonner";
+
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -25,24 +28,12 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className="h-full" suppressHydrationWarning>
-      <head>
-        <script
-          dangerouslySetInnerHTML={{
-            __html: `
-              (function() {
-                const theme = localStorage.getItem('theme');
-                if (theme === 'light') {
-                  document.documentElement.classList.add('light');
-                } else {
-                  document.documentElement.classList.remove('light');
-                }
-              })();
-            `,
-          }}
-        />
-      </head>
+      <head />
       <body className={`${inter.variable} ${poppins.variable} font-sans min-h-full bg-background text-foreground antialiased`}>
-        {children}
+        <ThemeProvider>
+          {children}
+          <Toaster position="top-right" richColors closeButton />
+        </ThemeProvider>
       </body>
     </html>
   );
