@@ -252,12 +252,65 @@ def generate_signals(
     donchian_high = high.shift(1).rolling(donchian_period).max()
     donchian_low = low.shift(1).rolling(donchian_period).min()
 
-    # 2. Modular Filter Flags (Task 2)
+    # Volatility Squeeze (TTM Squeeze)
+    std_20 = close.rolling(20).std()
+    bb_upper = ema_20 + (2 * std_20)
+    bb_lower = ema_20 - (2 * std_20)
+    atr_20 = tr.rolling(20).mean()
+    kc_upper = ema_20 + (1.5 * atr_20)
+    kc_lower = ema_20 - (1.5 * atr_20)
+    squeeze_on = (bb_upper < kc_upper) & (bb_lower > kc_lower)
+    squeeze_recent = squeeze_on.rolling(5).max() > 0
+
+    # Daily CPR and Pivots
+    if dates is not None:
+        daily_df = df.groupby(dates).agg({'high':'max', 'low':'min', 'close':'last'})
+        daily_df['pdh'] = daily_df['high'].shift(1)
+        daily_df['pdl'] = daily_df['low'].shift(1)
+        daily_df['pdc'] = daily_df['close'].shift(1)
+        
+        # We must align with df.index
+        # If dates is a numpy array of dates, we can map it.
+        # Ensure we align properly by using df's index or a parallel series.
+        date_series = pd.Series(dates, index=df.index)
+        pdh = date_series.map(daily_df['pdh'])
+        pdl = date_series.map(daily_df['pdl'])
+        pdc = date_series.map(daily_df['pdc'])
+    else:
+        pdh = high.rolling(75).max().shift(1)
+        pdl = low.rolling(75).min().shift(1)
+        pdc = close.shift(1)
+
+    pivot = (pdh + pdl + pdc) / 3
+    bc = (pdh + pdl) / 2
+    tc = (pivot - bc) + pivot
+    
+    # Identify which is higher tc or bc
+    top_cpr = pd.concat([tc, bc], axis=1).max(axis=1)
+    bottom_cpr = pd.concat([tc, bc], axis=1).min(axis=1)
+    
+    r1 = (2 * pivot) - pdl
+    s1 = (2 * pivot) - pdh
+
+    # Candle Close Strength (Aggression)
+    candle_range = high - low
+    close_strength = (close - low) / candle_range.replace(0, 0.00001)
+
+    # EMA Extension
+    ema_extension = abs(close - ema_20) / ema_20
+
+    # 2. Modular Filter Flags (Task 2 & 4)
     f_ema = kwargs.get("enable_ema_filter", True)
     f_vol = kwargs.get("enable_volume_filter", False)
     f_adx = kwargs.get("enable_adx_filter", False)
     f_vwap = kwargs.get("enable_vwap_filter", True)
     f_rsi = kwargs.get("enable_rsi_filter", True)
+    
+    # Advanced Institutional Filters
+    f_squeeze = kwargs.get("enable_squeeze_filter", False)
+    f_extension = kwargs.get("enable_extension_filter", False)
+    f_cpr = kwargs.get("enable_cpr_filter", False)
+    f_aggression = kwargs.get("enable_aggression_filter", False)
     
     # Dynamic RSI Thresholds
     rsi_long = kwargs.get("rsi_long", kwargs.get("rsi_buy_thresh", 50))
@@ -290,11 +343,14 @@ def generate_signals(
 
         # Regime Check
         regime = regimes.iloc[i]
+        is_chop_zone = regime['state'] == 'CHOP'
+        req_adx = 25 if is_chop_zone else 20
+        req_vol_mult = 1.5 if is_chop_zone else 1.2
+
         if regime["action"] == "NO_TRADE":
             if is_bull_setup or is_bear_setup:
                 rejection_logs.append({"time": timestamp, "reason": f"REJECTED: Regime Score too low ({regime['regime_score']} - {regime['state']})"})
             continue
-
         if is_bull_setup:
             # Check Filters
             if f_ema and not (close.iloc[i] > ema_200.iloc[i] and ema_20.iloc[i] > ema_50.iloc[i]):
@@ -305,19 +361,43 @@ def generate_signals(
                 rejection_logs.append({"time": timestamp, "reason": "REJECTED: Price is below Daily VWAP (Negative Bias)"})
                 continue
 
-            if f_adx and not (adx.iloc[i] > 20):
-                rejection_logs.append({"time": timestamp, "reason": f"REJECTED: Low ADX Trend Strength ({adx.iloc[i]:.1f} < 20)"})
+            if f_adx and not (adx.iloc[i] > req_adx):
+                rejection_logs.append({"time": timestamp, "reason": f"REJECTED: Low ADX Trend Strength ({adx.iloc[i]:.1f} < {req_adx}){' (Chop Zone)' if is_chop_zone else ''}"})
                 continue
 
-            if f_vol and not (volume.iloc[i] > vol_sma.iloc[i] * 1.2):
+            if f_vol and not (volume.iloc[i] > vol_sma.iloc[i] * req_vol_mult):
                 v_ratio = volume.iloc[i] / vol_sma.iloc[i] if vol_sma.iloc[i] > 0 else 0
-                rejection_logs.append({"time": timestamp, "reason": f"REJECTED: Volume surge is insufficient ({v_ratio:.1f}x < 1.2x)"})
+                rejection_logs.append({"time": timestamp, "reason": f"REJECTED: Volume surge is insufficient ({v_ratio:.1f}x < {req_vol_mult}x){' (Chop Zone)' if is_chop_zone else ''}"})
                 continue
 
             if f_rsi and not (rsi.iloc[i] >= rsi_long):
                 rejection_logs.append({"time": timestamp, "reason": f"REJECTED: RSI Momentum ({rsi.iloc[i]:.1f}) is below bullish threshold ({rsi_long})"})
                 continue
             
+            if f_squeeze and not squeeze_recent.iloc[i]:
+                rejection_logs.append({"time": timestamp, "reason": "REJECTED: No recent Volatility Squeeze (Not a fresh breakout)"})
+                continue
+                
+            if f_extension and (ema_extension.iloc[i] > 0.006):
+                rejection_logs.append({"time": timestamp, "reason": f"REJECTED: Price is over-extended from 20 EMA (Distance: {ema_extension.iloc[i]*100:.2f}%)"})
+                continue
+                
+            if f_aggression and (close_strength.iloc[i] < 0.6):
+                rejection_logs.append({"time": timestamp, "reason": f"REJECTED: Weak Bullish Candle Close ({close_strength.iloc[i]*100:.0f}% < 60%)"})
+                continue
+                
+            if f_cpr:
+                c_price = close.iloc[i]
+                r1_val = r1.iloc[i]
+                tc_val = top_cpr.iloc[i]
+                # Reject if price is within 0.15% below R1 or Top CPR
+                if (r1_val > c_price and (r1_val - c_price)/c_price < 0.0015):
+                    rejection_logs.append({"time": timestamp, "reason": "REJECTED: Approaching R1 Resistance"})
+                    continue
+                if (tc_val > c_price and (tc_val - c_price)/c_price < 0.0015):
+                    rejection_logs.append({"time": timestamp, "reason": "REJECTED: Approaching Top CPR Resistance"})
+                    continue
+
             signals.iloc[i] = 1
 
         elif is_bear_setup:
@@ -329,18 +409,42 @@ def generate_signals(
                 rejection_logs.append({"time": timestamp, "reason": "REJECTED: Price is above Daily VWAP (Positive Bias)"})
                 continue
 
-            if f_adx and not (adx.iloc[i] > 20):
-                rejection_logs.append({"time": timestamp, "reason": f"REJECTED: Low ADX Trend Strength ({adx.iloc[i]:.1f} < 20)"})
+            if f_adx and not (adx.iloc[i] > req_adx):
+                rejection_logs.append({"time": timestamp, "reason": f"REJECTED: Low ADX Trend Strength ({adx.iloc[i]:.1f} < {req_adx}){' (Chop Zone)' if is_chop_zone else ''}"})
                 continue
 
-            if f_vol and not (volume.iloc[i] > vol_sma.iloc[i] * 1.2):
+            if f_vol and not (volume.iloc[i] > vol_sma.iloc[i] * req_vol_mult):
                 v_ratio = volume.iloc[i] / vol_sma.iloc[i] if vol_sma.iloc[i] > 0 else 0
-                rejection_logs.append({"time": timestamp, "reason": f"REJECTED: Volume surge is insufficient ({v_ratio:.1f}x < 1.2x)"})
+                rejection_logs.append({"time": timestamp, "reason": f"REJECTED: Volume surge is insufficient ({v_ratio:.1f}x < {req_vol_mult}x){' (Chop Zone)' if is_chop_zone else ''}"})
                 continue
 
             if f_rsi and not (rsi.iloc[i] <= rsi_short):
                 rejection_logs.append({"time": timestamp, "reason": f"REJECTED: RSI Momentum ({rsi.iloc[i]:.1f}) is above bearish threshold ({rsi_short})"})
                 continue
+            
+            if f_squeeze and not squeeze_recent.iloc[i]:
+                rejection_logs.append({"time": timestamp, "reason": "REJECTED: No recent Volatility Squeeze (Not a fresh breakdown)"})
+                continue
+                
+            if f_extension and (ema_extension.iloc[i] > 0.006):
+                rejection_logs.append({"time": timestamp, "reason": f"REJECTED: Price is over-extended from 20 EMA (Distance: {ema_extension.iloc[i]*100:.2f}%)"})
+                continue
+                
+            if f_aggression and (close_strength.iloc[i] > 0.4):
+                rejection_logs.append({"time": timestamp, "reason": f"REJECTED: Weak Bearish Candle Close ({close_strength.iloc[i]*100:.0f}% > 40%)"})
+                continue
+                
+            if f_cpr:
+                c_price = close.iloc[i]
+                s1_val = s1.iloc[i]
+                bc_val = bottom_cpr.iloc[i]
+                # Reject if price is within 0.15% above S1 or Bottom CPR
+                if (s1_val < c_price and (c_price - s1_val)/c_price < 0.0015):
+                    rejection_logs.append({"time": timestamp, "reason": "REJECTED: Approaching S1 Support"})
+                    continue
+                if (bc_val < c_price and (c_price - bc_val)/c_price < 0.0015):
+                    rejection_logs.append({"time": timestamp, "reason": "REJECTED: Approaching Bottom CPR Support"})
+                    continue
             
             signals.iloc[i] = -1
 

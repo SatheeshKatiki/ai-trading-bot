@@ -563,6 +563,10 @@ async def get_backtest(
     enable_adx_filter: bool = Query(False),
     enable_vwap_filter: bool = Query(True),
     enable_rsi_filter: bool = Query(True),
+    enable_squeeze_filter: bool = Query(False),
+    enable_extension_filter: bool = Query(False),
+    enable_cpr_filter: bool = Query(False),
+    enable_aggression_filter: bool = Query(False),
     donchian_period: int = Query(10, description="Donchian Channel breakout period"),
     trailing_sl: bool = Query(True, description="Enable trailing stop loss"),
     trail_trigger: float = Query(0.8, description="Trail trigger percentage"),
@@ -643,6 +647,10 @@ async def get_backtest(
                 enable_adx_filter=enable_adx_filter,
                 enable_vwap_filter=enable_vwap_filter,
                 enable_rsi_filter=enable_rsi_filter,
+                enable_squeeze_filter=enable_squeeze_filter,
+                enable_extension_filter=enable_extension_filter,
+                enable_cpr_filter=enable_cpr_filter,
+                enable_aggression_filter=enable_aggression_filter,
                 donchian_period=donchian_period
             )
             

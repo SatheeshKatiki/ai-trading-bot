@@ -194,6 +194,10 @@ export default function Backtest() {
   const [enableAdxFilter, setEnableAdxFilter] = useState(true);
   const [enableVwapFilter, setEnableVwapFilter] = useState(true);
   const [enableRsiFilter, setEnableRsiFilter] = useState(true);
+  const [enableSqueezeFilter, setEnableSqueezeFilter] = useState(false);
+  const [enableExtensionFilter, setEnableExtensionFilter] = useState(false);
+  const [enableCprFilter, setEnableCprFilter] = useState(false);
+  const [enableAggressionFilter, setEnableAggressionFilter] = useState(false);
 
   // Search Autocomplete State
   const [searchQuery, setSearchQuery] = useState("NIFTY");
@@ -316,6 +320,10 @@ export default function Backtest() {
       setTrailTrigger(savedParams.trail_trigger || 0.8);
       setTrailOffset(savedParams.trail_offset || 0.2);
       setSearchQuery(savedParams.symbol);
+      setEnableSqueezeFilter(savedParams.enable_squeeze_filter !== undefined ? savedParams.enable_squeeze_filter : false);
+      setEnableExtensionFilter(savedParams.enable_extension_filter !== undefined ? savedParams.enable_extension_filter : false);
+      setEnableCprFilter(savedParams.enable_cpr_filter !== undefined ? savedParams.enable_cpr_filter : false);
+      setEnableAggressionFilter(savedParams.enable_aggression_filter !== undefined ? savedParams.enable_aggression_filter : false);
       
       if (wasRunning) {
         // Auto-run restored session if it was still loading
@@ -340,6 +348,7 @@ export default function Backtest() {
       quantity: quantity || 65,
       stoploss_pct: stoplossPct || 0.6, target_pct: targetPct || 2.5,
       enableEmaFilter, enableVolumeFilter, enableAdxFilter, enableVwapFilter, enableRsiFilter,
+      enableSqueezeFilter, enableExtensionFilter, enableCprFilter, enableAggressionFilter,
       donchian_period: donchianPeriod || 10,
       trailing_sl: trailingSl,
       enable_pyramiding: enablePyramiding,
@@ -376,6 +385,10 @@ export default function Backtest() {
         enable_adx_filter: params.enableAdxFilter.toString(),
         enable_vwap_filter: params.enableVwapFilter.toString(),
         enable_rsi_filter: params.enableRsiFilter.toString(),
+        enable_squeeze_filter: params.enableSqueezeFilter.toString(),
+        enable_extension_filter: params.enableExtensionFilter.toString(),
+        enable_cpr_filter: params.enableCprFilter.toString(),
+        enable_aggression_filter: params.enableAggressionFilter.toString(),
         donchian_period: (params.donchian_period || 10).toString(),
         trailing_sl: params.trailing_sl.toString(),
         enable_pyramiding: params.enable_pyramiding.toString(),
@@ -673,19 +686,56 @@ export default function Backtest() {
                     />
                   </div>
 
-                  <div className="md:col-span-4 lg:col-span-6 flex justify-between items-center mt-4 pt-6 border-t border-border/10">
-                    <div className="flex items-center gap-8">
-                      <label className="flex items-center gap-3 cursor-pointer group whitespace-nowrap">
+                  <div className="md:col-span-4 lg:col-span-6 flex flex-col gap-4 mt-4 pt-6 border-t border-border/10">
+                    <div className="flex flex-wrap items-center gap-6 pb-2 border-b border-border/5">
+                      <span className="text-xs font-bold text-muted-foreground uppercase tracking-widest mr-2">Institutional Filters:</span>
+                      
+                      <label className="flex items-center gap-2 cursor-pointer group whitespace-nowrap">
                         <div className="relative flex items-center justify-center">
-                          <input
-                            type="checkbox" checked={enablePyramiding}
-                            onChange={(e) => setEnablePyramiding(e.target.checked)}
-                            className="peer w-5 h-5 appearance-none rounded border border-border/50 bg-muted/30 checked:bg-primary checked:border-primary transition-all cursor-pointer"
-                          />
-                          <svg className="absolute w-3 h-3 text-primary-foreground opacity-0 peer-checked:opacity-100 pointer-events-none transition-opacity" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                          <input type="checkbox" checked={enableSqueezeFilter} onChange={(e) => setEnableSqueezeFilter(e.target.checked)} className="peer w-4 h-4 appearance-none rounded border border-border/50 bg-muted/30 checked:bg-primary checked:border-primary transition-all cursor-pointer" />
+                          <svg className="absolute w-2.5 h-2.5 text-primary-foreground opacity-0 peer-checked:opacity-100 pointer-events-none transition-opacity" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
                         </div>
-                        <span className="text-sm font-medium text-muted-foreground group-hover:text-foreground transition-colors">Enable Pyramiding</span>
+                        <span className="text-xs font-medium text-muted-foreground group-hover:text-foreground transition-colors">Squeeze Filter</span>
                       </label>
+                      
+                      <label className="flex items-center gap-2 cursor-pointer group whitespace-nowrap">
+                        <div className="relative flex items-center justify-center">
+                          <input type="checkbox" checked={enableExtensionFilter} onChange={(e) => setEnableExtensionFilter(e.target.checked)} className="peer w-4 h-4 appearance-none rounded border border-border/50 bg-muted/30 checked:bg-primary checked:border-primary transition-all cursor-pointer" />
+                          <svg className="absolute w-2.5 h-2.5 text-primary-foreground opacity-0 peer-checked:opacity-100 pointer-events-none transition-opacity" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                        </div>
+                        <span className="text-xs font-medium text-muted-foreground group-hover:text-foreground transition-colors">EMA Extension</span>
+                      </label>
+                      
+                      <label className="flex items-center gap-2 cursor-pointer group whitespace-nowrap">
+                        <div className="relative flex items-center justify-center">
+                          <input type="checkbox" checked={enableCprFilter} onChange={(e) => setEnableCprFilter(e.target.checked)} className="peer w-4 h-4 appearance-none rounded border border-border/50 bg-muted/30 checked:bg-primary checked:border-primary transition-all cursor-pointer" />
+                          <svg className="absolute w-2.5 h-2.5 text-primary-foreground opacity-0 peer-checked:opacity-100 pointer-events-none transition-opacity" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                        </div>
+                        <span className="text-xs font-medium text-muted-foreground group-hover:text-foreground transition-colors">CPR Rejection</span>
+                      </label>
+                      
+                      <label className="flex items-center gap-2 cursor-pointer group whitespace-nowrap">
+                        <div className="relative flex items-center justify-center">
+                          <input type="checkbox" checked={enableAggressionFilter} onChange={(e) => setEnableAggressionFilter(e.target.checked)} className="peer w-4 h-4 appearance-none rounded border border-border/50 bg-muted/30 checked:bg-primary checked:border-primary transition-all cursor-pointer" />
+                          <svg className="absolute w-2.5 h-2.5 text-primary-foreground opacity-0 peer-checked:opacity-100 pointer-events-none transition-opacity" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                        </div>
+                        <span className="text-xs font-medium text-muted-foreground group-hover:text-foreground transition-colors">Candle Aggression</span>
+                      </label>
+                    </div>
+
+                    <div className="flex justify-between items-center w-full">
+                      <div className="flex items-center gap-8">
+                        <label className="flex items-center gap-3 cursor-pointer group whitespace-nowrap">
+                          <div className="relative flex items-center justify-center">
+                            <input
+                              type="checkbox" checked={enablePyramiding}
+                              onChange={(e) => setEnablePyramiding(e.target.checked)}
+                              className="peer w-5 h-5 appearance-none rounded border border-border/50 bg-muted/30 checked:bg-primary checked:border-primary transition-all cursor-pointer"
+                            />
+                            <svg className="absolute w-3 h-3 text-primary-foreground opacity-0 peer-checked:opacity-100 pointer-events-none transition-opacity" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                          </div>
+                          <span className="text-sm font-medium text-muted-foreground group-hover:text-foreground transition-colors">Enable Pyramiding</span>
+                        </label>
 
                       <label className="flex items-center gap-3 cursor-pointer group whitespace-nowrap">
                         <div className="relative flex items-center justify-center">
@@ -708,6 +758,7 @@ export default function Backtest() {
                       {isLoading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
                       {isLoading ? "Running Simulation..." : "Run Full Backtest"}
                     </button>
+                    </div>
                   </div>
                 </div>
             </div>
