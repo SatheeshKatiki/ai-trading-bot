@@ -55,6 +55,8 @@ class TradeFilterModel:
         self.min_confidence = min_confidence
         self.model: Optional[RandomForestClassifier] = None
         self.feature_names: list[str] = []
+        self._last_mtime: float = 0.0
+        self.accuracy: float = 0.0
         self._load_if_exists()
 
     # ------------------------------------------------------------------
@@ -63,23 +65,29 @@ class TradeFilterModel:
 
     def _load_if_exists(self) -> None:
         """Load a previously trained model from disk if available."""
+        import os
         if _MODEL_PATH.is_file():
             try:
-                with open(_MODEL_PATH, "rb") as f:
-                    data = pickle.load(f)
-                self.model = data["model"]
-                self.feature_names = data["feature_names"]
-                logger.info("Loaded trade filter model from %s", _MODEL_PATH)
+                current_mtime = os.path.getmtime(_MODEL_PATH)
+                if current_mtime > self._last_mtime:
+                    with open(_MODEL_PATH, "rb") as f:
+                        data = pickle.load(f)
+                    self.model = data["model"]
+                    self.feature_names = data["feature_names"]
+                    self.accuracy = data.get("accuracy", 0.0)
+                    self._last_mtime = current_mtime
+                    logger.info("Loaded trade filter model from %s (Accuracy: %.2f%%)", _MODEL_PATH, self.accuracy * 100)
             except Exception as exc:
                 logger.warning("Could not load model: %s", exc)
 
-    def save(self) -> None:
+    def save(self, accuracy: float = 0.0) -> None:
         """Persist the trained model to disk."""
         _MODEL_DIR.mkdir(parents=True, exist_ok=True)
         with open(_MODEL_PATH, "wb") as f:
             pickle.dump({
                 "model": self.model,
                 "feature_names": self.feature_names,
+                "accuracy": accuracy,
             }, f)
         logger.info("Model saved to %s", _MODEL_PATH)
 
@@ -185,11 +193,13 @@ class TradeFilterModel:
             )
 
         self.model.fit(X_train, y_train)
-        self.save()
 
         y_pred = self.model.predict(X_test)
         acc = accuracy_score(y_test, y_pred)
         report = classification_report(y_test, y_pred, output_dict=True, zero_division=0)
+        
+        self.accuracy = acc
+        self.save(accuracy=acc)
 
         logger.info("Model trained. Test accuracy: %.2f%%", acc * 100)
         return {"accuracy": acc, "report": report, "train_size": len(X_train), "test_size": len(X_test)}
@@ -214,6 +224,9 @@ class TradeFilterModel:
             sell_prob   : float (probability of profitable short)
             confidence : float (max probability)
         """
+        # Hot-reload check
+        self._load_if_exists()
+        
         if self.model is None:
             logger.warning("No trained model available - returning neutral predictions")
             return pd.DataFrame({

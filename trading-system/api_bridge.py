@@ -106,6 +106,30 @@ from fastapi import WebSocket
 from fyers_apiv3.FyersWebsocket import data_ws
 import asyncio
 import threading
+import sys
+
+async def daily_retrain_scheduler():
+    """Background task to run AI retraining every day at 11 PM."""
+    while True:
+        now = datetime.now()
+        target = now.replace(hour=23, minute=0, second=0, microsecond=0)
+        if now >= target:
+            target += timedelta(days=1)
+        
+        sleep_seconds = (target - now).total_seconds()
+        logger.info(f"Next AI retraining scheduled in {sleep_seconds} seconds (at {target})")
+        await asyncio.sleep(sleep_seconds)
+        
+        logger.info("Executing daily AI retraining...")
+        try:
+            import subprocess
+            subprocess.run([sys.executable, "scripts/daily_ai_retrain.py"], check=False)
+        except Exception as e:
+            logger.error(f"Daily retrain failed: {e}")
+
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(daily_retrain_scheduler())
 
 # Global state for live market data (Institutional Streaming)
 current_market_data = {
@@ -1242,6 +1266,59 @@ async def start_bot():
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/ai/status")
+async def get_ai_status():
+    try:
+        from shared.ai.model import _MODEL_PATH
+        import os
+        import pickle
+        
+        if os.path.exists(_MODEL_PATH):
+            mtime = os.path.getmtime(_MODEL_PATH)
+            last_trained = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S")
+            
+            # Load accuracy if available
+            accuracy = 0.0
+            try:
+                with open(_MODEL_PATH, "rb") as f:
+                    data = pickle.load(f)
+                    accuracy = data.get("accuracy", 0.0) * 100
+            except Exception:
+                pass
+                
+            return {
+                "status": "success",
+                "is_trained": True,
+                "last_trained": last_trained,
+                "accuracy": f"{accuracy:.2f}%"
+            }
+        else:
+            return {
+                "status": "success",
+                "is_trained": False,
+                "last_trained": "Never",
+                "accuracy": "0.00%"
+            }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+def _run_retrain_script():
+    import subprocess
+    import sys
+    import os
+    try:
+        subprocess.run([sys.executable, "scripts/daily_ai_retrain.py"], cwd=os.getcwd())
+    except Exception as e:
+        logger.error(f"Manual AI retrain failed: {e}")
+
+@app.post("/api/ai/retrain")
+async def manual_ai_retrain(background_tasks: BackgroundTasks):
+    background_tasks.add_task(_run_retrain_script)
+    return {
+        "status": "success",
+        "message": "AI Retraining started in the background. You will receive an alert once completed."
+    }
 
 if __name__ == "__main__":
     import uvicorn
