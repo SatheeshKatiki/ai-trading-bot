@@ -245,33 +245,90 @@ def generate_signals(
     **kwargs,
 ) -> pd.Series:
     """
-    Drop-in compatible generate_signals() for the strategy registry.
-
-    Runs the PremiumSignalEngine on a rolling basis, returning a
-    standard pd.Series of 1 (BUY CALL), -1 (BUY PUT), 0 (NO TRADE).
-
-    Note: For live trading, use PremiumSignalEngine.evaluate() directly
-    to get the full PremiumSignal with option contract details.
+    Highly optimized drop-in compatible generate_signals() for the strategy registry.
+    Vectorized computation of all indicators and filter conditions.
     """
-    if len(df) < 205:
-        return pd.Series(0, index=df.index, dtype=int)
-
-    engine = PremiumSignalEngine(
-        instrument=instrument,
-        rsi_call_thresh=rsi_buy_thresh,
-        rsi_put_thresh=rsi_sell_thresh,
-    )
-
     signals = pd.Series(0, index=df.index, dtype=int)
+    if len(df) < 205:
+        return signals
 
-    # Only evaluate the last bar for efficiency in live mode
-    # For backtesting, evaluate each bar with a rolling window
+    # Compute all filters vectorially on the entire DataFrame once
+    df_indicators = df.copy()
+    df_indicators = compute_trend(df_indicators)
+    df_indicators = compute_momentum(df_indicators, rsi_window=rsi_window, rsi_call_thresh=rsi_buy_thresh, rsi_put_thresh=rsi_sell_thresh)
+    df_indicators = compute_volume(df_indicators)
+    df_indicators = compute_volatility(df_indicators, atr_window=rsi_window)
+    df_indicators = compute_market_structure(df_indicators)
+    df_indicators = compute_no_trade_conditions(df_indicators)
+
+    # Weights for composite confidence score
+    weights = {"trend": 0.20, "momentum": 0.20, "volume": 0.15,
+               "volatility": 0.10, "structure": 0.20, "ai": 0.15}
+
+    # Extract required series for speed
+    no_trade = df_indicators["no_trade"].values
+    volatility_ok = df_indicators["volatility_ok"].values
+    
+    trend_bullish = df_indicators["trend_bullish"].values
+    trend_bearish = df_indicators["trend_bearish"].values
+    
+    momentum_bullish = df_indicators["momentum_bullish"].values
+    momentum_bearish = df_indicators["momentum_bearish"].values
+    
+    volume_confirmed = df_indicators["volume_confirmed"].values
+    vol_expanding = df_indicators["vol_expanding"].values
+    
+    structure_bullish = df_indicators["structure_bullish"].values
+    structure_bearish = df_indicators["structure_bearish"].values
+    
+    vol_ratio = df_indicators.get("vol_ratio", pd.Series(1.0, index=df.index)).values
+    
+    # Calculate composite score for each bar
+    ai_confidence = 1.0
+    
     for i in range(200, len(df)):
-        window = df.iloc[max(0, i - 250): i + 1].reset_index(drop=True)
-        sig = engine.evaluate(window, ai_confidence=1.0)
-        if sig.direction == "BUY_CALL":
-            signals.iloc[i] = 1
-        elif sig.direction == "BUY_PUT":
-            signals.iloc[i] = -1
+        if no_trade[i] or not volatility_ok[i]:
+            continue
+            
+        bullish = (
+            trend_bullish[i] and
+            momentum_bullish[i] and
+            volume_confirmed[i] and
+            vol_expanding[i] and
+            structure_bullish[i]
+        )
+        
+        bearish = (
+            trend_bearish[i] and
+            momentum_bearish[i] and
+            volume_confirmed[i] and
+            vol_expanding[i] and
+            structure_bearish[i]
+        )
+        
+        if not bullish and not bearish:
+            continue
+            
+        direction = "BUY_CALL" if bullish else "BUY_PUT"
+        is_bull = (direction == "BUY_CALL")
+        
+        # Calculate composite score
+        trend_score = 1.0 if (trend_bullish[i] if is_bull else trend_bearish[i]) else 0.0
+        momentum_score = 1.0 if (momentum_bullish[i] if is_bull else momentum_bearish[i]) else 0.0
+        volume_score = min(vol_ratio[i] / 2.0, 1.0)
+        volatility_score = 1.0 if vol_expanding[i] else 0.5
+        structure_score = 1.0 if (structure_bullish[i] if is_bull else structure_bearish[i]) else 0.0
+        
+        composite = (
+            trend_score * weights["trend"] +
+            momentum_score * weights["momentum"] +
+            volume_score * weights["volume"] +
+            volatility_score * weights["volatility"] +
+            structure_score * weights["structure"] +
+            ai_confidence * weights["ai"]
+        )
+        
+        if composite >= 0.75:
+            signals.iloc[i] = 1 if is_bull else -1
 
     return signals

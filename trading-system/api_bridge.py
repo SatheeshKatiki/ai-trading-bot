@@ -1,11 +1,49 @@
 from fastapi import FastAPI, Query, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timedelta
+import logging
+import logging.handlers
 import pandas as pd
 import numpy as np
 import json
 import os
 import time
+
+# Module-level logger — NEVER use print() in async FastAPI code
+logger = logging.getLogger("api_bridge")
+
+# ---------------------------------------------------------------------------
+# Log rotation — cap fyersApi.log at 5 MB × 3 backups (≈ 20 MB total max)
+# ---------------------------------------------------------------------------
+
+def _setup_log_rotation() -> None:
+    """Install a rotating file handler for the primary Fyers log."""
+    _LOG_FILE    = "fyersApi.log"
+    _MAX_BYTES   = 5 * 1024 * 1024   # 5 MB per file
+    _BACKUP_COUNT = 3                 # keep .1 .2 .3 rollover files
+    root_logger = logging.getLogger()
+    # Avoid duplicate handlers if uvicorn reloads the module
+    if not any(isinstance(h, logging.handlers.RotatingFileHandler) for h in root_logger.handlers):
+        rotating = logging.handlers.RotatingFileHandler(
+            _LOG_FILE, maxBytes=_MAX_BYTES, backupCount=_BACKUP_COUNT, encoding="utf-8"
+        )
+        rotating.setFormatter(logging.Formatter(
+            "[%(asctime)s] %(levelname)s %(name)s: %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S"
+        ))
+        root_logger.addHandler(rotating)
+        if not root_logger.level:
+            root_logger.setLevel(logging.INFO)
+
+_setup_log_rotation()
+
+# Disable any local system proxy to prevent connection failures to Fyers
+os.environ["HTTP_PROXY"] = ""
+os.environ["HTTPS_PROXY"] = ""
+os.environ["ALL_PROXY"] = ""
+os.environ["no_proxy"] = "*"
+os.environ["NO_PROXY"] = "*"
+
 
 def convert_numpy_types(obj):
     import math
@@ -14,13 +52,15 @@ def convert_numpy_types(obj):
         return {k: convert_numpy_types(v) for k, v in obj.items()}
     elif isinstance(obj, list):
         return [convert_numpy_types(v) for v in obj]
-    elif isinstance(obj, (np.integer, np.int64, np.int32)):
-        return int(obj)
-    elif isinstance(obj, (np.floating, np.float64, np.float32, float)):
-        val = float(obj)
-        if math.isnan(val) or math.isinf(val):
+    elif hasattr(obj, "item") and callable(obj.item):
+        val = obj.item()
+        if isinstance(val, float) and (math.isnan(val) or math.isinf(val)):
             return 0.0
         return val
+    elif isinstance(obj, (float, int)):
+        if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+            return 0.0
+        return obj
     elif isinstance(obj, np.ndarray):
         return convert_numpy_types(obj.tolist())
     else:
@@ -35,6 +75,7 @@ from trading_bot.strategies.enhanced_ai_strategy import generate_signals as enha
 from trading_bot.strategies.premium_selection import generate_signals as premium_signals
 from trading_bot.strategies.institutional_ema_strategy import generate_signals as institutional_signals
 from trading_bot.strategies.advanced_ai_ml_strategy import generate_signals as advanced_ai_signals
+from trading_bot.strategies.momentum_strategy import generate_signals as momentum_signals
 
 # Register strategies for the API
 registry.register("ema_rsi",      ema_rsi_signals)
@@ -42,13 +83,20 @@ registry.register("enhanced_ai",  enhanced_signals)
 registry.register("premium",      premium_signals)
 registry.register("institutional_ema", institutional_signals)
 registry.register("advanced_ai", advanced_ai_signals)
+registry.register("institutional_momentum", momentum_signals)
 
 app = FastAPI(title="Broker Terminal Data Bridge & Backtester")
 
-# Allow requests from the Next.js frontend
+# Allow requests from the Next.js frontend (localhost only — security hardened)
+_ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:3001",
+    "http://127.0.0.1:3001",
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -73,6 +121,27 @@ engine_state = {
     "last_start_time": None,
     "mode": "Live"
 }
+
+# ------------------------------------------------------------------
+# Cached config/settings.json reader (avoids disk I/O on every request)
+# ------------------------------------------------------------------
+_config_cache: dict = {}
+_config_last_mtime: float = 0.0
+_CONFIG_PATH = "config/settings.json"
+
+def _load_config_settings() -> dict:
+    """Read config/settings.json with mtime-based cache. Thread-safe for FastAPI."""
+    global _config_cache, _config_last_mtime
+    if os.path.exists(_CONFIG_PATH):
+        try:
+            current_mtime = os.path.getmtime(_CONFIG_PATH)
+            if current_mtime > _config_last_mtime or not _config_cache:
+                with open(_CONFIG_PATH, "r", encoding="utf-8") as _f:
+                    _config_cache = json.load(_f)
+                _config_last_mtime = current_mtime
+        except Exception as _e:
+            logger.warning("Could not reload config/settings.json: %s", _e)
+    return _config_cache or {}
 
 def format_broker_symbol(symbol: str) -> str:
     """
@@ -113,18 +182,43 @@ def format_broker_symbol(symbol: str) -> str:
     # This covers all 2000+ NSE/BSE stocks perfectly!
     return f"{exchange}:{ticker}-EQ"
 
+# ---------------------------------------------------------------------------
+# Credential helpers — reads from encrypted broker_credentials.json once.
+# NEVER hardcode client_id inline; always go through this layer.
+# ---------------------------------------------------------------------------
+_fyers_client_id_cache: str = ""
+
+def _get_fyers_client_id() -> str:
+    """Return the Fyers client_id from encrypted credentials, with in-process cache."""
+    global _fyers_client_id_cache
+    if _fyers_client_id_cache:
+        return _fyers_client_id_cache
+    try:
+        from brokers.credentials import load_credentials
+        creds = load_credentials("fyers")
+        _fyers_client_id_cache = creds.get("client_id", "")
+        if not _fyers_client_id_cache:
+            # Fallback: try settings.json (for dev environments)
+            if os.path.exists("config/settings.json"):
+                with open("config/settings.json", "r") as _f:
+                    _s = json.load(_f)
+                    _fyers_client_id_cache = _s.get("client_id", "")
+    except Exception as _e:
+        logger.warning("Could not load Fyers client_id from credentials: %s", _e)
+    return _fyers_client_id_cache
+
 def start_fyers_socket():
     try:
         token_path = ".fyers_tokens.json"
         if not os.path.exists(token_path):
-            print("Token not found for WebSocket")
+            logger.warning("Token not found for WebSocket")
             return
             
         with open(token_path, "r") as f:
             token_data = json.load(f)
             token = token_data["access_token"]
             
-        client_id = "0KHBQ6IQA4-100"
+        client_id = _get_fyers_client_id()
         
         def on_message(message):
             global current_market_data
@@ -132,23 +226,22 @@ def start_fyers_socket():
                 symbol = message.get('symbol')
                 lp = message.get('ltp')
                 if symbol and lp:
-                    print(f"Fyers Tick: {symbol} @ {lp}") # Debug log to check speed
                     current_market_data[symbol] = {
                         "lp": lp,
                         "chp": message.get('chp', 0.0)
                     }
                     
         def on_error(message):
-            print(f"Fyers WS Error: {message}")
+            logger.error("Fyers WS Error: %s", message)
             
         def on_open():
-            print("Fyers WS Connected!")
+            logger.info("Fyers WS Connected!")
             # Subscribe to Nifty, Sensex, Bank Nifty
             if fyers_socket_instance:
                 fyers_socket_instance.subscribe(symbols=["NSE:NIFTY50-INDEX", "BSE:SENSEX-INDEX", "NSE:NIFTYBANK-INDEX", "NSE:RELIANCE-EQ", "NSE:TCS-EQ"], data_type="symbolData")
             
         def on_close():
-            print("Fyers WS Closed")
+            logger.info("Fyers WS Closed")
 
         access_token_full = f"{client_id}:{token}"
         
@@ -167,12 +260,22 @@ def start_fyers_socket():
         
         fyers_socket_instance.connect()
     except Exception as e:
-        print(f"Error starting Fyers socket: {e}")
+        logger.error("Error starting Fyers socket: %s", e)
 
 from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Seed last_confidence.json on first boot so the WebSocket always has
+    # something to serve — prevents a blank dashboard on cold start.
+    _seed_file = "last_confidence.json"
+    if not os.path.exists(_seed_file):
+        try:
+            with open(_seed_file, "w") as _sf:
+                json.dump({"confidence": 0, "status": "Awaiting first scan...", "bias": "NEUTRAL"}, _sf)
+            logger.info("[Boot] Seeded last_confidence.json with neutral defaults.")
+        except Exception as _se:
+            logger.warning("[Boot] Could not seed last_confidence.json: %s", _se)
     # Start the Fyers socket in background thread
     threading.Thread(target=start_fyers_socket, daemon=True).start()
     yield
@@ -207,18 +310,20 @@ async def websocket_endpoint(websocket: WebSocket):
                             "signals": []
                         }
                         signals_cache["last_updated"] = time.time()
-                        print(f"[WS] Loaded signals from file: {signals_cache['data'].get('confidence')}%")
-                except:
+                        logger.debug("[WS] Loaded signals from file: %s%%", signals_cache['data'].get('confidence'))
+                except Exception:
                     pass
                     
             if signals_cache["data"] is None or (time.time() - signals_cache["last_updated"] > 60 and is_market_open):
-                try:
-                    # Fetch signals for NIFTY by default
-                    signals_cache["data"] = await get_signals("NIFTY")
-                    signals_cache["last_updated"] = time.time()
-                    print(f"[WS] Updated signals cache: {signals_cache['data'].get('confidence')}%")
-                except Exception as e:
-                    print(f"[WS] Error updating signals cache: {e}")
+                # Run signal update as a non-blocking background task so WS stream stays responsive
+                async def _refresh_signals():
+                    try:
+                        signals_cache["data"] = await get_signals("NIFTY")
+                        signals_cache["last_updated"] = time.time()
+                        logger.debug("[WS] Updated signals cache: %s%%", signals_cache['data'].get('confidence'))
+                    except Exception as e:
+                        logger.warning("[WS] Error updating signals cache: %s", e)
+                asyncio.create_task(_refresh_signals())
                     
             # Send the latest data for NIFTY, SENSEX, BANKNIFTY and dynamic stocks
             websocket_data = {
@@ -257,7 +362,7 @@ async def panic_exit():
         if not broker.authenticate():
             raise HTTPException(status_code=401, detail="Broker not authenticated")
             
-        print("!!! PANIC EXIT TRIGGERED !!!")
+        logger.warning("!!! PANIC EXIT TRIGGERED !!!")
         
         # 1. Cancel all pending orders
         pending_orders = broker.get_orders()
@@ -297,7 +402,7 @@ async def panic_exit():
             "closed": closed_count
         }
     except Exception as e:
-        print(f"Panic Exit Failed: {e}")
+        logger.error("Panic Exit Failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/engine/status")
@@ -310,9 +415,9 @@ async def toggle_engine():
     engine_state["is_active"] = not engine_state["is_active"]
     if engine_state["is_active"]:
         engine_state["last_start_time"] = datetime.now().isoformat()
-        print(">>> TRADING ENGINE STARTED <<<")
+        logger.info(">>> TRADING ENGINE STARTED <<<")
     else:
-        print("<<< TRADING ENGINE STOPPED >>>")
+        logger.info("<<< TRADING ENGINE STOPPED >>>")
     
     # Log the event
     log_file = "fyersApi.log"
@@ -335,7 +440,7 @@ async def get_funds():
             token = token_data["access_token"]
             
         from fyers_apiv3 import fyersModel
-        client_id = "0KHBQ6IQA4-100"
+        client_id = _get_fyers_client_id()
         
         fyers = fyersModel.FyersModel(client_id=client_id, is_async=False, token=token, log_path="")
         funds = fyers.funds()
@@ -358,24 +463,24 @@ async def get_quote(
             token = token_data["access_token"]
             
         from fyers_apiv3 import fyersModel
-        client_id = "0KHBQ6IQA4-100"
+        client_id = _get_fyers_client_id()
         
         fyers = fyersModel.FyersModel(client_id=client_id, is_async=False, token=token, log_path="")
         
         # Dynamic WebSocket Subscription for real-time updates
         global fyers_socket_instance
         if fyers_socket_instance and symbol not in current_market_data:
-            print(f"Subscribing to {symbol} dynamically via WebSocket...")
+            logger.info("Subscribing to %s dynamically via WebSocket...", symbol)
             try:
                 fyers_socket_instance.subscribe(symbols=[symbol], data_type="symbolData")
                 # Initialize to prevent duplicate subscriptions
                 current_market_data[symbol] = {"lp": 0.0, "chp": 0.0}
             except Exception as e:
-                print(f"Failed to subscribe to {symbol}: {e}")
+                logger.warning("Failed to subscribe to %s: %s", symbol, e)
 
         data = {"symbols": symbol}
         quotes = fyers.quotes(data=data)
-        print(f"Quotes response for {symbol}: {quotes}") # Debug log
+        logger.debug("Quotes response for %s: %s", symbol, quotes)
         
         # Fallback: If WebSocket didn't receive ticks yet, populate from REST API!
         if quotes and quotes.get("s") == "ok" and "d" in quotes and len(quotes["d"]) > 0:
@@ -400,7 +505,7 @@ async def get_history(
     """Fetches real historical data dynamically from the ACTIVE BROKER."""
     try:
         broker = BrokerFactory.get_active_broker()
-        print(f"Fetching history via broker: {broker.DISPLAY_NAME} for {symbol}")
+        logger.info("Fetching history via broker: %s for %s", broker.DISPLAY_NAME, symbol)
         
         # Map symbol using institutional formatter
         original_symbol = symbol
@@ -427,7 +532,19 @@ async def get_backtest(
     end_date: str = Query(..., description="End date"),
     timeframe: str = Query("5 Min", description="Timeframe"),
     strategy: str = Query("ema_rsi", description="Strategy name"),
-    initial_capital: float = Query(100000.0, description="Initial Capital")
+    initial_capital: float = Query(100000.0, description="Initial Capital"),
+    quantity: int = Query(65, description="Trading quantity/lot size"),
+    stoploss_pct: float = Query(1.2, description="Stoploss %"),
+    target_pct: float = Query(2.5, description="Target %"),
+    enable_ema_filter: bool = Query(True),
+    enable_volume_filter: bool = Query(False),
+    enable_adx_filter: bool = Query(False),
+    enable_vwap_filter: bool = Query(True),
+    enable_rsi_filter: bool = Query(True),
+    donchian_period: int = Query(10, description="Donchian Channel breakout period"),
+    trailing_sl: bool = Query(True, description="Enable trailing stop loss"),
+    trail_trigger: float = Query(0.8, description="Trail trigger percentage"),
+    trail_offset: float = Query(0.2, description="Trail offset percentage")
 ):
     """Triggers a true Python backtest using the actual strategy files and broker data."""
     try:
@@ -437,19 +554,39 @@ async def get_backtest(
         original_symbol = symbol
         symbol = format_broker_symbol(symbol)
             
-        data = broker.get_historical_data(symbol, start_date, end_date, timeframe)
-        
-        if not data:
-            raise HTTPException(status_code=404, detail=f"No data found for backtest")
+        try:
+            data = broker.get_historical_data(symbol, start_date, end_date, timeframe)
+        except Exception as e:
+            logger.warning("Broker history fetch failed: %s. Checking local cache fallback...", e)
+            data = None
+            
+        if not data or len(data) == 0:
+            # Portable fallback: look for a cached CSV in the project data/ directory.
+            # To enable: place any NIFTY OHLCV CSV as  trading-system/data/NIFTY_cache.csv
+            _data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+            _csv_candidates = [
+                os.path.join(_data_dir, "NIFTY_cache.csv"),
+                os.path.join(_data_dir, "nifty_1year.csv"),
+                os.path.join(_data_dir, "NIFTY50.csv"),
+            ]
+            _loaded_from_cache = False
+            if "NIFTY" in symbol:
+                for csv_path in _csv_candidates:
+                    if os.path.exists(csv_path):
+                        logger.info("[Backtest] Loading from local CSV cache: %s", csv_path)
+                        cached_df = pd.read_csv(csv_path)
+                        data = cached_df.to_dict(orient="records")
+                        _loaded_from_cache = True
+                        break
+            if not _loaded_from_cache:
+                raise HTTPException(status_code=404, detail=f"No data returned by broker for {symbol}. Add a cached CSV to trading-system/data/ to enable offline backtesting.")
             
         # Convert list of dicts to DataFrame for the strategy
         df = pd.DataFrame(data)
+        logger.info("[API Backtest] Loaded DataFrame: %d rows. Strategy: %s", len(df), strategy)
         
-        # Load Settings
-        settings = {}
-        if os.path.exists("settings.json"):
-            with open("settings.json", "r") as f:
-                settings = json.load(f)
+        # Load Settings (cached — no disk I/O on every backtest call)
+        settings = _load_config_settings()
                 
         ema_fast = settings.get("ema_fast", 20)
         ema_slow = settings.get("ema_slow", 50)
@@ -462,15 +599,30 @@ async def get_backtest(
         
         # Generate Signals using Python Strategy via Registry
         try:
-            signals = registry.run_strategy(
+            signals_data = registry.run_strategy(
                 strategy, 
                 df, 
                 ema_fast=ema_fast, 
                 ema_slow=ema_slow, 
                 rsi_window=rsi_window, 
                 rsi_buy_thresh=rsi_buy, 
-                rsi_sell_thresh=rsi_sell
+                rsi_sell_thresh=rsi_sell,
+                stoploss_pct=stoploss_pct,
+                target_pct=target_pct,
+                enable_ema_filter=enable_ema_filter,
+                enable_volume_filter=enable_volume_filter,
+                enable_adx_filter=enable_adx_filter,
+                enable_vwap_filter=enable_vwap_filter,
+                enable_rsi_filter=enable_rsi_filter,
+                donchian_period=donchian_period
             )
+            
+            # Unpack signals and rejection logs if returned as tuple
+            if isinstance(signals_data, tuple):
+                signals, rejection_logs = signals_data
+            else:
+                signals, rejection_logs = signals_data, []
+            logger.info("[API Backtest] Strategy signals generated: %d. Rejections: %d", len(signals[signals != 0]), len(rejection_logs))
         except ValueError:
             # Fallback to default if strategy not found
             signals = ema_rsi_signals(
@@ -485,13 +637,28 @@ async def get_backtest(
         # Use the formal backtesting engine function for institutional accuracy
         from backtesting_engine.run import run_intraday_backtest
         
+        # Remove target/stoploss from settings to prevent multiple value arguments TypeError
+        backtest_settings = settings.copy()
+        backtest_settings.pop("target_pct", None)
+        backtest_settings.pop("stoploss_pct", None)
+        
+        # Override trailing SL settings with query parameters
+        backtest_settings["trailing_sl"] = trailing_sl
+        backtest_settings["trail_trigger"] = trail_trigger
+        backtest_settings["trail_offset"] = trail_offset
+        
         results = run_intraday_backtest(
             df, 
             signals, 
             initial_capital=initial_capital,
             slippage_bps=2.0, 
             commission_per_trade=20.0,
-            multiplier=10
+            multiplier=quantity,       # Dynamic quantity from UI
+            options_delta=0.5,         # Simulate ATM Options movement instead of 1:1 Futures
+            stoploss_pct=stoploss_pct,
+            target_pct=target_pct,
+            rejection_logs=rejection_logs,
+            **backtest_settings
         )
         
         # Sanitize all results to remove numpy int64/float64 for JSON serialization
@@ -511,8 +678,8 @@ async def get_backtest(
             
         # Read settings for target and stoploss
         settings = {}
-        if os.path.exists("settings.json"):
-            with open("settings.json", "r") as f:
+        if os.path.exists("config/settings.json"):
+            with open("config/settings.json", "r") as f:
                 settings = json.load(f)
                 
         # Calculate extra stats
@@ -521,8 +688,6 @@ async def get_backtest(
         put_trades = [t for t in trades if t['type'] == 'SELL']
         
         # Add to stats
-        results["stats"]["targetPct"] = settings.get("target_pct", 2.0)
-        results["stats"]["stoplossPct"] = settings.get("stoploss_pct", 1.8)
         results["stats"]["totalCE"] = len(call_trades)
         results["stats"]["totalPE"] = len(put_trades)
             
@@ -532,7 +697,8 @@ async def get_backtest(
             "strategy": strategy,
             "stats": results["stats"],
             "equityCurve": results["equityCurve"],
-            "trades": results["trades"][-20:]
+            "trades": results["trades"][-20:],
+            "rejectionLogs": results.get("rejectionLogs", [])
         }
         
     except Exception as e:
@@ -566,7 +732,7 @@ async def get_equity_data(symbol: str = "NIFTY"):
             })
         return trend_data
     except Exception as e:
-        print(f"Error in /equity-data: {e}")
+        logger.error("Error in /equity-data: %s", e)
         return []
 
 @app.get("/api/signals")
@@ -590,11 +756,8 @@ async def get_signals(
         df = pd.DataFrame(data)
         df.columns = [c.lower() for c in df.columns]
         
-        # Load Settings
-        settings = {}
-        if os.path.exists("settings.json"):
-            with open("settings.json", "r") as f:
-                settings = json.load(f)
+        # Load Settings (cached — no disk I/O on every signal scan)
+        settings = _load_config_settings()
                 
         ema_fast = settings.get("ema_fast", 20)
         ema_slow = settings.get("ema_slow", 50)
@@ -605,9 +768,12 @@ async def get_signals(
         from trading_bot.strategies.advanced_ai_ml_strategy import generate_signals as advanced_ai_signals
         signals = advanced_ai_signals(df)
         
-        # Read scores from dataframe
+        # Read scores from dataframe and clean NaN/None/non-numeric values
         call_scores = df['call_score'] if 'call_score' in df.columns else pd.Series(0, index=df.index)
         put_scores = df['put_score'] if 'put_score' in df.columns else pd.Series(0, index=df.index)
+        
+        call_scores = pd.to_numeric(call_scores, errors='coerce').fillna(0).astype(int)
+        put_scores = pd.to_numeric(put_scores, errors='coerce').fillna(0).astype(int)
         
         # Determine if market is open (9:15 AM to 3:30 PM IST)
         try:
@@ -698,7 +864,7 @@ async def get_signals(
                 with open("last_confidence.json", "w") as f:
                     json.dump({"confidence": confidence, "status": status, "bias": bias}, f)
             except Exception as e:
-                print(f"Error saving confidence file: {e}")
+                logger.warning("Error saving confidence file: %s", e)
                 
         return {
             "confidence": confidence,
@@ -708,9 +874,7 @@ async def get_signals(
             "signals": real_signals[-10:][::-1] # Reverse to show latest first!
         }
     except Exception as e:
-        print(f"[ERROR] In get_live_signals: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.exception("Error in /api/signals: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/test_connection")
@@ -830,8 +994,8 @@ async def get_settings():
         import os
         import json
         settings = {}
-        if os.path.exists("settings.json"):
-            with open("settings.json", "r") as f:
+        if os.path.exists("config/settings.json"):
+            with open("config/settings.json", "r") as f:
                 settings = json.load(f)
                 
         # Load secure credentials and merge
@@ -904,22 +1068,20 @@ async def save_settings(new_settings: dict):
                 save_credentials("fyers", backup_creds)
                 raise HTTPException(status_code=400, detail="Incorrect credentials or unable to login. Please check your details.")
             
-        # Save remaining settings to settings.json
-            
-        # Save remaining settings to settings.json
+        # Save remaining settings to config/settings.json
         existing = {}
-        if os.path.exists("settings.json"):
-            with open("settings.json", "r") as f:
+        if os.path.exists("config/settings.json"):
+            with open("config/settings.json", "r") as f:
                 existing = json.load(f)
                 
-        # Remove any existing plain text credentials from settings.json
+        # Remove any existing plain text credentials from settings
         for key in ["fyers_user_id", "fyers_pin", "fyers_totp_key"]:
             if key in existing:
                 existing.pop(key)
                 
         existing.update(new_settings)
         
-        with open("settings.json", "w") as f:
+        with open("config/settings.json", "w") as f:
             json.dump(existing, f, indent=4)
             
         return {"status": "success", "message": "Settings saved successfully (Credentials Encrypted)!"}

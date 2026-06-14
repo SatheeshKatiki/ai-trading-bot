@@ -7,8 +7,13 @@ from .ema import ema
 from .rsi import rsi
 from .macd import macd
 from .atr import atr
+from .adx import adx, dmi
 from .smc import smc_features
 from .option_chain import simulate_option_chain_sentiment
 from .supertrend import supertrend
 
-__all__ = ["ema", "rsi", "macd", "atr", "smc_features", "simulate_option_chain_sentiment", "supertrend"]
+__all__ = [
+    "ema", "rsi", "macd", "atr",
+    "adx", "dmi",
+    "smc_features", "simulate_option_chain_sentiment", "supertrend",
+]

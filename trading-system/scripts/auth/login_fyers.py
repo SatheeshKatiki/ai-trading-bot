@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 # Add project root to python path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from brokers.credentials import load_credentials
 from fyers_apiv3 import fyersModel
@@ -63,7 +63,7 @@ def main():
                 print("\n🎉 Login successful! Your access token has been received.")
                 
                 # Cache the token
-                token_cache_path = Path(__file__).resolve().parents[1] / ".fyers_tokens.json"
+                token_cache_path = Path(__file__).resolve().parents[2] / ".fyers_tokens.json"
                 with open(token_cache_path, "w") as f:
                     json.dump({"access_token": token}, f)
                 print(f"Token cached to {token_cache_path}")

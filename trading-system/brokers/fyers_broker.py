@@ -456,6 +456,10 @@ class FyersBroker(BaseBroker):
                 import time
                 time.sleep(0.1)
                 
+            if not all_candles:
+                logger.info("Fyers returned no candles. Falling back to base broker (CSV/yfinance)...")
+                return super().get_historical_data(symbol, start_date, end_date, timeframe)
+                
             result = []
             for c in all_candles:
                 # Fyers returns [timestamp, open, high, low, close, volume]
@@ -469,9 +473,13 @@ class FyersBroker(BaseBroker):
                 })
             return result
         except Exception as exc:
-            raise MarketDataError(
-                f"Fyers get_historical_data failed: {exc}", broker_id=self.BROKER_ID
-            ) from exc
+            logger.warning(f"Fyers get_historical_data exception: {exc}. Falling back to base broker...")
+            try:
+                return super().get_historical_data(symbol, start_date, end_date, timeframe)
+            except Exception as super_exc:
+                raise MarketDataError(
+                    f"Fyers get_historical_data fallback failed: {super_exc}", broker_id=self.BROKER_ID
+                ) from super_exc
 
     # ------------------------------------------------------------------
     # Streaming
@@ -519,10 +527,6 @@ class FyersBroker(BaseBroker):
     # Cleanup
     # ------------------------------------------------------------------
 
-    def close(self) -> None:
-        self._fyers_model = None
-        self._authenticated = False
-        logger.debug("FyersBroker.close() called.")
     def close(self) -> None:
         self._fyers_model = None
         self._authenticated = False

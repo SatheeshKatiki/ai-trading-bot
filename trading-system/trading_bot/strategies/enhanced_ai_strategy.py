@@ -14,6 +14,8 @@ import pandas as pd
 
 from shared.indicators import ema, rsi, macd, smc_features, simulate_option_chain_sentiment
 
+STRATEGY_NAME = "enhanced_ai"
+
 def _volume_filter(df: pd.DataFrame, lookback: int = 20) -> pd.Series:
     """Return a boolean mask where volume exceeds its average."""
     if "volume" not in df.columns or df["volume"].nunique() <= 1:
@@ -28,13 +30,14 @@ def generate_signals(
     rsi_window: int = 14,
     rsi_buy_thresh: float = 40,
     rsi_sell_thresh: float = 60,
+    **kwargs,
 ) -> pd.Series:
     """Generate BUY CALL / BUY PUT signals with multi-layer confirmation.
 
     BUY CALL: RSI > 40 (momentum is rising from oversold)
     BUY PUT : RSI < 60 (momentum is falling from overbought)
     """
-    df = df.copy()
+
     
     # 1. EMA Crossover
     df["ema_fast"] = ema(df["close"], window=ema_fast)
@@ -69,27 +72,30 @@ def generate_signals(
     opt_bullish = opt_chain == 1
     opt_bearish = opt_chain == -1
     
-    # Combine all logic
-    bullish_condition = (
-        ema_bullish & 
-        rsi_bullish & 
-        macd_bullish & 
-        vol_bullish & 
-        smc_bullish & 
-        opt_bullish
+    # Score each condition (1 point per confirmation)
+    # Require min 5 of 6 confirmations — prevents over-filtering while
+    # maintaining institutional conviction (6/6 AND killed all signals)
+    bull_score = (
+        ema_bullish.astype(int) +
+        rsi_bullish.astype(int) +
+        macd_bullish.astype(int) +
+        vol_bullish.astype(int) +
+        smc_bullish.astype(int) +
+        opt_bullish.astype(int)
     )
-    
-    bearish_condition = (
-        ema_bearish & 
-        rsi_bearish & 
-        macd_bearish & 
-        vol_bearish & 
-        smc_bearish & 
-        opt_bearish
+    bear_score = (
+        ema_bearish.astype(int) +
+        rsi_bearish.astype(int) +
+        macd_bearish.astype(int) +
+        vol_bearish.astype(int) +
+        smc_bearish.astype(int) +
+        opt_bearish.astype(int)
     )
 
+    MIN_CONFIRMATIONS = 5   # 5 of 6 layers must agree
+
     signals = pd.Series(0, index=df.index, dtype=int)
-    signals[bullish_condition] = 1
-    signals[bearish_condition] = -1
-    
+    signals[bull_score >= MIN_CONFIRMATIONS] = 1
+    signals[bear_score >= MIN_CONFIRMATIONS] = -1
+
     return signals

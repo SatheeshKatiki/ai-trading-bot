@@ -69,8 +69,11 @@ def compute_no_trade_conditions(df: pd.DataFrame) -> pd.DataFrame:
     else:
         df["in_no_trade_window"] = False
 
-    # Flat market: if last 5 closes within 0.1% range = sideways
-    close_range = df["close"].rolling(5).apply(lambda x: (x.max() - x.min()) / x.mean(), raw=True)
+    # Flat market: if last 5 closes within 0.1% range = sideways (vectorized optimization)
+    max_close = df["close"].rolling(5).max()
+    min_close = df["close"].rolling(5).min()
+    mean_close = df["close"].rolling(5).mean().replace(0, 1e-9)
+    close_range = (max_close - min_close) / mean_close
     df["is_sideways"] = close_range < 0.001
 
     # Combined no-trade flag

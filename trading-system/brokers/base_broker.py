@@ -187,57 +187,117 @@ class BaseBroker(ABC):
     ) -> List[Dict[str, Any]]:
         """Fetch historical data. 
         
-        Default implementation fallbacks to yfinance in paper mode or if not overriden.
-        This ensures the system remains functional without active broker subscriptions.
+        First attempts to load from a local CSV cache under `trading-system/data` if available.
+        Otherwise, falls back to fetching via yfinance.
         """
-        if self.paper_mode:
-            self.logger.info(f"Paper mode: Fetching history for {symbol} via yfinance fallback.")
-            import yfinance as yf
+        import os
+        import pandas as pd
+        from datetime import datetime
+        
+        # 1. Check local CSV cache fallback first
+        try:
+            broker_dir = os.path.dirname(os.path.abspath(__file__))
+            project_root = os.path.dirname(broker_dir)
+            data_dir = os.path.join(project_root, "data")
             
-            ticker_symbol = symbol
-            if not symbol.endswith(".NS") and not symbol.endswith(".BO"):
-                if symbol in ["NIFTY", "NIFTY50", "NSEI"]:
-                    ticker_symbol = "^NSEI"
-                elif symbol in ["SENSEX", "BSESN"]:
-                    ticker_symbol = "^BSESN"
-                else:
-                    ticker_symbol = f"{symbol}.NS"
-                    
-            try:
-                interval = "1m"
-                if timeframe == "3 Min": interval = "2m"
-                elif timeframe == "5 Min": interval = "5m"
-                elif timeframe == "15 Min": interval = "15m"
-                elif timeframe == "1 Hour": interval = "60m"
-                elif timeframe == "1 Day": interval = "1d"
+            csv_file = None
+            symbol_upper = symbol.upper()
+            if "NIFTY" in symbol_upper or "NSEI" in symbol_upper:
+                csv_file = os.path.join(data_dir, "NSEI_1min.csv")
+            elif "RELIANCE" in symbol_upper:
+                csv_file = os.path.join(data_dir, "RELIANCE.NS_1min.csv")
                 
-                ticker = yf.Ticker(ticker_symbol)
-                df = ticker.history(start=start_date, end=end_date, interval=interval)
+            if csv_file and os.path.exists(csv_file):
+                self.logger.info(f"Loading {symbol} historical data from local CSV: {csv_file}")
+                df = pd.read_csv(csv_file)
+                df.columns = [c.lower() for c in df.columns]
                 
-                if df.empty:
-                    return []
+                df['datetime'] = pd.to_datetime(df['datetime'])
+                df.set_index('datetime', inplace=True)
+                df.sort_index(inplace=True)
+                
+                start_dt = pd.to_datetime(start_date)
+                end_dt = pd.to_datetime(end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+                df = df.loc[start_dt:end_dt]
+                
+                if not df.empty:
+                    rule = "5min"
+                    if timeframe == "1 Min": rule = "1min"
+                    elif timeframe == "3 Min": rule = "3min"
+                    elif timeframe == "5 Min": rule = "5min"
+                    elif timeframe == "15 Min": rule = "15min"
+                    elif timeframe == "30 Min": rule = "30min"
+                    elif timeframe == "1 Hour": rule = "60min"
+                    elif timeframe == "1 Day": rule = "1D"
                     
-                data = []
-                for index, row in df.iterrows():
-                    data.append({
-                        "datetime": index.strftime('%Y-%m-%d %H:%M:%S'),
-                        "close": float(row['Close']),
-                        "high": float(row['High']),
-                        "low": float(row['Low']),
-                        "open": float(row['Open']),
-                        "volume": int(row['Volume'])
-                    })
-                return data
-            except Exception as e:
-                self.logger.error(f"Failed to fetch yfinance fallback: {e}")
+                    resampled = df.resample(rule).agg({
+                        'open': 'first',
+                        'high': 'max',
+                        'low': 'min',
+                        'close': 'last',
+                        'volume': 'sum'
+                    }).dropna()
+                    
+                    data = []
+                    for idx, row in resampled.iterrows():
+                        data.append({
+                            "datetime": idx.strftime('%Y-%m-%d %H:%M:%S'),
+                            "open": float(row['open']),
+                            "high": float(row['high']),
+                            "low": float(row['low']),
+                            "close": float(row['close']),
+                            "volume": int(row['volume'])
+                        })
+                    self.logger.info(f"Successfully resampled {len(data)} candles from local CSV cache.")
+                    return data
+        except Exception as e:
+            self.logger.warning(f"Failed to load from local CSV cache: {e}. Falling back to yfinance...")
+
+        # 2. Fallback to yfinance
+        self.logger.info(f"Fetching history for {symbol} via yfinance fallback.")
+        import yfinance as yf
+        
+        # Clean symbol to find correct yfinance ticker
+        clean_symbol = symbol.split(":")[-1]
+        clean_symbol = clean_symbol.replace("-EQ", "").replace("-INDEX", "")
+        
+        ticker_symbol = clean_symbol
+        if not clean_symbol.endswith(".NS") and not clean_symbol.endswith(".BO"):
+            if any(n in clean_symbol.upper() for n in ["NIFTY", "NSEI"]):
+                ticker_symbol = "^NSEI"
+            elif any(s in clean_symbol.upper() for s in ["SENSEX", "BSESN"]):
+                ticker_symbol = "^BSESN"
+            else:
+                ticker_symbol = f"{clean_symbol}.NS"
+                
+        try:
+            interval = "1m"
+            if timeframe == "3 Min": interval = "2m"
+            elif timeframe == "5 Min": interval = "5m"
+            elif timeframe == "15 Min": interval = "15m"
+            elif timeframe == "1 Hour": interval = "60m"
+            elif timeframe == "1 Day": interval = "1d"
+            
+            ticker = yf.Ticker(ticker_symbol)
+            df = ticker.history(start=start_date, end=end_date, interval=interval)
+            
+            if df.empty:
                 return []
-        else:
-            # Subclasses should override this with real broker API calls!
-            self.logger.warning(f"{self.DISPLAY_NAME} does not implement get_historical_data. Falling back to yfinance.")
-            self.paper_mode = True
-            data = self.get_historical_data(symbol, start_date, end_date, timeframe)
-            self.paper_mode = False
+                
+            data = []
+            for index, row in df.iterrows():
+                data.append({
+                    "datetime": index.strftime('%Y-%m-%d %H:%M:%S'),
+                    "close": float(row['Close']),
+                    "high": float(row['High']),
+                    "low": float(row['Low']),
+                    "open": float(row['Open']),
+                    "volume": int(row['Volume'])
+                })
             return data
+        except Exception as e:
+            self.logger.error(f"Failed to fetch yfinance fallback: {e}")
+            return []
 
     # ------------------------------------------------------------------
     # Streaming  (real-time tick feed)

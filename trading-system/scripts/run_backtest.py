@@ -69,7 +69,7 @@ def main():
     # Load Settings from settings.json
     import json
     settings = {}
-    settings_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "settings.json")
+    settings_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config", "settings.json")
     if os.path.exists(settings_file):
         with open(settings_file, "r") as f:
             settings = json.load(f)
@@ -77,15 +77,20 @@ def main():
 
     # Generate Signals
     try:
-        signals = registry.run_strategy(
+        signals_data = registry.run_strategy(
             args.strategy, 
             df,
             **settings
         )
+        if isinstance(signals_data, tuple):
+            signals, rejection_logs = signals_data
+        else:
+            signals, rejection_logs = signals_data, []
         print(f"Successfully generated signals using {args.strategy} with loaded settings.")
     except Exception as e:
         print(f"Error running strategy {args.strategy}: {e}. Falling back to default ema_rsi.")
         signals = ema_rsi_signals(df)
+        rejection_logs = []
 
     # Run Backtest
     print("Running backtest engine simulation...")
@@ -98,7 +103,8 @@ def main():
         multiplier=10,
         target_pct=settings.get("target_pct", 2.0),
         stoploss_pct=settings.get("stoploss_pct", 1.8),
-        enable_partial_profits=True
+        enable_partial_profits=True,
+        rejection_logs=rejection_logs
     )
 
     # Print Stats

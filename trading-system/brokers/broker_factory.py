@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from pathlib import Path
 from typing import Dict, Optional, Type
 
@@ -33,7 +34,7 @@ from .models import BrokerInfo
 logger = logging.getLogger(__name__)
 
 # Settings file (shared with dashboard and trading engine)
-_SETTINGS_FILE = Path(__file__).resolve().parents[1] / "settings.json"
+_SETTINGS_FILE = Path(__file__).resolve().parents[1] / "config" / "settings.json"
 
 
 class BrokerFactory:
@@ -47,6 +48,9 @@ class BrokerFactory:
 
     # The single active broker instance (None until first get_active_broker call)
     _active: Optional[BaseBroker] = None
+
+    # Guards _active to prevent race conditions between async tick loop and settings reload
+    _lock: threading.Lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Registry
@@ -76,20 +80,22 @@ class BrokerFactory:
 
         Reads the active broker ID from ``settings.json``.
         If no broker is configured, falls back to FyersBroker in paper mode.
+        Thread-safe: guarded by _lock.
         """
         broker_id = cls._read_active_broker_id()
         live_mode = cls._read_live_mode()
 
-        if cls._active is not None:
-            # If broker_id or live_mode has changed, refresh!
-            if cls._active.BROKER_ID != broker_id or cls._active.paper_mode == live_mode:
-                logger.info("BrokerFactory: configuration changed, refreshing active broker.")
-                cls.close_active()
-            else:
-                return cls._active
+        with cls._lock:
+            if cls._active is not None:
+                # If broker_id or live_mode has changed, refresh!
+                if cls._active.BROKER_ID != broker_id or cls._active.paper_mode == live_mode:
+                    logger.info("BrokerFactory: configuration changed, refreshing active broker.")
+                    cls._close_active_unsafe()   # already under lock
+                else:
+                    return cls._active
 
-        cls._active = cls._create(broker_id)
-        return cls._active
+            cls._active = cls._create(broker_id)
+            return cls._active
 
     @classmethod
     def switch_broker(cls, broker_id: str) -> BaseBroker:
@@ -122,7 +128,13 @@ class BrokerFactory:
 
     @classmethod
     def close_active(cls) -> None:
-        """Shut down the active broker and clear the singleton."""
+        """Shut down the active broker and clear the singleton. Thread-safe."""
+        with cls._lock:
+            cls._close_active_unsafe()
+
+    @classmethod
+    def _close_active_unsafe(cls) -> None:
+        """Internal close — caller must already hold _lock."""
         if cls._active is not None:
             try:
                 cls._active.close()

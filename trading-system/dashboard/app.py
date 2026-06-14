@@ -92,7 +92,7 @@ def inject_custom_css():
 # ---------------------------------------------------------------------------
 # Helper to manage user settings (timeframe, etc) for live bot
 # ---------------------------------------------------------------------------
-_SETTINGS_FILE = Path(__file__).resolve().parents[1] / "settings.json"
+_SETTINGS_FILE = Path(__file__).resolve().parents[1] / "config" / "settings.json"
 
 def load_settings() -> dict:
     defaults = {

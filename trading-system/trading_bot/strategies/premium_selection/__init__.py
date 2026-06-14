@@ -13,6 +13,8 @@ Layers:
   7. AI Confidence Gate  (minimum 75% AI score required)
   8. Options Selector    (ATM/ITM strike, expiry, lot size, symbol)
 """
+STRATEGY_NAME = "premium"
+
 from .signal_engine   import PremiumSignalEngine, PremiumSignal, generate_signals
 from .options_selector import select_option, calculate_lots, OptionContract, INSTRUMENT_CONFIG
 

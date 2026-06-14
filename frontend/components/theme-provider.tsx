@@ -11,17 +11,19 @@ type ThemeContextType = {
   setAccentColor: (c: string) => void;
   setDensity: (d: string) => void;
   setGlassEnabled: (g: boolean) => void;
+  isMounted: boolean;
 };
 
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  const [theme, setThemeState] = useState("dark");
-  const [accentColor, setAccentColorState] = useState("#ff4d4d");
-  const [density, setDensityState] = useState("compact");
-  const [glassEnabled, setGlassEnabledState] = useState(true);
+  const [isMounted, setIsMounted] = useState(false);
+  const [theme, setThemeState] = useState<string>("dark");
+  const [accentColor, setAccentColorState] = useState<string>("#ff4d4d");
+  const [density, setDensityState] = useState<string>("compact");
+  const [glassEnabled, setGlassEnabledState] = useState<boolean>(true);
 
-  // Initial load from localStorage
+  // Synchronize state with what the blocking script applied
   useEffect(() => {
     const savedTheme = localStorage.getItem("theme") || "dark";
     const savedColor = localStorage.getItem("accentColor") || "#ff4d4d";
@@ -32,11 +34,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     setAccentColorState(savedColor);
     setDensityState(savedDensity);
     setGlassEnabledState(savedGlass);
-
-    applyTheme(savedTheme);
-    applyAccent(savedColor);
-    applyDensity(savedDensity);
-    applyGlass(savedGlass);
+    setIsMounted(true);
   }, []);
 
   const applyTheme = (t: string) => {
@@ -46,6 +44,16 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
 
   const applyAccent = (c: string) => {
     document.documentElement.style.setProperty('--primary', c);
+    
+    // Calculate RGB for glow effects
+    const hex = c.replace('#', '');
+    const r = parseInt(hex.substring(0, 2), 16);
+    const g = parseInt(hex.substring(2, 4), 16);
+    const b = parseInt(hex.substring(4, 6), 16);
+    if (!isNaN(r) && !isNaN(g) && !isNaN(b)) {
+      document.documentElement.style.setProperty('--primary-rgb', `${r}, ${g}, ${b}`);
+      document.documentElement.style.setProperty('--glow-primary', `rgba(${r}, ${g}, ${b}, 0.25)`);
+    }
   };
 
   const applyDensity = (d: string) => {
@@ -85,7 +93,8 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   return (
     <ThemeContext.Provider value={{
       theme, accentColor, density, glassEnabled,
-      setTheme, setAccentColor, setDensity, setGlassEnabled
+      setTheme, setAccentColor, setDensity, setGlassEnabled,
+      isMounted
     }}>
       {children}
     </ThemeContext.Provider>

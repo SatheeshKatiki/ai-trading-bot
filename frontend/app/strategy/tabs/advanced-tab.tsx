@@ -17,7 +17,7 @@ export default function AdvancedTab({ settings, setSettings }: AdvancedTabProps)
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
 
       {/* Box 1: Webhook Integration */}
-      <div className="bg-gradient-to-br from-slate-800 to-slate-900 p-6 rounded-2xl border border-[#4f46e5]/20 space-y-5 h-[420px] flex flex-col justify-between shadow-xl hover:shadow-indigo-500/5 transition-all duration-300">
+      <div className="glass-card p-6 rounded-2xl space-y-5 h-[420px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
         <div>
           <div className="flex items-center gap-3 border-b border-border pb-3">
             <div className="p-2.5 bg-[#4f46e5]/20 rounded-xl text-[#4f46e5] shadow-lg shadow-indigo-500/10">
@@ -28,7 +28,7 @@ export default function AdvancedTab({ settings, setSettings }: AdvancedTabProps)
 
           <div className="space-y-4 mt-4">
             <div>
-              <label className="text-xs font-bold text-gray-400 block mb-1.5 uppercase tracking-wider">TradingView Webhook URL</label>
+              <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">TradingView Webhook URL</label>
               <input
                 type="text"
                 value={settings.tradingview_webhook_url || "https://api.quantai.com/webhook"}
@@ -37,7 +37,7 @@ export default function AdvancedTab({ settings, setSettings }: AdvancedTabProps)
               />
             </div>
             <div>
-              <label className="text-xs font-bold text-gray-400 block mb-1.5 uppercase tracking-wider">Secret Token</label>
+              <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Secret Token</label>
               <input type="password" value="••••••••••••••••" className="w-full bg-background border border-border rounded-lg px-3 py-2.5 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-[#4f46e5]" readOnly />
             </div>
           </div>
@@ -53,7 +53,7 @@ export default function AdvancedTab({ settings, setSettings }: AdvancedTabProps)
       </div>
 
       {/* Box 2: System Logs */}
-      <div className="bg-gradient-to-br from-slate-800 to-slate-900 p-6 rounded-2xl border border-[#ec4899]/20 space-y-5 h-[420px] flex flex-col justify-between shadow-xl hover:shadow-pink-500/5 transition-all duration-300">
+      <div className="glass-card p-6 rounded-2xl space-y-5 h-[420px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
         <div>
           <div className="flex items-center gap-3 border-b border-border pb-3">
             <div className="p-2.5 bg-[#ec4899]/20 rounded-xl text-[#ec4899] shadow-lg shadow-pink-500/10">
@@ -64,7 +64,7 @@ export default function AdvancedTab({ settings, setSettings }: AdvancedTabProps)
 
           <div className="space-y-4 mt-4">
             <div>
-              <label className="text-xs font-bold text-gray-400 block mb-1.5 uppercase tracking-wider">Log Level</label>
+              <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Log Level</label>
               <select
                 value={settings.log_level || "Info"}
                 onChange={(e) => updateSetting("log_level", e.target.value)}
@@ -76,7 +76,7 @@ export default function AdvancedTab({ settings, setSettings }: AdvancedTabProps)
               </select>
             </div>
             <div>
-              <label className="text-xs font-bold text-gray-400 block mb-1.5 uppercase tracking-wider">Log Retention (Days)</label>
+              <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Log Retention (Days)</label>
               <input
                 type="number"
                 value={settings.log_retention_days || 7}
@@ -97,7 +97,7 @@ export default function AdvancedTab({ settings, setSettings }: AdvancedTabProps)
       </div>
 
       {/* Box 3: Database & State */}
-      <div className="bg-gradient-to-br from-slate-800 to-slate-900 p-6 rounded-2xl border border-[#3b82f6]/20 space-y-5 h-[420px] flex flex-col justify-between shadow-xl hover:shadow-blue-500/5 transition-all duration-300">
+      <div className="glass-card p-6 rounded-2xl space-y-5 h-[420px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
         <div>
           <div className="flex items-center gap-3 border-b border-border pb-3">
             <div className="p-2.5 bg-[#3b82f6]/20 rounded-xl text-[#3b82f6] shadow-lg shadow-blue-500/10">
@@ -108,7 +108,7 @@ export default function AdvancedTab({ settings, setSettings }: AdvancedTabProps)
 
           <div className="space-y-4 mt-4">
             <div>
-              <label className="text-xs font-bold text-gray-400 block mb-1.5 uppercase tracking-wider">Persistence Interval</label>
+              <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Persistence Interval</label>
               <select
                 value={settings.persistence_interval || "Every 5 Seconds"}
                 onChange={(e) => updateSetting("persistence_interval", e.target.value)}
@@ -119,7 +119,7 @@ export default function AdvancedTab({ settings, setSettings }: AdvancedTabProps)
                 <option>On Trade Only</option>
               </select>
             </div>
-            <button className="w-full py-2.5 bg-background hover:bg-muted border border-border rounded-lg text-xs font-bold text-red-500 transition-colors">
+            <button className="w-full py-2.5 bg-primary/10 hover:bg-primary/20 border border-primary/20 rounded-lg text-xs font-bold text-primary transition-colors">
               Purge Database State
             </button>
           </div>

@@ -66,7 +66,7 @@ class StrategyRegistry:
         return params
 
     def autodiscover(self) -> None:
-        """Scan the strategies directory and register valid strategies."""
+        """Scan the strategies directory and register valid strategies (including subdirectories)."""
         import os
         import importlib
         from pathlib import Path
@@ -74,20 +74,28 @@ class StrategyRegistry:
         current_dir = Path(__file__).parent
         logger.info(f"Auto-discovering strategies in: {current_dir}")
         
+        # 1. Discover standalone .py files
         for file in os.listdir(current_dir):
             if file.endswith(".py") and file not in ["__init__.py", "registry.py"]:
                 module_name = file[:-3]
-                try:
-                    # Import the module dynamically
-                    module = importlib.import_module(f"trading_bot.strategies.{module_name}")
-                    
-                    # Look for generate_signals function
-                    if hasattr(module, "generate_signals"):
-                        # Use STRATEGY_NAME variable if defined, else fallback to module_name
-                        strat_name = getattr(module, "STRATEGY_NAME", module_name)
-                        self.register(strat_name, module.generate_signals)
-                except Exception as e:
-                    logger.error(f"Failed to auto-discover strategy in {file}: {e}")
+                self._load_module(f"trading_bot.strategies.{module_name}", module_name)
+        
+        # 2. Discover strategy packages (subdirectories with __init__.py)
+        for item in os.listdir(current_dir):
+            item_path = current_dir / item
+            if os.path.isdir(item_path) and os.path.exists(item_path / "__init__.py"):
+                self._load_module(f"trading_bot.strategies.{item}", item)
+
+    def _load_module(self, module_path: str, default_name: str) -> None:
+        """Helper to load a module and register its signals."""
+        import importlib
+        try:
+            module = importlib.import_module(module_path)
+            if hasattr(module, "generate_signals"):
+                strat_name = getattr(module, "STRATEGY_NAME", default_name)
+                self.register(strat_name, module.generate_signals)
+        except Exception as e:
+            logger.error(f"Failed to load strategy from {module_path}: {e}")
 
 # Global registry instance
 registry = StrategyRegistry()

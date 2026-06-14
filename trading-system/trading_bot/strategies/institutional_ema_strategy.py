@@ -12,7 +12,7 @@ import numpy as np
 import datetime
 from typing import Dict, Any
 
-from shared.indicators import ema, rsi, macd, smc_features, supertrend
+from shared.indicators import ema, rsi, macd, smc_features, supertrend, adx as adx_indicator, dmi
 
 STRATEGY_NAME = "institutional_ema"
 
@@ -39,38 +39,6 @@ def vwap(df: pd.DataFrame) -> pd.Series:
             cum_v = df['volume'].cumsum()
             
     return cum_tp_v / cum_v
-
-def adx(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
-    """Calculate Average Directional Index (ADX) and DMI."""
-    high = df['high']
-    low = df['low']
-    close = df['close']
-    
-    plus_dm = high.diff()
-    minus_dm = -low.diff()
-    plus_dm[plus_dm < 0] = 0
-    minus_dm[minus_dm < 0] = 0
-    
-    plus_dm[plus_dm < minus_dm] = 0
-    minus_dm[minus_dm < plus_dm] = 0
-    
-    tr1 = high - low
-    tr2 = abs(high - close.shift(1))
-    tr3 = abs(low - close.shift(1))
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    
-    atr = tr.ewm(alpha=1/period, adjust=False).mean()
-    plus_di = 100 * (plus_dm.ewm(alpha=1/period, adjust=False).mean() / atr)
-    minus_di = 100 * (minus_dm.ewm(alpha=1/period, adjust=False).mean() / atr)
-    
-    dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
-    adx_val = dx.ewm(alpha=1/period, adjust=False).mean()
-    
-    return pd.DataFrame({
-        'adx': adx_val,
-        'plus_di': plus_di,
-        'minus_di': minus_di
-    })
 
 # ---------------------------------------------------------------------------
 # Main Strategy Logic
@@ -112,7 +80,8 @@ def generate_signals(
     df['supertrend'] = st_df['supertrend']
     df['st_direction'] = st_df['direction']
     
-    adx_df = adx(df, period=adx_period)
+    # Use shared indicator — single source of truth for Wilder's formula
+    adx_df = dmi(df, window=adx_period)
     df['adx'] = adx_df['adx']
     df['plus_di'] = adx_df['plus_di']
     df['minus_di'] = adx_df['minus_di']
@@ -197,10 +166,13 @@ def generate_signals(
     else:
         score_call += 10
         
-    # 7. ADX
-    adx_thresh = kwargs.get("adx_threshold", 20)
-    c_adx_call = (df['adx'] > adx_thresh) & (df['plus_di'] > df['minus_di'])
-    score_call[c_adx_call] += 10
+    # 7. ADX filter — gated by enable_adx_filter toggle from UI
+    if kwargs.get("enable_adx_filter", True):
+        adx_thresh = kwargs.get("adx_threshold", 20)
+        c_adx_call = (df['adx'] > adx_thresh) & (df['plus_di'] > df['minus_di'])
+        score_call[c_adx_call] += 10
+    else:
+        score_call += 10   # bypass: award points unconditionally
     
     # 8. Volume
     if has_volume:
@@ -254,9 +226,12 @@ def generate_signals(
     else:
         score_put += 10
         
-    # 7. ADX
-    c_adx_put = (df['adx'] > 25) & (df['minus_di'] > df['plus_di'])
-    score_put[c_adx_put] += 10
+    # 7. ADX filter — gated by enable_adx_filter toggle from UI
+    if kwargs.get("enable_adx_filter", True):
+        c_adx_put = (df['adx'] > 25) & (df['minus_di'] > df['plus_di'])
+        score_put[c_adx_put] += 10
+    else:
+        score_put += 10   # bypass: award points unconditionally
     
     # 8. Volume
     if has_volume:

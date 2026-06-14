@@ -13,7 +13,7 @@ client = TestClient(app)
 def test_history_endpoint():
     """Test that the history endpoint returns data structure correctly."""
     print("Testing /api/history...")
-    response = client.get("/api/history?symbol=RELIANCE&start_date=2026-01-01&end_date=2026-01-05&timeframe=5 Min")
+    response = client.get("/api/history?symbol=NIFTY&start_date=2026-05-04&end_date=2026-05-05&timeframe=5 Min")
     
     # It might return 404 or 500 if yfinance fails or no internet, 
     # but we want to check the structure if it succeeds.
@@ -22,21 +22,21 @@ def test_history_endpoint():
         assert "symbol" in data
         assert "data" in data
         assert isinstance(data["data"], list)
-        print("✓ /api/history returned 200 OK with valid structure.")
+        print("[OK] /api/history returned 200 OK with valid structure.")
     else:
         print(f"i /api/history returned {response.status_code} (This is acceptable if no internet or asset not found)")
 
 def test_backtest_endpoint():
     """Test that the backtest endpoint computes strategy signals."""
     print("Testing /api/backtest...")
-    response = client.get("/api/backtest?symbol=RELIANCE&start_date=2026-01-01&end_date=2026-01-05&timeframe=5 Min")
+    response = client.get("/api/backtest?symbol=NIFTY&start_date=2026-05-04&end_date=2026-05-05&timeframe=5 Min")
     
     if response.status_code == 200:
         data = response.json()
         assert "stats" in data
         assert "trades" in data
         assert "equityCurve" in data
-        print("✓ /api/backtest returned 200 OK with valid strategy simulation.")
+        print("[OK] /api/backtest returned 200 OK with valid strategy simulation.")
     else:
         print(f"i /api/backtest returned {response.status_code}")
 
@@ -50,7 +50,7 @@ def test_signals_endpoint():
         assert "confidence" in data
         assert "status" in data
         assert "bias" in data
-        print("✓ /api/signals returned 200 OK.")
+        print("[OK] /api/signals returned 200 OK.")
     else:
         print(f"i /api/signals returned {response.status_code}")
 

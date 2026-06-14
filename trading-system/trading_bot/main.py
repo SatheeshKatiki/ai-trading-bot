@@ -9,9 +9,10 @@ The trading engine is BROKER-AGNOSTIC.  Broker selection, credentials, and
 switching are handled entirely by the brokers.BrokerFactory layer.
 
 Strategies available:
-  - ema_rsi       : Classic EMA crossover + RSI + Volume
-  - enhanced_ai   : Full multi-layer confirmation (EMA + RSI + MACD + Volume + SMC + Option Chain + AI)
-  - premium       : 8-Layer institutional-grade filter with option selection
+  - ema_rsi                : Classic EMA crossover + RSI + Volume
+  - enhanced_ai            : Full multi-layer confirmation (EMA + RSI + MACD + Volume + SMC + Option Chain + AI)
+  - premium                : 8-Layer institutional-grade filter with option selection
+  - institutional_momentum : Donchian breakout + VWAP + ADX + AI stoploss + 3-phase tiered exits
 """
 
 from __future__ import annotations
@@ -21,12 +22,24 @@ import json
 import logging
 import os
 import sys
+import threading
+
+# Disable any local system proxy to prevent connection failures to Fyers
+os.environ["HTTP_PROXY"] = ""
+os.environ["HTTPS_PROXY"] = ""
+os.environ["ALL_PROXY"] = ""
+os.environ["no_proxy"] = "*"
+os.environ["NO_PROXY"] = "*"
+
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List
 
 import pandas as pd
+import pytz
+
+_IST = pytz.timezone("Asia/Kolkata")
 
 # Add parent directory to sys.path to find 'shared' module
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -39,11 +52,12 @@ from trading_bot.strategies.registry import registry
 from trading_bot.strategies.premium_selection import (
     PremiumSignalEngine, PremiumSignal, generate_signals as premium_signals
 )
+from trading_bot.strategies.momentum_strategy import MomentumStrategy
 
 # Import AI / Risk / Exit / Alert Modules
 from shared.ai import TradeFilterModel, compute_features
 from shared.risk import RiskManager, RiskConfig, TradeRecord
-from shared.exits import SmartExitEngine, Position
+from shared.exits import SmartExitEngine, Position, PyramidSizer
 from shared.alerts import alerter
 
 # Security layer
@@ -66,7 +80,7 @@ logger = logging.getLogger(__name__)
 registry.register("premium", premium_signals)
 
 # Path to the shared settings file written by the Streamlit dashboard
-_SETTINGS_PATH = Path(__file__).resolve().parents[1] / "settings.json"
+_SETTINGS_PATH = Path(__file__).resolve().parents[1] / "config" / "settings.json"
 
 # ------------------------------------------------------------------
 # Settings cache: avoids disk I/O on every tick (checks mtime instead)
@@ -181,21 +195,40 @@ async def run_live_bot(symbols: List[str]) -> None:
 
     aggregator = CandleAggregator(symbols)
 
+    # Read initial capital from settings — not hardcoded
+    _init_settings = _load_settings()
+    _initial_capital = float(_init_settings.get("initial_capital", 100_000.0))
+
     # Initialize Core Engines
-    risk_manager = RiskManager(initial_capital=10_000.0)
+    risk_manager = RiskManager(initial_capital=_initial_capital)
     ai_filter = TradeFilterModel()
     exit_engine = SmartExitEngine(atr_multiplier=1.5, partial_booking_pct=50.0)
+    pyramid_sizer = PyramidSizer(points_trigger=40.0, max_scales=2)
 
     active_positions: Dict[str, Position] = {}
+    momentum_strategies: Dict[str, MomentumStrategy] = {}
 
     async def on_tick(tick: Dict) -> None:
         sym = tick["symbol"]
         ltp = tick["ltp"]
-        current_time = datetime.now(timezone.utc).strftime("%H:%M:%S")
+        # Use IST time for all intraday comparisons (EOD exit at 15:15 IST)
+        current_time = datetime.now(_IST).strftime("%H:%M:%S")
 
         # Load settings once per tick — the TTL cache (10 s) makes this free
         # (no disk I/O) on the vast majority of ticks.
         settings = _load_settings()
+
+        # ----------------------------------------------------------------
+        # Lazy Strategy Initialization
+        # ----------------------------------------------------------------
+        strategy_name = settings.get("active_strategy", "ema_rsi")
+        if strategy_name == "institutional_momentum" and sym not in momentum_strategies:
+            momentum_strategies[sym] = MomentumStrategy(
+                capital=_initial_capital,
+                target_pct=settings.get("target_pct", 1.0),
+                stoploss_pct=settings.get("stoploss_pct", 0.5),
+                default_lots=settings.get("quantity", 1)
+            )
 
         # ----------------------------------------------------------------
         # 1. Intra-candle Exit Evaluation for existing positions
@@ -205,9 +238,31 @@ async def run_live_bot(symbols: List[str]) -> None:
             df = aggregator.get_latest_dataframe(sym)
             current_atr = (df["high"].iloc[-1] - df["low"].iloc[-1]) if not df.empty else (ltp * 0.005)
 
-            should_exit, reason, exit_qty = exit_engine.evaluate_exit(
-                pos, ltp, current_time, current_atr
-            )
+            strategy_name = settings.get("active_strategy", "ema_rsi")
+            should_exit, reason, exit_qty = False, "", None
+            
+            if strategy_name == "institutional_momentum" and sym in momentum_strategies:
+                m_strategy = momentum_strategies[sym]
+                # Requires 5min dataframe for TieredExitManager
+                df_5min = df.resample('5min', label='right', closed='right').agg({
+                    'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'
+                }).dropna() if not df.empty else df
+                
+                # Fetch AI Confidence for early exit
+                features = compute_features(df.tail(60)).tail(1)
+                confidence = ai_filter.predict(features)["confidence"].iloc[-1] if (ai_filter.is_trained and not features.empty) else 1.0
+                
+                decision = m_strategy.manage_active_trades(ltp, df_5min, ai_confidence=confidence * 100)
+                if decision and decision.get("exit"):
+                    should_exit = True
+                    reason = decision.get("reason", "Institutional Smart Exit")
+                    # Support partial booking
+                    qty_pct = decision.get("quantity_pct", 1.0)
+                    exit_qty = max(1, int(pos.quantity * qty_pct)) if qty_pct < 1.0 else pos.quantity
+            else:
+                should_exit, reason, exit_qty = exit_engine.evaluate_exit(
+                    pos, ltp, current_time, current_atr
+                )
 
             if should_exit:
                 qty_to_close = exit_qty if exit_qty else pos.quantity
@@ -253,6 +308,53 @@ async def run_live_bot(symbols: List[str]) -> None:
                     del active_positions[sym]
                 else:
                     pos.quantity -= exit_qty
+
+            # ----------------------------------------------------------------
+            # 1.5. Pyramiding (Scaling In) for remaining positions
+            # ----------------------------------------------------------------
+            if sym in active_positions:
+                pos = active_positions[sym]
+                
+                should_scale, scale_reason = pyramid_sizer.evaluate_scale(pos, ltp)
+                
+                if should_scale:
+                    scale_qty = int(settings.get("quantity", 2)) // 2  # Scale in with half of base qty or 1 lot
+                    if scale_qty < 1: scale_qty = 1
+                    
+                    is_live = settings.get("live_trading_mode", False)
+                    side_str = "BUY" if pos.side == 1 else "SELL"
+                    
+                    if is_live:
+                        logger.info("PYRAMID SCALE %d: %s %d %s @ %.2f (%s) [LIVE]", 
+                                    pos.scales_done + 1, side_str, scale_qty, sym, ltp, scale_reason)
+                        
+                        if not ORDER_LIMITER.allow(broker.BROKER_ID):
+                            logger.warning("SCALE order rate-limited for %s — skipping.", sym)
+                        else:
+                            scale_req = OrderRequest(
+                                symbol=pos.symbol,
+                                quantity=scale_qty,
+                                side=OrderSide.BUY if pos.side == 1 else OrderSide.SELL,
+                            )
+                            try:
+                                scale_req = validator.validate(scale_req)
+                                await broker.place_order_async(scale_req)
+                                audit.trade(AuditEvent.TRADE_ENTRY, pos.symbol,
+                                            scale_req.side.value, scale_req.quantity,
+                                            ltp, broker=broker.BROKER_ID)
+                                
+                                # Update position
+                                pos.quantity += scale_qty
+                                pos.scales_done += 1
+                                alerter.send_trade_alert(pos.symbol, f"PYRAMID SCALE IN {side_str}", scale_qty, ltp, 1.0)
+                                
+                            except ValidationError as ve:
+                                logger.error("Scale order validation failed for %s: %s", sym, ve)
+                    else:
+                        logger.info("PYRAMID SCALE %d: %s %d %s @ %.2f (%s) [PAPER]", 
+                                    pos.scales_done + 1, side_str, scale_qty, sym, ltp, scale_reason)
+                        pos.quantity += scale_qty
+                        pos.scales_done += 1
 
         # ----------------------------------------------------------------
         # 2. Aggregate tick → check for new candle bar
@@ -324,7 +426,11 @@ async def run_live_bot(symbols: List[str]) -> None:
                             sig.direction, option_symbol, sig.layers_passed, sig.confidence * 100
                         )
                     else:
-                        signals = registry.run_strategy(strategy_name, df)
+                        signals_data = registry.run_strategy(strategy_name, df)
+                        if isinstance(signals_data, tuple):
+                            signals, _ = signals_data
+                        else:
+                            signals = signals_data
                         latest_signal = signals.iloc[-1]
                         entry_symbol  = s
                         lot_size      = 1
@@ -353,7 +459,11 @@ async def run_live_bot(symbols: List[str]) -> None:
                     side_str = "BUY CALL" if latest_signal == 1 else "BUY PUT"
                     sl_price = entry_price * (1 - sl_pct) if latest_signal == 1 else entry_price * (1 + sl_pct)
                     tgt_price = entry_price * (1 + target_pct) if latest_signal == 1 else entry_price * (1 - target_pct)
-                    qty = risk_manager.calculate_position_size(entry_price, sl_price) or 1
+                    
+                    if "quantity" in settings:
+                        qty = int(settings["quantity"])
+                    else:
+                        qty = risk_manager.calculate_position_size(entry_price, sl_price) or 1
 
                     # ── Execute (Live or Paper) ────────────────────────
                     if is_live:
@@ -406,6 +516,15 @@ async def run_live_bot(symbols: List[str]) -> None:
                         stop_loss=sl_price,
                         target=tgt_price,
                     )
+                    
+                    if strategy_name == "institutional_momentum" and s in momentum_strategies:
+                        momentum_strategies[s].open_trade(
+                            entry_price=entry_price, 
+                            stop_loss=sl_price, 
+                            total_lots=qty * lot_size, 
+                            direction=latest_signal
+                        )
+                        
                     update_equity(risk_manager.current_equity, risk_manager.daily_pnl)
 
         except Exception as exc:
@@ -416,7 +535,20 @@ async def run_live_bot(symbols: List[str]) -> None:
 
 
 if __name__ == "__main__":
-    SYMBOLS = ["NSE:RELIANCE-EQ", "NSE:NIFTY50-INDEX"]
+    # Read symbols from settings — no more hardcoded list
+    _boot_settings = {}
+    _settings_path = Path(__file__).resolve().parents[1] / "config" / "settings.json"
+    if _settings_path.is_file():
+        try:
+            _boot_settings = json.loads(_settings_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    SYMBOLS: List[str] = _boot_settings.get(
+        "symbols",
+        ["NSE:NIFTY50-INDEX"],   # sensible default if not set in settings
+    )
+    logger.info("Starting live bot with symbols: %s", SYMBOLS)
     try:
         asyncio.run(run_live_bot(SYMBOLS))
     except KeyboardInterrupt:

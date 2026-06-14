@@ -18,7 +18,7 @@ export default function AIFiltersTab({ settings, setSettings }: AIFiltersTabProp
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
 
       {/* Box 1: Model Selection */}
-      <div className="bg-gradient-to-br from-slate-800 to-slate-900 p-6 rounded-2xl border border-[#8c52ff]/20 space-y-5 h-[400px] flex flex-col justify-between shadow-xl hover:shadow-purple-500/5 transition-all duration-300">
+      <div className="glass-card p-6 rounded-2xl space-y-5 h-[400px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
         <div>
           <div className="flex items-center gap-3 border-b border-border pb-3">
             <div className="p-2.5 bg-[#8c52ff]/20 rounded-xl text-[#8c52ff] shadow-lg shadow-purple-500/10">
@@ -29,7 +29,7 @@ export default function AIFiltersTab({ settings, setSettings }: AIFiltersTabProp
 
           <div className="space-y-4 mt-4">
             <div>
-              <label className="text-xs font-bold text-gray-400 block mb-1.5 uppercase tracking-wider">Active ML Model</label>
+              <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Active ML Model</label>
               <select
                 value={settings.active_ml_model || "XGBoost Classifier"}
                 onChange={(e) => updateSetting("active_ml_model", e.target.value)}
@@ -41,7 +41,7 @@ export default function AIFiltersTab({ settings, setSettings }: AIFiltersTabProp
               </select>
             </div>
             <div>
-              <label className="text-xs font-bold text-gray-400 block mb-1.5 uppercase tracking-wider">Training Data Lookback</label>
+              <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Training Data Lookback</label>
               <select
                 value={settings.training_data_lookback || "Last 12 Months"}
                 onChange={(e) => updateSetting("training_data_lookback", e.target.value)}
@@ -64,7 +64,7 @@ export default function AIFiltersTab({ settings, setSettings }: AIFiltersTabProp
       </div>
 
       {/* Box 2: Confidence Thresholds */}
-      <div className="bg-gradient-to-br from-slate-800 to-slate-900 p-6 rounded-2xl border border-[#00f2fe]/20 space-y-5 h-[400px] flex flex-col justify-between shadow-xl hover:shadow-cyan-500/5 transition-all duration-300">
+      <div className="glass-card p-6 rounded-2xl space-y-5 h-[400px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
         <div>
           <div className="flex items-center gap-3 border-b border-border pb-3">
             <div className="p-2.5 bg-[#00f2fe]/20 rounded-xl text-[#00f2fe] shadow-lg shadow-cyan-500/10">
@@ -76,7 +76,7 @@ export default function AIFiltersTab({ settings, setSettings }: AIFiltersTabProp
           <div className="space-y-4 mt-4">
             <div className="space-y-1.5">
               <div className="flex justify-between text-xs font-bold uppercase tracking-wider">
-                <span className="text-gray-400">Min Confidence</span>
+                <span className="text-muted-foreground">Min Confidence</span>
                 <span className="text-[#00f2fe] font-extrabold text-sm">{settings.min_confidence || 75}%</span>
               </div>
               <CustomSlider
@@ -88,7 +88,7 @@ export default function AIFiltersTab({ settings, setSettings }: AIFiltersTabProp
             </div>
             <div className="space-y-1.5">
               <div className="flex justify-between text-xs font-bold uppercase tracking-wider">
-                <span className="text-gray-400">Extreme Signal Filter</span>
+                <span className="text-muted-foreground">Extreme Signal Filter</span>
                 <span className="text-[#00f2fe] font-extrabold text-sm">{settings.extreme_signal_filter || 90}%</span>
               </div>
               <CustomSlider
@@ -111,7 +111,7 @@ export default function AIFiltersTab({ settings, setSettings }: AIFiltersTabProp
       </div>
 
       {/* Box 3: Feature Weights */}
-      <div className="bg-gradient-to-br from-slate-800 to-slate-900 p-6 rounded-2xl border border-[#ff9f43]/20 space-y-5 h-[400px] flex flex-col justify-between shadow-xl hover:shadow-orange-500/5 transition-all duration-300">
+      <div className="glass-card p-6 rounded-2xl space-y-5 h-[400px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
         <div>
           <div className="flex items-center gap-3 border-b border-border pb-3">
             <div className="p-2.5 bg-[#ff9f43]/20 rounded-xl text-[#ff9f43] shadow-lg shadow-orange-500/10">
@@ -123,7 +123,7 @@ export default function AIFiltersTab({ settings, setSettings }: AIFiltersTabProp
           <div className="space-y-4 mt-4">
             <div className="space-y-1.5">
               <div className="flex justify-between text-xs font-bold uppercase tracking-wider">
-                <span className="text-gray-400">Technical Indicators</span>
+                <span className="text-muted-foreground">Technical Indicators</span>
                 <span className="text-[#ff9f43] font-extrabold text-sm">{settings.weight_tech_indicators || 40}%</span>
               </div>
               <CustomSlider
@@ -135,7 +135,7 @@ export default function AIFiltersTab({ settings, setSettings }: AIFiltersTabProp
             </div>
             <div className="space-y-1.5">
               <div className="flex justify-between text-xs font-bold uppercase tracking-wider">
-                <span className="text-gray-400">Order Flow</span>
+                <span className="text-muted-foreground">Order Flow</span>
                 <span className="text-[#ff9f43] font-extrabold text-sm">{settings.weight_order_flow || 30}%</span>
               </div>
               <CustomSlider
@@ -147,7 +147,7 @@ export default function AIFiltersTab({ settings, setSettings }: AIFiltersTabProp
             </div>
             <div className="space-y-1.5">
               <div className="flex justify-between text-xs font-bold uppercase tracking-wider">
-                <span className="text-gray-400">Sentiment Analysis</span>
+                <span className="text-muted-foreground">Sentiment Analysis</span>
                 <span className="text-[#ff9f43] font-extrabold text-sm">{settings.weight_sentiment || 30}%</span>
               </div>
               <CustomSlider

@@ -1,0 +1,38 @@
+=== AI TRADING BOT STARTUP COMMANDS ===
+
+Follow these steps every morning before the market opens (around 9:00 AM).
+
+STEP 1: Clear Port 8000 (Only if you get a port busy error)
+------------------------------------------------------------
+If you get an error saying "address already in use", run this in PowerShell:
+Stop-Process -Id (Get-NetTCPConnection -LocalPort 8000).OwningProcess -Force
+
+
+STEP 2: Start the Python Backend (API Bridge)
+---------------------------------------------
+1. Open a terminal and ensure you are in the 'trading-system' folder:
+   cd "D:\Projects\AI trading Bot\trading-system"
+
+2. Run the backend command:
+   .\venv\Scripts\python.exe api_bridge.py
+
+
+STEP 3: Start the Next.js Frontend (Live Dashboard)
+---------------------------------------------------
+1. Open a NEW terminal and go to the 'frontend' folder:
+   cd "D:\Projects\AI trading Bot\frontend"
+
+2. Run the frontend command:
+   npm run dev
+
+
+STEP 4: Start the Streamlit Dashboard (Optional)
+------------------------------------------------
+1. Open a NEW terminal and ensure you are in the 'trading-system' folder:
+   cd "D:\Projects\AI trading Bot\trading-system"
+
+2. Run Streamlit:
+   .\venv\Scripts\python.exe -m streamlit run dashboard/app.py
+
+==================================================
+Keep this file for reference every morning!

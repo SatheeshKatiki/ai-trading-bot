@@ -18,7 +18,7 @@ export default function ExecutionTab({ settings, setSettings }: ExecutionTabProp
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
 
       {/* Box 1: Order Routing */}
-      <div className="bg-gradient-to-br from-slate-800 to-slate-900 p-6 rounded-2xl border border-[#4f46e5]/20 space-y-5 h-[420px] flex flex-col justify-between shadow-xl hover:shadow-indigo-500/5 transition-all duration-300">
+      <div className="glass-card p-6 rounded-2xl space-y-5 h-[420px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
         <div>
           <div className="flex items-center gap-3 border-b border-border pb-3">
             <div className="p-2.5 bg-[#4f46e5]/20 rounded-xl text-[#4f46e5] shadow-lg shadow-indigo-500/10">
@@ -29,7 +29,7 @@ export default function ExecutionTab({ settings, setSettings }: ExecutionTabProp
 
           <div className="space-y-4 mt-4">
             <div>
-              <label className="text-xs font-bold text-gray-400 block mb-1.5 uppercase tracking-wider">Default Broker</label>
+              <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Default Broker</label>
               <select
                 value={settings.default_broker || "Fyers API v3"}
                 onChange={(e) => updateSetting("default_broker", e.target.value)}
@@ -41,7 +41,7 @@ export default function ExecutionTab({ settings, setSettings }: ExecutionTabProp
               </select>
             </div>
             <div>
-              <label className="text-xs font-bold text-gray-400 block mb-1.5 uppercase tracking-wider">Product Type</label>
+              <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Product Type</label>
               <select
                 value={settings.product_type || "MIS (Intraday)"}
                 onChange={(e) => updateSetting("product_type", e.target.value)}
@@ -64,7 +64,7 @@ export default function ExecutionTab({ settings, setSettings }: ExecutionTabProp
       </div>
 
       {/* Box 2: Slippage & Costs */}
-      <div className="bg-gradient-to-br from-slate-800 to-slate-900 p-6 rounded-2xl border border-[#ec4899]/20 space-y-5 h-[420px] flex flex-col justify-between shadow-xl hover:shadow-pink-500/5 transition-all duration-300">
+      <div className="glass-card p-6 rounded-2xl space-y-5 h-[420px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
         <div>
           <div className="flex items-center gap-3 border-b border-border pb-3">
             <div className="p-2.5 bg-[#ec4899]/20 rounded-xl text-[#ec4899] shadow-lg shadow-pink-500/10">
@@ -76,7 +76,7 @@ export default function ExecutionTab({ settings, setSettings }: ExecutionTabProp
           <div className="space-y-4 mt-4">
             <div className="space-y-1.5">
               <div className="flex justify-between text-xs font-bold uppercase tracking-wider">
-                <span className="text-gray-400">Slippage Tolerance</span>
+                <span className="text-muted-foreground">Slippage Tolerance</span>
                 <span className="text-[#ec4899] font-extrabold text-sm">{settings.slippage_tolerance || 0.5}%</span>
               </div>
               <CustomSlider
@@ -88,7 +88,7 @@ export default function ExecutionTab({ settings, setSettings }: ExecutionTabProp
               />
             </div>
             <div>
-              <label className="text-xs font-bold text-gray-400 block mb-1.5 uppercase tracking-wider">Max Bid-Ask Spread</label>
+              <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Max Bid-Ask Spread</label>
               <input
                 type="number"
                 value={settings.max_bid_ask_spread || 2.0}
@@ -110,7 +110,7 @@ export default function ExecutionTab({ settings, setSettings }: ExecutionTabProp
       </div>
 
       {/* Box 3: Speed & Execution */}
-      <div className="bg-gradient-to-br from-slate-800 to-slate-900 p-6 rounded-2xl border border-[#3b82f6]/20 space-y-5 h-[420px] flex flex-col justify-between shadow-xl hover:shadow-blue-500/5 transition-all duration-300">
+      <div className="glass-card p-6 rounded-2xl space-y-5 h-[420px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
         <div>
           <div className="flex items-center gap-3 border-b border-border pb-3">
             <div className="p-2.5 bg-[#3b82f6]/20 rounded-xl text-[#3b82f6] shadow-lg shadow-blue-500/10">
@@ -121,7 +121,7 @@ export default function ExecutionTab({ settings, setSettings }: ExecutionTabProp
 
           <div className="space-y-4 mt-4">
             <div>
-              <label className="text-xs font-bold text-gray-400 block mb-1.5 uppercase tracking-wider">Order Type</label>
+              <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Order Type</label>
               <select
                 value={settings.order_type || "Market Order"}
                 onChange={(e) => updateSetting("order_type", e.target.value)}
@@ -133,7 +133,7 @@ export default function ExecutionTab({ settings, setSettings }: ExecutionTabProp
               </select>
             </div>
             <div>
-              <label className="text-xs font-bold text-gray-400 block mb-1.5 uppercase tracking-wider">Execution Delay (ms)</label>
+              <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Execution Delay (ms)</label>
               <input
                 type="number"
                 value={settings.execution_delay_ms || 0}

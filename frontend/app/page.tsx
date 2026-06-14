@@ -57,6 +57,28 @@ export default function Dashboard() {
   });
   const [lastPrices, setLastPrices] = useState<any>({});
   const [flashes, setFlashes] = useState<any>({});
+  // Live AI Signal state — sourced from /api/signals
+  const [aiSignal, setAiSignal] = useState<{
+    confidence: number;
+    status: string;
+    bias: string;
+    signals: any[];
+  }>({
+    confidence: 0,
+    status: "Initializing...",
+    bias: "NEUTRAL Bias Detected",
+    signals: [],
+  });
+  // Active time-range for the equity curve chart
+  const [curveRange, setCurveRange] = useState<'1D' | '1W' | '1M' | 'ALL'>('1D');
+
+  // Slice the equity curve to the selected time window
+  const filteredCurve = (() => {
+    if (!curve || curve.length === 0) return curve;
+    const limits: Record<string, number> = { '1D': 78, '1W': 390, '1M': 1680, 'ALL': Infinity };
+    const limit = limits[curveRange] ?? Infinity;
+    return curve.slice(-Math.min(curve.length, limit));
+  })();
 
   // WebSocket for Real-time Institutional Ticker
   useEffect(() => {
@@ -68,7 +90,7 @@ export default function Dashboard() {
       // Update flashes for price changes
       const newFlashes: any = {};
       Object.keys(data).forEach(key => {
-        if (typeof data[key] === 'object' && data[key].lp) {
+        if (data[key] !== null && typeof data[key] === 'object' && data[key].lp) {
           if (lastPrices[key] && data[key].lp !== lastPrices[key]) {
             newFlashes[key] = data[key].lp > lastPrices[key] ? "up" : "down";
           }
@@ -80,21 +102,27 @@ export default function Dashboard() {
         setTimeout(() => setFlashes({}), 800);
       }
 
-      setLastPrices(prev => {
+      setLastPrices((prev: any) => {
         const next = { ...prev };
         Object.keys(data).forEach(key => {
-          if (typeof data[key] === 'object' && data[key].lp) next[key] = data[key].lp;
+          if (data[key] !== null && typeof data[key] === 'object' && data[key].lp) next[key] = data[key].lp;
         });
         return next;
       });
 
-      setTickerData(prev => ({
+      setTickerData((prev: any) => ({
         ...prev,
-        ...data,
-        "NIFTY": data.NIFTY || prev.NIFTY,
-        "BANKNIFTY": data.BANKNIFTY || prev.BANKNIFTY,
-        "SENSEX": data.SENSEX || prev.SENSEX
+        ...Object.fromEntries(
+          Object.entries(data).filter(([_, v]) => v !== null)
+        ),
+        "NIFTY": data.NIFTY ?? prev.NIFTY,
+        "BANKNIFTY": data.BANKNIFTY ?? prev.BANKNIFTY,
+        "SENSEX": data.SENSEX ?? prev.SENSEX
       }));
+    };
+
+    ws.onerror = (error) => {
+      console.warn('WebSocket connection attempt failed. Ensure the API bridge is running.', error);
     };
 
     return () => ws.close();
@@ -198,10 +226,33 @@ export default function Dashboard() {
     }
   };
 
+  // Poll live AI signals from backend every 30 seconds
+  useEffect(() => {
+    const fetchAiSignal = async () => {
+      try {
+        const res = await fetch('http://127.0.0.1:8000/api/signals?symbol=NIFTY');
+        if (res.ok) {
+          const data = await res.json();
+          setAiSignal({
+            confidence: data.confidence ?? 0,
+            status: data.status ?? "Scanning...",
+            bias: data.bias ?? "NEUTRAL Bias Detected",
+            signals: data.signals ?? [],
+          });
+        }
+      } catch {
+        // Backend offline — keep last known state silently
+      }
+    };
+    fetchAiSignal();
+    const interval = setInterval(fetchAiSignal, 30_000);
+    return () => clearInterval(interval);
+  }, []);
+
   // Calculate some derived stats
   const winRate = trades.length > 0 
-    ? (trades.filter(t => t.pnl > 0).length / trades.length * 100).toFixed(1)
-    : "0.0";
+    ? (trades.filter((t: any) => t.pnl > 0).length / trades.length * 100)
+    : 0.0;
 
   return (
     <div className="flex h-screen bg-background text-foreground">
@@ -334,7 +385,7 @@ export default function Dashboard() {
               </div>
               <div className="mt-2 flex items-end justify-between">
                 <div>
-                  <div className="text-2xl font-bold font-mono text-foreground leading-none">{winRate}%</div>
+                  <div className="text-2xl font-bold font-mono text-foreground leading-none">{winRate.toFixed(1)}%</div>
                   <p className={`text-[10px] font-bold mt-1 uppercase tracking-tighter ${winRate > 60 ? "text-success" : "text-warning"}`}>
                     {winRate > 75 ? "Strong Bullish" : winRate > 50 ? "Bullish Bias" : "Neutral/Cautious"}
                   </p>
@@ -353,16 +404,20 @@ export default function Dashboard() {
               </div>
             </div>
 
-            {/* Stat Card 4 */}
+            {/* Stat Card 4 — Total Trades (distinct from card 3) */}
             <div className="glass-card rounded-xl p-4 border border-border/20 flex flex-col justify-between">
               <div className="flex justify-between items-start">
-                <span className="text-[10px] text-muted-foreground font-bold uppercase tracking-widest">Signal Success</span>
+                <span className="text-[10px] text-muted-foreground font-bold uppercase tracking-widest">Total Trades</span>
                 <Target className="w-3.5 h-3.5 text-warning" />
               </div>
               <div className="mt-2">
-                <div className="text-2xl font-bold font-mono text-foreground leading-none">{winRate}%</div>
-                <div className="w-full h-1 bg-muted/30 rounded-full mt-2 overflow-hidden">
-                  <div className="h-full bg-success rounded-full" style={{ width: `${winRate}%` }}></div>
+                <div className="text-2xl font-bold font-mono text-foreground leading-none">{trades.length}</div>
+                <div className="flex items-center gap-2 mt-2">
+                  <span className="text-[9px] text-success font-bold">{trades.filter((t: any) => t.pnl > 0).length}W</span>
+                  <div className="flex-1 h-1 bg-muted/30 rounded-full overflow-hidden">
+                    <div className="h-full bg-success rounded-full" style={{ width: `${winRate}%` }}></div>
+                  </div>
+                  <span className="text-[9px] text-destructive font-bold">{trades.filter((t: any) => t.pnl <= 0).length}L</span>
                 </div>
               </div>
             </div>
@@ -378,8 +433,16 @@ export default function Dashboard() {
                   <p className="text-[10px] text-muted-foreground uppercase tracking-tight font-bold">Intraday Equity Projection</p>
                 </div>
                 <div className="flex gap-1">
-                  {['1D', '1W', '1M', 'ALL'].map(t => (
-                    <button key={t} className={`px-2 py-0.5 rounded text-[10px] font-bold ${t === '1D' ? 'bg-primary text-primary-foreground' : 'bg-muted/50 text-muted-foreground hover:bg-muted'}`}>
+                  {(['1D', '1W', '1M', 'ALL'] as const).map(t => (
+                    <button
+                      key={t}
+                      onClick={() => setCurveRange(t)}
+                      className={`px-2 py-0.5 rounded text-[10px] font-bold transition-colors ${
+                        curveRange === t
+                          ? 'bg-primary text-primary-foreground'
+                          : 'bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground'
+                      }`}
+                    >
                       {t}
                     </button>
                   ))}
@@ -388,11 +451,11 @@ export default function Dashboard() {
 
               <div className="h-[280px] w-full">
                 <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={curve}>
+                  <AreaChart data={filteredCurve}>
                     <defs>
                       <linearGradient id="colorValue" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#ff4d4d" stopOpacity={0.2}/>
-                        <stop offset="95%" stopColor="#ff4d4d" stopOpacity={0}/>
+                        <stop offset="5%" stopColor={pnl >= 0 ? "#10b981" : "#ef4444"} stopOpacity={0.25}/>
+                        <stop offset="95%" stopColor={pnl >= 0 ? "#10b981" : "#ef4444"} stopOpacity={0}/>
                       </linearGradient>
                     </defs>
                     <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
@@ -401,47 +464,56 @@ export default function Dashboard() {
                     <Tooltip 
                       contentStyle={{ backgroundColor: "hsl(var(--card))", borderColor: "hsl(var(--border))", borderRadius: "8px", fontSize: "10px" }}
                     />
-                    <Area type="monotone" dataKey="value" stroke="#ff4d4d" strokeWidth={2} fillOpacity={1} fill="url(#colorValue)" />
+                    <Area type="monotone" dataKey="value" stroke={pnl >= 0 ? "#10b981" : "#ef4444"} strokeWidth={2} fillOpacity={1} fill="url(#colorValue)" />
                   </AreaChart>
                 </ResponsiveContainer>
               </div>
             </div>
 
             {/* Active Positions Widget */}
-            <div className="lg:col-span-2 glass-card rounded-xl border border-border/20 flex flex-col overflow-hidden">
+            <div className="lg:col-span-2 glass-card rounded-xl border border-border/20 flex flex-col overflow-hidden h-[300px]">
               <div className="p-3 bg-muted/20 border-b border-border/20 flex justify-between items-center">
                 <h3 className="text-xs font-bold text-foreground flex items-center gap-2">
                   <ShieldAlert className="w-3.5 h-3.5 text-primary" />
                   Active Positions
                 </h3>
-                    <tr className="bg-muted/10 text-muted-foreground uppercase tracking-widest text-[9px] border-b border-border/10">
-                      <th className="text-left p-3 font-bold">Symbol</th>
-                      <th className="text-right p-3 font-bold">Avg Price</th>
-                      <th className="text-right p-3 font-bold">LTP</th>
-                      <th className="text-right p-3 font-bold">P&L</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {positions.length === 0 ? (
-                      <tr>
-                        <td colSpan={4} className="p-8 text-center text-muted-foreground italic">
-                          No active positions found.
-                        </td>
+                {positions.length > 0 && (
+                  <span className="text-[10px] font-bold text-primary uppercase bg-primary/10 px-2 py-0.5 rounded-full animate-pulse">
+                    {positions.length} Open
+                  </span>
+                )}
+              </div>
+              
+              <div className="flex-1 overflow-y-auto custom-scrollbar">
+                {positions.length > 0 ? (
+                  <table className="w-full text-xs text-left">
+                    <thead className="bg-muted/30 sticky top-0 z-10">
+                      <tr className="text-muted-foreground uppercase tracking-widest text-[9px]">
+                        <th className="p-3 font-bold">Symbol</th>
+                        <th className="text-right p-3 font-bold">Avg Price</th>
+                        <th className="text-right p-3 font-bold">LTP</th>
+                        <th className="text-right p-3 font-bold">P&L</th>
                       </tr>
-                    ) : (
-                      positions.map((pos, i) => (
-                        <tr key={i} className="border-b border-border/5 hover:bg-muted/10 transition-colors cursor-pointer">
-                          <td className="p-3 font-bold text-foreground">{pos.symbol}</td>
-                          <td className="p-3 text-right font-mono text-muted-foreground">₹{pos.average_price.toFixed(2)}</td>
-                          <td className="p-3 text-right font-mono font-bold">₹{pos.ltp.toFixed(2)}</td>
-                          <td className={`p-3 text-right font-bold font-mono ${pos.unrealized_pnl >= 0 ? "text-success" : "text-destructive"}`}>
+                    </thead>
+                    <tbody className="divide-y divide-border/20">
+                      {positions.map((pos, i) => (
+                        <tr key={i} className="hover:bg-primary/5 transition-colors group">
+                          <td className="px-4 py-3 font-bold text-foreground">{pos.symbol}</td>
+                          <td className="px-4 py-3 font-mono text-right text-muted-foreground">₹{pos.average_price.toFixed(2)}</td>
+                          <td className="px-4 py-3 font-mono text-right font-bold text-foreground">₹{pos.ltp.toFixed(2)}</td>
+                          <td className={`px-4 py-3 font-mono font-bold text-right ${pos.unrealized_pnl >= 0 ? "text-success" : "text-destructive"}`}>
                             {pos.unrealized_pnl >= 0 ? "+" : ""}₹{pos.unrealized_pnl.toLocaleString('en-IN')}
                           </td>
                         </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <div className="h-full flex flex-col items-center justify-center opacity-30 gap-3 py-10">
+                    <Inbox className="w-12 h-12" />
+                    <p className="text-sm font-bold uppercase tracking-widest">No Active Positions</p>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -501,31 +573,68 @@ export default function Dashboard() {
               </div>
             </div>
 
-            {/* AI Signal Scanner */}
+            {/* AI Signal Scanner — Live from /api/signals */}
             <div className="lg:col-span-1 glass-card rounded-xl p-4 border border-border/20 flex flex-col justify-between">
               <div>
                 <div className="flex justify-between items-center mb-4">
                   <h3 className="text-xs font-bold text-foreground uppercase tracking-widest">AI Scanner</h3>
                   <Search className="w-3.5 h-3.5 text-muted-foreground" />
                 </div>
-                <div className="space-y-3">
-                  <div className="p-2.5 bg-muted/30 rounded-lg border border-border/50">
+
+                {/* Confidence Gauge */}
+                <div className="mb-3 p-2.5 bg-muted/30 rounded-lg border border-border/50">
+                  <div className="flex justify-between items-center mb-1.5">
                     <p className="text-[10px] text-foreground font-bold">NIFTY 50</p>
-                    <div className="flex justify-between items-center mt-1">
-                      <span className="text-[9px] text-success font-bold uppercase">Strong Buy</span>
-                      <span className="text-[9px] text-muted-foreground font-mono">Conf: 92%</span>
-                    </div>
+                    <span className={`text-[9px] font-bold uppercase ${
+                      aiSignal.bias.includes("BUY") ? "text-success" :
+                      aiSignal.bias.includes("SELL") ? "text-destructive" : "text-warning"
+                    }`}>
+                      {aiSignal.bias.replace(" Bias Detected", "")}
+                    </span>
                   </div>
-                  <div className="p-2.5 bg-muted/30 rounded-lg border border-border/50 opacity-60">
-                    <p className="text-[10px] text-foreground font-bold">RELIANCE</p>
-                    <div className="flex justify-between items-center mt-1">
-                      <span className="text-[9px] text-warning font-bold uppercase">Neutral</span>
-                      <span className="text-[9px] text-muted-foreground font-mono">Conf: 45%</span>
-                    </div>
+                  <div className="w-full h-1.5 bg-muted/40 rounded-full overflow-hidden">
+                    <div
+                      className={`h-full rounded-full transition-all duration-700 ${
+                        aiSignal.confidence >= 75 ? "bg-success" :
+                        aiSignal.confidence >= 50 ? "bg-warning" : "bg-destructive/60"
+                      }`}
+                      style={{ width: `${Math.min(aiSignal.confidence, 100)}%` }}
+                    />
                   </div>
+                  <p className="text-[9px] text-muted-foreground mt-1 font-mono">
+                    Conf: <span className="text-foreground font-bold">{aiSignal.confidence}%</span>
+                    &nbsp;·&nbsp;{aiSignal.status}
+                  </p>
+                </div>
+
+                {/* Latest signals */}
+                <div className="space-y-1.5">
+                  {aiSignal.signals.length > 0 ? (
+                    aiSignal.signals.slice(0, 3).map((sig: any, i: number) => (
+                      <div key={i} className="p-2 bg-muted/20 rounded-lg border border-border/40">
+                        <div className="flex justify-between items-center">
+                          <span className="text-[9px] font-bold text-foreground">{sig.type}</span>
+                          <span className={`text-[9px] font-bold ${
+                            sig.bias === "BUY" ? "text-success" : "text-destructive"
+                          }`}>{sig.strength}</span>
+                        </div>
+                        <div className="flex justify-between items-center mt-0.5">
+                          <span className="text-[8px] text-muted-foreground font-mono">{sig.time}</span>
+                          <span className="text-[8px] text-muted-foreground font-mono">Conf: {sig.confidence}%</span>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="p-2.5 bg-muted/20 rounded-lg border border-border/40 opacity-60">
+                      <p className="text-[9px] text-muted-foreground text-center italic">Waiting for market session...</p>
+                    </div>
+                  )}
                 </div>
               </div>
-              <button className="w-full mt-4 py-2 bg-primary/10 text-primary hover:bg-primary hover:text-white text-[10px] font-bold rounded-lg border border-primary/20 transition-all uppercase tracking-widest">
+              <button
+                onClick={() => window.location.href = '/signals'}
+                className="w-full mt-4 py-2 bg-primary/10 text-primary hover:bg-primary hover:text-white text-[10px] font-bold rounded-lg border border-primary/20 transition-all uppercase tracking-widest"
+              >
                 Full AI Report
               </button>
             </div>

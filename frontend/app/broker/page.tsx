@@ -258,7 +258,7 @@ export default function BrokerSettings() {
                   <div className="flex flex-col md:flex-row gap-3 pt-2">
                     <button 
                       onClick={handleBrokerLogin}
-                      className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 text-white hover:from-emerald-700 hover:to-teal-700 rounded-lg text-sm font-medium transition-colors shadow-lg shadow-emerald-900/20"
+                      className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-primary text-white hover:bg-primary/90 rounded-lg text-sm font-medium transition-colors"
                     >
                       <Shield className="w-4 h-4" />
                       Login to Fyers

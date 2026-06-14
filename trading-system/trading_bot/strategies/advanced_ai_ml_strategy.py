@@ -64,15 +64,15 @@ def generate_signals(
     # (Predicting short term direction for Options Buying)
     df['target'] = (df['close'].shift(-3) > df['close']).astype(int)
     
-    # Drop rows with NaN values created by indicators
-    ml_data = df.dropna().copy()
+    # Features list for the model
+    features = ['ema_diff', 'rsi', 'macd_hist', 'atr', 'candle_body', 'upper_wick', 'lower_wick']
+    
+    # Drop rows with NaN values created by indicators (excluding None/NaN score columns)
+    ml_data = df.dropna(subset=features + ['target']).copy()
     
     if len(ml_data) < 10:
         print("[AI Strategy] Not enough valid data after indicator calculation.")
         return signals
-        
-    # Features list for the model
-    features = ['ema_diff', 'rsi', 'macd_hist', 'atr', 'candle_body', 'upper_wick', 'lower_wick']
     
     X = ml_data[features]
     y = ml_data['target']
@@ -117,6 +117,7 @@ def generate_signals(
                 os.makedirs(os.path.dirname(model_path), exist_ok=True)
                 model.save_model(model_path)
                 print(f"[AI Strategy] Model saved to {model_path}")
+                need_train = False
             else:
                 print("[AI Strategy] Not enough data to train. Using rule-based fallback.")
                 need_train = False # Force fallback logic if we couldn't train

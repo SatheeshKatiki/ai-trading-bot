@@ -11,7 +11,7 @@ export default function RiskManagementTab({ settings, setSettings }: { settings:
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
 
       {/* Box 1: Stop Loss Physics (Option Buyer's Life Insurance) */}
-      <div className="bg-gradient-to-br from-slate-800 to-slate-900 p-6 rounded-2xl border border-[#ef4444]/20 space-y-5 h-[420px] flex flex-col justify-between shadow-xl hover:shadow-red-500/5 transition-all duration-300">
+      <div className="glass-card p-6 rounded-2xl space-y-5 h-[420px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
         <div>
           <div className="flex items-center gap-3 border-b border-[#1f293d]/50 pb-3">
             <div className="p-2.5 bg-[#ef4444]/20 rounded-xl text-[#ef4444] shadow-lg shadow-red-500/10">
@@ -22,7 +22,7 @@ export default function RiskManagementTab({ settings, setSettings }: { settings:
 
           <div className="space-y-4 mt-4">
             <div>
-              <label className="text-xs font-bold text-gray-400 block mb-1.5 uppercase tracking-wider">Stop Loss Type</label>
+              <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Stop Loss Type</label>
               {/* Triple Switch Button - Advanced Level */}
               <div className="flex bg-background p-1 rounded-lg border border-border">
                 {["Points", "Amount", "Percentage"].map((type) => (
@@ -31,7 +31,7 @@ export default function RiskManagementTab({ settings, setSettings }: { settings:
                     onClick={() => setSettings({ ...settings, stop_loss_type: type })}
                     className={`flex-1 py-2 text-xs font-bold rounded-md transition-all ${stopLossType === type
                         ? "bg-[#ef4444] text-white shadow-lg shadow-red-500/20"
-                        : "text-gray-400 hover:text-foreground"
+                        : "text-muted-foreground hover:text-foreground"
                       }`}
                   >
                     {type}
@@ -41,7 +41,7 @@ export default function RiskManagementTab({ settings, setSettings }: { settings:
             </div>
 
             <div>
-              <label className="text-xs font-bold text-gray-400 block mb-1.5 uppercase tracking-wider">
+              <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">
                 Value ({stopLossType === "Points" ? "Pts" : stopLossType === "Amount" ? "₹" : "%"})
               </label>
               <input
@@ -79,7 +79,7 @@ export default function RiskManagementTab({ settings, setSettings }: { settings:
       </div>
 
       {/* Box 2: Theta Protection (Time Decay Exit) */}
-      <div className="bg-gradient-to-br from-slate-800 to-slate-900 p-6 rounded-2xl border border-[#f59e0b]/20 space-y-5 h-[420px] flex flex-col justify-between shadow-xl hover:shadow-amber-500/5 transition-all duration-300">
+      <div className="glass-card p-6 rounded-2xl space-y-5 h-[420px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
         <div>
           <div className="flex items-center gap-3 border-b border-[#1f293d]/50 pb-3">
             <div className="p-2.5 bg-[#f59e0b]/20 rounded-xl text-[#f59e0b] shadow-lg shadow-amber-500/10">
@@ -90,17 +90,17 @@ export default function RiskManagementTab({ settings, setSettings }: { settings:
 
           <div className="space-y-4 mt-4">
             <div>
-              <label className="text-xs font-bold text-gray-400 block mb-1.5 uppercase tracking-wider">Max Hold Time (Minutes)</label>
+              <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Max Hold Time (Minutes)</label>
               <input
                 type="number"
                 value={settings.max_hold_time || 30}
                 onChange={(e) => setSettings({ ...settings, max_hold_time: parseInt(e.target.value) })}
                 className="w-full bg-background border border-border rounded-lg px-3 py-2.5 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-[#f59e0b]"
               />
-              <p className="text-[10px] text-gray-500 mt-1">Option buyers lose edge if price stalls. Hard exit after time limit.</p>
+              <p className="text-[10px] text-muted-foreground mt-1">Option buyers lose edge if price stalls. Hard exit after time limit.</p>
             </div>
             <div>
-              <label className="text-xs font-bold text-gray-400 block mb-1.5 uppercase tracking-wider">Breakeven Trigger (Min)</label>
+              <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Breakeven Trigger (Min)</label>
               <input
                 type="number"
                 value={settings.breakeven_trigger || 10}
@@ -121,7 +121,7 @@ export default function RiskManagementTab({ settings, setSettings }: { settings:
       </div>
 
       {/* Box 3: Profit Booking & Trailing */}
-      <div className="bg-gradient-to-br from-slate-800 to-slate-900 p-6 rounded-2xl border border-[#10b981]/20 space-y-5 h-[420px] flex flex-col justify-between shadow-xl hover:shadow-emerald-500/5 transition-all duration-300">
+      <div className="glass-card p-6 rounded-2xl space-y-5 h-[420px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
         <div>
           <div className="flex items-center gap-3 border-b border-[#1f293d]/50 pb-3">
             <div className="p-2.5 bg-[#10b981]/20 rounded-xl text-[#10b981] shadow-lg shadow-emerald-500/10">
@@ -132,7 +132,7 @@ export default function RiskManagementTab({ settings, setSettings }: { settings:
 
           <div className="space-y-4 mt-4">
             <div>
-              <label className="text-xs font-bold text-gray-400 block mb-1.5 uppercase tracking-wider">Target 1 (Partial 50%)</label>
+              <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Target 1 (Partial 50%)</label>
               <input
                 type="number"
                 value={settings.target_pct || 2.0}
@@ -141,7 +141,20 @@ export default function RiskManagementTab({ settings, setSettings }: { settings:
               />
             </div>
             <div>
-              <label className="text-xs font-bold text-gray-400 block mb-1.5 uppercase tracking-wider">Trailing Trigger</label>
+              <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Position Sizing</label>
+              <div className="relative">
+                <input
+                  type="number"
+                  value={settings.quantity || 65}
+                  onChange={(e) => setSettings({ ...settings, quantity: parseInt(e.target.value) || 65 })}
+                  placeholder="e.g. 65"
+                  className="w-full bg-background border border-border rounded-lg pl-3 pr-24 py-2.5 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-[#10b981]"
+                />
+                <span className="absolute right-3 top-1/2 transform -translate-y-1/2 text-[10px] font-bold text-muted-foreground uppercase">Qty (e.g. 1 Lot)</span>
+              </div>
+            </div>
+            <div>
+              <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Trailing Trigger</label>
               <select
                 value={settings.trailing_trigger || "At Target 1"}
                 onChange={(e) => setSettings({ ...settings, trailing_trigger: e.target.value })}

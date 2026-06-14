@@ -165,6 +165,7 @@ class Backtester:
 
 def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital: float = 100000.0,
                            slippage_bps: float = 2.0, commission_per_trade: float = 20.0, multiplier: int = 10,
+                           options_delta: float = 1.0,
                            target_pct: float = 2.0, stoploss_pct: float = 1.0, **kwargs) -> dict:
     """Run a detailed backtest with shorting, slippage, and commission."""
     trades = []
@@ -179,7 +180,7 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
     # Optimize by converting to numpy arrays for the tight loop
     closes = df['close'].to_numpy()
     if 'datetime' in df.columns:
-        times = df['datetime'].apply(lambda x: str(x).split(' ')[1][:5] if isinstance(x, str) and ' ' in x else "00:00").to_numpy()
+        times = df['datetime'].apply(lambda x: str(x)[:16] if isinstance(x, str) else "00:00").to_numpy()
     else:
         times = ["00:00"] * len(df)
         
@@ -220,11 +221,39 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
                     smart_stop_loss = True
                     
             # Exit Logic
-            entry_price = position["entry"]
+            # Calculate PnL based on the FIRST entry price for SL/Target percentage checks
+            entry_price = position["entries"][0][0]
             pnl_pct = (current_price - entry_price) / entry_price * 100 if is_long else (entry_price - current_price) / entry_price * 100
+            
+            # Pyramiding (Scaling In) Simulation
+            if kwargs.get("enable_pyramiding", True):
+                scales_done = position.get("scales_done", 0)
+                if scales_done < kwargs.get("max_scales", 2):
+                    pnl_pts = (current_price - entry_price) if is_long else (entry_price - current_price)
+                    req_pts = (scales_done + 1) * kwargs.get("scale_points", 40)
+                    
+                    if pnl_pts >= req_pts:
+                        scale_qty = multiplier // 2
+                        if scale_qty < 1: scale_qty = 1
+                        position["entries"].append((current_price, scale_qty))
+                        position["scales_done"] = scales_done + 1
+            
+            # Track peak profit reached for trailing stop loss
+            position["max_pnl_pct"] = max(position.get("max_pnl_pct", 0.0), pnl_pct)
             
             current_sl_pct = position.get("sl_pct", stoploss_pct)
             
+            # Trailing Stop Loss / Breakeven Profit Lock
+            enable_tsl = kwargs.get("enable_trailing_sl", True) and kwargs.get("trailing_sl", True)
+            if enable_tsl:
+                trail_trigger = kwargs.get("trail_trigger", 0.8)
+                trail_offset = kwargs.get("trail_offset", 0.2)
+                
+                if position["max_pnl_pct"] >= trail_trigger:
+                    # Trailed Stop Loss is set relative to entry (negative current_sl_pct acts as a profit target exit)
+                    current_sl_pct = -max(0.0, position["max_pnl_pct"] - trail_offset)
+            
+            target_hit = pnl_pct >= target_pct
             stoploss_hit = pnl_pct <= -current_sl_pct
             
             # Track if targets were hit (for partial profits if enabled)
@@ -233,13 +262,23 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
             if pnl_pct >= (current_sl_pct * 2):
                 position["t2_hit"] = True
                 
-            should_exit = (is_long and signal == -1) or (not is_long and signal == 1) or (i == len(df) - 1) or stoploss_hit
+            should_exit = (is_long and signal == -1) or (not is_long and signal == 1) or (i == len(df) - 1) or stoploss_hit or target_hit
             
             if should_exit:
                 exit_price = apply_slippage(current_price, "SELL" if is_long else "BUY")
                 
-                # Base PnL for 100% position
-                base_pnl = (exit_price - entry_price) * multiplier if is_long else (entry_price - exit_price) * multiplier
+                # Determine exit reason
+                exit_reason = "SIGNAL"
+                if stoploss_hit:
+                    exit_reason = "STOPLOSS"
+                elif target_hit:
+                    exit_reason = "TARGET"
+                
+                # Base PnL for all scales combined
+                if is_long:
+                    base_pnl = sum((exit_price - e_price) * qty * options_delta for e_price, qty in position["entries"])
+                else:
+                    base_pnl = sum((e_price - exit_price) * qty * options_delta for e_price, qty in position["entries"])
                 
                 # Calculate PnL (Partial Profits vs Full Run)
                 pnl = 0
@@ -247,11 +286,11 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
                     rem_weight = 1.0
                     # 30% at 1:1
                     if position.get("t1_hit", False):
-                        pnl += (entry_price * (current_sl_pct / 100)) * multiplier * 0.3
+                        pnl += (entry_price * (current_sl_pct / 100)) * multiplier * options_delta * 0.3
                         rem_weight -= 0.3
                     # 30% at 1:2
                     if position.get("t2_hit", False):
-                        pnl += (entry_price * (current_sl_pct * 2 / 100)) * multiplier * 0.3
+                        pnl += (entry_price * (current_sl_pct * 2 / 100)) * multiplier * options_delta * 0.3
                         rem_weight -= 0.3
                     # Remaining 40%
                     pnl += base_pnl * rem_weight
@@ -264,11 +303,13 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
                 trades.append({
                     "id": f"T-{len(trades) + 1}",
                     "type": position["type"],
-                    "entry": position["entry"],
+                    "entry": position["entries"][0][0],
                     "exit": exit_price,
+                    "scales": position.get("scales_done", 0),
                     "pnl": pnl,
                     "time": position["time"],
-                    "score": position.get("score", 0)
+                    "score": position.get("score", 0),
+                    "exit_reason": exit_reason
                 })
                 position = None
                 
@@ -288,7 +329,7 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
                 
                 score = call_scores[i] if has_scores else 0
                 
-                position = {"type": "BUY", "entry": entry_price, "time": current_time, "sl_pct": current_sl_pct, "score": score}
+                position = {"type": "BUY", "entries": [(entry_price, multiplier)], "time": current_time, "sl_pct": current_sl_pct, "score": score}
                 capital -= commission_per_trade
             elif signal == -1 and (i == 0 or sig_vals[i-1] != -1):
                 entry_price = apply_slippage(current_price, "SELL")
@@ -304,7 +345,7 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
                 
                 score = put_scores[i] if has_scores else 0
                 
-                position = {"type": "SELL", "entry": entry_price, "time": current_time, "sl_pct": current_sl_pct, "score": score}
+                position = {"type": "SELL", "entries": [(entry_price, multiplier)], "time": current_time, "sl_pct": current_sl_pct, "score": score}
                 capital -= commission_per_trade
                 
         if i % max(1, len(df) // 20) == 0:
@@ -365,19 +406,26 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
         "profitFactor": profit_factor,
         "winRate": f"{(win_rate * 100):.1f}" if trades else "0.0",
         "totalTrades": len(trades),
+        "successTrades": len(winning_trades),
+        "failedTrades": len(losing_trades),
+        "stoplossTrades": sum(1 for t in trades if t.get("exit_reason") == "STOPLOSS"),
         "maxDrawdown": -round(max_dd, 2),
         "netProfit": total_pnl,
         "avgWinScore": f"{avg_win_score:.1f}",
         "avgLossScore": f"{avg_loss_score:.1f}",
         "expectancy": round(expectancy, 2),
         "sharpeRatio": round(sharpe_ratio, 2),
-        "sortinoRatio": round(sortino_ratio, 2)
+        "sortinoRatio": round(sortino_ratio, 2),
+        "targetPct": target_pct,   # Dynamic Echo
+        "stoplossPct": stoploss_pct, # Dynamic Echo
+        "donchianPeriod": kwargs.get("donchian_period", 10)
     }
     
     return {
         "stats": stats,
         "equityCurve": equity_curve,
-        "trades": trades
+        "trades": trades,
+        "rejectionLogs": kwargs.get("rejection_logs", [])
     }
 
 # ---------------------------------------------------------------------------

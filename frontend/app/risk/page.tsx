@@ -139,7 +139,7 @@ export default function RiskManagement() {
                       type="number"
                       value={maxPositions}
                       onChange={(e) => setMaxPositions(e.target.value)}
-                      className="w-full bg-muted/30 border border-border/50 rounded-lg px-4 py-2.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary focus:border-transparent"
+                      className="input-field w-full"
                     />
                   </div>
 
@@ -148,8 +148,8 @@ export default function RiskManagement() {
                       onClick={() => setCircuitBreaker(!circuitBreaker)}
                       className={`w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${
                         circuitBreaker 
-                          ? "bg-destructive/10 text-destructive hover:bg-destructive/20 border border-destructive/20" 
-                          : "bg-success/10 text-success hover:bg-success/20 border border-success/20"
+                          ? "bg-primary text-white hover:bg-primary/90" 
+                          : "bg-primary text-white hover:bg-primary/90"
                       }`}
                     >
                       {circuitBreaker ? <Lock className="w-4 h-4" /> : <Unlock className="w-4 h-4" />}

@@ -3,7 +3,7 @@
 import Sidebar from "@/components/sidebar";
 import Header from "@/components/header";
 import CustomDatePicker from "@/components/custom-date-picker";
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import { 
@@ -60,7 +60,7 @@ const journalEntries = [
   }
 ];
 
-export default function Journal() {
+function JournalContent() {
   const searchParams = useSearchParams();
   const initialSearch = searchParams.get("symbol") || "";
   
@@ -215,7 +215,7 @@ export default function Journal() {
               <p className="text-sm text-muted-foreground">Professional trade logging & psychological audit.</p>
             </div>
             <div className="flex gap-3">
-              <button onClick={() => setIsFilterPanelOpen(true)} className="px-4 py-2 bg-muted/50 rounded-lg text-sm border border-border/50 flex items-center gap-2">
+              <button onClick={() => setIsFilterPanelOpen(true)} className="px-4 py-2 bg-primary text-white hover:bg-primary/90 rounded-lg text-sm transition-colors flex items-center gap-2">
                 <Filter className="w-4 h-4" /> Deep Filter
               </button>
               <button onClick={() => setIsAddModalOpen(true)} className="px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-bold shadow-lg flex items-center gap-2">
@@ -278,7 +278,6 @@ export default function Journal() {
       </div>
 
       {/* MODALS */}
-      <Toaster position="top-right" richColors closeButton />
       
       {isFilterPanelOpen && (
         <div className="fixed inset-0 z-[100] flex justify-end">
@@ -299,7 +298,7 @@ export default function Journal() {
                   ))}
                 </div>
               </div>
-              <button onClick={resetFilters} className="w-full py-2 text-xs font-bold text-muted-foreground hover:text-foreground transition-all">RESET ALL FILTERS</button>
+              <button onClick={resetFilters} className="w-full py-2 text-xs font-bold text-primary hover:opacity-80 transition-all">RESET ALL FILTERS</button>
             </div>
           </div>
         </div>
@@ -317,7 +316,7 @@ export default function Journal() {
               </div>
               <textarea placeholder="Trade Logic & Notes" rows={4} value={newEntry.notes} onChange={e => setNewEntry({...newEntry, notes: e.target.value})} className="w-full bg-muted/30 border border-border/50 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-primary/50 outline-none transition-all resize-none"></textarea>
               <div className="flex gap-4 pt-4">
-                <button onClick={() => setIsAddModalOpen(false)} className="flex-1 py-3 bg-muted/50 rounded-xl text-sm font-bold hover:bg-muted transition-all">Cancel</button>
+                <button onClick={() => setIsAddModalOpen(false)} className="flex-1 py-3 bg-muted/50 text-foreground hover:bg-muted rounded-xl text-sm font-bold transition-all">Cancel</button>
                 <button onClick={handleSaveEntry} className="flex-1 py-3 bg-primary text-white rounded-xl text-sm font-bold shadow-lg hover:bg-primary/90 transition-all">Save Log</button>
               </div>
             </div>
@@ -325,5 +324,20 @@ export default function Journal() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function Journal() {
+  return (
+    <Suspense fallback={
+      <div className="flex h-screen items-center justify-center bg-background text-foreground">
+        <div className="text-center space-y-4">
+          <div className="w-10 h-10 border-4 border-primary/20 border-t-primary rounded-full animate-spin mx-auto"></div>
+          <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest">Loading Journal...</p>
+        </div>
+      </div>
+    }>
+      <JournalContent />
+    </Suspense>
   );
 }

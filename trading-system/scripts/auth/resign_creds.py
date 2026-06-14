@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 # Add project root to python path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from brokers.credentials import _save_file, _CREDS_FILE
 

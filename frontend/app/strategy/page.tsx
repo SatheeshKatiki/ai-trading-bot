@@ -64,6 +64,7 @@ export default function StrategySettings() {
     { id: "institutional_ema", name: "Institutional EMA" },
     { id: "advanced_ai", name: "Advanced AI/ML" },
     { id: "premium", name: "Premium Options Alpha" },
+    { id: "institutional_momentum", name: "Institutional Momentum" },
   ]);
 
   const defaultSettings: Record<string, any> = {
@@ -127,7 +128,8 @@ export default function StrategySettings() {
             "enhanced_ai": "Enhanced AI Strategy",
             "premium": "Premium Options Alpha",
             "institutional_ema": "Institutional EMA",
-            "advanced_ai": "Advanced AI/ML"
+            "advanced_ai": "Advanced AI/ML",
+            "institutional_momentum": "Institutional Momentum"
           };
           
           const mapped = data.strategies.map((id: string) => ({
@@ -229,24 +231,27 @@ export default function StrategySettings() {
         <Header />
 
         <main className="flex-1 overflow-y-auto p-8 space-y-8">
-          {/* Header */}
-          <div className="flex justify-between items-center bg-card p-6 rounded-2xl border border-[#1f293d]/30 backdrop-blur-xl">
-            <div>
-              <h1 className="font-display font-extrabold text-4xl tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-foreground to-gray-500">Strategy Settings</h1>
-              <p className="text-base text-gray-400 mt-1">Configure and optimize your trading strategy parameters</p>
+          {/* Header & Controls Section */}
+          <div className="flex flex-col gap-5 w-full">
+            {/* Title Row */}
+            <div className="shrink-0">
+              <h1 className="font-display font-extrabold text-3xl xl:text-4xl tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-foreground to-gray-500 whitespace-nowrap">Strategy Settings</h1>
+              <p className="text-base text-muted-foreground mt-1">Configure and optimize your trading strategy parameters</p>
             </div>
-            <div className="flex items-center gap-3">
-              <div className="flex items-center gap-2 mr-2">
-                <label className="text-sm font-bold text-gray-400 uppercase tracking-wider">Strategy:</label>
+
+            {/* Control Bar - Glass Container */}
+            <div className="flex flex-wrap lg:flex-nowrap items-center gap-4 w-full glass-card p-4 rounded-2xl overflow-x-auto hide-scrollbar">
+              <div className="flex items-center gap-3">
+                <label className="text-sm font-bold text-muted-foreground uppercase tracking-wider">Strategy:</label>
                 <div className="relative">
-                  <Cpu className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#ff4d4d] pointer-events-none" />
+                  <Cpu className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-primary pointer-events-none" />
                   <select
                     value={selectedStrategy}
                     onChange={(e) => {
                       setSelectedStrategy(e.target.value);
                       applyDefaults(e.target.value);
                     }}
-                    className="bg-background border border-border rounded-xl pl-10 pr-4 py-2.5 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all"
+                    className="bg-background border border-border rounded-xl pl-10 pr-4 py-2 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all"
                   >
                     {strategies.map((s) => (
                       <option key={s.id} value={s.id}>{s.name}</option>
@@ -255,7 +260,7 @@ export default function StrategySettings() {
                 </div>
                 <button
                   onClick={() => applyDefaults(selectedStrategy)}
-                  className="px-4 py-2.5 bg-[#ff4d4d] text-white rounded-xl text-sm font-bold hover:opacity-90 flex items-center gap-2 transition-all duration-200 shadow-lg shadow-red-500/20 hover:scale-[1.02]"
+                  className="px-4 py-2 bg-[#ff4d4d] text-white rounded-xl text-sm font-bold hover:opacity-90 flex items-center gap-2 transition-all duration-200 shadow-lg shadow-red-500/20 hover:scale-[1.02] whitespace-nowrap"
                 >
                   <Zap className="w-4 h-4" />
                   Set Defaults
@@ -266,26 +271,26 @@ export default function StrategySettings() {
                   loadSettings();
                   setToast({ message: 'Reset Settings Successfully..', type: 'success' });
                 }}
-                className="px-4 py-2.5 bg-background border border-border rounded-xl text-sm font-bold text-foreground hover:bg-muted hover:border-border flex items-center gap-2 transition-all duration-200 shadow-lg hover:shadow-primary/5"
+                className="px-4 py-2 bg-background border border-border rounded-xl text-sm font-bold text-foreground hover:bg-muted hover:border-border flex items-center gap-2 transition-all duration-200 shadow-lg hover:shadow-primary/5 whitespace-nowrap"
               >
-                <RotateCcw className="w-4 h-4 text-gray-400" />
+                <RotateCcw className="w-4 h-4 text-muted-foreground" />
                 Reset
               </button>
               <button
                 onClick={handleImport}
-                className="px-4 py-2.5 bg-background border border-border rounded-xl text-sm font-bold text-foreground hover:bg-muted hover:border-border flex items-center gap-2 transition-all duration-200 shadow-lg hover:shadow-primary/5"
+                className="px-4 py-2 bg-background border border-border rounded-xl text-sm font-bold text-foreground hover:bg-muted hover:border-border flex items-center gap-2 transition-all duration-200 shadow-lg hover:shadow-primary/5 whitespace-nowrap"
               >
-                <FileDown className="w-4 h-4 text-gray-400" />
+                <FileDown className="w-4 h-4 text-muted-foreground" />
                 Import
               </button>
               <button
                 onClick={handleExport}
-                className="px-4 py-2.5 bg-background border border-border rounded-xl text-sm font-bold text-foreground hover:bg-muted hover:border-border flex items-center gap-2 transition-all duration-200 shadow-lg hover:shadow-primary/5"
+                className="px-4 py-2 bg-background border border-border rounded-xl text-sm font-bold text-foreground hover:bg-muted hover:border-border flex items-center gap-2 transition-all duration-200 shadow-lg hover:shadow-primary/5 whitespace-nowrap"
               >
-                <FileUp className="w-4 h-4 text-gray-400" />
+                <FileUp className="w-4 h-4 text-muted-foreground" />
                 Export
               </button>
-              <div className="relative">
+              <div className="relative ml-auto shrink-0">
                 {/* Toast */}
                 {toast && (
                   <div className="absolute bottom-full mb-4 right-0 bg-gradient-to-r from-emerald-50 to-green-100 border border-emerald-200 rounded-lg p-2 shadow-2xl z-[100] flex items-center gap-2 text-emerald-900 whitespace-nowrap">
@@ -303,7 +308,7 @@ export default function StrategySettings() {
                       <ShieldAlert className="w-5 h-5" />
                       <h3 className="font-display font-extrabold text-base text-foreground">Confirm Save</h3>
                     </div>
-                    <p className="text-xs text-gray-400 font-medium">Are you sure you want to save these settings? This will overwrite the current live strategy configuration.</p>
+                    <p className="text-xs text-muted-foreground font-medium">Are you sure you want to save these settings? This will overwrite the current live strategy configuration.</p>
                     <div className="flex justify-end gap-3 pt-2">
                       <button
                         onClick={() => setShowSaveConfirm(false)}
@@ -326,7 +331,7 @@ export default function StrategySettings() {
 
                 <button
                   onClick={handleSave}
-                  className="px-6 py-2.5 bg-primary text-white rounded-xl text-sm font-bold hover:opacity-90 flex items-center gap-2 transition-all duration-200 shadow-lg shadow-primary/30 hover:scale-[1.02]"
+                  className="px-6 py-2 bg-primary text-white rounded-xl text-sm font-bold hover:opacity-90 flex items-center gap-2 transition-all duration-200 shadow-lg shadow-primary/30 hover:scale-[1.02] whitespace-nowrap"
                 >
                   <Save className="w-4 h-4" />
                   Save Settings
@@ -342,13 +347,13 @@ export default function StrategySettings() {
                 key={tab}
                 onClick={() => setActiveTab(tab)}
                 className={`px-5 py-3 text-sm font-bold transition-all duration-200 whitespace-nowrap relative ${activeTab === tab
-                  ? "text-[#ff4d4d]"
-                  : "text-gray-500 hover:text-foreground"
+                  ? "text-primary"
+                  : "text-muted-foreground hover:text-foreground"
                   }`}
               >
                 {tab}
                 {activeTab === tab && (
-                  <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#ff4d4d] shadow-lg shadow-red-500/50"></div>
+                  <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary shadow-[0_0_12px_var(--glow-primary)]"></div>
                 )}
               </button>
             ))}
@@ -367,7 +372,7 @@ export default function StrategySettings() {
                   {/* === COLUMN 1 === */}
                   <div className="space-y-6">
                     {/* Strategy Mode */}
-                    <div className="bg-gradient-to-br from-slate-800 to-slate-900 p-6 rounded-2xl border border-slate-500/50 space-y-5 h-[420px] flex flex-col justify-between shadow-xl hover:shadow-primary/5 transition-all duration-300">
+                    <div className="glass-card p-6 rounded-2xl space-y-5 h-[420px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
                       <div>
                         <div className="flex items-center gap-3 border-b border-border pb-3">
                           <div className="p-2.5 bg-[#4f46e5]/20 rounded-xl text-[#4f46e5] shadow-lg shadow-indigo-500/10">
@@ -378,7 +383,7 @@ export default function StrategySettings() {
 
                         <div className="space-y-4 mt-4">
                           <div>
-                            <label className="text-xs font-bold text-gray-400 block mb-1.5 uppercase tracking-wider">Select Strategy Mode</label>
+                            <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Select Strategy Mode</label>
                             <select
                               value={settings.active_strategy || "ema_rsi"}
                               onChange={(e) => setSettings({ ...settings, active_strategy: e.target.value })}
@@ -392,7 +397,7 @@ export default function StrategySettings() {
                             </select>
                           </div>
                           <div>
-                            <label className="text-xs font-bold text-gray-400 block mb-1.5 uppercase tracking-wider">Timeframe</label>
+                            <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Timeframe</label>
                             <select
                               value={settings.timeframe || "5 Min"}
                               onChange={(e) => setSettings({ ...settings, timeframe: e.target.value })}
@@ -413,32 +418,32 @@ export default function StrategySettings() {
 
                       <div className="space-y-4">
                         <div>
-                          <label className="text-xs font-bold text-gray-400 block mb-1.5 uppercase tracking-wider">Max Trades / Day</label>
+                          <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Max Trades / Day</label>
                           <div className="flex items-center border border-border rounded-lg bg-background overflow-hidden focus-within:ring-2 focus-within:ring-primary transition-all">
                             <button
                               onClick={() => setSettings({ ...settings, max_trades_per_day: Math.max(1, (settings.max_trades_per_day || 5) - 1) })}
-                              className="px-4 py-2.5 hover:bg-muted text-gray-400 transition-colors hover:text-foreground"
+                              className="px-4 py-2.5 hover:bg-muted text-muted-foreground transition-colors hover:text-foreground"
                             >
                               <Minus className="w-4 h-4" />
                             </button>
                             <input type="text" value={settings.max_trades_per_day || 5} className="w-full bg-transparent text-center text-sm font-extrabold text-foreground focus:outline-none" readOnly />
                             <button
                               onClick={() => setSettings({ ...settings, max_trades_per_day: (settings.max_trades_per_day || 5) + 1 })}
-                              className="px-4 py-2.5 hover:bg-muted text-gray-400 transition-colors hover:text-foreground"
+                              className="px-4 py-2.5 hover:bg-muted text-muted-foreground transition-colors hover:text-foreground"
                             >
                               <Plus className="w-4 h-4" />
                             </button>
                           </div>
                         </div>
                         <div>
-                          <label className="text-xs font-bold text-gray-400 block mb-1.5 uppercase tracking-wider">Cooldown (min)</label>
+                          <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Cooldown (min)</label>
                           <input type="number" defaultValue="15" className="w-full bg-background border border-border rounded-lg px-3 py-2.5 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all" />
                         </div>
                       </div>
                     </div>
 
                     {/* Volume Settings */}
-                    <div className="bg-gradient-to-br from-slate-800 to-slate-900 p-6 rounded-2xl border border-slate-500/50 space-y-5 h-[420px] flex flex-col justify-between shadow-xl hover:shadow-primary/5 transition-all duration-300">
+                    <div className="glass-card p-6 rounded-2xl space-y-5 h-[420px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
                       <div>
                         <div className="flex items-center gap-3 border-b border-border pb-3">
                           <div className="p-2.5 bg-[#ec4899]/20 rounded-xl text-[#ec4899] shadow-lg shadow-pink-500/10">
@@ -450,7 +455,7 @@ export default function StrategySettings() {
                         <div className="space-y-5 mt-4">
                           <div className="space-y-1.5">
                             <div className="flex justify-between text-xs font-bold uppercase tracking-wider">
-                              <span className="text-gray-400">Spike Multiplier</span>
+                              <span className="text-muted-foreground">Spike Multiplier</span>
                               <span className="text-[#ec4899] font-extrabold text-sm">{spikeMultiplier.toFixed(1)}x</span>
                             </div>
                             <CustomSlider
@@ -463,7 +468,7 @@ export default function StrategySettings() {
                           </div>
                           <div className="space-y-1.5">
                             <div className="flex justify-between text-xs font-bold uppercase tracking-wider">
-                              <span className="text-gray-400">Relative Threshold</span>
+                              <span className="text-muted-foreground">Relative Threshold</span>
                               <span className="text-[#ec4899] font-extrabold text-sm">{relativeThreshold.toFixed(1)}x</span>
                             </div>
                             <CustomSlider
@@ -490,7 +495,7 @@ export default function StrategySettings() {
                   {/* === COLUMN 2 === */}
                   <div className="space-y-6">
                     {/* Strategy Parameters */}
-                    <div className="bg-gradient-to-br from-slate-800 to-slate-900 p-6 rounded-2xl border border-[#3b82f6]/20 space-y-5 h-[420px] flex flex-col justify-between shadow-xl hover:shadow-blue-500/5 transition-all duration-300">
+                    <div className="glass-card p-6 rounded-2xl space-y-5 h-[420px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
                       <div>
                         <div className="flex items-center gap-3 border-b border-border pb-3">
                           <div className="p-2.5 bg-[#3b82f6]/20 rounded-xl text-[#3b82f6] shadow-lg shadow-blue-500/10">
@@ -503,7 +508,7 @@ export default function StrategySettings() {
                           {Object.keys(strategyParams).length > 0 ? (
                             Object.keys(strategyParams).map((paramName) => (
                               <div key={paramName}>
-                                <label className="text-xs font-bold text-gray-400 block mb-1.5 uppercase tracking-wider">{paramName.replace(/_/g, ' ')}</label>
+                                <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">{paramName.replace(/_/g, ' ')}</label>
                                 <input
                                   type="text"
                                   value={settings[paramName] !== undefined ? settings[paramName] : strategyParams[paramName].default}
@@ -513,7 +518,7 @@ export default function StrategySettings() {
                               </div>
                             ))
                           ) : (
-                            <p className="text-sm text-gray-500">No parameters found for this strategy.</p>
+                            <p className="text-sm text-muted-foreground">No parameters found for this strategy.</p>
                           )}
                         </div>
                       </div>
@@ -525,7 +530,7 @@ export default function StrategySettings() {
                     </div>
 
                     {/* VWAP Settings */}
-                    <div className="bg-gradient-to-br from-slate-800 to-slate-900 p-6 rounded-2xl border border-slate-500/50 space-y-5 h-[420px] flex flex-col justify-between shadow-xl hover:shadow-primary/5 transition-all duration-300">
+                    <div className="glass-card p-6 rounded-2xl space-y-5 h-[420px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
                       <div>
                         <div className="flex items-center gap-3 border-b border-border pb-3">
                           <div className="p-2.5 bg-[#06b6d4]/20 rounded-xl text-[#06b6d4] shadow-lg shadow-cyan-500/10">
@@ -536,14 +541,14 @@ export default function StrategySettings() {
 
                         <div className="space-y-5 mt-4">
                           <div>
-                            <label className="text-xs font-bold text-gray-400 block mb-1.5 uppercase tracking-wider">VWAP Confirmation</label>
+                            <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">VWAP Confirmation</label>
                             <select className="w-full bg-background border border-border rounded-lg px-3 py-2.5 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all">
                               <option>Price Above VWAP</option>
                             </select>
                           </div>
                           <div className="space-y-1.5">
                             <div className="flex justify-between text-xs font-bold uppercase tracking-wider">
-                              <span className="text-gray-400">Strength</span>
+                              <span className="text-muted-foreground">Strength</span>
                               <span className="text-[#06b6d4] font-extrabold text-sm">{strength}%</span>
                             </div>
                             <CustomSlider
@@ -569,7 +574,7 @@ export default function StrategySettings() {
                   {/* === COLUMN 3 === */}
                   <div className="space-y-6">
                     {/* RSI Settings */}
-                    <div className="bg-gradient-to-br from-slate-800 to-slate-900 p-6 rounded-2xl border border-slate-500/50 space-y-5 h-[420px] flex flex-col justify-between shadow-xl hover:shadow-primary/5 transition-all duration-300">
+                    <div className="glass-card p-6 rounded-2xl space-y-5 h-[420px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
                       <div>
                         <div className="flex items-center gap-3 border-b border-border pb-3">
                           <div className="p-2.5 bg-[#10b981]/20 rounded-xl text-[#10b981] shadow-lg shadow-emerald-500/10">
@@ -580,7 +585,7 @@ export default function StrategySettings() {
 
                         <div className="space-y-5 mt-4">
                           <div>
-                            <label className="text-xs font-bold text-gray-400 block mb-1.5 uppercase tracking-wider">RSI Period</label>
+                            <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">RSI Period</label>
                             <input
                               type="number"
                               value={settings.rsi_window || 14}
@@ -590,7 +595,7 @@ export default function StrategySettings() {
                           </div>
                           <div className="grid grid-cols-2 gap-4">
                             <div>
-                              <label className="text-xs font-bold text-gray-400 block mb-1.5 uppercase tracking-wider">Overbought</label>
+                              <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Overbought</label>
                               <input
                                 type="number"
                                 value={settings.rsi_sell || 70}
@@ -599,7 +604,7 @@ export default function StrategySettings() {
                               />
                             </div>
                             <div>
-                              <label className="text-xs font-bold text-gray-400 block mb-1.5 uppercase tracking-wider">Oversold</label>
+                              <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Oversold</label>
                               <input
                                 type="number"
                                 value={settings.rsi_buy || 30}
@@ -621,7 +626,7 @@ export default function StrategySettings() {
                     </div>
 
                     {/* Option Chain Filters */}
-                    <div className="bg-gradient-to-br from-slate-800 to-slate-900 p-6 rounded-2xl border border-slate-500/50 space-y-5 h-[420px] flex flex-col justify-between shadow-xl hover:shadow-primary/5 transition-all duration-300">
+                    <div className="glass-card p-6 rounded-2xl space-y-5 h-[420px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
                       <div>
                         <div className="flex items-center gap-3 border-b border-border pb-3">
                           <div className="p-2.5 bg-[#f59e0b]/20 rounded-xl text-[#f59e0b] shadow-lg shadow-amber-500/10">
@@ -632,16 +637,16 @@ export default function StrategySettings() {
 
                         <div className="space-y-4 mt-4">
                           <div>
-                            <label className="text-xs font-bold text-gray-400 block mb-1.5 uppercase tracking-wider">Min OI</label>
+                            <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Min OI</label>
                             <input type="number" defaultValue="1000" className="w-full bg-background border border-border rounded-lg px-3 py-2.5 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all" />
                           </div>
                           <div className="grid grid-cols-2 gap-4">
                             <div>
-                              <label className="text-xs font-bold text-gray-400 block mb-1.5 uppercase tracking-wider">PCR Upper</label>
+                              <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">PCR Upper</label>
                               <input type="number" defaultValue="1.20" step="0.05" className="w-full bg-background border border-border rounded-lg px-3 py-2.5 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all" />
                             </div>
                             <div>
-                              <label className="text-xs font-bold text-gray-400 block mb-1.5 uppercase tracking-wider">PCR Lower</label>
+                              <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">PCR Lower</label>
                               <input type="number" defaultValue="0.80" step="0.05" className="w-full bg-background border border-border rounded-lg px-3 py-2.5 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all" />
                             </div>
                           </div>
@@ -661,7 +666,7 @@ export default function StrategySettings() {
                   {/* === COLUMN 4 === */}
                   <div className="space-y-6">
                     {/* MACD Settings */}
-                    <div className="bg-gradient-to-br from-slate-800 to-slate-900 p-6 rounded-2xl border border-slate-500/50 space-y-5 h-[420px] flex flex-col justify-between shadow-xl hover:shadow-primary/5 transition-all duration-300">
+                    <div className="glass-card p-6 rounded-2xl space-y-5 h-[420px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
                       <div>
                         <div className="flex items-center gap-3 border-b border-border pb-3">
                           <div className="p-2.5 bg-[#ff9f43]/20 rounded-xl text-[#ff9f43] shadow-lg shadow-orange-500/10">
@@ -672,13 +677,13 @@ export default function StrategySettings() {
 
                         <div className="space-y-4 mt-4">
                           <div>
-                            <label className="text-xs font-bold text-gray-400 block mb-1.5 uppercase tracking-wider">Fast Length</label>
+                            <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Fast Length</label>
                             <select className="w-full bg-background border border-border rounded-lg px-3 py-2.5 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all">
                               <option>12</option>
                             </select>
                           </div>
                           <div>
-                            <label className="text-xs font-bold text-gray-400 block mb-1.5 uppercase tracking-wider">Slow Length</label>
+                            <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Slow Length</label>
                             <select className="w-full bg-background border border-border rounded-lg px-3 py-2.5 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all">
                               <option>26</option>
                             </select>
@@ -696,7 +701,7 @@ export default function StrategySettings() {
                     </div>
 
                     {/* Greeks Filters */}
-                    <div className="bg-gradient-to-br from-slate-800 to-slate-900 p-6 rounded-2xl border border-slate-500/50 space-y-5 h-[420px] flex flex-col justify-between shadow-xl hover:shadow-primary/5 transition-all duration-300">
+                    <div className="glass-card p-6 rounded-2xl space-y-5 h-[420px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
                       <div>
                         <div className="flex items-center gap-3 border-b border-border pb-3">
                           <div className="p-2.5 bg-[#8c52ff]/20 rounded-xl text-[#8c52ff] shadow-lg shadow-purple-500/10">
@@ -707,10 +712,10 @@ export default function StrategySettings() {
 
                         <div className="space-y-4 mt-4">
                           <div>
-                            <label className="text-xs font-bold text-gray-400 block mb-1.5 uppercase tracking-wider">Delta Range</label>
+                            <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Delta Range</label>
                             <div className="flex items-center gap-3">
                               <input type="number" defaultValue="0.40" step="0.05" className="w-full bg-background border border-border rounded-lg px-3 py-2.5 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all" />
-                              <span className="text-gray-500 text-xs">to</span>
+                              <span className="text-muted-foreground text-xs">to</span>
                               <input type="number" defaultValue="0.70" step="0.05" className="w-full bg-background border border-border rounded-lg px-3 py-2.5 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all" />
                             </div>
                           </div>
@@ -834,7 +839,7 @@ export default function StrategySettings() {
                     <p className="text-xs text-emerald-400 font-extrabold tracking-wide">EXCELLENT</p>
                   </div>
 
-                  <div className="flex justify-between w-40 text-[10px] text-gray-500 mt-1">
+                  <div className="flex justify-between w-40 text-[10px] text-muted-foreground mt-1">
                     <span>0%</span>
                     <span>100%</span>
                   </div>
@@ -872,7 +877,7 @@ export default function StrategySettings() {
                     <option>My Momentum Setup</option>
                     <option>Conservative Grid</option>
                   </select>
-                  <button className="p-2 bg-background hover:bg-muted border border-border rounded-lg text-gray-400 hover:text-foreground transition-colors shrink-0">
+                  <button className="p-2 bg-background hover:bg-muted border border-border rounded-lg text-muted-foreground hover:text-foreground transition-colors shrink-0">
                     <Eye className="w-4 h-4" />
                   </button>
                   <button className="p-2 bg-background hover:bg-muted border border-border rounded-lg text-red-500 hover:text-red-400 transition-colors shrink-0">

@@ -9,7 +9,7 @@ from pathlib import Path
 from fyers_apiv3 import fyersModel
 
 # Add project root to python path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from brokers.credentials import load_credentials
 
@@ -129,7 +129,7 @@ def main():
             print("\n[Success] Login successful! Token generated.")
             
             # Save token
-            token_path = Path(__file__).resolve().parents[1] / ".fyers_tokens.json"
+            token_path = Path(__file__).resolve().parents[2] / ".fyers_tokens.json"
             with open(token_path, "w") as f:
                 json.dump({"access_token": token}, f)
             print(f"Token saved to {token_path}")

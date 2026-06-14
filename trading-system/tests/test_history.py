@@ -2,6 +2,10 @@ import os
 import sys
 import json
 import time
+from pathlib import Path
+
+# Add project root to python path
+sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from brokers import BrokerFactory
 
@@ -27,7 +31,11 @@ def test_history():
         
         print("Generating signals...")
         t3 = time.time()
-        signals = registry.run_strategy("ema_rsi", df)
+        signals_data = registry.run_strategy("ema_rsi", df)
+        if isinstance(signals_data, tuple):
+            signals, _ = signals_data
+        else:
+            signals = signals_data
         t4 = time.time()
         print(f"Signals generated in {t4-t3:.2f}s.")
         

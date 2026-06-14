@@ -28,7 +28,38 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className="h-full" suppressHydrationWarning>
-      <head />
+      <head>
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              (function() {
+                try {
+                  const theme = localStorage.getItem('theme') || 'dark';
+                  const accentColor = localStorage.getItem('accentColor') || '#ff4d4d';
+                  const density = localStorage.getItem('density') || 'compact';
+                  const glassEnabled = localStorage.getItem('glassEnabled') !== 'false';
+                  
+                  if (theme === 'light') document.documentElement.classList.add('light');
+                  document.documentElement.style.setProperty('--primary', accentColor);
+                  
+                  // Calculate RGB for glow effects
+                  const hex = accentColor.replace('#', '');
+                  const r = parseInt(hex.substring(0, 2), 16);
+                  const g = parseInt(hex.substring(2, 4), 16);
+                  const b = parseInt(hex.substring(4, 6), 16);
+                  if (!isNaN(r) && !isNaN(g) && !isNaN(b)) {
+                    document.documentElement.style.setProperty('--primary-rgb', r + ', ' + g + ', ' + b);
+                    document.documentElement.style.setProperty('--glow-primary', 'rgba(' + r + ', ' + g + ', ' + b + ', 0.25)');
+                  }
+
+                  if (density === 'spacious') document.documentElement.classList.add('spacious-mode');
+                  if (!glassEnabled) document.documentElement.classList.add('no-glass');
+                } catch (e) {}
+              })();
+            `,
+          }}
+        />
+      </head>
       <body className={`${inter.variable} ${poppins.variable} font-sans min-h-full bg-background text-foreground antialiased`}>
         <ThemeProvider>
           {children}

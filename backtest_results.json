@@ -1,0 +1,991 @@
+{
+    "symbol": "NSE:NIFTY50-INDEX",
+    "timeframe": "5 Min",
+    "strategy": "institutional_momentum",
+    "stats": {
+        "profitFactor": 1.66,
+        "winRate": "37.5",
+        "totalTrades": 80,
+        "successTrades": 30,
+        "failedTrades": 50,
+        "stoplossTrades": 0,
+        "maxDrawdown": -40.55,
+        "netProfit": 210114.43823499966,
+        "avgWinScore": "0.0",
+        "avgLossScore": "0.0",
+        "expectancy": 2646.43,
+        "sharpeRatio": 2.54,
+        "sortinoRatio": 8.65,
+        "targetPct": 1000.0,
+        "stoplossPct": 10.0,
+        "donchianPeriod": 10
+    },
+    "equityCurve": [
+        {
+            "name": "2025-05-19 09:15",
+            "value": 100000.0
+        },
+        {
+            "name": "2025-06-04 11:10",
+            "value": 100000.0
+        },
+        {
+            "name": "2025-06-20 13:05",
+            "value": 100000.0
+        },
+        {
+            "name": "2025-07-08 15:00",
+            "value": 77162.46428000004
+        },
+        {
+            "name": "2025-07-25 10:40",
+            "value": 82345.29488000015
+        },
+        {
+            "name": "2025-08-12 12:35",
+            "value": 83442.17552500036
+        },
+        {
+            "name": "2025-09-01 14:30",
+            "value": 91754.72534500048
+        },
+        {
+            "name": "2025-09-18 10:10",
+            "value": 82276.70721500079
+        },
+        {
+            "name": "2025-10-07 12:05",
+            "value": 120743.19642000081
+        },
+        {
+            "name": "2025-10-27 12:55",
+            "value": 139133.06303500064
+        },
+        {
+            "name": "2025-11-13 14:50",
+            "value": 125272.19314000098
+        },
+        {
+            "name": "2025-12-02 10:30",
+            "value": 103898.38023500095
+        },
+        {
+            "name": "2025-12-18 12:25",
+            "value": 99938.40840000082
+        },
+        {
+            "name": "2026-01-06 14:20",
+            "value": 97969.94021500088
+        },
+        {
+            "name": "2026-01-27 10:00",
+            "value": 130402.89138000073
+        },
+        {
+            "name": "2026-02-11 11:55",
+            "value": 132404.8587950004
+        },
+        {
+            "name": "2026-02-27 13:50",
+            "value": 131151.63104500007
+        },
+        {
+            "name": "2026-03-19 09:30",
+            "value": 177124.02097999997
+        },
+        {
+            "name": "2026-04-09 11:25",
+            "value": 200096.48286499994
+        },
+        {
+            "name": "2026-04-28 13:20",
+            "value": 284824.47084999963
+        },
+        {
+            "name": "2026-05-15 15:15",
+            "value": 311527.2926849996
+        }
+    ],
+    "trades": [
+        {
+            "id": "T-1",
+            "type": "BUY",
+            "entry": 25595.118,
+            "exit": 25427.063570000002,
+            "scales": 0,
+            "pnl": -5481.768974999886,
+            "time": "2025-07-01 09:45",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-2",
+            "type": "SELL",
+            "entry": 25427.063570000002,
+            "exit": 25572.31344,
+            "scales": 0,
+            "pnl": -4740.6207749999885,
+            "time": "2025-07-02 13:20",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-3",
+            "type": "BUY",
+            "entry": 25572.31344,
+            "exit": 25421.21474,
+            "scales": 0,
+            "pnl": -4930.707750000074,
+            "time": "2025-07-03 11:20",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-4",
+            "type": "SELL",
+            "entry": 25421.21474,
+            "exit": 25459.64091,
+            "scales": 2,
+            "pnl": -4465.359644999906,
+            "time": "2025-07-03 14:30",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-5",
+            "type": "BUY",
+            "entry": 25459.64091,
+            "exit": 25426.763629999998,
+            "scales": 0,
+            "pnl": -1088.5116000000198,
+            "time": "2025-07-04 14:40",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-6",
+            "type": "SELL",
+            "entry": 25426.763629999998,
+            "exit": 25487.39646,
+            "scales": 0,
+            "pnl": -1990.5669750000743,
+            "time": "2025-07-08 11:05",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-7",
+            "type": "BUY",
+            "entry": 25487.39646,
+            "exit": 25452.308520000002,
+            "scales": 1,
+            "pnl": -2371.4217299998854,
+            "time": "2025-07-08 14:55",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-8",
+            "type": "SELL",
+            "entry": 25452.308520000002,
+            "exit": 25206.94038,
+            "scales": 2,
+            "pnl": 13794.77239000004,
+            "time": "2025-07-09 14:30",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-9",
+            "type": "BUY",
+            "entry": 25206.94038,
+            "exit": 25117.22555,
+            "scales": 1,
+            "pnl": -5044.923175000027,
+            "time": "2025-07-15 15:10",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-10",
+            "type": "SELL",
+            "entry": 25117.22555,
+            "exit": 25079.96499,
+            "scales": 2,
+            "pnl": 287.28851999996004,
+            "time": "2025-07-17 14:45",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-11",
+            "type": "BUY",
+            "entry": 25079.96499,
+            "exit": 25093.68026,
+            "scales": 2,
+            "pnl": -1382.8854049999718,
+            "time": "2025-07-21 11:05",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-12",
+            "type": "SELL",
+            "entry": 25093.68026,
+            "exit": 24799.90899,
+            "scales": 2,
+            "pnl": 15483.278595000027,
+            "time": "2025-07-24 11:30",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-13",
+            "type": "BUY",
+            "entry": 24799.90899,
+            "exit": 24721.0548,
+            "scales": 2,
+            "pnl": -7332.2075749998985,
+            "time": "2025-07-29 13:50",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-14",
+            "type": "SELL",
+            "entry": 24721.0548,
+            "exit": 24573.11364,
+            "scales": 2,
+            "pnl": 7326.851220000106,
+            "time": "2025-08-01 09:15",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-15",
+            "type": "BUY",
+            "entry": 24573.11364,
+            "exit": 24373.97423,
+            "scales": 1,
+            "pnl": -10576.443144999996,
+            "time": "2025-08-07 15:00",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-16",
+            "type": "SELL",
+            "entry": 24373.97423,
+            "exit": 24487.34649,
+            "scales": 0,
+            "pnl": -3704.598450000003,
+            "time": "2025-08-08 15:05",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-17",
+            "type": "BUY",
+            "entry": 24487.34649,
+            "exit": 24502.54851,
+            "scales": 2,
+            "pnl": -1054.7820299999275,
+            "time": "2025-08-11 13:00",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-18",
+            "type": "SELL",
+            "entry": 24502.54851,
+            "exit": 24968.74275,
+            "scales": 0,
+            "pnl": -15171.312800000023,
+            "time": "2025-08-12 14:40",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-19",
+            "type": "BUY",
+            "entry": 24968.74275,
+            "exit": 25017.4955,
+            "scales": 2,
+            "pnl": 1067.520374999971,
+            "time": "2025-08-18 09:25",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-20",
+            "type": "SELL",
+            "entry": 25017.4955,
+            "exit": 24617.67255,
+            "scales": 2,
+            "pnl": 23551.124275000097,
+            "time": "2025-08-22 09:15",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-21",
+            "type": "BUY",
+            "entry": 24617.67255,
+            "exit": 24584.982020000003,
+            "scales": 2,
+            "pnl": -4135.817584999824,
+            "time": "2025-09-01 14:05",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-22",
+            "type": "SELL",
+            "entry": 24584.982020000003,
+            "exit": 24679.28487,
+            "scales": 1,
+            "pnl": -5302.200544999863,
+            "time": "2025-09-02 13:55",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-23",
+            "type": "BUY",
+            "entry": 24679.28487,
+            "exit": 25251.19875,
+            "scales": 2,
+            "pnl": 33179.16110000003,
+            "time": "2025-09-03 14:30",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-24",
+            "type": "SELL",
+            "entry": 25251.19875,
+            "exit": 25256.80035,
+            "scales": 2,
+            "pnl": -2854.8632000001126,
+            "time": "2025-09-22 13:55",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-25",
+            "type": "BUY",
+            "entry": 25256.80035,
+            "exit": 25060.43691,
+            "scales": 0,
+            "pnl": -6401.811800000032,
+            "time": "2025-09-23 14:05",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-26",
+            "type": "SELL",
+            "entry": 25060.43691,
+            "exit": 24799.258859999998,
+            "scales": 2,
+            "pnl": 14624.003105000134,
+            "time": "2025-09-24 14:40",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-27",
+            "type": "BUY",
+            "entry": 24799.258859999998,
+            "exit": 25043.79024,
+            "scales": 2,
+            "pnl": 13820.557529999962,
+            "time": "2025-10-01 11:55",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-28",
+            "type": "SELL",
+            "entry": 25043.79024,
+            "exit": 25333.26564,
+            "scales": 0,
+            "pnl": -9427.950500000097,
+            "time": "2025-10-08 11:05",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-29",
+            "type": "BUY",
+            "entry": 25333.26564,
+            "exit": 25166.11577,
+            "scales": 0,
+            "pnl": -5452.370775000036,
+            "time": "2025-10-10 13:35",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-30",
+            "type": "SELL",
+            "entry": 25166.11577,
+            "exit": 25298.358659999998,
+            "scales": 0,
+            "pnl": -4317.893924999926,
+            "time": "2025-10-13 13:00",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-31",
+            "type": "BUY",
+            "entry": 25298.358659999998,
+            "exit": 25061.28674,
+            "scales": 0,
+            "pnl": -7724.837399999951,
+            "time": "2025-10-14 09:15",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-32",
+            "type": "SELL",
+            "entry": 25061.28674,
+            "exit": 25244.99799,
+            "scales": 0,
+            "pnl": -5990.6156250000095,
+            "time": "2025-10-14 12:40",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-33",
+            "type": "BUY",
+            "entry": 25244.99799,
+            "exit": 25860.176929999998,
+            "scales": 2,
+            "pnl": 37622.977309999864,
+            "time": "2025-10-15 09:15",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-34",
+            "type": "SELL",
+            "entry": 25860.176929999998,
+            "exit": 25988.34663,
+            "scales": 2,
+            "pnl": -10351.807410000083,
+            "time": "2025-10-23 15:10",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-35",
+            "type": "BUY",
+            "entry": 25988.34663,
+            "exit": 25828.3333,
+            "scales": 1,
+            "pnl": -8427.900425000065,
+            "time": "2025-10-27 14:15",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-36",
+            "type": "SELL",
+            "entry": 25828.3333,
+            "exit": 25559.710919999998,
+            "scales": 2,
+            "pnl": 15121.87791000012,
+            "time": "2025-10-28 14:25",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-37",
+            "type": "BUY",
+            "entry": 25559.710919999998,
+            "exit": 25560.33691,
+            "scales": 2,
+            "pnl": -2008.0742049998207,
+            "time": "2025-11-10 09:15",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-38",
+            "type": "SELL",
+            "entry": 25560.33691,
+            "exit": 25649.728919999998,
+            "scales": 2,
+            "pnl": -8094.965764999819,
+            "time": "2025-11-10 15:10",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-39",
+            "type": "BUY",
+            "entry": 25649.728919999998,
+            "exit": 25900.218920000003,
+            "scales": 2,
+            "pnl": 12971.930440000266,
+            "time": "2025-11-11 13:35",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-40",
+            "type": "SELL",
+            "entry": 25900.218920000003,
+            "exit": 26169.88293,
+            "scales": 1,
+            "pnl": -13770.207204999891,
+            "time": "2025-11-18 15:05",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-41",
+            "type": "BUY",
+            "entry": 26169.88293,
+            "exit": 26065.135929999997,
+            "scales": 1,
+            "pnl": -5796.502620000174,
+            "time": "2025-11-20 12:30",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-42",
+            "type": "SELL",
+            "entry": 26065.135929999997,
+            "exit": 26207.14038,
+            "scales": 2,
+            "pnl": -11250.836785000165,
+            "time": "2025-11-21 14:55",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-43",
+            "type": "BUY",
+            "entry": 26207.14038,
+            "exit": 26185.41187,
+            "scales": 2,
+            "pnl": -3428.1967350000414,
+            "time": "2025-11-26 14:00",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-44",
+            "type": "SELL",
+            "entry": 26185.41187,
+            "exit": 26192.13738,
+            "scales": 2,
+            "pnl": -2870.975235000011,
+            "time": "2025-12-01 11:45",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-45",
+            "type": "BUY",
+            "entry": 26192.13738,
+            "exit": 26030.09294,
+            "scales": 0,
+            "pnl": -5286.444300000048,
+            "time": "2025-12-05 15:00",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-46",
+            "type": "SELL",
+            "entry": 26030.09294,
+            "exit": 25921.6833,
+            "scales": 2,
+            "pnl": 4257.447699999917,
+            "time": "2025-12-08 12:10",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-47",
+            "type": "BUY",
+            "entry": 25921.6833,
+            "exit": 25776.14374,
+            "scales": 2,
+            "pnl": -12103.036020000027,
+            "time": "2025-12-11 14:25",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-48",
+            "type": "SELL",
+            "entry": 25776.14374,
+            "exit": 25949.488859999998,
+            "scales": 0,
+            "pnl": -5653.716399999939,
+            "time": "2025-12-18 14:20",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-49",
+            "type": "BUY",
+            "entry": 25949.488859999998,
+            "exit": 26133.12233,
+            "scales": 2,
+            "pnl": 6768.802334999957,
+            "time": "2025-12-19 09:20",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-50",
+            "type": "SELL",
+            "entry": 26133.12233,
+            "exit": 26073.76371,
+            "scales": 2,
+            "pnl": 1743.9164300000048,
+            "time": "2025-12-24 14:25",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-51",
+            "type": "BUY",
+            "entry": 26073.76371,
+            "exit": 26218.70521,
+            "scales": 2,
+            "pnl": 7375.565470000052,
+            "time": "2025-12-31 11:40",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-52",
+            "type": "SELL",
+            "entry": 26218.70521,
+            "exit": 25752.1494,
+            "scales": 2,
+            "pnl": 27986.283025000106,
+            "time": "2026-01-05 14:00",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-53",
+            "type": "BUY",
+            "entry": 25752.1494,
+            "exit": 25654.218129999997,
+            "scales": 0,
+            "pnl": -3202.766275000031,
+            "time": "2026-01-14 11:15",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-54",
+            "type": "SELL",
+            "entry": 25654.218129999997,
+            "exit": 25391.72733,
+            "scales": 2,
+            "pnl": 14625.276439999796,
+            "time": "2026-01-14 13:40",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-55",
+            "type": "BUY",
+            "entry": 25391.72733,
+            "exit": 25180.16296,
+            "scales": 0,
+            "pnl": -6895.842025000002,
+            "time": "2026-01-22 09:25",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-56",
+            "type": "SELL",
+            "entry": 25180.16296,
+            "exit": 25175.434080000003,
+            "scales": 2,
+            "pnl": -2301.8019600001044,
+            "time": "2026-01-23 12:10",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-57",
+            "type": "BUY",
+            "entry": 25175.434080000003,
+            "exit": 25227.55348,
+            "scales": 2,
+            "pnl": -99.60814000018581,
+            "time": "2026-01-27 15:10",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-58",
+            "type": "SELL",
+            "entry": 25227.55348,
+            "exit": 25073.66373,
+            "scales": 2,
+            "pnl": 4463.377514999955,
+            "time": "2026-01-30 13:15",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-59",
+            "type": "BUY",
+            "entry": 25073.66373,
+            "exit": 25838.73122,
+            "scales": 2,
+            "pnl": 25784.892465000077,
+            "time": "2026-02-02 15:00",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-60",
+            "type": "SELL",
+            "entry": 25838.73122,
+            "exit": 25691.787330000003,
+            "scales": 2,
+            "pnl": 4917.681864999877,
+            "time": "2026-02-12 09:20",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-61",
+            "type": "BUY",
+            "entry": 25691.787330000003,
+            "exit": 25598.3793,
+            "scales": 2,
+            "pnl": -8365.223375000036,
+            "time": "2026-02-16 15:00",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-62",
+            "type": "SELL",
+            "entry": 25598.3793,
+            "exit": 25640.026980000002,
+            "scales": 2,
+            "pnl": -4722.412960000136,
+            "time": "2026-02-19 12:10",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-63",
+            "type": "BUY",
+            "entry": 25640.026980000002,
+            "exit": 25387.47149,
+            "scales": 2,
+            "pnl": -18768.165745000093,
+            "time": "2026-02-20 12:15",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-64",
+            "type": "SELL",
+            "entry": 25387.47149,
+            "exit": 24731.74536,
+            "scales": 2,
+            "pnl": 40157.64770499991,
+            "time": "2026-02-24 12:45",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-65",
+            "type": "BUY",
+            "entry": 24731.74536,
+            "exit": 24483.90224,
+            "scales": 2,
+            "pnl": -19718.029720000064,
+            "time": "2026-03-05 14:40",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-66",
+            "type": "SELL",
+            "entry": 24483.90224,
+            "exit": 24257.00043,
+            "scales": 2,
+            "pnl": 2586.2950649999784,
+            "time": "2026-03-06 14:45",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-67",
+            "type": "BUY",
+            "entry": 24257.00043,
+            "exit": 23956.7077,
+            "scales": 0,
+            "pnl": -9779.513725000033,
+            "time": "2026-03-10 13:35",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-68",
+            "type": "SELL",
+            "entry": 23956.7077,
+            "exit": 23416.28232,
+            "scales": 2,
+            "pnl": 32825.99061000008,
+            "time": "2026-03-11 13:00",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-69",
+            "type": "BUY",
+            "entry": 23416.28232,
+            "exit": 23123.42439,
+            "scales": 2,
+            "pnl": -20866.702244999964,
+            "time": "2026-03-16 14:35",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-70",
+            "type": "SELL",
+            "entry": 23123.42439,
+            "exit": 22886.0763,
+            "scales": 2,
+            "pnl": 12899.371324999964,
+            "time": "2026-03-19 14:00",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-71",
+            "type": "BUY",
+            "entry": 22886.0763,
+            "exit": 23037.19164,
+            "scales": 2,
+            "pnl": 6970.981030000015,
+            "time": "2026-03-24 12:20",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-72",
+            "type": "SELL",
+            "entry": 23037.19164,
+            "exit": 22631.77545,
+            "scales": 2,
+            "pnl": 24048.811774999944,
+            "time": "2026-03-27 09:15",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-73",
+            "type": "BUY",
+            "entry": 22631.77545,
+            "exit": 24102.028629999997,
+            "scales": 2,
+            "pnl": 92300.14450999978,
+            "time": "2026-04-02 14:10",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-74",
+            "type": "SELL",
+            "entry": 24102.028629999997,
+            "exit": 24329.51493,
+            "scales": 0,
+            "pnl": -7413.304750000134,
+            "time": "2026-04-16 13:20",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-75",
+            "type": "BUY",
+            "entry": 24329.51493,
+            "exit": 24364.6261,
+            "scales": 2,
+            "pnl": -98.8517749999537,
+            "time": "2026-04-17 14:20",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-76",
+            "type": "SELL",
+            "entry": 24364.6261,
+            "exit": 24181.88541,
+            "scales": 2,
+            "pnl": 6690.73930500011,
+            "time": "2026-04-22 15:20",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-77",
+            "type": "BUY",
+            "entry": 24181.88541,
+            "exit": 24132.37256,
+            "scales": 2,
+            "pnl": -5491.645705000003,
+            "time": "2026-05-04 09:15",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-78",
+            "type": "SELL",
+            "entry": 24132.37256,
+            "exit": 23609.37093,
+            "scales": 2,
+            "pnl": 27176.883214999943,
+            "time": "2026-05-08 13:55",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-79",
+            "type": "BUY",
+            "entry": 23609.37093,
+            "exit": 23621.22481,
+            "scales": 2,
+            "pnl": -1593.1549800000266,
+            "time": "2026-05-14 11:30",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        },
+        {
+            "id": "T-80",
+            "type": "SELL",
+            "entry": 23621.22481,
+            "exit": 23664.081869999998,
+            "scales": 0,
+            "pnl": -1412.8544499999498,
+            "time": "2026-05-15 14:45",
+            "score": 0,
+            "exit_reason": "SIGNAL"
+        }
+    ]
+}

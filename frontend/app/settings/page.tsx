@@ -20,6 +20,7 @@ import {
   RotateCcw
 } from "lucide-react";
 import { useTheme } from "@/components/theme-provider";
+import CustomSwitch from "@/components/custom-switch";
 
 export default function Settings() {
   const { 
@@ -36,10 +37,12 @@ export default function Settings() {
     setCustomHex(accentColor);
   }, [accentColor]);
 
-  const handleHexInput = (hex: string) => {
-    setCustomHex(hex);
-    if (/^#[0-9A-Fa-f]{6}$/.test(hex)) {
-      setAccentColor(hex);
+  const handleHexInput = (raw: string) => {
+    const cleanHex = raw.replace(/[^0-9A-Fa-f]/g, '').substring(0, 6);
+    const hexWithHash = '#' + cleanHex;
+    setCustomHex(hexWithHash);
+    if (cleanHex.length === 6) {
+      setAccentColor(hexWithHash);
     }
   };
 
@@ -168,7 +171,7 @@ export default function Settings() {
                 <p className="text-sm text-muted-foreground">Start or stop the live trading bot. Make sure your credentials are filled in `settings.json`.</p>
                 <button 
                   onClick={handleStartBot}
-                  className="px-4 py-2 bg-success text-white rounded-lg text-sm font-medium hover:bg-success/90 transition-colors flex items-center gap-2"
+                  className="px-4 py-2 bg-primary text-white hover:bg-primary/90 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 w-fit"
                 >
                   <Zap className="w-4 h-4" />
                   Start Live Bot
@@ -176,43 +179,43 @@ export default function Settings() {
               </div>
 
               {/* Broker Credentials */}
-              <div className="glass-card rounded-xl p-6 border border-border/20 space-y-4">
+              <div className="stat-card rounded-xl p-6 border border-border/20 space-y-5 shadow-lg group">
                 <div className="flex justify-between items-center">
-                  <h3 className="font-display font-bold text-lg text-foreground">Fyers Credentials</h3>
-                  <Shield className="w-4 h-4 text-muted-foreground" />
+                  <h3 className="font-display font-bold text-lg text-foreground tracking-tight">Fyers Credentials</h3>
+                  <Shield className="w-5 h-5 text-primary opacity-50 group-hover:opacity-100 transition-opacity" />
                 </div>
                 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                   <div>
-                    <label className="text-xs font-medium text-muted-foreground block mb-1.5">Client ID</label>
+                    <label className="text-xs font-bold uppercase tracking-wider text-muted-foreground block mb-1.5">Client ID</label>
                     <input
                       type="text"
                       value={credentials.fyers_user_id || ""}
                       onChange={(e) => setCredentials({...credentials, fyers_user_id: e.target.value})}
-                      className="w-full bg-muted/30 border border-border/50 rounded-lg px-4 py-2.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary focus:border-transparent"
+                      className="input-field w-full"
                       placeholder="Enter Client ID"
                     />
                   </div>
 
                   <div>
-                    <label className="text-xs font-medium text-muted-foreground block mb-1.5">MPIN</label>
+                    <label className="text-xs font-bold uppercase tracking-wider text-muted-foreground block mb-1.5">MPIN</label>
                     <input
                       type="password"
                       value={credentials.fyers_pin || ""}
                       onChange={(e) => setCredentials({...credentials, fyers_pin: e.target.value})}
-                      className="w-full bg-muted/30 border border-border/50 rounded-lg px-4 py-2.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary focus:border-transparent"
+                      className="input-field w-full"
                       placeholder="Enter 4-digit PIN"
                     />
                   </div>
                 </div>
 
                 <div>
-                  <label className="text-xs font-medium text-muted-foreground block mb-1.5">TOTP Secret Key</label>
+                  <label className="text-xs font-bold uppercase tracking-wider text-muted-foreground block mb-1.5">TOTP Secret Key</label>
                   <input
-                    type="text"
+                    type="password"
                     value={credentials.fyers_totp_key || ""}
                     onChange={(e) => setCredentials({...credentials, fyers_totp_key: e.target.value})}
-                    className="w-full bg-muted/30 border border-border/50 rounded-lg px-4 py-2.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary focus:border-transparent"
+                    className="input-field w-full"
                     placeholder="Enter TOTP Secret Key"
                   />
                 </div>
@@ -242,73 +245,73 @@ export default function Settings() {
               </div>
 
               {/* Profile Settings */}
-              <div className="glass-card rounded-xl p-6 border border-border/20 space-y-4">
+              <div className="stat-card rounded-xl p-6 border border-border/20 space-y-5 shadow-lg group">
                 <div className="flex justify-between items-center">
-                  <h3 className="font-display font-bold text-lg text-foreground">Account Profile</h3>
-                  <User className="w-4 h-4 text-muted-foreground" />
+                  <h3 className="font-display font-bold text-lg text-foreground tracking-tight">Account Profile</h3>
+                  <User className="w-5 h-5 text-primary opacity-50 group-hover:opacity-100 transition-opacity" />
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                   <div>
-                    <label className="text-xs font-medium text-muted-foreground block mb-1.5">Full Name</label>
+                    <label className="text-xs font-bold uppercase tracking-wider text-muted-foreground block mb-1.5">Full Name</label>
                     <input
                       type="text"
                       defaultValue="Institutional Trader"
-                      className="w-full bg-muted/30 border border-border/50 rounded-lg px-4 py-2.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary focus:border-transparent"
+                      className="input-field w-full"
                     />
                   </div>
 
                   <div>
-                    <label className="text-xs font-medium text-muted-foreground block mb-1.5">Email Address</label>
+                    <label className="text-xs font-bold uppercase tracking-wider text-muted-foreground block mb-1.5">Email Address</label>
                     <input
                       type="email"
                       defaultValue="trader@quantai.com"
-                      className="w-full bg-muted/30 border border-border/50 rounded-lg px-4 py-2.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary focus:border-transparent"
+                      className="input-field w-full"
                     />
                   </div>
                 </div>
 
-                <button className="px-4 py-2 bg-[#ff4d4d] text-white hover:bg-[#ff4d4d]/90 rounded-lg text-sm font-medium transition-colors">
+                <button className="px-4 py-2 bg-primary text-white hover:bg-primary/90 rounded-lg text-sm font-medium transition-colors w-fit mt-2">
                   Update Profile
                 </button>
               </div>
 
               {/* Security */}
-              <div className="glass-card rounded-xl p-6 border border-border/20 space-y-4">
+              <div className="stat-card rounded-xl p-6 border border-border/20 space-y-5 shadow-lg group">
                 <div className="flex justify-between items-center">
-                  <h3 className="font-display font-bold text-lg text-foreground">Security & Password</h3>
-                  <Lock className="w-4 h-4 text-muted-foreground" />
+                  <h3 className="font-display font-bold text-lg text-foreground tracking-tight">Security & Password</h3>
+                  <Lock className="w-5 h-5 text-primary opacity-50 group-hover:opacity-100 transition-opacity" />
                 </div>
 
-                <div className="space-y-4">
+                <div className="space-y-5">
                   <div>
-                    <label className="text-xs font-medium text-muted-foreground block mb-1.5">Current Password</label>
+                    <label className="text-xs font-bold uppercase tracking-wider text-muted-foreground block mb-1.5">Current Password</label>
                     <input
                       type="password"
                       defaultValue="••••••••••••"
-                      className="w-full bg-muted/30 border border-border/50 rounded-lg px-4 py-2.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary focus:border-transparent"
+                      className="input-field w-full"
                     />
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                     <div>
-                      <label className="text-xs font-medium text-muted-foreground block mb-1.5">New Password</label>
+                      <label className="text-xs font-bold uppercase tracking-wider text-muted-foreground block mb-1.5">New Password</label>
                       <input
                         type="password"
-                        className="w-full bg-muted/30 border border-border/50 rounded-lg px-4 py-2.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary focus:border-transparent"
+                        className="input-field w-full"
                       />
                     </div>
                     <div>
-                      <label className="text-xs font-medium text-muted-foreground block mb-1.5">Confirm New Password</label>
+                      <label className="text-xs font-bold uppercase tracking-wider text-muted-foreground block mb-1.5">Confirm New Password</label>
                       <input
                         type="password"
-                        className="w-full bg-muted/30 border border-border/50 rounded-lg px-4 py-2.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary focus:border-transparent"
+                        className="input-field w-full"
                       />
                     </div>
                   </div>
                 </div>
 
-                <button className="px-4 py-2 bg-muted hover:bg-muted/70 text-foreground rounded-lg text-sm font-medium transition-colors border border-border/50">
+                <button className="px-4 py-2 bg-primary text-white hover:bg-primary/90 rounded-lg text-sm font-medium transition-colors w-fit">
                   Change Password
                 </button>
               </div>
@@ -317,65 +320,62 @@ export default function Settings() {
             {/* Right Column: Preferences & Notifications */}
             <div className="space-y-6">
               {/* Notifications */}
-              <div className="glass-card rounded-xl p-6 border border-border/20 space-y-4">
+              <div className="stat-card rounded-xl p-6 border border-border/20 space-y-5 shadow-lg group">
                 <div className="flex justify-between items-center">
-                  <h3 className="font-display font-bold text-lg text-foreground">Notifications</h3>
-                  <Bell className="w-4 h-4 text-muted-foreground" />
+                  <h3 className="font-display font-bold text-lg text-foreground tracking-tight">Notifications</h3>
+                  <Bell className="w-5 h-5 text-primary opacity-50 group-hover:opacity-100 transition-opacity" />
                 </div>
 
-                <div className="space-y-3">
+                <div className="space-y-4">
                   <div className="flex justify-between items-center">
                     <div>
-                      <p className="text-sm font-medium text-foreground">Email Alerts</p>
-                      <p className="text-xs text-muted-foreground">Daily summaries & critical alerts</p>
+                      <p className="text-sm font-bold text-foreground">Email Alerts</p>
+                      <p className="text-[10px] uppercase tracking-wider text-muted-foreground mt-0.5">Daily summaries & critical alerts</p>
                     </div>
-                    <button
-                      onClick={() => setNotifications({ ...notifications, email: !notifications.email })}
-                      className={`w-10 h-6 rounded-full p-1 transition-colors ${notifications.email ? "bg-primary" : "bg-muted"}`}
-                    >
-                      <div className={`w-4 h-4 rounded-full bg-white transition-transform ${notifications.email ? "translate-x-4" : ""}`}></div>
-                    </button>
+                    <CustomSwitch 
+                      checked={notifications.email} 
+                      onChange={(checked) => setNotifications({ ...notifications, email: checked })} 
+                      size="sm"
+                    />
                   </div>
 
                   <div className="flex justify-between items-center">
                     <div>
-                      <p className="text-sm font-medium text-foreground">Telegram Channel</p>
-                      <p className="text-xs text-muted-foreground">Real-time signal push</p>
+                      <p className="text-sm font-bold text-foreground">Telegram Channel</p>
+                      <p className="text-[10px] uppercase tracking-wider text-muted-foreground mt-0.5">Real-time signal push</p>
                     </div>
-                    <button
-                      onClick={() => setNotifications({ ...notifications, telegram: !notifications.telegram })}
-                      className={`w-10 h-6 rounded-full p-1 transition-colors ${notifications.telegram ? "bg-primary" : "bg-muted"}`}
-                    >
-                      <div className={`w-4 h-4 rounded-full bg-white transition-transform ${notifications.telegram ? "translate-x-4" : ""}`}></div>
-                    </button>
+                    <CustomSwitch 
+                      checked={notifications.telegram} 
+                      onChange={(checked) => setNotifications({ ...notifications, telegram: checked })} 
+                      size="sm"
+                    />
                   </div>
 
                   <div className="flex justify-between items-center">
                     <div>
-                      <p className="text-sm font-medium text-foreground">WhatsApp Bot</p>
-                      <p className="text-xs text-muted-foreground">Order execution pings</p>
+                      <p className="text-sm font-bold text-foreground">WhatsApp Bot</p>
+                      <p className="text-[10px] uppercase tracking-wider text-muted-foreground mt-0.5">Order execution pings</p>
                     </div>
-                    <button
-                      onClick={() => setNotifications({ ...notifications, whatsapp: !notifications.whatsapp })}
-                      className={`w-10 h-6 rounded-full p-1 transition-colors ${notifications.whatsapp ? "bg-primary" : "bg-muted"}`}
-                    >
-                      <div className={`w-4 h-4 rounded-full bg-white transition-transform ${notifications.whatsapp ? "translate-x-4" : ""}`}></div>
-                    </button>
+                    <CustomSwitch 
+                      checked={notifications.whatsapp} 
+                      onChange={(checked) => setNotifications({ ...notifications, whatsapp: checked })} 
+                      size="sm"
+                    />
                   </div>
                 </div>
               </div>
 
               {/* Preferences */}
-              <div className="glass-card rounded-xl p-6 border border-border/20 space-y-4">
+              <div className="stat-card rounded-xl p-6 border border-border/20 space-y-5 shadow-lg group">
                 <div className="flex justify-between items-center">
-                  <h3 className="font-display font-bold text-lg text-foreground">Preferences</h3>
-                  <Globe className="w-4 h-4 text-muted-foreground" />
+                  <h3 className="font-display font-bold text-lg text-foreground tracking-tight">Preferences</h3>
+                  <Globe className="w-5 h-5 text-primary opacity-50 group-hover:opacity-100 transition-opacity" />
                 </div>
 
-                <div className="space-y-4">
+                <div className="space-y-5">
                   <div>
-                    <label className="text-xs font-medium text-muted-foreground block mb-1.5">Default Timezone</label>
-                    <select className="w-full bg-muted/30 border border-border/50 rounded-lg px-4 py-2.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary focus:border-transparent">
+                    <label className="text-xs font-bold uppercase tracking-wider text-muted-foreground block mb-1.5">Default Timezone</label>
+                    <select className="select-field w-full">
                       <option value="IST">Kolkata (IST) - GMT+5:30</option>
                       <option value="UTC">Coordinated Universal Time (UTC)</option>
                       <option value="EST">New York (EST) - GMT-5:00</option>
@@ -484,8 +484,8 @@ export default function Settings() {
                         <input
                           type="text"
                           value={customHex.replace('#', '')}
-                          onChange={(e) => handleHexInput('#' + e.target.value)}
-                          maxLength={6}
+                          onChange={(e) => handleHexInput(e.target.value)}
+                          maxLength={8}
                           placeholder="ff4d4d"
                           className="flex-1 bg-transparent text-sm font-mono text-foreground focus:outline-none uppercase tracking-widest"
                         />
@@ -493,7 +493,14 @@ export default function Settings() {
 
                       {/* Apply Button */}
                       <button
-                        onClick={() => setAccentColor(customHex)}
+                        onClick={() => {
+                          const cleanHex = customHex.replace(/[^0-9A-Fa-f]/g, '');
+                          if (cleanHex.length === 6) {
+                            setAccentColor('#' + cleanHex);
+                          } else {
+                            setCustomHex(accentColor);
+                          }
+                        }}
                         className="px-3 py-2 bg-primary text-white text-[10px] font-bold rounded-lg hover:opacity-90 transition-opacity uppercase tracking-wider"
                       >
                         Apply
@@ -541,15 +548,14 @@ export default function Settings() {
                   {/* UI Effects */}
                   <div className="flex justify-between items-center pt-2">
                     <div>
-                      <p className="text-sm font-medium text-foreground">Glassmorphism FX</p>
-                      <p className="text-xs text-muted-foreground">Premium blur and transparency effects</p>
+                      <p className="text-sm font-bold text-foreground">Glassmorphism FX</p>
+                      <p className="text-[10px] uppercase tracking-wider text-muted-foreground mt-0.5">Premium blur and transparency effects</p>
                     </div>
-                    <button
-                      onClick={() => setGlassEnabled(!glassEnabled)}
-                      className={`w-10 h-6 rounded-full p-1 transition-colors ${glassEnabled ? "bg-primary" : "bg-muted"}`}
-                    >
-                      <div className={`w-4 h-4 rounded-full bg-white transition-transform ${glassEnabled ? "translate-x-4" : ""}`}></div>
-                    </button>
+                    <CustomSwitch 
+                      checked={glassEnabled} 
+                      onChange={(checked) => setGlassEnabled(checked)} 
+                      size="sm"
+                    />
                   </div>
                 </div>
               </div>

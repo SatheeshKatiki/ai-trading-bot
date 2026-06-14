@@ -31,6 +31,7 @@ class Position:
     stop_loss: float         # Current stop-loss price
     target: float            # Current profit target
     is_partially_booked: bool = False
+    scales_done: int = 0     # Number of times this position has been scaled into
 
 
 class SmartExitEngine:

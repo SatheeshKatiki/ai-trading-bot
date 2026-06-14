@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState, useEffect } from "react";
+import { motion } from "framer-motion";
 import { 
   BarChart2, 
   Play, 
@@ -12,7 +13,6 @@ import {
   PieChart, 
   Settings, 
   ShieldCheck, 
-  Power,
   TrendingUp,
   Plug,
   Sliders
@@ -31,6 +31,21 @@ const menuItems = [
   { icon: ShieldCheck, label: "Risk Management", href: "/risk" },
   { icon: Settings, label: "Settings", href: "/settings" },
 ];
+
+const containerVariants = {
+  hidden: { opacity: 0 },
+  show: {
+    opacity: 1,
+    transition: {
+      staggerChildren: 0.05
+    }
+  }
+};
+
+const itemVariants = {
+  hidden: { opacity: 0, x: -10 },
+  show: { opacity: 1, x: 0 }
+};
 
 export default function Sidebar() {
   const pathname = usePathname();
@@ -57,47 +72,95 @@ export default function Sidebar() {
   }, []);
 
   return (
-    <div className="w-64 h-full bg-card/50 backdrop-blur-xl border-r border-border/50 flex flex-col">
-      <div className="p-6 flex items-center gap-3 border-b border-border/50">
-        <div className="w-8 h-8 rounded-lg bg-[#ff4d4d] flex items-center justify-center">
+    <div className="w-64 h-full bg-card/80 backdrop-blur-xl border-r border-border/50 flex flex-col shadow-2xl relative z-20">
+      <div className="p-6 flex items-center gap-3 border-b border-border/50 relative overflow-hidden group">
+        <div className="absolute inset-0 bg-gradient-to-r from-primary/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500"></div>
+        <motion.div 
+          className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary to-primary/60 flex items-center justify-center shadow-lg shadow-primary/20"
+          whileHover={{ rotate: 180, scale: 1.1 }}
+          transition={{ duration: 0.4, type: "spring" }}
+        >
           <TrendingUp className="w-5 h-5 text-primary-foreground" />
-        </div>
-        <div>
-          <h1 className="font-display font-bold text-lg text-foreground">QuantAI</h1>
-          <p className="text-xs text-muted-foreground">Institutional Terminal</p>
+        </motion.div>
+        <div className="relative z-10">
+          <h1 className="font-display font-bold text-lg text-foreground tracking-tight">QuantAI</h1>
+          <p className="text-[10px] uppercase tracking-wider font-bold text-primary">Ultra Terminal</p>
         </div>
       </div>
 
-      <nav className="flex-1 p-4 flex flex-col gap-1">
+      <motion.nav 
+        className="flex-1 p-4 flex flex-col gap-1.5 overflow-y-auto overflow-x-hidden"
+        variants={containerVariants}
+        initial="hidden"
+        animate="show"
+      >
         {menuItems.map((item) => {
           const isActive = pathname === item.href;
           return (
-            <Link
-              key={item.href}
-              href={item.href}
-              className={clsx(
-                "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200",
-                isActive 
-                  ? "bg-[#ff4d4d]/10 text-[#ff4d4d]" 
-                  : "text-muted-foreground hover:bg-muted/50 hover:text-foreground"
-              )}
-            >
-              <item.icon className="w-5 h-5" />
-              {item.label}
-            </Link>
+            <motion.div key={item.href} variants={itemVariants}>
+              <Link
+                href={item.href}
+                className={clsx(
+                  "group relative flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-300 outline-none",
+                  isActive 
+                    ? "text-primary font-bold" 
+                    : "text-muted-foreground hover:bg-muted/50 hover:text-foreground hover:translate-x-1"
+                )}
+              >
+                {/* Active Indicator Glow */}
+                {isActive && (
+                  <motion.div 
+                    layoutId="active-nav-bg"
+                    className="absolute inset-0 bg-primary/10 rounded-lg border border-primary/20 shadow-[inset_0_0_12px_rgba(59,130,246,0.1)]"
+                    initial={false}
+                    transition={{ type: "spring", stiffness: 300, damping: 30 }}
+                  />
+                )}
+                {/* Active Left Accent Line */}
+                {isActive && (
+                  <motion.div 
+                    layoutId="active-nav-line"
+                    className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-2/3 bg-primary rounded-r-full shadow-[0_0_8px_var(--primary)]"
+                  />
+                )}
+                <div className="relative z-10 flex items-center gap-3 w-full">
+                  <item.icon className={clsx(
+                    "w-5 h-5 transition-transform duration-300",
+                    isActive ? "text-primary drop-shadow-[0_0_8px_var(--primary)]" : "group-hover:rotate-6 group-hover:scale-110 group-hover:text-foreground"
+                  )} />
+                  {item.label}
+                </div>
+              </Link>
+            </motion.div>
           );
         })}
-      </nav>
+      </motion.nav>
 
-      <div className="p-4 border-t border-border/50 flex flex-col gap-2">
-        <div className="flex items-center justify-between p-3 rounded-lg bg-muted/30">
+      <div className="p-4 border-t border-border/50 flex flex-col gap-3">
+        <div className="flex items-center justify-between p-3 rounded-lg bg-card border border-border/50 shadow-inner group cursor-default">
           <div className="flex items-center gap-2">
-            <div className={`w-2 h-2 rounded-full ${isConnected ? "bg-success" : "bg-destructive"}`}></div>
-            <span className="text-xs font-medium text-foreground">Broker: Fyers</span>
+            <div className="relative flex h-2.5 w-2.5">
+              {isConnected && (
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-75"></span>
+              )}
+              <span className={clsx(
+                "relative inline-flex rounded-full h-2.5 w-2.5 transition-colors duration-300",
+                isConnected ? "bg-success shadow-[0_0_8px_var(--success)]" : "bg-destructive shadow-[0_0_8px_var(--destructive)]"
+              )}></span>
+            </div>
+            <span className="text-xs font-bold text-foreground tracking-wide">Broker: Fyers</span>
           </div>
-          <span className="text-xs text-muted-foreground">{isConnected ? "Connected" : "Disconnected"}</span>
+          <span className={clsx(
+            "text-[10px] uppercase font-bold tracking-wider",
+            isConnected ? "text-success" : "text-destructive"
+          )}>
+            {isConnected ? "LIVE" : "OFFLINE"}
+          </span>
         </div>
         
+        <div className="text-center">
+          <span className="text-[10px] text-muted-foreground/60 font-mono tracking-widest">v2.0 ULTRA</span>
+        </div>
       </div>
     </div>
   );

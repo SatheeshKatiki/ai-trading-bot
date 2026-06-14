@@ -48,6 +48,7 @@ def generate_signals(
     rsi_window: int = 14,
     rsi_buy_thresh: float = 55,
     rsi_sell_thresh: float = 45,
+    **kwargs
 ) -> pd.Series:
     """Generate trade signals for the EMA + RSI strategy.
 
@@ -71,7 +72,6 @@ def generate_signals(
     pandas.Series[int]
         ``1`` (buy), ``-1`` (sell), or ``0`` (no trade).
     """
-    df = df.copy()
     df["ema_fast"] = ema(df["close"], window=ema_fast)
     df["ema_slow"] = ema(df["close"], window=ema_slow)
     df["rsi"] = rsi(df["close"], window=rsi_window)

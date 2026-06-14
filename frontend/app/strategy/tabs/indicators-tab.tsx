@@ -18,7 +18,7 @@ export default function IndicatorsTab({ settings, setSettings }: IndicatorsTabPr
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
 
       {/* Box 1: Multi-Timeframe Indicators */}
-      <div className="bg-gradient-to-br from-slate-800 to-slate-900 p-6 rounded-2xl border border-[#3b82f6]/20 space-y-5 h-[400px] flex flex-col justify-between shadow-xl hover:shadow-blue-500/5 transition-all duration-300">
+      <div className="glass-card p-6 rounded-2xl space-y-5 h-[400px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
         <div>
           <div className="flex items-center gap-3 border-b border-border pb-3">
             <div className="p-2.5 bg-[#3b82f6]/20 rounded-xl text-[#3b82f6] shadow-lg shadow-blue-500/10">
@@ -29,7 +29,7 @@ export default function IndicatorsTab({ settings, setSettings }: IndicatorsTabPr
 
           <div className="space-y-4 mt-4">
             <div>
-              <label className="text-xs font-bold text-gray-400 block mb-1.5 uppercase tracking-wider">Anchor Timeframe</label>
+              <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Anchor Timeframe</label>
               <select
                 value={settings.anchor_timeframe || "1 Hour"}
                 onChange={(e) => updateSetting("anchor_timeframe", e.target.value)}
@@ -41,7 +41,7 @@ export default function IndicatorsTab({ settings, setSettings }: IndicatorsTabPr
               </select>
             </div>
             <div>
-              <label className="text-xs font-bold text-gray-400 block mb-1.5 uppercase tracking-wider">Trend Indicator</label>
+              <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Trend Indicator</label>
               <select
                 value={settings.trend_indicator || "Supertrend (10, 3)"}
                 onChange={(e) => updateSetting("trend_indicator", e.target.value)}
@@ -64,7 +64,7 @@ export default function IndicatorsTab({ settings, setSettings }: IndicatorsTabPr
       </div>
 
       {/* Box 2: Custom Script Indicators */}
-      <div className="bg-gradient-to-br from-slate-800 to-slate-900 p-6 rounded-2xl border border-[#10b981]/20 space-y-5 h-[400px] flex flex-col justify-between shadow-xl hover:shadow-emerald-500/5 transition-all duration-300">
+      <div className="glass-card p-6 rounded-2xl space-y-5 h-[400px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
         <div>
           <div className="flex items-center gap-3 border-b border-border pb-3">
             <div className="p-2.5 bg-[#10b981]/20 rounded-xl text-[#10b981] shadow-lg shadow-emerald-500/10">
@@ -75,7 +75,7 @@ export default function IndicatorsTab({ settings, setSettings }: IndicatorsTabPr
 
           <div className="space-y-4 mt-4">
             <div>
-              <label className="text-xs font-bold text-gray-400 block mb-1.5 uppercase tracking-wider">Loaded Script</label>
+              <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Loaded Script</label>
               <select
                 value={settings.loaded_script || "VWAP Stochastics Cross"}
                 onChange={(e) => updateSetting("loaded_script", e.target.value)}
@@ -87,7 +87,7 @@ export default function IndicatorsTab({ settings, setSettings }: IndicatorsTabPr
             </div>
             <div className="space-y-1.5">
               <div className="flex justify-between text-xs font-bold uppercase tracking-wider">
-                <span className="text-gray-400">Script Weight</span>
+                <span className="text-muted-foreground">Script Weight</span>
                 <span className="text-[#10b981] font-extrabold text-sm">{settings.script_weight || 80}%</span>
               </div>
               <CustomSlider
@@ -110,7 +110,7 @@ export default function IndicatorsTab({ settings, setSettings }: IndicatorsTabPr
       </div>
 
       {/* Box 3: Signal Combinations */}
-      <div className="bg-gradient-to-br from-slate-800 to-slate-900 p-6 rounded-2xl border border-[#f59e0b]/20 space-y-5 h-[400px] flex flex-col justify-between shadow-xl hover:shadow-amber-500/5 transition-all duration-300">
+      <div className="glass-card p-6 rounded-2xl space-y-5 h-[400px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
         <div>
           <div className="flex items-center gap-3 border-b border-border pb-3">
             <div className="p-2.5 bg-[#f59e0b]/20 rounded-xl text-[#f59e0b] shadow-lg shadow-amber-500/10">
@@ -121,7 +121,7 @@ export default function IndicatorsTab({ settings, setSettings }: IndicatorsTabPr
 
           <div className="space-y-4 mt-4">
             <div>
-              <label className="text-xs font-bold text-gray-400 block mb-1.5 uppercase tracking-wider">Logic Gate</label>
+              <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Logic Gate</label>
               <select
                 value={settings.logic_gate || "ALL Conditions Met (AND)"}
                 onChange={(e) => updateSetting("logic_gate", e.target.value)}
@@ -133,7 +133,7 @@ export default function IndicatorsTab({ settings, setSettings }: IndicatorsTabPr
               </select>
             </div>
             <div>
-              <label className="text-xs font-bold text-gray-400 block mb-1.5 uppercase tracking-wider">Min Indicators Required</label>
+              <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Min Indicators Required</label>
               <select
                 value={settings.min_indicators_required || "3 Indicators"}
                 onChange={(e) => updateSetting("min_indicators_required", e.target.value)}
