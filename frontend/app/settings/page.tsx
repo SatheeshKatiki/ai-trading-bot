@@ -55,6 +55,13 @@ export default function Settings() {
     fyers_totp_key: ""
   });
 
+  const [filters, setFilters] = useState({
+    enable_squeeze_filter: false,
+    enable_extension_filter: false,
+    enable_cpr_filter: false,
+    enable_aggression_filter: false
+  });
+
   useEffect(() => {
     const fetchCredentials = async () => {
       try {
@@ -71,6 +78,12 @@ export default function Settings() {
             fyers_user_id: data.fyers_user_id || "",
             fyers_pin: data.fyers_pin || "",
             fyers_totp_key: data.fyers_totp_key || ""
+          });
+          setFilters({
+            enable_squeeze_filter: data.enable_squeeze_filter || false,
+            enable_extension_filter: data.enable_extension_filter || false,
+            enable_cpr_filter: data.enable_cpr_filter || false,
+            enable_aggression_filter: data.enable_aggression_filter || false
           });
         } else {
           const text = await res.text();
@@ -135,6 +148,21 @@ export default function Settings() {
     } catch (error) {
       console.error("Error starting bot:", error);
       alert("Error starting bot!");
+    }
+  };
+
+  const handleFilterChange = async (key: string, value: boolean) => {
+    const newFilters = { ...filters, [key]: value };
+    setFilters(newFilters);
+    
+    try {
+      await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ [key]: value })
+      });
+    } catch (error) {
+      console.error(`Error saving filter ${key}:`, error);
     }
   };
 
@@ -314,6 +342,64 @@ export default function Settings() {
                 <button className="px-4 py-2 bg-primary text-white hover:bg-primary/90 rounded-lg text-sm font-medium transition-colors w-fit">
                   Change Password
                 </button>
+              </div>
+
+              {/* Advanced Institutional Filters */}
+              <div className="stat-card rounded-xl p-6 border border-border/20 space-y-5 shadow-lg group">
+                <div className="flex justify-between items-center">
+                  <h3 className="font-display font-bold text-lg text-foreground tracking-tight">Advanced Institutional Filters</h3>
+                  <Shield className="w-5 h-5 text-primary opacity-50 group-hover:opacity-100 transition-opacity" />
+                </div>
+                <p className="text-xs text-muted-foreground">Select which institutional filters to apply to the live bot signals. These directly impact the live trading engine.</p>
+                <div className="space-y-4">
+                  <div className="flex justify-between items-center">
+                    <div>
+                      <p className="text-sm font-bold text-foreground">Squeeze Filter</p>
+                      <p className="text-[10px] uppercase tracking-wider text-muted-foreground mt-0.5">Ensure recent consolidation</p>
+                    </div>
+                    <CustomSwitch 
+                      checked={filters.enable_squeeze_filter} 
+                      onChange={(checked) => handleFilterChange("enable_squeeze_filter", checked)} 
+                      size="sm"
+                    />
+                  </div>
+
+                  <div className="flex justify-between items-center">
+                    <div>
+                      <p className="text-sm font-bold text-foreground">EMA Extension</p>
+                      <p className="text-[10px] uppercase tracking-wider text-muted-foreground mt-0.5">Avoid over-extended entries</p>
+                    </div>
+                    <CustomSwitch 
+                      checked={filters.enable_extension_filter} 
+                      onChange={(checked) => handleFilterChange("enable_extension_filter", checked)} 
+                      size="sm"
+                    />
+                  </div>
+
+                  <div className="flex justify-between items-center">
+                    <div>
+                      <p className="text-sm font-bold text-foreground">CPR Rejection</p>
+                      <p className="text-[10px] uppercase tracking-wider text-muted-foreground mt-0.5">Reject signals near CPR resistance</p>
+                    </div>
+                    <CustomSwitch 
+                      checked={filters.enable_cpr_filter} 
+                      onChange={(checked) => handleFilterChange("enable_cpr_filter", checked)} 
+                      size="sm"
+                    />
+                  </div>
+                  
+                  <div className="flex justify-between items-center">
+                    <div>
+                      <p className="text-sm font-bold text-foreground">Candle Aggression</p>
+                      <p className="text-[10px] uppercase tracking-wider text-muted-foreground mt-0.5">Require strong close near High/Low</p>
+                    </div>
+                    <CustomSwitch 
+                      checked={filters.enable_aggression_filter} 
+                      onChange={(checked) => handleFilterChange("enable_aggression_filter", checked)} 
+                      size="sm"
+                    />
+                  </div>
+                </div>
               </div>
             </div>
 

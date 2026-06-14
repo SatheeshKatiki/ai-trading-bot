@@ -158,6 +158,12 @@ function LiveTradingContent() {
   const [riskStatus, setRiskStatus] = useState("ACTIVE");
   const [isWsConnected, setIsWsConnected] = useState(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [filters, setFilters] = useState({
+    enable_squeeze_filter: false,
+    enable_extension_filter: false,
+    enable_cpr_filter: false,
+    enable_aggression_filter: false
+  });
   const prevTradesRef = useRef<Trade[]>([]);
 
   const addNotification = (message: string, type: 'success' | 'danger' | 'warning' | 'info') => {
@@ -230,6 +236,12 @@ function LiveTradingContent() {
           if (data.quantity && data.quantity % defaultBaseQty === 0) {
             setQuantity(data.quantity);
           }
+          setFilters({
+            enable_squeeze_filter: data.enable_squeeze_filter || false,
+            enable_extension_filter: data.enable_extension_filter || false,
+            enable_cpr_filter: data.enable_cpr_filter || false,
+            enable_aggression_filter: data.enable_aggression_filter || false
+          });
         }
       } catch (error) {
         console.error("Failed to fetch settings:", error);
@@ -298,6 +310,21 @@ function LiveTradingContent() {
       });
     } catch (error) {
       console.error("Failed to update quantity:", error);
+    }
+  };
+
+  const handleFilterChange = async (key: string, value: boolean) => {
+    const newFilters = { ...filters, [key]: value };
+    setFilters(newFilters);
+    
+    try {
+      await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ [key]: value })
+      });
+    } catch (error) {
+      console.error(`Error saving filter ${key}:`, error);
     }
   };
   
@@ -686,6 +713,66 @@ function LiveTradingContent() {
                 <ChevronDown className="w-4 h-4 text-muted-foreground absolute right-3 top-1/2 transform -translate-y-1/2 pointer-events-none z-10 group-focus-within:text-primary transition-colors" />
               </div>
 
+            </div>
+
+            {/* Institutional Filters Row */}
+            <div className="flex flex-wrap items-center gap-6 px-4 py-3 bg-muted/5 border border-border/40 rounded-xl shadow-sm backdrop-blur-sm w-full">
+              <div className="text-xs font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5 border-r border-border/50 pr-4">
+                <Shield className="w-3.5 h-3.5" />
+                Institutional Filters:
+              </div>
+              
+              <div className="flex items-center gap-2">
+                <input 
+                  type="checkbox" 
+                  id="squeeze_filter" 
+                  checked={filters.enable_squeeze_filter}
+                  onChange={(e) => handleFilterChange("enable_squeeze_filter", e.target.checked)}
+                  className="w-3.5 h-3.5 rounded border-border/50 bg-background/50 focus:ring-primary focus:ring-offset-0 text-primary transition-colors cursor-pointer"
+                />
+                <label htmlFor="squeeze_filter" className={`text-xs font-medium cursor-pointer transition-colors ${filters.enable_squeeze_filter ? "text-primary" : "text-muted-foreground hover:text-foreground"}`}>
+                  Squeeze Filter
+                </label>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <input 
+                  type="checkbox" 
+                  id="extension_filter" 
+                  checked={filters.enable_extension_filter}
+                  onChange={(e) => handleFilterChange("enable_extension_filter", e.target.checked)}
+                  className="w-3.5 h-3.5 rounded border-border/50 bg-background/50 focus:ring-primary focus:ring-offset-0 text-primary transition-colors cursor-pointer"
+                />
+                <label htmlFor="extension_filter" className={`text-xs font-medium cursor-pointer transition-colors ${filters.enable_extension_filter ? "text-primary" : "text-muted-foreground hover:text-foreground"}`}>
+                  EMA Extension
+                </label>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <input 
+                  type="checkbox" 
+                  id="cpr_filter" 
+                  checked={filters.enable_cpr_filter}
+                  onChange={(e) => handleFilterChange("enable_cpr_filter", e.target.checked)}
+                  className="w-3.5 h-3.5 rounded border-border/50 bg-background/50 focus:ring-primary focus:ring-offset-0 text-primary transition-colors cursor-pointer"
+                />
+                <label htmlFor="cpr_filter" className={`text-xs font-medium cursor-pointer transition-colors ${filters.enable_cpr_filter ? "text-primary" : "text-muted-foreground hover:text-foreground"}`}>
+                  CPR Rejection
+                </label>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <input 
+                  type="checkbox" 
+                  id="aggression_filter" 
+                  checked={filters.enable_aggression_filter}
+                  onChange={(e) => handleFilterChange("enable_aggression_filter", e.target.checked)}
+                  className="w-3.5 h-3.5 rounded border-border/50 bg-background/50 focus:ring-primary focus:ring-offset-0 text-primary transition-colors cursor-pointer"
+                />
+                <label htmlFor="aggression_filter" className={`text-xs font-medium cursor-pointer transition-colors ${filters.enable_aggression_filter ? "text-primary" : "text-muted-foreground hover:text-foreground"}`}>
+                  Candle Aggression
+                </label>
+              </div>
             </div>
           </div>
 

@@ -432,7 +432,7 @@ async def run_live_bot(symbols: List[str]) -> None:
                             sig.direction, option_symbol, sig.layers_passed, sig.confidence * 100
                         )
                     else:
-                        signals_data = registry.run_strategy(strategy_name, df)
+                        signals_data = registry.run_strategy(strategy_name, df, **settings)
                         if isinstance(signals_data, tuple):
                             signals, _ = signals_data
                         else:
