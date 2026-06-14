@@ -260,16 +260,29 @@ def generate_signals(
     
     # Mandatory Filters
     mandatory_call = pd.Series(True, index=df.index)
+    mandatory_put = pd.Series(True, index=df.index)
+    
     if kwargs.get("enable_ema_filter", True):
         mandatory_call = mandatory_call & (df['ema_9'] > df['ema_21'])
+        mandatory_put = mandatory_put & (df['ema_9'] < df['ema_21'])
+        
     if kwargs.get("enable_volume_filter", True) and has_volume:
         mandatory_call = mandatory_call & (df['volume'] > df['volume_sma'])
-        
-    mandatory_put = pd.Series(True, index=df.index)
-    if kwargs.get("enable_ema_filter", True):
-        mandatory_put = mandatory_put & (df['ema_9'] < df['ema_21'])
-    if kwargs.get("enable_volume_filter", True) and has_volume:
         mandatory_put = mandatory_put & (df['volume'] > df['volume_sma'])
+        
+    # Enforce strict "perfect entry" filters if toggles are ON
+    if kwargs.get("enable_vwap_filter", True) and has_volume:
+        mandatory_call = mandatory_call & (df['close'] > df['vwap'])
+        mandatory_put = mandatory_put & (df['close'] < df['vwap'])
+        
+    if kwargs.get("enable_rsi_filter", True):
+        mandatory_call = mandatory_call & (df['rsi'] > 50)
+        mandatory_put = mandatory_put & (df['rsi'] < 50)
+        
+    if kwargs.get("enable_adx_filter", True):
+        adx_thresh = kwargs.get("adx_threshold", 20)
+        mandatory_call = mandatory_call & (df['adx'] > adx_thresh) & (df['plus_di'] > df['minus_di'])
+        mandatory_put = mandatory_put & (df['adx'] > adx_thresh) & (df['minus_di'] > df['plus_di'])
         
     # Generate Signals
     signals[(df['call_score'] >= threshold) & mandatory_call] = 1

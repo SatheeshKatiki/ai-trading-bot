@@ -3,6 +3,7 @@
 import Sidebar from "@/components/sidebar";
 import Header from "@/components/header";
 import CustomDatePicker from "@/components/custom-date-picker";
+import { NumberInput } from "@/components/number-input";
 import { useState, useRef, useEffect } from "react";
 import { 
   TrendingUp, 
@@ -22,7 +23,9 @@ import {
   Globe,
   Briefcase,
   Database,
-  Package
+  Package,
+  ChevronUp,
+  ChevronDown
 } from "lucide-react";
 import { 
   AreaChart, 
@@ -169,10 +172,15 @@ export default function Backtest() {
   const [datePreset, setDatePreset] = useState("all_data");
   const [initialCapital, setInitialCapital] = useState("100000");
   const [quantity, setQuantity] = useState<number | string>(65);
-  const [stoplossPct, setStoplossPct] = useState<number | string>(1.2);
+  const [stoplossPct, setStoplossPct] = useState<number | string>(0.6);
   const [targetPct, setTargetPct] = useState<number | string>(2.5);
   const [donchianPeriod, setDonchianPeriod] = useState<number | string>(10);
   const [trailingSl, setTrailingSl] = useState(true);
+  const [enablePyramiding, setEnablePyramiding] = useState(true);
+  const [scalePct, setScalePct] = useState<number | string>(0.2);
+  const [maxScales, setMaxScales] = useState<number | string>(2);
+  const [maxDailyLossPct, setMaxDailyLossPct] = useState<number | string>(3);
+  const [maxDailyTrades, setMaxDailyTrades] = useState<number | string>(6);
   const [inputMode, setInputMode] = useState<'lots' | 'qty'>('lots');
   const [trailTrigger, setTrailTrigger] = useState<number | string>(0.8);
   const [trailOffset, setTrailOffset] = useState<number | string>(0.2);
@@ -296,10 +304,15 @@ export default function Backtest() {
       setEndDate(savedParams.endDate);
       setInitialCapital(savedParams.initialCapital);
       setQuantity(savedParams.quantity || 65);
-      setStoplossPct(savedParams.stoploss_pct || 1.2);
+      setStoplossPct(savedParams.stoploss_pct || 0.6);
       setTargetPct(savedParams.target_pct || 2.5);
       setDonchianPeriod(savedParams.donchian_period || 10);
       setTrailingSl(savedParams.trailing_sl !== undefined ? savedParams.trailing_sl : true);
+      setEnablePyramiding(savedParams.enable_pyramiding !== undefined ? savedParams.enable_pyramiding : true);
+      setScalePct(savedParams.scale_pct || 0.2);
+      setMaxScales(savedParams.max_scales || 2);
+      setMaxDailyLossPct(savedParams.max_daily_loss_pct ?? 3);
+      setMaxDailyTrades(savedParams.max_daily_trades ?? 6);
       setTrailTrigger(savedParams.trail_trigger || 0.8);
       setTrailOffset(savedParams.trail_offset || 0.2);
       setSearchQuery(savedParams.symbol);
@@ -325,10 +338,15 @@ export default function Backtest() {
     const params = { 
       symbol, timeframe, strategy, startDate, endDate, initialCapital, 
       quantity: quantity || 65,
-      stoploss_pct: stoplossPct || 1.2, target_pct: targetPct || 2.5,
+      stoploss_pct: stoplossPct || 0.6, target_pct: targetPct || 2.5,
       enableEmaFilter, enableVolumeFilter, enableAdxFilter, enableVwapFilter, enableRsiFilter,
       donchian_period: donchianPeriod || 10,
       trailing_sl: trailingSl,
+      enable_pyramiding: enablePyramiding,
+      scale_pct: scalePct || 0.2,
+      max_scales: maxScales || 2,
+      max_daily_loss_pct: maxDailyLossPct || 3,
+      max_daily_trades: maxDailyTrades || 6,
       trail_trigger: trailTrigger || 0.8,
       trail_offset: trailOffset || 0.2
     };
@@ -347,9 +365,9 @@ export default function Backtest() {
         symbol: params.symbol,
         timeframe: params.timeframe,
         strategy: params.strategy,
-        startDate: params.startDate,
-        endDate: params.endDate,
-        initialCapital: params.initialCapital,
+        start_date: params.startDate,
+        end_date: params.endDate,
+        initial_capital: params.initialCapital,
         quantity: params.quantity.toString(),
         stoploss_pct: params.stoploss_pct.toString(),
         target_pct: params.target_pct.toString(),
@@ -360,6 +378,11 @@ export default function Backtest() {
         enable_rsi_filter: params.enableRsiFilter.toString(),
         donchian_period: (params.donchian_period || 10).toString(),
         trailing_sl: params.trailing_sl.toString(),
+        enable_pyramiding: params.enable_pyramiding.toString(),
+        scale_pct: params.scale_pct.toString(),
+        max_scales: params.max_scales.toString(),
+        max_daily_loss_pct: (params.max_daily_loss_pct ?? 3).toString(),
+        max_daily_trades: (params.max_daily_trades ?? 6).toString(),
         trail_trigger: params.trail_trigger.toString(),
         trail_offset: params.trail_offset.toString()
       });
@@ -471,68 +494,64 @@ export default function Backtest() {
               </div>
 
               {/* Dynamic Lot/Qty Selector */}
-              <div className="pt-2">
-                <div className="relative inline-flex items-center border border-border/50 rounded-lg bg-muted/30 h-10 w-full group focus-within:ring-1 focus-within:ring-primary focus-within:border-primary transition-all">
-                  <span className="absolute -top-2.5 left-2 px-1 bg-background text-[10px] font-bold text-muted-foreground uppercase tracking-wider group-focus-within:text-primary transition-colors z-10">
-                    {inputMode === 'lots' ? 'Lots' : 'Qty.'}
-                  </span>
-                  
-                  <input 
-                    type="number"
-                    min="0"
-                    step="1"
-                    value={displayValue}
-                    onChange={(e) => handleValueChange(Number(e.target.value))}
-                    className="w-20 pl-3 pr-1 py-2 bg-transparent text-foreground text-sm font-bold font-mono focus:outline-none"
-                  />
-                  
-                  <button 
-                    onClick={() => setInputMode(prev => prev === 'lots' ? 'qty' : 'lots')}
-                    className="flex items-center justify-center w-10 h-full border-l border-border/50 hover:bg-muted/50 transition-colors rounded-r-lg flex-shrink-0 bg-muted/20"
-                    title={`Switch to ${inputMode === 'lots' ? 'Quantity' : 'Lots'}`}
-                  >
-                    {inputMode === 'lots' ? <Package className="w-4 h-4 text-muted-foreground" /> : <Layers className="w-4 h-4 text-muted-foreground" />}
-                  </button>
-                </div>
+              <div className="pt-2 relative group">
+                <span className="absolute -top-0.5 left-2 px-1 bg-[#09090b] text-[10px] font-bold text-muted-foreground uppercase tracking-wider group-focus-within:text-primary transition-colors z-20">
+                  {inputMode === 'lots' ? 'Lots' : 'Qty.'}
+                </span>
+                <NumberInput
+                  value={displayValue}
+                  onChange={(val) => handleValueChange(Number(val))}
+                  min={0}
+                  step={1}
+                  containerClassName="w-full"
+                  appendContent={
+                    <button
+                      onClick={() => setInputMode(prev => prev === 'lots' ? 'qty' : 'lots')}
+                      className="flex items-center justify-center w-10 h-full border-l border-border/50 hover:bg-muted/50 transition-colors flex-shrink-0 bg-muted/20"
+                      title={`Switch to ${inputMode === 'lots' ? 'Quantity' : 'Lots'}`}
+                    >
+                      {inputMode === 'lots' ? <Package className="w-4 h-4 text-muted-foreground" /> : <Layers className="w-4 h-4 text-muted-foreground" />}
+                    </button>
+                  }
+                />
               </div>
 
               <div>
                 <label className="text-xs font-medium text-muted-foreground block mb-1.5 font-mono">Target %</label>
-                <div className="relative">
-                  <input 
-                    type="number" step="0.1" min="0.1" max="100"
-                    value={targetPct}
-                    onChange={(e) => setTargetPct(e.target.value)}
-                    className="w-full bg-muted/30 border border-border/50 rounded-lg pl-3 pr-8 py-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary font-mono"
-                  />
-                  <span className="absolute right-3 top-1/2 transform -translate-y-1/2 text-xs font-bold text-primary font-mono">%</span>
-                </div>
+                <NumberInput
+                  value={targetPct}
+                  onChange={(val) => setTargetPct(String(val))}
+                  min={0.1}
+                  max={100}
+                  step={0.1}
+                  suffix="%"
+                />
               </div>
-
+              
               <div>
                 <label className="text-xs font-medium text-muted-foreground block mb-1.5 font-mono">Stoploss %</label>
-                <div className="relative">
-                  <input 
-                    type="number" step="0.1" min="0.1" max="50"
-                    value={stoplossPct}
-                    onChange={(e) => setStoplossPct(e.target.value)}
-                    className="w-full bg-muted/30 border border-border/50 rounded-lg pl-3 pr-8 py-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-warning font-mono"
-                  />
-                  <span className="absolute right-3 top-1/2 transform -translate-y-1/2 text-xs font-bold text-warning font-mono">%</span>
-                </div>
+                <NumberInput
+                  value={stoplossPct}
+                  onChange={(val) => setStoplossPct(String(val))}
+                  min={0.1}
+                  max={50}
+                  step={0.1}
+                  suffix="%"
+                  ringColor="warning"
+                />
               </div>
 
               <div>
                 <label className="text-xs font-medium text-muted-foreground block mb-1.5 font-mono">Donchian Period</label>
-                <div className="relative">
-                  <input 
-                    type="number" step="1" min="1" max="250"
-                    value={donchianPeriod}
-                    onChange={(e) => setDonchianPeriod(e.target.value)}
-                    className="w-full bg-muted/30 border border-border/50 rounded-lg pl-3 pr-14 py-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary font-mono"
-                  />
-                  <span className="absolute right-3 top-1/2 transform -translate-y-1/2 text-xs font-bold text-muted-foreground font-mono">bars</span>
-                </div>
+                <NumberInput
+                  value={donchianPeriod}
+                  onChange={(val) => setDonchianPeriod(String(val))}
+                  min={1}
+                  max={250}
+                  step={1}
+                  suffix="bars"
+                  ringColor="muted-foreground"
+                />
               </div>
 
               <div>
@@ -610,26 +629,87 @@ export default function Backtest() {
                 </>
               )}
 
-              <div className="md:col-span-4 lg:col-span-3 flex justify-end items-center gap-6 h-10">
-                <label className="flex items-center gap-2 cursor-pointer group whitespace-nowrap">
-                  <input 
-                    type="checkbox" checked={trailingSl} 
-                    onChange={(e) => setTrailingSl(e.target.checked)}
-                    className="w-4 h-4 rounded border-border bg-muted/30 text-primary focus:ring-primary"
-                  />
-                  <span className="text-sm font-semibold text-foreground group-hover:text-primary transition-colors">Enable Trailing SL</span>
-                </label>
+                  {enablePyramiding && (
+                    <>
+                      <div>
+                        <label className="block text-xs font-semibold text-muted-foreground mb-1">Scale Profit %</label>
+                        <NumberInput
+                          value={scalePct}
+                          onChange={(val) => setScalePct(val === '' ? '' : Number(val))}
+                          min={0}
+                          step={0.1}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-muted-foreground mb-1">Max Scales</label>
+                        <NumberInput
+                          value={maxScales}
+                          onChange={(val) => setMaxScales(val === '' ? '' : Number(val))}
+                          min={0}
+                          step={1}
+                        />
+                      </div>
+                    </>
+                  )}
+                  <div>
+                    <label className="block text-xs font-semibold text-orange-400 mb-1">⛔ Daily Loss Limit %</label>
+                    <NumberInput
+                      value={maxDailyLossPct}
+                      onChange={(val) => setMaxDailyLossPct(val === '' ? '' : Number(val))}
+                      min={0.5}
+                      step={0.5}
+                      suffix="%"
+                      ringColor="destructive"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-orange-400 mb-1">⛔ Max Trades/Day</label>
+                    <NumberInput
+                      value={maxDailyTrades}
+                      onChange={(val) => setMaxDailyTrades(val === '' ? '' : Number(val))}
+                      min={1}
+                      step={1}
+                      ringColor="destructive"
+                    />
+                  </div>
 
-                <button 
-                  onClick={runBacktest}
-                  disabled={isLoading}
-                  className="px-8 h-10 bg-gradient-to-r from-primary to-primary/80 text-primary-foreground hover:from-primary/90 hover:to-primary/70 rounded-lg text-sm font-bold transition-all duration-200 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap shadow-lg shadow-primary/20 hover:scale-[1.02] active:scale-[0.98]"
-                >
-                  {isLoading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
-                  {isLoading ? "Running Simulation..." : "Run Full Backtest"}
-                </button>
-              </div>
-              </div>
+                  <div className="md:col-span-4 lg:col-span-6 flex justify-between items-center mt-4 pt-6 border-t border-border/10">
+                    <div className="flex items-center gap-8">
+                      <label className="flex items-center gap-3 cursor-pointer group whitespace-nowrap">
+                        <div className="relative flex items-center justify-center">
+                          <input
+                            type="checkbox" checked={enablePyramiding}
+                            onChange={(e) => setEnablePyramiding(e.target.checked)}
+                            className="peer w-5 h-5 appearance-none rounded border border-border/50 bg-muted/30 checked:bg-primary checked:border-primary transition-all cursor-pointer"
+                          />
+                          <svg className="absolute w-3 h-3 text-primary-foreground opacity-0 peer-checked:opacity-100 pointer-events-none transition-opacity" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                        </div>
+                        <span className="text-sm font-medium text-muted-foreground group-hover:text-foreground transition-colors">Enable Pyramiding</span>
+                      </label>
+
+                      <label className="flex items-center gap-3 cursor-pointer group whitespace-nowrap">
+                        <div className="relative flex items-center justify-center">
+                          <input
+                            type="checkbox" checked={trailingSl}
+                            onChange={(e) => setTrailingSl(e.target.checked)}
+                            className="peer w-5 h-5 appearance-none rounded border border-border/50 bg-muted/30 checked:bg-primary checked:border-primary transition-all cursor-pointer"
+                          />
+                          <svg className="absolute w-3 h-3 text-primary-foreground opacity-0 peer-checked:opacity-100 pointer-events-none transition-opacity" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                        </div>
+                        <span className="text-sm font-medium text-muted-foreground group-hover:text-foreground transition-colors">Enable Trailing SL</span>
+                      </label>
+                    </div>
+
+                    <button
+                      onClick={runBacktest}
+                      disabled={isLoading}
+                      className="px-8 h-11 bg-gradient-to-r from-primary to-primary/80 text-primary-foreground hover:from-primary/90 hover:to-primary/70 rounded-xl text-sm font-bold transition-all duration-300 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap shadow-lg shadow-primary/20 hover:shadow-primary/40 hover:-translate-y-0.5 active:translate-y-0"
+                    >
+                      {isLoading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
+                      {isLoading ? "Running Simulation..." : "Run Full Backtest"}
+                    </button>
+                  </div>
+                </div>
             </div>
 
           {error && (

@@ -204,7 +204,7 @@ async def run_live_bot(symbols: List[str]) -> None:
     risk_manager = RiskManager(initial_capital=_initial_capital)
     ai_filter = TradeFilterModel()
     exit_engine = SmartExitEngine(atr_multiplier=1.5, partial_booking_pct=50.0)
-    pyramid_sizer = PyramidSizer(points_trigger=40.0, max_scales=2)
+    pyramid_sizer = PyramidSizer(pct_trigger=0.2, max_scales=2)
     portfolio_risk = PortfolioRiskEngine(max_daily_dd_pct=5.0, max_weekly_dd_pct=10.0, max_consecutive_losses=3)
 
     active_positions: Dict[str, Position] = {}

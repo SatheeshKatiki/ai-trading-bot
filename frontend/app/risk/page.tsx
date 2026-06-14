@@ -2,6 +2,7 @@
 
 import Sidebar from "@/components/sidebar";
 import Header from "@/components/header";
+import { NumberInput } from "@/components/number-input";
 import { useState, useEffect } from "react";
 import { 
   Shield, 
@@ -114,32 +115,32 @@ export default function RiskManagement() {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
                     <label className="text-xs font-medium text-muted-foreground block mb-1.5">Max Daily Loss (₹)</label>
-                    <input
-                      type="number"
+                    <NumberInput
                       value={maxDailyLoss}
-                      onChange={(e) => setMaxDailyLoss(e.target.value)}
-                      className="w-full bg-muted/30 border border-border/50 rounded-lg px-4 py-2.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary focus:border-transparent"
+                      onChange={(val) => setMaxDailyLoss(String(val))}
+                      min={0}
+                      step={500}
                     />
                   </div>
 
                   <div>
                     <label className="text-xs font-medium text-muted-foreground block mb-1.5">Risk Per Trade (%)</label>
-                    <input
-                      type="number"
-                      step="0.1"
+                    <NumberInput
                       value={riskPerTrade}
-                      onChange={(e) => setRiskPerTrade(e.target.value)}
-                      className="w-full bg-muted/30 border border-border/50 rounded-lg px-4 py-2.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary focus:border-transparent"
+                      onChange={(val) => setRiskPerTrade(String(val))}
+                      min={0.1}
+                      step={0.1}
+                      suffix="%"
                     />
                   </div>
 
                   <div>
                     <label className="text-xs font-medium text-muted-foreground block mb-1.5">Max Open Positions</label>
-                    <input
-                      type="number"
+                    <NumberInput
                       value={maxPositions}
-                      onChange={(e) => setMaxPositions(e.target.value)}
-                      className="input-field w-full"
+                      onChange={(val) => setMaxPositions(String(val))}
+                      min={1}
+                      step={1}
                     />
                   </div>
 

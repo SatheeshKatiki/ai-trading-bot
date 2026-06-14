@@ -2,6 +2,7 @@
 
 import { Cpu, ShieldAlert, Zap, BarChart } from "lucide-react";
 import CustomSwitch from "@/components/custom-switch";
+import { NumberInput } from "@/components/number-input";
 
 interface AdvancedTabProps {
   settings: any;
@@ -76,12 +77,13 @@ export default function AdvancedTab({ settings, setSettings }: AdvancedTabProps)
               </select>
             </div>
             <div>
-              <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Log Retention (Days)</label>
-              <input
-                type="number"
+              <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Log Retention</label>
+              <NumberInput
                 value={settings.log_retention_days || 7}
-                onChange={(e) => updateSetting("log_retention_days", parseInt(e.target.value))}
-                className="w-full bg-background border border-border rounded-lg px-3 py-2.5 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-[#ec4899]"
+                onChange={(val) => updateSetting("log_retention_days", Number(val))}
+                min={1}
+                step={1}
+                suffix="days"
               />
             </div>
           </div>

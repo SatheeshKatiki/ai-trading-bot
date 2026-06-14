@@ -3,6 +3,7 @@
 import { Zap, ShieldAlert, Cpu, BarChart } from "lucide-react";
 import CustomSlider from "@/components/custom-slider";
 import CustomSwitch from "@/components/custom-switch";
+import { NumberInput } from "@/components/number-input";
 
 interface ExecutionTabProps {
   settings: any;
@@ -89,12 +90,11 @@ export default function ExecutionTab({ settings, setSettings }: ExecutionTabProp
             </div>
             <div>
               <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Max Bid-Ask Spread</label>
-              <input
-                type="number"
+              <NumberInput
                 value={settings.max_bid_ask_spread || 2.0}
-                step="0.5"
-                onChange={(e) => updateSetting("max_bid_ask_spread", parseFloat(e.target.value))}
-                className="w-full bg-background border border-border rounded-lg px-3 py-2.5 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-[#ec4899]"
+                onChange={(val) => updateSetting("max_bid_ask_spread", Number(val))}
+                step={0.5}
+                min={0}
               />
             </div>
           </div>
@@ -134,11 +134,12 @@ export default function ExecutionTab({ settings, setSettings }: ExecutionTabProp
             </div>
             <div>
               <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Execution Delay (ms)</label>
-              <input
-                type="number"
+              <NumberInput
                 value={settings.execution_delay_ms || 0}
-                onChange={(e) => updateSetting("execution_delay_ms", parseInt(e.target.value))}
-                className="w-full bg-background border border-border rounded-lg px-3 py-2.5 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-[#3b82f6]"
+                onChange={(val) => updateSetting("execution_delay_ms", Number(val))}
+                step={10}
+                min={0}
+                suffix="ms"
               />
             </div>
           </div>

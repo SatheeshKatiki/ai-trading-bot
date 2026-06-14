@@ -3,6 +3,7 @@
 import { Layers, Zap, ShieldAlert, Activity } from "lucide-react";
 import CustomSlider from "@/components/custom-slider";
 import CustomSwitch from "@/components/custom-switch";
+import { NumberInput } from "@/components/number-input";
 
 interface OptionChainTabProps {
   settings: any;
@@ -124,22 +125,19 @@ export default function OptionChainTab({ settings, setSettings }: OptionChainTab
           <div className="space-y-4 mt-4">
             <div>
               <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Min Delta</label>
-              <input
-                type="number"
+              <NumberInput
                 value={settings.min_delta || 0.30}
-                step="0.05"
-                onChange={(e) => updateSetting("min_delta", parseFloat(e.target.value))}
-                className="w-full bg-background border border-border rounded-lg px-3 py-2.5 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-[#8c52ff]"
+                onChange={(val) => updateSetting("min_delta", Number(val))}
+                step={0.05}
+                min={0}
               />
             </div>
             <div>
               <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Max Theta Decay</label>
-              <input
-                type="number"
+              <NumberInput
                 value={settings.max_theta_decay || -10.00}
-                step="0.5"
-                onChange={(e) => updateSetting("max_theta_decay", parseFloat(e.target.value))}
-                className="w-full bg-background border border-border rounded-lg px-3 py-2.5 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-[#8c52ff]"
+                onChange={(val) => updateSetting("max_theta_decay", Number(val))}
+                step={0.5}
               />
             </div>
           </div>
@@ -167,20 +165,20 @@ export default function OptionChainTab({ settings, setSettings }: OptionChainTab
           <div className="space-y-4 mt-4">
             <div>
               <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Max India VIX</label>
-              <input
-                type="number"
+              <NumberInput
                 value={settings.max_india_vix || 22}
-                onChange={(e) => updateSetting("max_india_vix", parseFloat(e.target.value))}
-                className="w-full bg-background border border-border rounded-lg px-3 py-2.5 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-[#00f2fe]"
+                onChange={(val) => updateSetting("max_india_vix", Number(val))}
+                step={1}
+                min={0}
               />
             </div>
             <div>
               <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Min India VIX</label>
-              <input
-                type="number"
+              <NumberInput
                 value={settings.min_india_vix || 12}
-                onChange={(e) => updateSetting("min_india_vix", parseFloat(e.target.value))}
-                className="w-full bg-background border border-border rounded-lg px-3 py-2.5 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-[#00f2fe]"
+                onChange={(val) => updateSetting("min_india_vix", Number(val))}
+                step={1}
+                min={0}
               />
             </div>
           </div>

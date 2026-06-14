@@ -2,6 +2,7 @@
 
 import Sidebar from "@/components/sidebar";
 import Header from "@/components/header";
+import { NumberInput } from "@/components/number-input";
 import { useState, useEffect } from "react";
 import CustomSlider from "@/components/custom-slider";
 import CustomSwitch from "@/components/custom-switch";
@@ -437,7 +438,7 @@ export default function StrategySettings() {
                         </div>
                         <div>
                           <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Cooldown (min)</label>
-                          <input type="number" defaultValue="15" className="w-full bg-background border border-border rounded-lg px-3 py-2.5 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all" />
+                          <NumberInput defaultValue="15" min={1} step={1} />
                         </div>
                       </div>
                     </div>
@@ -586,30 +587,30 @@ export default function StrategySettings() {
                         <div className="space-y-5 mt-4">
                           <div>
                             <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">RSI Period</label>
-                            <input
-                              type="number"
+                            <NumberInput
                               value={settings.rsi_window || 14}
-                              onChange={(e) => setSettings({ ...settings, rsi_window: parseInt(e.target.value) })}
-                              className="w-full bg-background border border-border rounded-lg px-3 py-2.5 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all"
+                              onChange={(val) => setSettings({ ...settings, rsi_window: Number(val) })}
+                              min={1}
+                              step={1}
                             />
                           </div>
                           <div className="grid grid-cols-2 gap-4">
                             <div>
                               <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Overbought</label>
-                              <input
-                                type="number"
+                              <NumberInput
                                 value={settings.rsi_sell || 70}
-                                onChange={(e) => setSettings({ ...settings, rsi_sell: parseInt(e.target.value) })}
-                                className="w-full bg-background border border-border rounded-lg px-3 py-2.5 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all"
+                                onChange={(val) => setSettings({ ...settings, rsi_sell: Number(val) })}
+                                min={1}
+                                step={1}
                               />
                             </div>
                             <div>
                               <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Oversold</label>
-                              <input
-                                type="number"
+                              <NumberInput
                                 value={settings.rsi_buy || 30}
-                                onChange={(e) => setSettings({ ...settings, rsi_buy: parseInt(e.target.value) })}
-                                className="w-full bg-background border border-border rounded-lg px-3 py-2.5 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all"
+                                onChange={(val) => setSettings({ ...settings, rsi_buy: Number(val) })}
+                                min={1}
+                                step={1}
                               />
                             </div>
                           </div>
@@ -638,16 +639,16 @@ export default function StrategySettings() {
                         <div className="space-y-4 mt-4">
                           <div>
                             <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Min OI</label>
-                            <input type="number" defaultValue="1000" className="w-full bg-background border border-border rounded-lg px-3 py-2.5 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all" />
+                            <NumberInput defaultValue="1000" min={1} step={100} />
                           </div>
                           <div className="grid grid-cols-2 gap-4">
                             <div>
                               <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">PCR Upper</label>
-                              <input type="number" defaultValue="1.20" step="0.05" className="w-full bg-background border border-border rounded-lg px-3 py-2.5 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all" />
+                              <NumberInput defaultValue="1.20" step={0.05} />
                             </div>
                             <div>
                               <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">PCR Lower</label>
-                              <input type="number" defaultValue="0.80" step="0.05" className="w-full bg-background border border-border rounded-lg px-3 py-2.5 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all" />
+                              <NumberInput defaultValue="0.80" step={0.05} />
                             </div>
                           </div>
                         </div>
@@ -714,9 +715,9 @@ export default function StrategySettings() {
                           <div>
                             <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Delta Range</label>
                             <div className="flex items-center gap-3">
-                              <input type="number" defaultValue="0.40" step="0.05" className="w-full bg-background border border-border rounded-lg px-3 py-2.5 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all" />
+                              <NumberInput defaultValue="0.40" step={0.05} />
                               <span className="text-muted-foreground text-xs">to</span>
-                              <input type="number" defaultValue="0.70" step="0.05" className="w-full bg-background border border-border rounded-lg px-3 py-2.5 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all" />
+                              <NumberInput defaultValue="0.70" step={0.05} />
                             </div>
                           </div>
                         </div>

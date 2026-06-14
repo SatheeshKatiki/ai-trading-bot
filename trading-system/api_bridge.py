@@ -566,7 +566,12 @@ async def get_backtest(
     donchian_period: int = Query(10, description="Donchian Channel breakout period"),
     trailing_sl: bool = Query(True, description="Enable trailing stop loss"),
     trail_trigger: float = Query(0.8, description="Trail trigger percentage"),
-    trail_offset: float = Query(0.2, description="Trail offset percentage")
+    trail_offset: float = Query(0.2, description="Trail offset percentage"),
+    enable_pyramiding: bool = Query(True, description="Enable scaling into winning trades"),
+    scale_pct: float = Query(0.2, description="Percentage of profit to scale in"),
+    max_scales: int = Query(2, description="Maximum number of times to scale in"),
+    max_daily_loss_pct: float = Query(3.0, description="Stop trading if daily loss exceeds this % of capital"),
+    max_daily_trades: int = Query(6, description="Maximum number of trades allowed per day")
 ):
     """Triggers a true Python backtest using the actual strategy files and broker data."""
     try:
@@ -667,9 +672,14 @@ async def get_backtest(
             backtest_settings.pop(key, None)
         
         # Override trailing SL settings with query parameters
-        backtest_settings["trailing_sl"] = trailing_sl
+        backtest_settings["trailing_sl"] = trailing_sl if isinstance(trailing_sl, bool) else str(trailing_sl).lower() == 'true'
         backtest_settings["trail_trigger"] = trail_trigger
         backtest_settings["trail_offset"] = trail_offset
+        backtest_settings["enable_pyramiding"] = enable_pyramiding if isinstance(enable_pyramiding, bool) else str(enable_pyramiding).lower() == 'true'
+        backtest_settings["scale_pct"] = scale_pct
+        backtest_settings["max_scales"] = max_scales
+        backtest_settings["max_daily_loss_pct"] = max_daily_loss_pct
+        backtest_settings["max_daily_trades"] = max_daily_trades
         
         from fastapi.concurrency import run_in_threadpool
         
@@ -681,7 +691,7 @@ async def get_backtest(
             slippage_bps=2.0, 
             commission_per_trade=20.0,
             multiplier=quantity,       # Dynamic quantity from UI
-            options_delta=0.5,         # Simulate ATM Options movement instead of 1:1 Futures
+            options_delta=1.0,         # Set to 1.0 to simulate Futures/Cash PnL (yesterday's behavior)
             stoploss_pct=stoploss_pct,
             target_pct=target_pct,
             rejection_logs=rejection_logs,

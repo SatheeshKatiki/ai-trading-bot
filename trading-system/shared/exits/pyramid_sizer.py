@@ -24,18 +24,18 @@ class PyramidSizer:
 
     def __init__(
         self,
-        points_trigger: float = 40.0,
+        pct_trigger: float = 0.2,
         max_scales: int = 2,
     ):
         """
         Parameters
         ----------
-        points_trigger : float
-            Number of points in profit required to trigger the next scale.
+        pct_trigger : float
+            Percentage of profit from entry price required to trigger the next scale.
         max_scales : int
             Maximum number of times to scale in.
         """
-        self.points_trigger = points_trigger
+        self.pct_trigger = pct_trigger
         self.max_scales = max_scales
 
     def evaluate_scale(self, position: Position, current_price: float) -> Tuple[bool, str]:
@@ -63,11 +63,13 @@ class PyramidSizer:
             profit_points = position.entry_price - current_price
 
         # Determine how many points are needed for the next scale
-        # Scale 1 requires 40 pts, Scale 2 requires 80 pts, etc.
-        required_profit = (position.scales_done + 1) * self.points_trigger
+        # Scale 1 requires entry * pct_trigger%, Scale 2 requires entry * 2*pct_trigger%, etc.
+        pts_per_scale = position.entry_price * (self.pct_trigger / 100.0)
+        required_profit = (position.scales_done + 1) * pts_per_scale
 
         if profit_points >= required_profit:
-            reason = f"Profit hit +{profit_points:.1f} pts (Target: {required_profit:.1f} pts)"
+            profit_pct = (profit_points / position.entry_price) * 100
+            reason = f"Profit hit +{profit_pct:.2f}% (Target: {((position.scales_done + 1) * self.pct_trigger):.2f}%)"
             return True, reason
 
         return False, ""

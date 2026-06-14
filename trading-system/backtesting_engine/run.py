@@ -160,7 +160,8 @@ class Backtester:
             "max_drawdown_%": round(mdd * 100, 2),
             "sharpe": round(sharpe_ratio(returns), 2),
             "sortino": round(sortino, 2),
-            "calmar": round(calmar, 2)
+            "calmar": round(calmar, 2),
+            "debug_pyramiding": kwargs.get("enable_pyramiding")
         }
 
 def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital: float = 100000.0,
@@ -172,7 +173,18 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
     position = None
     capital = initial_capital
     equity_curve = []
-    
+    print(f"DEBUG_KWARGS: enable_pyramiding={kwargs.get('enable_pyramiding')} type={type(kwargs.get('enable_pyramiding'))}")
+
+    # ── Daily Risk Controls ──────────────────────────────────────────────
+    max_daily_loss_pct  = kwargs.get("max_daily_loss_pct", 3.0)   # stop trading day if capital drops X%
+    max_daily_trades    = kwargs.get("max_daily_trades", 6)         # max trades per day
+    daily_capital_start = initial_capital                          # resets each new day
+    daily_pnl           = 0.0
+    daily_trades_count  = 0
+    trading_halted_day  = None                                     # date string when halt triggered
+    current_day         = None
+    # ─────────────────────────────────────────────────────────────────────
+
     def apply_slippage(price, side):
         slip_amt = price * (slippage_bps / 10000)
         return price + slip_amt if side == "BUY" else price - slip_amt
@@ -183,14 +195,14 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
         times = df['datetime'].apply(lambda x: str(x)[:16] if isinstance(x, str) else "00:00").to_numpy()
     else:
         times = ["00:00"] * len(df)
-        
+
     sig_vals = signals.to_numpy()
     has_st = 'st_direction' in df.columns
     st_dirs = df['st_direction'].to_numpy() if has_st else np.zeros(len(df))
-    
+
     has_custom_sl = 'custom_sl_pct' in df.columns
     custom_sls = df['custom_sl_pct'].to_numpy() if has_custom_sl else np.zeros(len(df))
-    
+
     has_scores = 'call_score' in df.columns and 'put_score' in df.columns
     if has_scores:
         call_scores = df['call_score'].to_numpy()
@@ -198,14 +210,29 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
     else:
         call_scores = np.zeros(len(df))
         put_scores = np.zeros(len(df))
-        
+
     has_atr = 'atr' in df.columns
     atr_vals = df['atr'].to_numpy() if has_atr else np.zeros(len(df))
-    
+
     for i in range(len(df)):
         current_price = float(closes[i])
         current_time = times[i]
         signal = sig_vals[i]
+
+        # ── Daily Reset & Loss-Limit Guard ───────────────────────────────
+        candle_day = current_time[:10] if len(current_time) >= 10 else current_time
+        if candle_day != current_day:
+            # New trading day: reset daily counters
+            current_day         = candle_day
+            daily_pnl           = 0.0
+            daily_trades_count  = 0
+            daily_capital_start = capital
+
+        # If daily loss limit hit → skip entries for the rest of this day
+        daily_loss_pct = (daily_pnl / daily_capital_start * 100) if daily_capital_start > 0 else 0
+        daily_limit_hit = daily_loss_pct <= -max_daily_loss_pct
+        daily_trades_hit = daily_trades_count >= max_daily_trades
+        # ─────────────────────────────────────────────────────────────────
         
         # Exit condition
         if position is not None:
@@ -226,54 +253,113 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
             pnl_pct = (current_price - entry_price) / entry_price * 100 if is_long else (entry_price - current_price) / entry_price * 100
             
             # Pyramiding (Scaling In) Simulation
-            if kwargs.get("enable_pyramiding", True):
+            enable_pyramiding_flag = kwargs.get("enable_pyramiding", True)
+            if str(enable_pyramiding_flag).lower() == "true":
                 scales_done = position.get("scales_done", 0)
                 if scales_done < kwargs.get("max_scales", 2):
                     pnl_pts = (current_price - entry_price) if is_long else (entry_price - current_price)
-                    req_pts = (scales_done + 1) * kwargs.get("scale_points", 40)
-                    
-                    if pnl_pts >= req_pts:
-                        scale_qty = multiplier // 2
-                        if scale_qty < 1: scale_qty = 1
+                    pts_per_scale = entry_price * (kwargs.get("scale_pct", 0.2) / 100.0)
+                    # Each scale triggers at a DIFFERENT level: scale1 at 1x, scale2 at 2x etc
+                    req_pts = (scales_done + 1) * pts_per_scale
+
+                    if pnl_pts >= req_pts and not position.get(f"scale_{scales_done}_done", False):
+                        print(f"DEBUG: Pyramiding triggered! pnl_pts={pnl_pts:.2f}, req_pts={req_pts:.2f}, scales_done={scales_done}")
+                        scale_qty = max(1, multiplier // 2)
                         position["entries"].append((current_price, scale_qty))
                         position["scales_done"] = scales_done + 1
-            
+                        # Mark this specific scale as done to prevent re-triggering every candle
+                        position[f"scale_{scales_done}_done"] = True
+                        # Shift SL to weighted average entry (breakeven protection)
+                        total_qty = sum(q for _, q in position["entries"])
+                        total_value = sum(p * q for p, q in position["entries"])
+                        avg_price = total_value / total_qty
+                        # Store average price directly — SL will trail from avg_price
+                        position["avg_entry_price"] = avg_price
+                        # Set SL so that if price returns to avg_entry we break even (not lose money)
+                        # sl_pct is POSITIVE: how much % below entry before we exit
+                        # We set it to the % distance from entry to avg (this protects breakeven)
+                        pct_to_avg = abs((avg_price - entry_price) / entry_price * 100)
+                        position["sl_pct"] = -pct_to_avg  # Now SL is NEGATIVE — exits if price falls back to avg
+
             # Track peak profit reached for trailing stop loss
             position["max_pnl_pct"] = max(position.get("max_pnl_pct", 0.0), pnl_pct)
-            
+
+            # Use the position's current SL (may be updated by pyramiding)
             current_sl_pct = position.get("sl_pct", stoploss_pct)
-            
-            # Trailing Stop Loss / Breakeven Profit Lock
+
+            # Trailing Stop Loss: once profit >= trail_trigger, lock in (profit - trail_offset)
             enable_tsl = kwargs.get("enable_trailing_sl", True) and kwargs.get("trailing_sl", True)
             if enable_tsl:
                 trail_trigger = kwargs.get("trail_trigger", 0.8)
                 trail_offset = kwargs.get("trail_offset", 0.2)
-                
+
                 if position["max_pnl_pct"] >= trail_trigger:
-                    # Trailed Stop Loss is set relative to entry (negative current_sl_pct acts as a profit target exit)
-                    current_sl_pct = -max(0.0, position["max_pnl_pct"] - trail_offset)
-            
-            target_hit = pnl_pct >= target_pct
+                    # Lock profit: SL now means "exit if profit drops below (peak - offset)"
+                    # i.e., exit when pnl_pct < (max_pnl_pct - trail_offset)
+                    # Equivalent: exit when pnl_pct <= -(current_sl_pct) is WRONG
+                    # Correct: we will handle this via a separate check below
+                    locked_profit = max(0.0, position["max_pnl_pct"] - trail_offset)
+                    position["tsl_locked_pct"] = locked_profit
+
+            # Stoploss check: exit if pnl drops below -current_sl_pct (losing trade)
             stoploss_hit = pnl_pct <= -current_sl_pct
+
+            # Trailing SL hit: exit if profit falls below the locked profit level
+            tsl_locked = position.get("tsl_locked_pct")
+            tsl_hit = (tsl_locked is not None) and (pnl_pct < tsl_locked)
+
+            target_hit = pnl_pct >= target_pct
             
-            # Track if targets were hit (for partial profits if enabled)
-            if pnl_pct >= current_sl_pct:
+            # Hard monetary stoploss check (e.g. 2500 INR max loss per trade)
+            max_inr_loss = kwargs.get("max_trade_loss_inr", 2500.0)
+            if is_long:
+                current_inr_pnl = sum((current_price - e_price) * qty * options_delta for e_price, qty in position["entries"])
+            else:
+                current_inr_pnl = sum((e_price - current_price) * qty * options_delta for e_price, qty in position["entries"])
+            hard_monetary_hit = current_inr_pnl <= -max_inr_loss
+
+            # Track if partial profit targets were hit (use original stoploss_pct as R unit)
+            if pnl_pct >= stoploss_pct:
                 position["t1_hit"] = True
-            if pnl_pct >= (current_sl_pct * 2):
+            if pnl_pct >= (stoploss_pct * 2):
                 position["t2_hit"] = True
                 
-            should_exit = (is_long and signal == -1) or (not is_long and signal == 1) or (i == len(df) - 1) or stoploss_hit or target_hit
-            
+            should_exit = (is_long and signal == -1) or (not is_long and signal == 1) or (i == len(df) - 1) or stoploss_hit or tsl_hit or target_hit or hard_monetary_hit
+
             if should_exit:
-                exit_price = apply_slippage(current_price, "SELL" if is_long else "BUY")
-                
-                # Determine exit reason
+                exit_price = current_price
                 exit_reason = "SIGNAL"
-                if stoploss_hit:
+                
+                total_qty = sum(qty for _, qty in position["entries"])
+                avg_e = sum(p*q for p, q in position["entries"]) / total_qty
+
+                if hard_monetary_hit:
+                    exit_reason = "MAX_LOSS_LIMIT"
+                    loss_pts = max_inr_loss / (total_qty * options_delta)
+                    if is_long:
+                        exit_price = avg_e - loss_pts
+                    else:
+                        exit_price = avg_e + loss_pts
+                elif stoploss_hit:
                     exit_reason = "STOPLOSS"
+                    if is_long:
+                        exit_price = avg_e * (1 - current_sl_pct / 100.0)
+                    else:
+                        exit_price = avg_e * (1 + current_sl_pct / 100.0)
+                elif tsl_hit:
+                    exit_reason = "TRAILING_SL"
+                    if is_long:
+                        exit_price = avg_e * (1 + tsl_locked / 100.0)
+                    else:
+                        exit_price = avg_e * (1 - tsl_locked / 100.0)
                 elif target_hit:
                     exit_reason = "TARGET"
+                    if is_long:
+                        exit_price = avg_e * (1 + target_pct / 100.0)
+                    else:
+                        exit_price = avg_e * (1 - target_pct / 100.0)
                 
+                exit_price = apply_slippage(exit_price, "SELL" if is_long else "BUY")
                 # Base PnL for all scales combined
                 if is_long:
                     base_pnl = sum((exit_price - e_price) * qty * options_delta for e_price, qty in position["entries"])
@@ -286,11 +372,11 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
                     rem_weight = 1.0
                     # 30% at 1:1
                     if position.get("t1_hit", False):
-                        pnl += (entry_price * (current_sl_pct / 100)) * multiplier * options_delta * 0.3
+                        pnl += (entry_price * (stoploss_pct / 100)) * multiplier * options_delta * 0.3
                         rem_weight -= 0.3
                     # 30% at 1:2
                     if position.get("t2_hit", False):
-                        pnl += (entry_price * (current_sl_pct * 2 / 100)) * multiplier * options_delta * 0.3
+                        pnl += (entry_price * (stoploss_pct * 2 / 100)) * multiplier * options_delta * 0.3
                         rem_weight -= 0.3
                     # Remaining 40%
                     pnl += base_pnl * rem_weight
@@ -298,8 +384,10 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
                     pnl = base_pnl
                     
                 pnl -= commission_per_trade
-                
+
                 capital += pnl
+                daily_pnl += pnl          # ← track daily P&L
+                daily_trades_count += 1   # ← track daily trade count
                 trades.append({
                     "id": f"T-{len(trades) + 1}",
                     "type": position["type"],
@@ -313,11 +401,11 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
                 })
                 position = None
                 
-        # Entry condition
-        if position is None:
+        # Entry condition — skip if daily loss limit or trade cap reached
+        if position is None and not daily_limit_hit and not daily_trades_hit:
             if signal == 1 and (i == 0 or sig_vals[i-1] != 1):
                 entry_price = apply_slippage(current_price, "BUY")
-                
+
                 # Dynamic SL/Target based on ATR (Optional) or Custom SL
                 if has_custom_sl and custom_sls[i] > 0:
                     current_sl_pct = custom_sls[i]
@@ -326,14 +414,14 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
                     current_sl_pct = (atr * 1.5) / entry_price * 100
                 else:
                     current_sl_pct = stoploss_pct
-                
+
                 score = call_scores[i] if has_scores else 0
-                
+
                 position = {"type": "BUY", "entries": [(entry_price, multiplier)], "time": current_time, "sl_pct": current_sl_pct, "score": score}
                 capital -= commission_per_trade
             elif signal == -1 and (i == 0 or sig_vals[i-1] != -1):
                 entry_price = apply_slippage(current_price, "SELL")
-                
+
                 # Dynamic SL/Target based on ATR (Optional) or Custom SL
                 if has_custom_sl and custom_sls[i] > 0:
                     current_sl_pct = custom_sls[i]
@@ -342,9 +430,9 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
                     current_sl_pct = (atr * 1.5) / entry_price * 100
                 else:
                     current_sl_pct = stoploss_pct
-                
+
                 score = put_scores[i] if has_scores else 0
-                
+
                 position = {"type": "SELL", "entries": [(entry_price, multiplier)], "time": current_time, "sl_pct": current_sl_pct, "score": score}
                 capital -= commission_per_trade
                 
@@ -408,7 +496,7 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
         "totalTrades": len(trades),
         "successTrades": len(winning_trades),
         "failedTrades": len(losing_trades),
-        "stoplossTrades": sum(1 for t in trades if t.get("exit_reason") == "STOPLOSS"),
+        "stoplossTrades": sum(1 for t in trades if t.get("exit_reason") in ("STOPLOSS", "TRAILING_SL")),
         "maxDrawdown": -round(max_dd, 2),
         "netProfit": total_pnl,
         "avgWinScore": f"{avg_win_score:.1f}",

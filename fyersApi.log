@@ -1,0 +1,131 @@
+[2026-06-12 21:58:03] WARNING trading_bot.strategies.registry: Strategy ema_rsi is already registered. Overwriting.
+[2026-06-12 21:58:03] WARNING trading_bot.strategies.registry: Strategy enhanced_ai is already registered. Overwriting.
+[2026-06-12 21:58:03] WARNING trading_bot.strategies.registry: Strategy premium is already registered. Overwriting.
+[2026-06-12 21:58:03] WARNING trading_bot.strategies.registry: Strategy institutional_ema is already registered. Overwriting.
+[2026-06-12 21:58:03] WARNING trading_bot.strategies.registry: Strategy advanced_ai is already registered. Overwriting.
+[2026-06-12 21:58:03] WARNING trading_bot.strategies.registry: Strategy institutional_momentum is already registered. Overwriting.
+[2026-06-12 22:00:20] WARNING brokers.broker_factory: BrokerFactory: Paper mode active (live_trading_mode=False or missing credentials).
+[2026-06-12 22:00:20] WARNING brokers.fyers: Fyers: credentials not set or paper_mode=True — running in paper-trading simulation mode.
+[2026-06-13 02:13:40] WARNING trading_bot.strategies.registry: Strategy ema_rsi is already registered. Overwriting.
+[2026-06-13 02:13:40] WARNING trading_bot.strategies.registry: Strategy enhanced_ai is already registered. Overwriting.
+[2026-06-13 02:13:40] WARNING trading_bot.strategies.registry: Strategy premium is already registered. Overwriting.
+[2026-06-13 02:13:40] WARNING trading_bot.strategies.registry: Strategy institutional_ema is already registered. Overwriting.
+[2026-06-13 02:13:40] WARNING trading_bot.strategies.registry: Strategy advanced_ai is already registered. Overwriting.
+[2026-06-13 02:13:40] WARNING trading_bot.strategies.registry: Strategy institutional_momentum is already registered. Overwriting.
+[2026-06-13 02:14:33] WARNING brokers.broker_factory: BrokerFactory: Paper mode active (live_trading_mode=False or missing credentials).
+[2026-06-13 02:14:33] WARNING brokers.fyers: Fyers: credentials not set or paper_mode=True — running in paper-trading simulation mode.
+[2026-06-13 02:48:48] WARNING trading_bot.strategies.registry: Strategy ema_rsi is already registered. Overwriting.
+[2026-06-13 02:48:48] WARNING trading_bot.strategies.registry: Strategy enhanced_ai is already registered. Overwriting.
+[2026-06-13 02:48:48] WARNING trading_bot.strategies.registry: Strategy premium is already registered. Overwriting.
+[2026-06-13 02:48:48] WARNING trading_bot.strategies.registry: Strategy institutional_ema is already registered. Overwriting.
+[2026-06-13 02:48:48] WARNING trading_bot.strategies.registry: Strategy advanced_ai is already registered. Overwriting.
+[2026-06-13 02:48:48] WARNING trading_bot.strategies.registry: Strategy institutional_momentum is already registered. Overwriting.
+[2026-06-13 02:49:12] WARNING brokers.broker_factory: BrokerFactory: Paper mode active (live_trading_mode=False or missing credentials).
+[2026-06-13 02:49:12] WARNING brokers.fyers: Fyers: credentials not set or paper_mode=True — running in paper-trading simulation mode.
+{"level":"ERROR","location":"[error:54] fyers_logger","message":{"API":"/history","Error":{"code":-16,"message":"Could not authenticate the user","s":"error"}},"timestamp":"2026-06-13 06:09:27,741+0530","service":"FyersAPI","taskName":"Task-10302"}
+[2026-06-13 06:09:27] WARNING brokers.fyers_broker: Fyers history API chunk failed: Could not authenticate the user
+{"level":"ERROR","location":"[error:54] fyers_logger","message":{"API":"/history","Error":{"code":-16,"message":"Could not authenticate the user","s":"error"}},"timestamp":"2026-06-13 06:09:27,950+0530","service":"FyersAPI","taskName":"Task-10302"}
+[2026-06-13 06:09:27] WARNING brokers.fyers_broker: Fyers history API chunk failed: Could not authenticate the user
+{"level":"ERROR","location":"[error:54] fyers_logger","message":{"API":"/history","Error":{"code":-16,"message":"Could not authenticate the user","s":"error"}},"timestamp":"2026-06-13 06:09:28,138+0530","service":"FyersAPI","taskName":"Task-10302"}
+[2026-06-13 06:09:28] WARNING brokers.fyers_broker: Fyers history API chunk failed: Could not authenticate the user
+{"level":"ERROR","location":"[error:54] fyers_logger","message":{"API":"/history","Error":{"code":-16,"message":"Could not authenticate the user","s":"error"}},"timestamp":"2026-06-13 06:09:28,339+0530","service":"FyersAPI","taskName":"Task-10302"}
+[2026-06-13 06:09:28] WARNING brokers.fyers_broker: Fyers history API chunk failed: Could not authenticate the user
+{"level":"ERROR","location":"[error:54] fyers_logger","message":{"API":"/history","Error":{"code":-16,"message":"Could not authenticate the user","s":"error"}},"timestamp":"2026-06-13 06:09:52,564+0530","service":"FyersAPI","taskName":"Task-10311"}
+[2026-06-13 06:09:52] WARNING brokers.fyers_broker: Fyers history API chunk failed: Could not authenticate the user
+{"level":"ERROR","location":"[error:54] fyers_logger","message":{"API":"/history","Error":{"code":-16,"message":"Could not authenticate the user","s":"error"}},"timestamp":"2026-06-13 06:09:52,754+0530","service":"FyersAPI","taskName":"Task-10311"}
+[2026-06-13 06:09:52] WARNING brokers.fyers_broker: Fyers history API chunk failed: Could not authenticate the user
+{"level":"ERROR","location":"[error:54] fyers_logger","message":{"API":"/history","Error":{"code":-16,"message":"Could not authenticate the user","s":"error"}},"timestamp":"2026-06-13 06:09:52,944+0530","service":"FyersAPI","taskName":"Task-10311"}
+[2026-06-13 06:09:52] WARNING brokers.fyers_broker: Fyers history API chunk failed: Could not authenticate the user
+{"level":"ERROR","location":"[error:54] fyers_logger","message":{"API":"/history","Error":{"code":-16,"message":"Could not authenticate the user","s":"error"}},"timestamp":"2026-06-13 06:09:53,141+0530","service":"FyersAPI","taskName":"Task-10311"}
+[2026-06-13 06:09:53] WARNING brokers.fyers_broker: Fyers history API chunk failed: Could not authenticate the user
+{"level":"ERROR","location":"[error:54] fyers_logger","message":{"API":"/history","Error":{"code":-16,"message":"Could not authenticate the user","s":"error"}},"timestamp":"2026-06-13 06:10:28,162+0530","service":"FyersAPI","taskName":"Task-10321"}
+[2026-06-13 06:10:28] WARNING brokers.fyers_broker: Fyers history API chunk failed: Could not authenticate the user
+{"level":"ERROR","location":"[error:54] fyers_logger","message":{"API":"/history","Error":{"code":-16,"message":"Could not authenticate the user","s":"error"}},"timestamp":"2026-06-13 06:10:28,380+0530","service":"FyersAPI","taskName":"Task-10321"}
+[2026-06-13 06:10:28] WARNING brokers.fyers_broker: Fyers history API chunk failed: Could not authenticate the user
+{"level":"ERROR","location":"[error:54] fyers_logger","message":{"API":"/history","Error":{"code":-16,"message":"Could not authenticate the user","s":"error"}},"timestamp":"2026-06-13 06:10:28,606+0530","service":"FyersAPI","taskName":"Task-10321"}
+[2026-06-13 06:10:28] WARNING brokers.fyers_broker: Fyers history API chunk failed: Could not authenticate the user
+{"level":"ERROR","location":"[error:54] fyers_logger","message":{"API":"/history","Error":{"code":-16,"message":"Could not authenticate the user","s":"error"}},"timestamp":"2026-06-13 06:10:28,802+0530","service":"FyersAPI","taskName":"Task-10321"}
+[2026-06-13 06:10:28] WARNING brokers.fyers_broker: Fyers history API chunk failed: Could not authenticate the user
+[2026-06-14 12:49:38] WARNING trading_bot.strategies.registry: Strategy ema_rsi is already registered. Overwriting.
+[2026-06-14 12:49:38] WARNING trading_bot.strategies.registry: Strategy enhanced_ai is already registered. Overwriting.
+[2026-06-14 12:49:38] WARNING trading_bot.strategies.registry: Strategy premium is already registered. Overwriting.
+[2026-06-14 12:49:38] WARNING trading_bot.strategies.registry: Strategy institutional_ema is already registered. Overwriting.
+[2026-06-14 12:49:38] WARNING trading_bot.strategies.registry: Strategy advanced_ai is already registered. Overwriting.
+[2026-06-14 12:49:38] WARNING trading_bot.strategies.registry: Strategy institutional_momentum is already registered. Overwriting.
+[2026-06-14 12:49:39] WARNING api_bridge: Token not found for WebSocket
+[2026-06-14 12:53:31] CRITICAL brokers.credentials: SECURITY ALERT: broker_credentials.json integrity check FAILED. The file may have been tampered with outside the application. Refusing to load credentials.
+[2026-06-14 12:53:31] CRITICAL brokers.credentials: Refusing to return credentials — integrity check failed.
+[2026-06-14 12:53:31] WARNING brokers.broker_factory: BrokerFactory: Paper mode active (live_trading_mode=False or missing credentials).
+[2026-06-14 12:53:31] WARNING brokers.fyers: Fyers: credentials not set or paper_mode=True — running in paper-trading simulation mode.
+{"level":"ERROR","location":"[error:54] fyers_logger","message":{"API":"/history","Error":{"code":-16,"message":"Could not authenticate the user","s":"error"}},"timestamp":"2026-06-14 12:53:33,124+0530","service":"FyersAPI","taskName":"Task-32"}
+[2026-06-14 12:53:33] WARNING brokers.fyers_broker: Fyers history API chunk failed: Could not authenticate the user
+{"level":"ERROR","location":"[error:54] fyers_logger","message":{"API":"/history","Error":{"code":-16,"message":"Could not authenticate the user","s":"error"}},"timestamp":"2026-06-14 12:53:33,325+0530","service":"FyersAPI","taskName":"Task-32"}
+[2026-06-14 12:53:33] WARNING brokers.fyers_broker: Fyers history API chunk failed: Could not authenticate the user
+[2026-06-14 12:53:37] ERROR yfinance: $^NSEI: possibly delisted; no price data found  (5m 2024-01-01 -> 2024-06-01) (Yahoo error = "5m data not available for startTime=1704047400 and endTime=1717180200. The requested range must be within the last 60 days.")
+{"level":"ERROR","location":"[error:54] fyers_logger","message":{"API":"/history","Error":{"code":-16,"message":"Could not authenticate the user","s":"error"}},"timestamp":"2026-06-14 12:56:39,483+0530","service":"FyersAPI","taskName":"Task-40"}
+[2026-06-14 12:56:39] WARNING brokers.fyers_broker: Fyers history API chunk failed: Could not authenticate the user
+{"level":"ERROR","location":"[error:54] fyers_logger","message":{"API":"/history","Error":{"code":-16,"message":"Could not authenticate the user","s":"error"}},"timestamp":"2026-06-14 12:56:39,691+0530","service":"FyersAPI","taskName":"Task-40"}
+[2026-06-14 12:56:39] WARNING brokers.fyers_broker: Fyers history API chunk failed: Could not authenticate the user
+[2026-06-14 12:56:39] ERROR yfinance: $^NSEI: possibly delisted; no price data found  (5m 2024-01-01 -> 2024-06-01) (Yahoo error = "5m data not available for startTime=1704047400 and endTime=1717180200. The requested range must be within the last 60 days.")
+{"level":"ERROR","location":"[error:54] fyers_logger","message":{"API":"/history","Error":{"code":-16,"message":"Could not authenticate the user","s":"error"}},"timestamp":"2026-06-14 12:57:25,862+0530","service":"FyersAPI","taskName":"Task-44"}
+[2026-06-14 12:57:25] WARNING brokers.fyers_broker: Fyers history API chunk failed: Could not authenticate the user
+{"level":"ERROR","location":"[error:54] fyers_logger","message":{"API":"/history","Error":{"code":-16,"message":"Could not authenticate the user","s":"error"}},"timestamp":"2026-06-14 12:57:26,062+0530","service":"FyersAPI","taskName":"Task-44"}
+[2026-06-14 12:57:26] WARNING brokers.fyers_broker: Fyers history API chunk failed: Could not authenticate the user
+[2026-06-14 12:57:26] ERROR yfinance: $^NSEI: possibly delisted; no price data found  (5m 2024-01-01 -> 2024-06-01) (Yahoo error = "5m data not available for startTime=1704047400 and endTime=1717180200. The requested range must be within the last 60 days.")
+{"level":"ERROR","location":"[error:54] fyers_logger","message":{"API":"/history","Error":{"code":-16,"message":"Could not authenticate the user","s":"error"}},"timestamp":"2026-06-14 13:00:49,407+0530","service":"FyersAPI","taskName":"Task-52"}
+[2026-06-14 13:00:49] WARNING brokers.fyers_broker: Fyers history API chunk failed: Could not authenticate the user
+{"level":"ERROR","location":"[error:54] fyers_logger","message":{"API":"/history","Error":{"code":-16,"message":"Could not authenticate the user","s":"error"}},"timestamp":"2026-06-14 13:00:49,649+0530","service":"FyersAPI","taskName":"Task-52"}
+[2026-06-14 13:00:49] WARNING brokers.fyers_broker: Fyers history API chunk failed: Could not authenticate the user
+[2026-06-14 13:00:49] ERROR yfinance: $^NSEI: possibly delisted; no price data found  (5m 2024-01-01 -> 2024-06-01) (Yahoo error = "5m data not available for startTime=1704047400 and endTime=1717180200. The requested range must be within the last 60 days.")
+[2026-06-14 13:07:33] WARNING trading_bot.strategies.registry: Strategy ema_rsi is already registered. Overwriting.
+[2026-06-14 13:07:33] WARNING trading_bot.strategies.registry: Strategy enhanced_ai is already registered. Overwriting.
+[2026-06-14 13:07:33] WARNING trading_bot.strategies.registry: Strategy premium is already registered. Overwriting.
+[2026-06-14 13:07:33] WARNING trading_bot.strategies.registry: Strategy institutional_ema is already registered. Overwriting.
+[2026-06-14 13:07:33] WARNING trading_bot.strategies.registry: Strategy advanced_ai is already registered. Overwriting.
+[2026-06-14 13:07:33] WARNING trading_bot.strategies.registry: Strategy institutional_momentum is already registered. Overwriting.
+[2026-06-14 13:07:34] WARNING api_bridge: Token not found for WebSocket
+[2026-06-14 13:08:08] CRITICAL brokers.credentials: SECURITY ALERT: broker_credentials.json integrity check FAILED. The file may have been tampered with outside the application. Refusing to load credentials.
+[2026-06-14 13:08:08] CRITICAL brokers.credentials: Refusing to return credentials — integrity check failed.
+[2026-06-14 13:08:08] WARNING brokers.broker_factory: BrokerFactory: Paper mode active (live_trading_mode=False or missing credentials).
+[2026-06-14 13:08:08] WARNING brokers.fyers: Fyers: credentials not set or paper_mode=True — running in paper-trading simulation mode.
+{"level":"ERROR","location":"[error:54] fyers_logger","message":{"API":"/history","Error":{"code":-16,"message":"Could not authenticate the user","s":"error"}},"timestamp":"2026-06-14 13:08:09,504+0530","service":"FyersAPI","taskName":"Task-20"}
+[2026-06-14 13:08:09] WARNING brokers.fyers_broker: Fyers history API chunk failed: Could not authenticate the user
+{"level":"ERROR","location":"[error:54] fyers_logger","message":{"API":"/history","Error":{"code":-16,"message":"Could not authenticate the user","s":"error"}},"timestamp":"2026-06-14 13:08:09,687+0530","service":"FyersAPI","taskName":"Task-20"}
+[2026-06-14 13:08:09] WARNING brokers.fyers_broker: Fyers history API chunk failed: Could not authenticate the user
+[2026-06-14 13:08:13] ERROR yfinance: $^NSEI: possibly delisted; no price data found  (5m 2024-01-01 -> 2024-06-01) (Yahoo error = "5m data not available for startTime=1704047400 and endTime=1717180200. The requested range must be within the last 60 days.")
+[2026-06-14 13:14:52] ERROR asyncio: Task exception was never retrieved
+future: <Task finished name='Task-21' coro=<IocpProactor.accept.<locals>.accept_coro() done, defined at C:\Python314\Lib\asyncio\windows_events.py:564> exception=OSError(22, 'The specified network name is no longer available', None, 64, None)>
+Traceback (most recent call last):
+  File "C:\Python314\Lib\asyncio\windows_events.py", line 567, in accept_coro
+    await future
+  File "C:\Python314\Lib\asyncio\windows_events.py", line 804, in _poll
+    value = callback(transferred, key, ov)
+  File "C:\Python314\Lib\asyncio\windows_events.py", line 556, in finish_accept
+    ov.getresult()
+    ~~~~~~~~~~~~^^
+OSError: [WinError 64] The specified network name is no longer available
+[2026-06-14 13:14:52] ERROR asyncio: Accept failed on a socket
+socket: <asyncio.TransportSocket fd=1196, family=2, type=1, proto=6, laddr=('127.0.0.1', 8000)>
+Traceback (most recent call last):
+  File "C:\Python314\Lib\asyncio\proactor_events.py", line 845, in loop
+    conn, addr = f.result()
+                 ~~~~~~~~^^
+OSError: [WinError 64] The specified network name is no longer available
+[2026-06-14 16:48:14] WARNING trading_bot.strategies.registry: Strategy ema_rsi is already registered. Overwriting.
+[2026-06-14 16:48:14] WARNING trading_bot.strategies.registry: Strategy enhanced_ai is already registered. Overwriting.
+[2026-06-14 16:48:14] WARNING trading_bot.strategies.registry: Strategy premium is already registered. Overwriting.
+[2026-06-14 16:48:14] WARNING trading_bot.strategies.registry: Strategy institutional_ema is already registered. Overwriting.
+[2026-06-14 16:48:14] WARNING trading_bot.strategies.registry: Strategy advanced_ai is already registered. Overwriting.
+[2026-06-14 16:48:14] WARNING trading_bot.strategies.registry: Strategy institutional_momentum is already registered. Overwriting.
+[2026-06-14 16:48:27] WARNING trading_bot.strategies.registry: Strategy ema_rsi is already registered. Overwriting.
+[2026-06-14 16:48:27] WARNING trading_bot.strategies.registry: Strategy enhanced_ai is already registered. Overwriting.
+[2026-06-14 16:48:27] WARNING trading_bot.strategies.registry: Strategy premium is already registered. Overwriting.
+[2026-06-14 16:48:27] WARNING trading_bot.strategies.registry: Strategy institutional_ema is already registered. Overwriting.
+[2026-06-14 16:48:27] WARNING trading_bot.strategies.registry: Strategy advanced_ai is already registered. Overwriting.
+[2026-06-14 16:48:27] WARNING trading_bot.strategies.registry: Strategy institutional_momentum is already registered. Overwriting.
+[2026-06-14 16:49:28] WARNING trading_bot.strategies.registry: Strategy ema_rsi is already registered. Overwriting.
+[2026-06-14 16:49:28] WARNING trading_bot.strategies.registry: Strategy enhanced_ai is already registered. Overwriting.
+[2026-06-14 16:49:28] WARNING trading_bot.strategies.registry: Strategy premium is already registered. Overwriting.
+[2026-06-14 16:49:28] WARNING trading_bot.strategies.registry: Strategy institutional_ema is already registered. Overwriting.
+[2026-06-14 16:49:28] WARNING trading_bot.strategies.registry: Strategy advanced_ai is already registered. Overwriting.
+[2026-06-14 16:49:28] WARNING trading_bot.strategies.registry: Strategy institutional_momentum is already registered. Overwriting.

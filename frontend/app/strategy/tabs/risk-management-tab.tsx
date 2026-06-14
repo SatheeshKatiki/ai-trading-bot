@@ -2,6 +2,7 @@
 
 import { ShieldCheck, Target, Clock, Zap, AlertTriangle } from "lucide-react";
 import CustomSwitch from "@/components/custom-switch";
+import { NumberInput } from "@/components/number-input";
 import { useState } from "react";
 
 export default function RiskManagementTab({ settings, setSettings }: { settings: any, setSettings: (s: any) => void }) {
@@ -44,8 +45,7 @@ export default function RiskManagementTab({ settings, setSettings }: { settings:
               <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">
                 Value ({stopLossType === "Points" ? "Pts" : stopLossType === "Amount" ? "₹" : "%"})
               </label>
-              <input
-                type="number"
+              <NumberInput
                 value={
                   stopLossType === "Percentage"
                     ? (settings.stoploss_pct || 1.8)
@@ -53,17 +53,19 @@ export default function RiskManagementTab({ settings, setSettings }: { settings:
                       ? (settings.stop_loss_points || 20)
                       : (settings.stop_loss_amount || 5000)
                 }
-                onChange={(e) => {
-                  const val = parseFloat(e.target.value);
+                onChange={(val) => {
+                  const numVal = Number(val);
                   if (stopLossType === "Percentage") {
-                    setSettings({ ...settings, stoploss_pct: val });
+                    setSettings({ ...settings, stoploss_pct: numVal });
                   } else if (stopLossType === "Points") {
-                    setSettings({ ...settings, stop_loss_points: val });
+                    setSettings({ ...settings, stop_loss_points: numVal });
                   } else if (stopLossType === "Amount") {
-                    setSettings({ ...settings, stop_loss_amount: val });
+                    setSettings({ ...settings, stop_loss_amount: numVal });
                   }
                 }}
-                className="w-full bg-background border border-border rounded-lg px-3 py-2.5 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-[#ef4444]"
+                step={stopLossType === "Percentage" ? 0.1 : 1}
+                min={0}
+                ringColor="destructive"
               />
             </div>
           </div>
@@ -91,21 +93,22 @@ export default function RiskManagementTab({ settings, setSettings }: { settings:
           <div className="space-y-4 mt-4">
             <div>
               <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Max Hold Time (Minutes)</label>
-              <input
-                type="number"
+              <NumberInput
                 value={settings.max_hold_time || 30}
-                onChange={(e) => setSettings({ ...settings, max_hold_time: parseInt(e.target.value) })}
-                className="w-full bg-background border border-border rounded-lg px-3 py-2.5 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-[#f59e0b]"
+                onChange={(val) => setSettings({ ...settings, max_hold_time: Number(val) })}
+                step={1}
+                min={0}
+                suffix="min"
               />
               <p className="text-[10px] text-muted-foreground mt-1">Option buyers lose edge if price stalls. Hard exit after time limit.</p>
             </div>
             <div>
               <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Breakeven Trigger (Min)</label>
-              <input
-                type="number"
+              <NumberInput
                 value={settings.breakeven_trigger || 10}
-                onChange={(e) => setSettings({ ...settings, breakeven_trigger: parseInt(e.target.value) })}
-                className="w-full bg-background border border-border rounded-lg px-3 py-2.5 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-[#f59e0b]"
+                onChange={(val) => setSettings({ ...settings, breakeven_trigger: Number(val) })}
+                step={1}
+                min={0}
               />
             </div>
           </div>
@@ -133,27 +136,24 @@ export default function RiskManagementTab({ settings, setSettings }: { settings:
           <div className="space-y-4 mt-4">
             <div>
               <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Target 1 (Partial 50%)</label>
-              <input
-                type="number"
+              <NumberInput
                 value={settings.target_pct || 2.0}
-                onChange={(e) => setSettings({ ...settings, target_pct: parseFloat(e.target.value) })}
-                className="w-full bg-background border border-border rounded-lg px-3 py-2.5 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-[#10b981]"
+                onChange={(val) => setSettings({ ...settings, target_pct: Number(val) })}
+                step={0.1}
+                min={0}
+                suffix="%"
               />
             </div>
             <div>
               <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Position Sizing</label>
-              <div className="relative">
-                <input
-                  type="number"
-                  value={settings.quantity || 65}
-                  onChange={(e) => setSettings({ ...settings, quantity: parseInt(e.target.value) || 65 })}
-                  placeholder="e.g. 65"
-                  className="w-full bg-background border border-border rounded-lg pl-3 pr-24 py-2.5 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-[#10b981]"
-                />
-                <span className="absolute right-3 top-1/2 transform -translate-y-1/2 text-[10px] font-bold text-muted-foreground uppercase">Qty (e.g. 1 Lot)</span>
-              </div>
-            </div>
-            <div>
+              <NumberInput
+                value={settings.quantity || 65}
+                onChange={(val) => setSettings({ ...settings, quantity: Number(val) || 65 })}
+                step={1}
+                min={0}
+                suffix="Qty"
+                placeholder="e.g. 65"
+              />
               <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Trailing Trigger</label>
               <select
                 value={settings.trailing_trigger || "At Target 1"}

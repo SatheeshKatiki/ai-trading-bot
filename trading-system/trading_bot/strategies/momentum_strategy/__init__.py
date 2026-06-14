@@ -344,4 +344,31 @@ def generate_signals(
             
             signals.iloc[i] = -1
 
+    # Task: Automatic Swing Low/High (ATR based) Stoploss calculation
+    df['custom_sl_pct'] = 0.0
+    
+    # If the user sets Stoploss % to 0.0, we automatically activate the Swing/ATR SL
+    stoploss_pct = kwargs.get("stoploss_pct", 2.0)
+    enable_swing_sl = kwargs.get("enable_swing_sl", False)
+    
+    if stoploss_pct <= 0.0 or enable_swing_sl:
+        # Vectorized calculation for performance
+        # Bull SL: Distance from close down to Donchian Low, minimum 1.5x ATR
+        bull_sl_dist = (close - donchian_low).clip(lower=atr * 1.5)
+        bull_sl_pct = (bull_sl_dist / close) * 100
+        
+        # Bear SL: Distance from Donchian High down to close, minimum 1.5x ATR
+        bear_sl_dist = (donchian_high - close).clip(lower=atr * 1.5)
+        bear_sl_pct = (bear_sl_dist / close) * 100
+        
+        signals_np = signals.to_numpy()
+        bull_mask = signals_np == 1
+        bear_mask = signals_np == -1
+        
+        custom_sl = np.zeros(len(df))
+        custom_sl[bull_mask] = bull_sl_pct[bull_mask]
+        custom_sl[bear_mask] = bear_sl_pct[bear_mask]
+        
+        df['custom_sl_pct'] = custom_sl
+
     return signals, rejection_logs

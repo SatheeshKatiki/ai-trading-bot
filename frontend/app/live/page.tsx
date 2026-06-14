@@ -2,6 +2,7 @@
 
 import Sidebar from "@/components/sidebar";
 import Header from "@/components/header";
+import { NumberInput } from "@/components/number-input";
 import { useState, useEffect, useRef, Suspense } from "react";
 import { 
   TrendingUp, 
@@ -627,45 +628,42 @@ function LiveTradingContent() {
               </div>
 
               {/* Dynamic Lot/Qty Selector */}
-              <div className="relative inline-flex items-center h-10 group rounded-xl">
-                <span className="absolute -top-2.5 left-2 px-1 bg-background text-[10px] font-bold text-muted-foreground uppercase tracking-wider group-focus-within:text-primary transition-colors z-20">
+              <div className="relative group">
+                <span className="absolute -top-2.5 left-2 px-1 bg-[#09090b] text-[10px] font-bold text-muted-foreground uppercase tracking-wider group-focus-within:text-primary transition-colors z-20">
                   {inputMode === 'lots' ? 'Lots' : 'Qty.'}
                 </span>
-                
-                <input 
-                  type="number"
-                  min="0"
-                  step="1"
+                <NumberInput
                   value={displayValue}
-                  onChange={(e) => handleValueChange(Number(e.target.value))}
-                  className="input-field w-20 pl-3 pr-1 py-2 font-mono rounded-r-none h-full z-10"
+                  onChange={(val) => handleValueChange(Number(val))}
+                  min={0}
+                  step={1}
+                  containerClassName="w-24 h-10 rounded-xl"
+                  appendContent={
+                    <button 
+                      onClick={() => setInputMode(prev => prev === 'lots' ? 'qty' : 'lots')}
+                      className="flex items-center justify-center w-10 h-full border border-l-0 border-border bg-muted/20 hover:bg-muted/50 hover:text-primary transition-colors rounded-r-xl flex-shrink-0 z-10"
+                      title={`Switch to ${inputMode === 'lots' ? 'Quantity' : 'Lots'}`}
+                    >
+                      {inputMode === 'lots' ? <Package className="w-4 h-4" /> : <Layers className="w-4 h-4" />}
+                    </button>
+                  }
                 />
-                
-                <button 
-                  onClick={() => setInputMode(prev => prev === 'lots' ? 'qty' : 'lots')}
-                  className="flex items-center justify-center w-10 h-full border border-l-0 border-border bg-muted/20 hover:bg-muted/50 hover:text-primary transition-colors rounded-r-xl flex-shrink-0 z-10"
-                  title={`Switch to ${inputMode === 'lots' ? 'Quantity' : 'Lots'}`}
-                >
-                  {inputMode === 'lots' ? <Package className="w-4 h-4" /> : <Layers className="w-4 h-4" />}
-                </button>
               </div>
 
               {/* Stoploss Selector */}
-              <div className="relative inline-flex items-center h-10 group rounded-xl">
-                <span className="absolute -top-2.5 left-2 px-1 bg-background text-[10px] font-bold text-destructive/80 uppercase tracking-wider group-focus-within:text-destructive transition-colors z-20">
+              <div className="relative group">
+                <span className="absolute -top-2.5 left-2 px-1 bg-[#09090b] text-[10px] font-bold text-destructive/80 uppercase tracking-wider group-focus-within:text-destructive transition-colors z-20">
                   SL %
                 </span>
-                <input 
-                  type="number"
-                  min="0.1"
-                  step="0.1"
+                <NumberInput
                   value={stoploss}
-                  onChange={(e) => handleStoplossChange(e.target.value)}
-                  className="input-field w-16 pl-3 pr-1 py-2 font-mono rounded-r-none h-full focus:!border-destructive focus:!ring-destructive/20 z-10"
+                  onChange={(val) => handleStoplossChange(String(val))}
+                  min={0.1}
+                  step={0.1}
+                  suffix="%"
+                  ringColor="destructive"
+                  containerClassName="w-24 h-10 rounded-xl"
                 />
-                <div className="flex items-center justify-center w-8 h-full border border-l-0 border-border bg-destructive/10 text-destructive rounded-r-xl text-xs font-bold z-10">
-                  %
-                </div>
               </div>
               
               {/* Timeframe Selector */}
