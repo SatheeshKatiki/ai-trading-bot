@@ -46,7 +46,7 @@ export default function StrategySettings() {
   const [strength, setStrength] = useState(70);
   const [spikeMultiplier, setSpikeMultiplier] = useState(2.0);
   const [relativeThreshold, setRelativeThreshold] = useState(1.5);
-  const [selectedStrategy, setSelectedStrategy] = useState("ema_rsi");
+  const [selectedStrategy, setSelectedStrategy] = useState("institutional_momentum");
   const [showSaveConfirm, setShowSaveConfirm] = useState(false);
   const [toast, setToast] = useState<{ message: string, type: 'success' | 'error' } | null>(null);
   const [strategyParams, setStrategyParams] = useState<any>({});
@@ -385,7 +385,7 @@ export default function StrategySettings() {
                           <div>
                             <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Select Strategy Mode</label>
                             <select
-                              value={settings.active_strategy || "ema_rsi"}
+                              value={settings.active_strategy || "institutional_momentum"}
                               onChange={(e) => setSettings({ ...settings, active_strategy: e.target.value })}
                               className="w-full bg-background border border-border rounded-lg px-3 py-2.5 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all"
                             >

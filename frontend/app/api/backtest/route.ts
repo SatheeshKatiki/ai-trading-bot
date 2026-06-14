@@ -39,7 +39,7 @@ export async function GET(request: Request) {
       const errorData = await response.json();
       return NextResponse.json({ 
         error: `Python Bridge Error: ${errorData.detail || response.statusText}` 
-      }, { status: response.status });
+      }, { status: 400 });
     }
     
     const result = await response.json();

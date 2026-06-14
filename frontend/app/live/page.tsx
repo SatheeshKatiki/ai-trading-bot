@@ -16,7 +16,8 @@ import {
   Layers,
   Globe,
   Briefcase,
-  Package
+  Package,
+  ChevronDown
 } from "lucide-react";
 import { useSearchParams } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
@@ -129,7 +130,7 @@ function LiveTradingContent() {
   const urlSymbol = searchParams.get('symbol') || 'SENSEX';
   const defaultBaseQty = getBaseQty(urlSymbol);
 
-  const [strategy, setStrategy] = useState("ema_rsi");
+  const [strategy, setStrategy] = useState("institutional_momentum");
   const [timeframe, setTimeframe] = useState("5 Min");
   const [stoploss, setStoploss] = useState(1.0);
   const [tradingMode, setTradingMode] = useState(() => {
@@ -220,7 +221,7 @@ function LiveTradingContent() {
           if (typeof window !== 'undefined') {
             localStorage.setItem('tradingMode', mode);
           }
-          setStrategy(data.active_strategy || "ema_rsi");
+          setStrategy(data.active_strategy || "institutional_momentum");
           if (data.stoploss !== undefined) {
             setStoploss(data.stoploss);
           }
@@ -558,10 +559,38 @@ function LiveTradingContent() {
 
           {/* Header & Controls Section */}
           <div className="flex flex-col gap-5 w-full">
-            {/* Title Row */}
-            <div className="shrink-0">
-              <h1 className="font-display font-bold text-3xl text-foreground tracking-tight">Live Trading Terminal</h1>
-              <p className="text-sm text-muted-foreground mt-1">Monitor real-time executions and account equity.</p>
+            {/* Title Row & Toggle Switch */}
+            <div className="flex justify-between items-start shrink-0 w-full">
+              <div>
+                <h1 className="font-display font-bold text-3xl text-foreground tracking-tight">Live Trading Terminal</h1>
+                <p className="text-sm text-muted-foreground mt-1">Monitor real-time executions and account equity.</p>
+              </div>
+
+              {/* Premium Animated Toggle Switch */}
+              <div className="flex items-center gap-3 bg-muted/20 px-4 py-2 rounded-xl border border-border/10 shadow-inner">
+                <span className={`text-[10px] font-bold flex items-center gap-1.5 transition-colors uppercase tracking-wider ${tradingMode === 'live' ? 'text-primary drop-shadow-[0_0_8px_var(--glow-primary)]' : 'text-muted-foreground/40'}`}>
+                  <Globe className="w-3.5 h-3.5" />
+                  Live
+                </span>
+                
+                <button
+                  onClick={toggleTradingMode}
+                  className={`relative w-12 h-6 rounded-full transition-colors duration-300 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-background ${tradingMode === 'live' ? 'bg-primary shadow-[0_0_12px_var(--glow-primary)]' : 'bg-primary/60 shadow-[0_0_12px_var(--glow-primary)]'}`}
+                >
+                  <motion.div 
+                    className="absolute top-1 left-1 w-4 h-4 bg-white rounded-full shadow-md flex items-center justify-center"
+                    animate={{ x: tradingMode === 'paper' ? 24 : 0 }}
+                    transition={{ type: "spring", stiffness: 500, damping: 30 }}
+                  >
+                    <div className="absolute inset-0 rounded-full bg-gradient-to-br from-white to-gray-200"></div>
+                  </motion.div>
+                </button>
+                
+                <span className={`text-[10px] font-bold flex items-center gap-1.5 transition-colors uppercase tracking-wider ${tradingMode === 'paper' ? 'text-primary drop-shadow-[0_0_8px_var(--glow-primary)]' : 'text-muted-foreground/40'}`}>
+                  <Briefcase className="w-3.5 h-3.5" />
+                  Paper
+                </span>
+              </div>
             </div>
             
             {/* Control Bar - Glass Container */}
@@ -585,7 +614,7 @@ function LiveTradingContent() {
                 <select 
                   value={strategy}
                   onChange={(e) => handleStrategyChange(e.target.value)}
-                  className="select-field pl-10 h-10 min-w-[200px]"
+                  className="select-field pl-10 pr-10 h-10 min-w-[200px] text-ellipsis overflow-hidden whitespace-nowrap appearance-none"
                 >
                   <option value="ema_rsi">EMA + RSI (Classic)</option>
                   <option value="enhanced_ai">Enhanced AI Strategy</option>
@@ -594,6 +623,7 @@ function LiveTradingContent() {
                   <option value="premium">Premium Options Alpha</option>
                   <option value="institutional_momentum">Institutional Momentum</option>
                 </select>
+                <ChevronDown className="w-4 h-4 text-muted-foreground absolute right-3 top-1/2 transform -translate-y-1/2 pointer-events-none z-10 group-focus-within:text-primary transition-colors" />
               </div>
 
               {/* Dynamic Lot/Qty Selector */}
@@ -644,7 +674,7 @@ function LiveTradingContent() {
                 <select 
                   value={timeframe}
                   onChange={(e) => setTimeframe(e.target.value)}
-                  className="select-field pl-10 h-10 min-w-[110px]"
+                  className="select-field pl-10 pr-10 h-10 min-w-[110px] appearance-none"
                 >
                   <option value="1 Min">1 Min</option>
                   <option value="3 Min">3 Min</option>
@@ -655,32 +685,9 @@ function LiveTradingContent() {
                   <option value="1 Week">1 Week</option>
                   <option value="1 Month">1 Month</option>
                 </select>
+                <ChevronDown className="w-4 h-4 text-muted-foreground absolute right-3 top-1/2 transform -translate-y-1/2 pointer-events-none z-10 group-focus-within:text-primary transition-colors" />
               </div>
-                {/* Premium Animated Toggle Switch */}
-                <div className="flex items-center gap-3 bg-muted/20 px-4 py-2 rounded-xl border border-border/10 shadow-inner">
-                  <span className={`text-[10px] font-bold flex items-center gap-1.5 transition-colors uppercase tracking-wider ${tradingMode === 'live' ? 'text-primary drop-shadow-[0_0_8px_var(--glow-primary)]' : 'text-muted-foreground/40'}`}>
-                    <Globe className="w-3.5 h-3.5" />
-                    Live
-                  </span>
-                  
-                  <button
-                    onClick={toggleTradingMode}
-                    className={`relative w-12 h-6 rounded-full transition-colors duration-300 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-background ${tradingMode === 'live' ? 'bg-primary shadow-[0_0_12px_var(--glow-primary)]' : 'bg-primary/60 shadow-[0_0_12px_var(--glow-primary)]'}`}
-                  >
-                    <motion.div 
-                      className="absolute top-1 left-1 w-4 h-4 bg-white rounded-full shadow-md flex items-center justify-center"
-                      animate={{ x: tradingMode === 'paper' ? 24 : 0 }}
-                      transition={{ type: "spring", stiffness: 500, damping: 30 }}
-                    >
-                      <div className="absolute inset-0 rounded-full bg-gradient-to-br from-white to-gray-200"></div>
-                    </motion.div>
-                  </button>
-                  
-                  <span className={`text-[10px] font-bold flex items-center gap-1.5 transition-colors uppercase tracking-wider ${tradingMode === 'paper' ? 'text-primary drop-shadow-[0_0_8px_var(--glow-primary)]' : 'text-muted-foreground/40'}`}>
-                    <Briefcase className="w-3.5 h-3.5" />
-                    Paper
-                  </span>
-                </div>
+
             </div>
           </div>
 

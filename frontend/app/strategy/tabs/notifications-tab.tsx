@@ -1,6 +1,7 @@
 "use client";
 
 import { Bell, ShieldAlert, Zap, BarChart } from "lucide-react";
+import CustomSwitch from "@/components/custom-switch";
 
 interface NotificationsTabProps {
   settings: any;
@@ -46,7 +47,7 @@ export default function NotificationsTab({ settings, setSettings }: Notification
           <span className="text-xs font-bold text-foreground uppercase tracking-wider">Enable Telegram</span>
           <CustomSwitch
             checked={settings.enable_telegram || false}
-            onChange={(checked) => updateSetting("enable_telegram", checked)}
+            onChange={(checked: boolean) => updateSetting("enable_telegram", checked)}
           />
         </div>
       </div>
@@ -131,8 +132,8 @@ export default function NotificationsTab({ settings, setSettings }: Notification
         <div className="flex justify-between items-center pt-3 border-t border-border">
           <span className="text-xs font-bold text-foreground uppercase tracking-wider">Enable Email</span>
           <CustomSwitch
-            checked={settings.enable_discord || false}
-            onChange={(checked) => updateSetting("enable_discord", checked)}
+            checked={settings.enable_whatsapp || false}
+            onChange={(checked: boolean) => updateSetting("enable_whatsapp", checked)}
           />
         </div>
       </div>

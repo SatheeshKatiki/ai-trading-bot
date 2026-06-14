@@ -93,7 +93,9 @@ class FyersBroker(BaseBroker):
                 logger.info("Fyers: Initialized model in paper mode for data fetching.")
             return True
 
-        token = self.credentials.get("access_token") or self._load_cached_token()
+        token = self._load_cached_token() or self.credentials.get("access_token")
+        client_id = self.credentials.get("client_id", "")
+        logger.info(f"FYERS INIT: client_id={client_id}, token={token}")
         if not token:
             logger.warning(
                 "Fyers: no access_token found — call get_login_url() then complete_login()."

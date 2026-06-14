@@ -59,6 +59,7 @@ from shared.ai import TradeFilterModel, compute_features
 from shared.risk import RiskManager, RiskConfig, TradeRecord
 from shared.exits import SmartExitEngine, Position, PyramidSizer
 from shared.alerts import alerter
+from trading_bot.portfolio_risk import PortfolioRiskEngine
 
 # Security layer
 from shared.security import install_log_sanitizer, audit, validator
@@ -96,7 +97,7 @@ def _load_settings() -> dict:
     
     
     defaults = {
-        "active_strategy": "ema_rsi",
+        "active_strategy": "institutional_momentum",
         "live_trading_mode": False,
         "ema_fast": 9,
         "ema_slow": 20,
@@ -204,6 +205,7 @@ async def run_live_bot(symbols: List[str]) -> None:
     ai_filter = TradeFilterModel()
     exit_engine = SmartExitEngine(atr_multiplier=1.5, partial_booking_pct=50.0)
     pyramid_sizer = PyramidSizer(points_trigger=40.0, max_scales=2)
+    portfolio_risk = PortfolioRiskEngine(max_daily_dd_pct=5.0, max_weekly_dd_pct=10.0, max_consecutive_losses=3)
 
     active_positions: Dict[str, Position] = {}
     momentum_strategies: Dict[str, MomentumStrategy] = {}
@@ -221,7 +223,7 @@ async def run_live_bot(symbols: List[str]) -> None:
         # ----------------------------------------------------------------
         # Lazy Strategy Initialization
         # ----------------------------------------------------------------
-        strategy_name = settings.get("active_strategy", "ema_rsi")
+        strategy_name = settings.get("active_strategy", "institutional_momentum")
         if strategy_name == "institutional_momentum" and sym not in momentum_strategies:
             momentum_strategies[sym] = MomentumStrategy(
                 capital=_initial_capital,
@@ -238,7 +240,7 @@ async def run_live_bot(symbols: List[str]) -> None:
             df = aggregator.get_latest_dataframe(sym)
             current_atr = (df["high"].iloc[-1] - df["low"].iloc[-1]) if not df.empty else (ltp * 0.005)
 
-            strategy_name = settings.get("active_strategy", "ema_rsi")
+            strategy_name = settings.get("active_strategy", "institutional_momentum")
             should_exit, reason, exit_qty = False, "", None
             
             if strategy_name == "institutional_momentum" and sym in momentum_strategies:
@@ -294,6 +296,10 @@ async def run_live_bot(symbols: List[str]) -> None:
 
                 # Record PnL & update dashboard state
                 pnl = (ltp - pos.entry_price) * qty_to_close * pos.side
+                
+                # Phase 7: Update Portfolio Risk
+                portfolio_risk.update_pnl(pnl, risk_manager.current_equity)
+                
                 trade_side = "LONG" if pos.side == 1 else "SHORT"
                 risk_manager.record_trade(TradeRecord(
                     sym, trade_side,
@@ -365,7 +371,7 @@ async def run_live_bot(symbols: List[str]) -> None:
                datetime.now(timezone.utc).replace(second=0, microsecond=0) > aggregator._current_minute:
 
                 # Settings already loaded at top of on_tick (cached, no disk I/O)
-                strategy_name = settings.get("active_strategy", "ema_rsi")
+                strategy_name = settings.get("active_strategy", "institutional_momentum")
                 is_live = settings.get("live_trading_mode", False)
                 target_pct = settings.get("target_pct", 1.0) / 100.0
                 sl_pct = settings.get("stoploss_pct", 0.5) / 100.0
@@ -444,6 +450,13 @@ async def run_live_bot(symbols: List[str]) -> None:
 
                     # ── Risk Manager Gate ──────────────────────────────
                     current_volatility = df["close"].pct_change().std() * 100
+                    
+                    # Phase 7: Portfolio Circuit Breaker
+                    is_trading_allowed, halt_reason = portfolio_risk.is_trading_allowed(risk_manager.current_equity)
+                    if not is_trading_allowed:
+                        logger.warning("Portfolio Risk Halt for %s: %s", s, halt_reason)
+                        continue
+                        
                     allowed, reject_reason = risk_manager.can_trade(
                         symbol=s,
                         risk_amount=100,

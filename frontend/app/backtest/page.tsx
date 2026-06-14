@@ -163,7 +163,7 @@ export default function Backtest() {
   const [symbol, setSymbol] = useState("NIFTY");
   const [selectedAssetName, setSelectedAssetName] = useState("NIFTY 50");
   const [timeframe, setTimeframe] = useState("1 Min");
-  const [strategy, setStrategy] = useState("ema_rsi");
+  const [strategy, setStrategy] = useState("institutional_momentum");
   const [startDate, setStartDate] = useState("2025-05-16");
   const [endDate, setEndDate] = useState("2026-05-16");
   const [datePreset, setDatePreset] = useState("all_data");

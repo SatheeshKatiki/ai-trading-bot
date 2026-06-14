@@ -217,8 +217,8 @@ select {
 }
 
 select option {
-  background-color: #0a0c14; /* Match --card */
-  color: #fcfcfc;
+  background-color: var(--card) !important;
+  color: var(--foreground) !important;
   padding: 10px;
 }
 
@@ -292,15 +292,8 @@ input:focus, select:focus {
   background: var(--primary);
 }
 
-/* Hide number input spinners (up/down arrows) */
-input[type="number"]::-webkit-outer-spin-button,
-input[type="number"]::-webkit-inner-spin-button {
-  -webkit-appearance: none;
-  margin: 0;
-}
-input[type="number"] {
-  -moz-appearance: textfield;
-}
+
+
 
 /* ─── Ultra Premium Components ──────────────────────────────────────── */
 
@@ -351,10 +344,11 @@ input[type="number"] {
 
 .select-field {
   appearance: none;
-  background: var(--input) url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3E%3Cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3E%3C/svg%3E") no-repeat right 0.5rem center/1.5em 1.5em;
+  background: var(--input) url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3E%3Cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3E%3C/svg%3E") no-repeat right 0.75rem center/1.5em 1.5em;
   border: 1px solid var(--border);
   color: var(--foreground);
   transition: all var(--transition-smooth);
+  padding-right: 2.5rem;
 }
 .select-field:focus {
   outline: none;

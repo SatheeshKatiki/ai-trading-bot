@@ -20,6 +20,8 @@ from .itm_selector import ITMOptionSelector
 from .execution_sizer import ExecutionSizer
 from .exit_manager import TieredExitManager
 from .mtm_trailing import MTMTrailingEngine
+from .regime_detector import MarketRegimeDetector
+from .trade_scorer import TradeQualityScorer
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +55,8 @@ class MomentumStrategy:
         self.exec_sizer = ExecutionSizer(capital=capital, default_lots=self.default_lots)
         self.exit_manager = TieredExitManager()
         self.mtm_engine = MTMTrailingEngine()
+        self.regime_detector = MarketRegimeDetector()
+        self.trade_scorer = TradeQualityScorer()
 
         logger.info(
             "MomentumStrategy initialized | Capital=₹%.0f | Target=%.1f%% | SL=%.1f%%",
@@ -76,16 +80,29 @@ class MomentumStrategy:
         if not allowed:
             return None
 
-        # 2. Signal Generation
+        # 2. Market Regime Intelligence
+        regime = self.regime_detector.detect(df_1min, vix)
+        if regime["action"] == "NO_TRADE":
+            logger.info(f"Regime filter blocked trade: Score {regime['regime_score']}, State: {regime['state']}")
+            return None
+
+        # 3. Signal Generation
         signal = self.signal_engine.generate(df_1min, df_1hr)
         if signal.direction == 0:
             return None
 
-        # 3. Option Selection
+        # 4. Trade Quality Scoring
+        # We pass idx=-1 to score the current latest state
+        quality = self.trade_scorer.score(df_1min, -1, signal.direction, regime["regime_score"])
+        if quality["conviction"] == "REJECT":
+            logger.info(f"Trade Quality Scorer rejected trade: Score {quality['trade_score']}")
+            return None
+
+        # 5. Option Selection
         spot_price = float(df_1min["close"].iloc[-1])
         contract = self.itm_selector.select(spot_price, signal.direction)
 
-        # 4. Sizing and Smart AI Stoploss (ATR Based)
+        # 6. Sizing and Smart AI Stoploss (ATR Based)
         # Calculate ATR for dynamic stoploss
         high = df_1min["high"]
         low = df_1min["low"]
@@ -103,14 +120,23 @@ class MomentumStrategy:
         # Approximate option entry premium and SL premium for sizer
         entry_premium = spot_price * 0.02
         sl_premium = entry_premium - (contract.estimated_delta * actual_spot_drop)
-        lots = self.exec_sizer.calculate_lots(entry_premium, sl_premium, user_lots=self.default_lots)
+        
+        # Base lots
+        base_lots = self.exec_sizer.calculate_lots(entry_premium, sl_premium, user_lots=self.default_lots)
+        
+        # Apply Regime sizing (Reduced Exposure vs Full Allocation)
+        if regime["action"] == "REDUCED_EXPOSURE":
+            lots = max(1, base_lots // 2)
+            logger.info(f"Reduced exposure due to regime. Base: {base_lots}, Adjusted: {lots}")
+        else:
+            lots = base_lots
 
         return {
             "type": "BUY" if signal.direction == 1 else "SELL",
             "symbol": contract.symbol,
             "lots": lots,
             "entry_price": spot_price,
-            "reason": signal.reason
+            "reason": f"{signal.reason} | Regime Score: {regime['regime_score']} | Trade Quality: {quality['trade_score']}"
         }
 
     def open_trade(self, entry_price: float, stop_loss: float, total_lots: int, direction: int) -> None:
@@ -143,7 +169,19 @@ def generate_signals(
     signals = pd.Series(0, index=df.index, dtype=int)
     rejection_logs = []
 
+    # Phase 6: Adaptive Donchian Intelligence (Dynamic Lookback)
+    daily_vix = kwargs.get("daily_vix", 15.0)
+    enable_adaptive_donchian = kwargs.get("enable_adaptive_donchian", True)
     donchian_period = kwargs.get("donchian_period", 10)
+    
+    if enable_adaptive_donchian:
+        if daily_vix > 25.0:
+            donchian_period = int(donchian_period * 1.5)  # Longer lookback for high VIX to avoid chop
+        elif daily_vix < 12.0:
+            donchian_period = int(donchian_period * 0.7)  # Shorter lookback for low VIX to catch tight breakouts
+
+    donchian_period = max(3, donchian_period) # Ensure minimum period
+
     if len(df) < donchian_period + 10:
         return signals, []
 
@@ -224,6 +262,18 @@ def generate_signals(
     # Dynamic RSI Thresholds
     rsi_long = kwargs.get("rsi_long", kwargs.get("rsi_buy_thresh", 50))
     rsi_short = kwargs.get("rsi_short", kwargs.get("rsi_sell_thresh", 50))
+    
+    # Init Regime Detector
+    regime_detector = MarketRegimeDetector()
+    df_indicators = df.copy()
+    df_indicators['ema_20'] = ema_20
+    df_indicators['ema_50'] = ema_50
+    df_indicators['ema_200'] = ema_200
+    df_indicators['vwap'] = vwap
+    df_indicators['rsi'] = rsi
+    
+    # Vectorized Regime Detection
+    regimes = regime_detector.detect_vectorized(df_indicators)
 
     # 3. Iterative Signal Generation with Rejection Logging (Task 3)
     for i in range(donchian_period + 1, len(df)):
@@ -237,6 +287,13 @@ def generate_signals(
         # Base Setup: 10-candle Donchian Breakout + Price > EMA 20
         is_bull_setup = (close.iloc[i] > donchian_high.iloc[i]) and (close.iloc[i] > ema_20.iloc[i])
         is_bear_setup = (close.iloc[i] < donchian_low.iloc[i]) and (close.iloc[i] < ema_20.iloc[i])
+
+        # Regime Check
+        regime = regimes.iloc[i]
+        if regime["action"] == "NO_TRADE":
+            if is_bull_setup or is_bear_setup:
+                rejection_logs.append({"time": timestamp, "reason": f"REJECTED: Regime Score too low ({regime['regime_score']} - {regime['state']})"})
+            continue
 
         if is_bull_setup:
             # Check Filters
@@ -253,7 +310,8 @@ def generate_signals(
                 continue
 
             if f_vol and not (volume.iloc[i] > vol_sma.iloc[i] * 1.2):
-                rejection_logs.append({"time": timestamp, "reason": f"REJECTED: Volume surge is insufficient ({volume.iloc[i]/vol_sma.iloc[i]:.1f}x < 1.2x)"})
+                v_ratio = volume.iloc[i] / vol_sma.iloc[i] if vol_sma.iloc[i] > 0 else 0
+                rejection_logs.append({"time": timestamp, "reason": f"REJECTED: Volume surge is insufficient ({v_ratio:.1f}x < 1.2x)"})
                 continue
 
             if f_rsi and not (rsi.iloc[i] >= rsi_long):
@@ -276,7 +334,8 @@ def generate_signals(
                 continue
 
             if f_vol and not (volume.iloc[i] > vol_sma.iloc[i] * 1.2):
-                rejection_logs.append({"time": timestamp, "reason": f"REJECTED: Volume surge is insufficient ({volume.iloc[i]/vol_sma.iloc[i]:.1f}x < 1.2x)"})
+                v_ratio = volume.iloc[i] / vol_sma.iloc[i] if vol_sma.iloc[i] > 0 else 0
+                rejection_logs.append({"time": timestamp, "reason": f"REJECTED: Volume surge is insufficient ({v_ratio:.1f}x < 1.2x)"})
                 continue
 
             if f_rsi and not (rsi.iloc[i] <= rsi_short):

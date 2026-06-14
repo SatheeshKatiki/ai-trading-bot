@@ -276,6 +276,18 @@ async def lifespan(app: FastAPI):
             logger.info("[Boot] Seeded last_confidence.json with neutral defaults.")
         except Exception as _se:
             logger.warning("[Boot] Could not seed last_confidence.json: %s", _se)
+
+    logger.info("Attempting auto-login for Fyers...")
+    import subprocess
+    import sys
+    try:
+        res = subprocess.run([sys.executable, "scripts/auth/auto_login_fyers.py"], check=True, capture_output=True, text=True)
+        logger.info(f"Auto-login completed successfully: {res.stdout.splitlines()[-1] if res.stdout else ''}")
+    except Exception as e:
+        logger.error(f"Auto-login failed: {e}")
+        if hasattr(e, 'stderr') and e.stderr:
+            logger.error(f"Auto-login stderr: {e.stderr}")
+            
     # Start the Fyers socket in background thread
     threading.Thread(target=start_fyers_socket, daemon=True).start()
     yield
@@ -525,6 +537,16 @@ async def get_history(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/inspect")
+def inspect_broker():
+    broker = BrokerFactory.get_active_broker()
+    return {
+        "client_id": broker.credentials.get("client_id"),
+        "cached_token_head": broker._load_cached_token()[:20] if broker._load_cached_token() else None,
+        "token_in_credentials": broker.credentials.get("access_token"),
+        "live_trading_mode": broker.paper_mode
+    }
+
 @app.get("/api/backtest")
 async def get_backtest(
     symbol: str = Query(..., description="The stock ticker"),
@@ -599,7 +621,9 @@ async def get_backtest(
         
         # Generate Signals using Python Strategy via Registry
         try:
-            signals_data = registry.run_strategy(
+            from fastapi.concurrency import run_in_threadpool
+            signals_data = await run_in_threadpool(
+                registry.run_strategy,
                 strategy, 
                 df, 
                 ema_fast=ema_fast, 
@@ -637,17 +661,20 @@ async def get_backtest(
         # Use the formal backtesting engine function for institutional accuracy
         from backtesting_engine.run import run_intraday_backtest
         
-        # Remove target/stoploss from settings to prevent multiple value arguments TypeError
+        # Remove explicitly passed args from settings to prevent multiple value arguments TypeError
         backtest_settings = settings.copy()
-        backtest_settings.pop("target_pct", None)
-        backtest_settings.pop("stoploss_pct", None)
+        for key in ["target_pct", "stoploss_pct", "initial_capital", "multiplier", "slippage_bps", "commission_per_trade", "options_delta", "rejection_logs"]:
+            backtest_settings.pop(key, None)
         
         # Override trailing SL settings with query parameters
         backtest_settings["trailing_sl"] = trailing_sl
         backtest_settings["trail_trigger"] = trail_trigger
         backtest_settings["trail_offset"] = trail_offset
         
-        results = run_intraday_backtest(
+        from fastapi.concurrency import run_in_threadpool
+        
+        results = await run_in_threadpool(
+            run_intraday_backtest,
             df, 
             signals, 
             initial_capital=initial_capital,
