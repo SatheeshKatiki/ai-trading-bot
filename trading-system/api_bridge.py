@@ -1320,6 +1320,19 @@ async def manual_ai_retrain(background_tasks: BackgroundTasks):
         "message": "AI Retraining started in the background. You will receive an alert once completed."
     }
 
+@app.get("/api/sentiment")
+async def get_market_sentiment():
+    try:
+        from shared.sentiment import get_current_sentiment
+        import concurrent.futures
+        loop = __import__('asyncio').get_event_loop()
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            data = await loop.run_in_executor(pool, get_current_sentiment)
+        return data
+    except Exception as e:
+        logger.error(f"Error fetching sentiment API: {e}")
+        return {"score": 0.0, "label": "Neutral", "top_headlines": []}
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=8000)

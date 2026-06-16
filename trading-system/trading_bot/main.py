@@ -24,6 +24,12 @@ import os
 import sys
 import threading
 
+# Force UTF-8 for terminal logging on Windows
+if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
+if sys.stderr and hasattr(sys.stderr, 'reconfigure'):
+    sys.stderr.reconfigure(encoding='utf-8')
+
 # Disable any local system proxy to prevent connection failures to Fyers
 os.environ["HTTP_PROXY"] = ""
 os.environ["HTTPS_PROXY"] = ""
@@ -240,8 +246,18 @@ async def run_live_bot(symbols: List[str]) -> None:
             df = aggregator.get_latest_dataframe(sym)
             current_atr = (df["high"].iloc[-1] - df["low"].iloc[-1]) if not df.empty else (ltp * 0.005)
 
-            strategy_name = settings.get("active_strategy", "institutional_momentum")
+            from shared.sentiment import get_current_sentiment
+            sentiment_data = get_current_sentiment()
+            sentiment_score = sentiment_data.get("score", 0.0)
+
             should_exit, reason, exit_qty = False, "", None
+
+            if sentiment_score < -0.8 and pos.direction == "LONG":
+                should_exit = True
+                reason = "Macro Panic (Sentiment Circuit Breaker)"
+                exit_qty = pos.quantity
+            else:
+                strategy_name = settings.get("active_strategy", "institutional_momentum")
             
             if strategy_name == "institutional_momentum" and sym in momentum_strategies:
                 m_strategy = momentum_strategies[sym]
@@ -265,6 +281,9 @@ async def run_live_bot(symbols: List[str]) -> None:
                 should_exit, reason, exit_qty = exit_engine.evaluate_exit(
                     pos, ltp, current_time, current_atr
                 )
+            
+            # Close the else block for the sentiment check
+            pass
 
             if should_exit:
                 qty_to_close = exit_qty if exit_qty else pos.quantity
@@ -446,6 +465,21 @@ async def run_live_bot(symbols: List[str]) -> None:
                             logger.info(f"Using custom SL%% from strategy: {sl_pct*100:.2f}%%")
 
                     if latest_signal == 0:
+                        continue
+
+                    # ── Macro Sentiment Blocks ─────────────────────────
+                    from shared.sentiment import get_current_sentiment
+                    sentiment_data = get_current_sentiment()
+                    sentiment_score = sentiment_data.get("score", 0.0)
+
+                    if latest_signal == 1 and sentiment_score < -0.5:
+                        logger.warning("Macro Filter Blocked BUY for %s: Highly Bearish Sentiment (%.2f)", s, sentiment_score)
+                        alerter.send_telegram_alert(f"🛑 **Trade Blocked**\n\nSymbol: {s}\nReason: Highly Bearish Sentiment ({sentiment_score})")
+                        continue
+                        
+                    if latest_signal == -1 and sentiment_score > 0.5:
+                        logger.warning("Macro Filter Blocked SELL for %s: Highly Bullish Sentiment (%.2f)", s, sentiment_score)
+                        alerter.send_telegram_alert(f"🛑 **Trade Blocked**\n\nSymbol: {s}\nReason: Highly Bullish Sentiment ({sentiment_score})")
                         continue
 
                     # ── Risk Manager Gate ──────────────────────────────

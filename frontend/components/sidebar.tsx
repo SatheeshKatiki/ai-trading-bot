@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
@@ -73,19 +74,15 @@ export default function Sidebar() {
 
   return (
     <div className="w-64 h-full bg-card/80 backdrop-blur-xl border-r border-border/50 flex flex-col shadow-2xl relative z-20">
-      <div className="p-6 flex items-center gap-3 border-b border-border/50 relative overflow-hidden group">
+      <div className="p-6 flex items-center justify-center border-b border-border/50 relative overflow-hidden group">
         <div className="absolute inset-0 bg-gradient-to-r from-primary/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500"></div>
         <motion.div 
-          className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary to-primary/60 flex items-center justify-center shadow-lg shadow-primary/20"
-          whileHover={{ rotate: 180, scale: 1.1 }}
-          transition={{ duration: 0.4, type: "spring" }}
+          className="w-full flex items-center justify-center relative z-10"
+          whileHover={{ scale: 1.05 }}
+          transition={{ duration: 0.2 }}
         >
-          <TrendingUp className="w-5 h-5 text-primary-foreground" />
+          <Image src="/mana-logo.png" alt="Mana AI Logo" width={150} height={60} className="object-contain hover:drop-shadow-[0_0_8px_rgba(6,182,212,0.5)] transition-all" priority />
         </motion.div>
-        <div className="relative z-10">
-          <h1 className="font-display font-bold text-lg text-foreground tracking-tight">QuantAI</h1>
-          <p className="text-[10px] uppercase tracking-wider font-bold text-primary">Ultra Terminal</p>
-        </div>
       </div>
 
       <motion.nav 

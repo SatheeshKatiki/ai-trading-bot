@@ -47,6 +47,8 @@ interface Notification {
   type: 'success' | 'danger' | 'warning' | 'info';
 }
 
+import NativeChart from "@/components/native-chart";
+
 export default function LiveTrading() {
   return (
     <Suspense fallback={
@@ -206,15 +208,8 @@ function LiveTradingContent() {
     prevTradesRef.current = trades;
   }, [trades]);
 
-  // Map our symbols to TradingView symbols
-  const getTVSymbol = (sym: string) => {
-    if (sym === "SENSEX") return "BSE:SENSEX";
-    if (sym === "NIFTY") return "NSE:NIFTY";
-    if (sym === "BANKNIFTY") return "NSE:BANKNIFTY";
-    if (sym === "FINNIFTY") return "NSE:FINNIFTY";
-    // Default to NSE for stocks if not a recognized index
-    return `NSE:${sym}`;
-  };
+  // Deprecated: Advanced TradingView Widget is no longer used due to exchange restrictions.
+  // We use our custom NativeChart component instead.
 
   // Fetch Settings (to get trading mode and strategy)
   useEffect(() => {
@@ -467,47 +462,7 @@ function LiveTradingContent() {
   }, [urlSymbol]);
 
 
-  // Load the REAL Advanced TradingView Widget with ALL features!
-  useEffect(() => {
-    const initWidget = () => {
-      if (window.TradingView && document.getElementById(`tradingview_chart_${urlSymbol}`)) {
-        const tvSymbol = getTVSymbol(urlSymbol);
-        console.log(`Initializing Advanced TradingView for: ${tvSymbol}`);
-        
-        new window.TradingView.widget({
-          "width": "100%",
-          "height": 450,
-          "symbol": tvSymbol,
-          "interval": "D",
-          "timezone": "Asia/Kolkata",
-          "theme": "dark",
-          "style": "1",
-          "locale": "en",
-          "toolbar_bg": "#090a0f",
-          "enable_publishing": false,
-          "hide_side_toolbar": false, // SHOW THE DRAWING TOOLBAR!
-          "allow_symbol_change": true,
-          "details": true,
-          "hotlist": true,
-          "calendar": true,
-          "show_popup_button": true,
-          "popup_width": "1000",
-          "popup_height": "650",
-          "container_id": `tradingview_chart_${urlSymbol}`
-        });
-      }
-    };
-
-    if (window.TradingView) {
-      initWidget();
-    } else {
-      const script = document.createElement('script');
-      script.src = 'https://s3.tradingview.com/tv.js';
-      script.async = true;
-      script.onload = initWidget;
-      document.head.appendChild(script);
-    }
-  }, [urlSymbol]);
+  // Removed TradingView initialization
 
   return (
     <div className="flex h-screen bg-background text-foreground">
@@ -899,26 +854,24 @@ function LiveTradingContent() {
           </motion.div>
 
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            {/* REAL TradingView Chart with ALL features */}
+            {/* Native Custom Chart built with Lightweight-Charts */}
             <div className="lg:col-span-2 glass-card rounded-xl p-6 border border-border/20">
               <div className="flex justify-between items-center mb-6">
                 <div>
-                  <h3 className="font-display font-bold text-lg text-foreground">Active Market Chart: {urlSymbol}</h3>
-                  <p className="text-xs text-muted-foreground">Advanced TradingView Terminal with drawing tools and indicators</p>
+                  <h3 className="font-display font-bold text-lg text-foreground flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-success animate-pulse"></span>
+                    Active Market Chart: {urlSymbol}
+                  </h3>
+                  <p className="text-xs text-muted-foreground">Native Institutional Candlestick Chart (Live Feed)</p>
                 </div>
               </div>
 
-              {/* Container for TradingView iframe */}
+              {/* Container for Native Chart */}
               <div 
                 key={urlSymbol}
-                id={`tradingview_chart_${urlSymbol}`} 
-                className="w-full rounded-lg overflow-hidden border border-border/10 bg-[#090a0f] flex items-center justify-center" 
-                style={{ height: '450px' }}
+                className="w-full rounded-lg overflow-hidden border border-border/10 bg-[#090a0f]" 
               >
-                <div className="text-xs text-muted-foreground flex items-center gap-2">
-                  <RefreshCw className="w-3 h-3 animate-spin" />
-                  Loading TradingView Terminal...
-                </div>
+                <NativeChart symbol={urlSymbol} livePrice={currentPrice} />
               </div>
             </div>
 

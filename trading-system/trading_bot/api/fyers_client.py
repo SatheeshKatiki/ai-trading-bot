@@ -91,7 +91,7 @@ class FyersClient:
             return
 
         try:
-            from fyers_api import fyersModel  # type: ignore[import]
+            from fyers_apiv3 import fyersModel  # type: ignore[import]
 
             session = fyersModel.SessionModel(
                 client_id=CONFIG.FYERS_CLIENT_ID,
@@ -132,7 +132,7 @@ class FyersClient:
             return {"status": "paper", "symbol": symbol, "qty": qty, "side": side}
 
         try:
-            from fyers_api import fyersModel  # type: ignore[import]
+            from fyers_apiv3 import fyersModel  # type: ignore[import]
 
             fyers = fyersModel.FyersModel(
                 client_id=CONFIG.FYERS_CLIENT_ID,
