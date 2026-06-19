@@ -230,7 +230,7 @@ class FyersBroker(BaseBroker):
             "type":         2 if request.order_type == OrderType.MARKET else 1,
             "side":         1 if request.side == OrderSide.BUY else -1,
             "productType":  request.product_type.value,
-            "limitPrice":   request.price,
+            "limitPrice":   0 if request.order_type == OrderType.MARKET else request.price,
             "stopPrice":    request.trigger_price,
             "validity":     "DAY",
             "disclosedQty": 0,
@@ -238,29 +238,37 @@ class FyersBroker(BaseBroker):
             "stopLoss":     0,
             "takeProfit":   0,
         }
-        try:
-            resp = self._fyers_model.place_order(payload)
-            order_id = resp.get("id", "")
-            code     = resp.get("s", "")
-            if code != "ok":
-                raise OrderRejectedError(
-                    resp.get("message", "Order rejected"),
-                    order_id=order_id, broker_id=self.BROKER_ID, raw_response=resp,
+        
+        # Retry loop for transient broker API errors
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                resp = self._fyers_model.place_order(payload)
+                order_id = resp.get("id", "")
+                code     = resp.get("s", "")
+                if code != "ok":
+                    raise OrderRejectedError(
+                        resp.get("message", "Order rejected"),
+                        order_id=order_id, broker_id=self.BROKER_ID, raw_response=resp,
+                    )
+                return OrderResponse(
+                    order_id=order_id,
+                    status=OrderStatus.OPEN,
+                    symbol=request.symbol,
+                    quantity=request.quantity,
+                    side=request.side,
+                    raw=resp,
                 )
-            return OrderResponse(
-                order_id=order_id,
-                status=OrderStatus.OPEN,
-                symbol=request.symbol,
-                quantity=request.quantity,
-                side=request.side,
-                raw=resp,
-            )
-        except OrderRejectedError:
-            raise
-        except Exception as exc:
-            raise BrokerConnectionError(
-                f"Fyers place_order failed: {exc}", broker_id=self.BROKER_ID
-            ) from exc
+            except OrderRejectedError:
+                raise
+            except Exception as exc:
+                if attempt < max_retries - 1:
+                    logger.warning(f"Fyers place_order failed, retrying ({attempt+1}/{max_retries})... Error: {exc}")
+                    time.sleep(0.5)
+                else:
+                    raise BrokerConnectionError(
+                        f"Fyers place_order failed after {max_retries} attempts: {exc}", broker_id=self.BROKER_ID
+                    ) from exc
 
     def cancel_order(self, order_id: str) -> Dict[str, Any]:
         if self.paper_mode:
@@ -398,7 +406,8 @@ class FyersBroker(BaseBroker):
         try:
             # Map timeframe string to Fyers resolution
             resolution = "5"
-            if timeframe == "1 Min": resolution = "1"
+            if timeframe == "30 Sec": resolution = "30S"
+            elif timeframe == "1 Min": resolution = "1"
             elif timeframe == "3 Min": resolution = "3"
             elif timeframe == "5 Min": resolution = "5"
             elif timeframe == "15 Min": resolution = "15"
@@ -498,32 +507,36 @@ class FyersBroker(BaseBroker):
         import os
         os.environ["NO_PROXY"] = "localhost,127.0.0.1"
         
-        try:
-            async with websockets.connect("ws://127.0.0.1:8000/ws/live") as ws:
-                logger.info("Connected to API Bridge WebSocket!")
-                while True:
-                    data = await ws.recv()
-                    msg = json.loads(data)
-                    
-                    for sym, val in msg.items():
-                        long_sym = sym
-                        if sym == "NIFTY":
-                            long_sym = "NSE:NIFTY50-INDEX"
-                        elif sym == "BANKNIFTY":
-                            long_sym = "NSE:NIFTYBANK-INDEX"
-                        elif sym == "SENSEX":
-                            long_sym = "BSE:SENSEX-INDEX"
-                        elif sym == "RELIANCE":
-                            long_sym = "NSE:RELIANCE-EQ"
-                        elif ":" not in sym:
-                            long_sym = f"NSE:{sym}-EQ"
-                            
-                        if long_sym in symbols:
-                            import time
-                            await on_tick({"symbol": long_sym, "ltp": val["lp"], "timestamp": int(time.time()), "volume": 0})
-                            
-        except Exception as e:
-            logger.error("Failed to connect or stream from API Bridge WebSocket: %s", e)
+        while True:
+            try:
+                async with websockets.connect("ws://127.0.0.1:8000/ws/live") as ws:
+                    logger.info("Connected to API Bridge WebSocket!")
+                    while True:
+                        data = await ws.recv()
+                        msg = json.loads(data)
+                        
+                        for sym, val in msg.items():
+                            if sym in ["trades", "signalsData"]:
+                                continue
+                            long_sym = sym
+                            if sym == "NIFTY":
+                                long_sym = "NSE:NIFTY50-INDEX"
+                            elif sym == "BANKNIFTY":
+                                long_sym = "NSE:NIFTYBANK-INDEX"
+                            elif sym == "SENSEX":
+                                long_sym = "BSE:SENSEX-INDEX"
+                            elif sym == "RELIANCE":
+                                long_sym = "NSE:RELIANCE-EQ"
+                            elif ":" not in sym:
+                                long_sym = f"NSE:{sym}-EQ"
+                                
+                            if long_sym in symbols:
+                                import time
+                                await on_tick({"symbol": long_sym, "ltp": val["lp"], "timestamp": int(time.time()), "volume": 0})
+                                
+            except Exception as e:
+                logger.error("API Bridge WebSocket disconnected or failed: %s. Retrying in 5 seconds...", e)
+                await asyncio.sleep(5)
 
     # ------------------------------------------------------------------
     # Cleanup

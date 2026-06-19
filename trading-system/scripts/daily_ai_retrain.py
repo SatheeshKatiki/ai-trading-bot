@@ -45,17 +45,23 @@ async def retrain_ai():
         # We need historical data. Fyers historical data API takes epoch or YYYY-MM-DD string
         # using the broker's get_historical_data
         
-        # Wait, broker.get_historical_data() exists in standard broker API
-        df_raw = await broker.get_historical_data(
+        import pandas as pd
+        raw_data = broker.get_historical_data(
             symbol=symbol,
-            resolution="5", # 5-minute timeframe
-            start_date=start_date,
-            end_date=end_date
+            timeframe="5 Min",
+            start_date=start_date.strftime("%Y-%m-%d"),
+            end_date=end_date.strftime("%Y-%m-%d")
         )
+        
+        df_raw = pd.DataFrame(raw_data)
 
         if df_raw.empty or len(df_raw) < 500:
             logger.error(f"Not enough historical data fetched for {symbol}. Rows: {len(df_raw)}")
             return
+
+        # Ensure correct column names
+        if 'time' in df_raw.columns:
+            df_raw.rename(columns={'time': 'timestamp'}, inplace=True)
 
         logger.info(f"Fetched {len(df_raw)} rows of historical data.")
 

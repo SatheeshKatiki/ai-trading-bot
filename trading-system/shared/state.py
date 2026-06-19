@@ -60,15 +60,22 @@ def _init_db() -> None:
             last_update TEXT
         )
     """)
-    cursor.execute("""
+    cursor.execute('''
         CREATE TABLE IF NOT EXISTS trades (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             symbol TEXT,
             side TEXT,
             price REAL,
+            qty INTEGER DEFAULT 1,
             time TEXT
         )
-    """)
+        ''')
+        
+    # Migration: Add qty column if it doesn't exist
+    try:
+        cursor.execute("ALTER TABLE trades ADD COLUMN qty INTEGER DEFAULT 1")
+    except sqlite3.OperationalError:
+        pass # Column already exists
     # Insert default state if empty
     cursor.execute("SELECT COUNT(*) FROM state")
     if cursor.fetchone()[0] == 0:
@@ -93,8 +100,8 @@ def _ensure_loaded() -> None:
         row = cursor.fetchone()
         
         # Load trades
-        cursor.execute("SELECT symbol, side, price, time FROM trades ORDER BY id DESC LIMIT 100")
-        trades = [{"symbol": r[0], "side": r[1], "price": r[2], "time": r[3]} for r in cursor.fetchall()]
+        cursor.execute("SELECT symbol, side, price, time, qty FROM trades ORDER BY id DESC LIMIT 100")
+        trades = [{"symbol": r[0], "side": r[1], "price": r[2], "time": r[3], "qty": r[4] if len(r)>4 else 1} for r in cursor.fetchall()]
         trades.reverse() # Restore chronological order
         
         _CACHE = {
@@ -162,11 +169,11 @@ def load_state(reload_trades: bool = False) -> Dict[str, Any]:
                 import sqlite3
                 conn = sqlite3.connect(_STATE_DB)
                 cursor = conn.cursor()
-                cursor.execute("SELECT symbol, side, price, time FROM trades ORDER BY id DESC LIMIT 100")
+                cursor.execute("SELECT symbol, side, price, time, qty FROM trades ORDER BY id DESC LIMIT 100")
                 rows = cursor.fetchall()
                 trades = []
                 for r in rows:
-                    trades.append({"symbol": r[0], "side": r[1], "price": r[2], "time": r[3]})
+                    trades.append({"symbol": r[0], "side": r[1], "price": r[2], "time": r[3], "qty": r[4] if len(r)>4 else 1})
                 _CACHE["trades"] = trades
                 conn.close()
             except Exception as e:
@@ -203,7 +210,7 @@ def update_equity(equity: float, pnl: float) -> None:
             _flush_to_disk()
 
 
-def record_trade(symbol: str, side: str, price: float, timestamp: str) -> None:
+def record_trade(symbol: str, side: str, price: float, timestamp: str, qty: int = 1) -> None:
     """Append a trade and flush to disk immediately (trades are critical data)."""
     if side not in {"BUY", "SELL"}:
         raise ValueError("side must be 'BUY' or 'SELL'")
@@ -213,7 +220,7 @@ def record_trade(symbol: str, side: str, price: float, timestamp: str) -> None:
         # Update cache
         _CACHE.setdefault("trades", [])
         _CACHE["trades"].append(
-            {"symbol": symbol, "side": side, "price": price, "time": timestamp}
+            {"symbol": symbol, "side": side, "price": price, "qty": qty, "time": timestamp}
         )
         if len(_CACHE["trades"]) > 100:
             _CACHE["trades"] = _CACHE["trades"][-100:]
@@ -226,8 +233,8 @@ def record_trade(symbol: str, side: str, price: float, timestamp: str) -> None:
             
             # Insert trade
             cursor.execute(
-                "INSERT INTO trades (symbol, side, price, time) VALUES (?, ?, ?, ?)",
-                (symbol, side, price, timestamp)
+                "INSERT INTO trades (symbol, side, price, time, qty) VALUES (?, ?, ?, ?, ?)",
+                (symbol, side, price, timestamp, qty)
             )
             
             # Update state (last_update)

@@ -98,6 +98,8 @@ class TieredExitManager:
         self.booked_lots = 0
         self.remaining_lots = 0
         self.direction = 0
+        self.highest_price = 0.0
+        self.lowest_price = float('inf')
 
     @property
     def has_position(self) -> bool:
@@ -112,6 +114,7 @@ class TieredExitManager:
         current_price: float,
         df_5min: pd.DataFrame,
         ai_confidence: float = None,
+        current_atr: float = 10.0,
     ) -> ExitDecision:
         """Evaluate the position against the 3-phase exit logic.
 
@@ -123,6 +126,8 @@ class TieredExitManager:
             Recent 5-minute candle data (needs 'close' column for 9 EMA).
         ai_confidence : float, optional
             Real-time AI Confidence Score. If < 40%, triggers early exit.
+        current_atr : float
+            Current ATR (14) of the underlying, used for dynamic exhaustion.
 
         Returns
         -------
@@ -130,6 +135,17 @@ class TieredExitManager:
         """
         if not self.has_position:
             return ExitDecision()
+
+        # Update MFE (Maximum Favorable Excursion)
+        if self.direction == 1:
+            self.highest_price = max(self.highest_price, current_price)
+        else:
+            self.lowest_price = min(self.lowest_price, current_price)
+
+        # ── EXHAUSTION EXIT (Chandelier Lock) ──
+        exhaustion_decision = self._evaluate_exhaustion(current_price, current_atr)
+        if exhaustion_decision.should_exit:
+            return exhaustion_decision
 
         # ── STOP-LOSS CHECK (all phases) ──
         sl_hit = self._check_stop_loss(current_price)
@@ -161,6 +177,37 @@ class TieredExitManager:
         # ── PHASE 2 → 3: Runner Management ──
         if self.phase >= 2:
             return self._evaluate_runner(current_price, df_5min)
+
+        return ExitDecision()
+
+    # ──────────────────────────────────────────────────────────────────
+    # Exhaustion Exit: Parabolic Chandelier Lock
+    # ──────────────────────────────────────────────────────────────────
+
+    def _evaluate_exhaustion(self, current_price: float, current_atr: float) -> ExitDecision:
+        """Lock profits on massive spikes if they reverse heavily."""
+        if self.direction == 1:
+            profit_points = self.highest_price - self.entry_price
+            drop_from_peak = self.highest_price - current_price
+        else:
+            profit_points = self.entry_price - self.lowest_price
+            drop_from_peak = current_price - self.lowest_price
+
+        # Check if we had a massive spike (e.g., > 1.5x ATR)
+        if profit_points >= (1.5 * current_atr):
+            # If it drops by 0.75x ATR from the peak, lock the rest!
+            if drop_from_peak >= (0.75 * current_atr):
+                logger.info(
+                    "EXHAUSTION EXIT: Parabolic move exhausted. Peak profit was %.1f pts. "
+                    "Dropped by %.1f pts from peak. Locking profit now!",
+                    profit_points, drop_from_peak
+                )
+                return ExitDecision(
+                    should_exit=True,
+                    reason=f"EXHAUSTION: Dropped {drop_from_peak:.1f} from {profit_points:.1f} pt peak",
+                    quantity_pct=1.0,
+                    phase=4, # Special Parabolic Phase
+                )
 
         return ExitDecision()
 
@@ -277,3 +324,4 @@ class TieredExitManager:
         elif self.direction == -1:
             return current_price >= self.stop_loss
         return False
+

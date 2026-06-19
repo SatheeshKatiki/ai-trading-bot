@@ -4,7 +4,7 @@ export const dynamic = 'force-dynamic';
 
 export async function POST(request: Request) {
   try {
-    const res = await fetch('http://localhost:8000/api/broker-login', {
+    const res = await fetch('http://127.0.0.1:8000/api/broker-login', {
       method: 'POST',
     });
     
@@ -28,7 +28,7 @@ export async function POST(request: Request) {
 
 export async function GET(request: Request) {
   try {
-    const res = await fetch('http://localhost:8000/api/broker-auth-url', {
+    const res = await fetch('http://127.0.0.1:8000/api/broker-auth-url', {
       method: 'GET',
     });
     

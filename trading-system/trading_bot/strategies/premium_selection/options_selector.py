@@ -18,7 +18,7 @@ from typing import Literal
 # ──────────────────────────────────────────────
 INSTRUMENT_CONFIG = {
     "NIFTY": {
-        "lot_size": 25,
+        "lot_size": 65,
         "strike_step": 50,
         "expiry_day": 3,        # Thursday (0=Mon, 3=Thu)
         "exchange": "NSE",
@@ -153,8 +153,8 @@ def select_option(
 
 
 def get_lot_size(instrument: str) -> int:
-    """Return lot size for the given instrument."""
-    return INSTRUMENT_CONFIG.get(instrument.upper(), {}).get("lot_size", 25)
+    """Return the fixed lot size for a given instrument."""
+    return INSTRUMENT_CONFIG.get(instrument.upper(), {}).get("lot_size", 65)
 
 
 def calculate_lots(

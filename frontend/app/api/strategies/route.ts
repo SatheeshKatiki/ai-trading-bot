@@ -4,7 +4,7 @@ export const dynamic = 'force-dynamic';
 
 export async function GET() {
   try {
-    const res = await fetch('http://localhost:8000/api/strategies');
+    const res = await fetch('http://127.0.0.1:8000/api/strategies');
     if (!res.ok) {
       const text = await res.text();
       return NextResponse.json({ error: `Server error: ${text}` }, { status: res.status });

@@ -16,7 +16,7 @@ export async function GET(request: Request) {
 
   try {
     // Dynamically forward all searchParams to the Python bridge!
-    const pythonApiUrl = `http://localhost:8000/api/backtest?${searchParams.toString()}`;
+    const pythonApiUrl = `http://127.0.0.1:8000/api/backtest?${searchParams.toString()}`;
     
     console.log(`Forwarding backtest request to Python bridge: ${pythonApiUrl}`);
     

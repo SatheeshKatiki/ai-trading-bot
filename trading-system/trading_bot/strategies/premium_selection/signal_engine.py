@@ -153,20 +153,17 @@ class PremiumSignalEngine:
                 ai_confidence=ai_confidence, reject_reason="Volatility out of tradeable range (too low or news spike)",
             )
 
-        # ── Determine direction ───────────────────────────────────────
+        # ── Determine direction (Aggressive Mode) ────────────────────
+        # Require Trend, Momentum, and Structure. Volume/Volatility are bonuses.
         bullish = (
             row.get("trend_bullish", False) and
             row.get("momentum_bullish", False) and
-            row.get("volume_confirmed", False) and
-            row.get("vol_expanding", False) and
             row.get("structure_bullish", False)
         )
 
         bearish = (
             row.get("trend_bearish", False) and
             row.get("momentum_bearish", False) and
-            row.get("volume_confirmed", False) and
-            row.get("vol_expanding", False) and
             row.get("structure_bearish", False)
         )
 
@@ -177,14 +174,12 @@ class PremiumSignalEngine:
                 reasons.append("trend not aligned")
             if not row.get("momentum_bullish", False) and not row.get("momentum_bearish", False):
                 reasons.append("momentum weak")
-            if not row.get("volume_confirmed", False):
-                reasons.append("volume insufficient")
             if not row.get("structure_bullish", False) and not row.get("structure_bearish", False):
                 reasons.append("no valid market structure")
             return PremiumSignal(
                 direction="NO_TRADE", confidence=0.0,
                 ai_confidence=ai_confidence,
-                reject_reason="; ".join(reasons) or "Layers not aligned",
+                reject_reason="; ".join(reasons) or "Core layers not aligned",
             )
 
         # ── Composite Confidence Score ────────────────────────────────
@@ -195,8 +190,8 @@ class PremiumSignalEngine:
         layers = {
             "trend":      1.0 if (row.get("trend_bullish") if bullish else row.get("trend_bearish")) else 0.0,
             "momentum":   1.0 if (row.get("momentum_bullish") if bullish else row.get("momentum_bearish")) else 0.0,
-            "volume":     min(row.get("vol_ratio", 1.0) / 2.0, 1.0),
-            "volatility": 1.0 if row.get("vol_expanding", False) else 0.5,
+            "volume":     min(row.get("vol_ratio", 1.0) / 1.5, 1.0), # Aggressive volume score
+            "volatility": 1.0 if row.get("vol_expanding", False) else 0.8, # Aggressive volatility score
             "structure":  1.0 if (row.get("structure_bullish") if bullish else row.get("structure_bearish")) else 0.0,
             "ai":         ai_confidence,
         }
@@ -207,12 +202,12 @@ class PremiumSignalEngine:
         composite = sum(layers[k] * weights[k] for k in layers)
         composite = min(composite, 1.0)
 
-        # Final threshold: composite must be ≥ 0.75 to be premium
-        if composite < 0.75:
+        # Final threshold: Aggressive tuning -> lowered from 0.75 to 0.60
+        if composite < 0.60:
             return PremiumSignal(
                 direction="NO_TRADE", confidence=composite,
                 ai_confidence=ai_confidence,
-                reject_reason=f"Composite score {composite:.0%} below premium threshold 75%",
+                reject_reason=f"Composite score {composite:.0%} below aggressive premium threshold 60%",
                 layers_passed=layers,
             )
 
@@ -290,19 +285,16 @@ def generate_signals(
         if no_trade[i] or not volatility_ok[i]:
             continue
             
+        # Aggressive mode: require Trend, Momentum, Structure
         bullish = (
             trend_bullish[i] and
             momentum_bullish[i] and
-            volume_confirmed[i] and
-            vol_expanding[i] and
             structure_bullish[i]
         )
         
         bearish = (
             trend_bearish[i] and
             momentum_bearish[i] and
-            volume_confirmed[i] and
-            vol_expanding[i] and
             structure_bearish[i]
         )
         
@@ -315,8 +307,8 @@ def generate_signals(
         # Calculate composite score
         trend_score = 1.0 if (trend_bullish[i] if is_bull else trend_bearish[i]) else 0.0
         momentum_score = 1.0 if (momentum_bullish[i] if is_bull else momentum_bearish[i]) else 0.0
-        volume_score = min(vol_ratio[i] / 2.0, 1.0)
-        volatility_score = 1.0 if vol_expanding[i] else 0.5
+        volume_score = min(vol_ratio[i] / 1.5, 1.0) # Aggressive volume score
+        volatility_score = 1.0 if vol_expanding[i] else 0.8 # Aggressive volatility score
         structure_score = 1.0 if (structure_bullish[i] if is_bull else structure_bearish[i]) else 0.0
         
         composite = (
@@ -328,7 +320,8 @@ def generate_signals(
             ai_confidence * weights["ai"]
         )
         
-        if composite >= 0.75:
+        # Lowered threshold to 0.60
+        if composite >= 0.60:
             signals.iloc[i] = 1 if is_bull else -1
 
     return signals

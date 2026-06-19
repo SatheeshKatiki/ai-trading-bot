@@ -4,7 +4,7 @@ export const dynamic = 'force-dynamic';
 
 export async function GET() {
   try {
-    const res = await fetch('http://localhost:8000/api/ai/status', {
+    const res = await fetch('http://127.0.0.1:8000/api/ai/status', {
       next: { revalidate: 0 } // Disable caching
     });
     

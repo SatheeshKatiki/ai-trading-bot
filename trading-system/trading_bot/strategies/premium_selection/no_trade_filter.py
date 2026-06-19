@@ -74,7 +74,7 @@ def compute_no_trade_conditions(df: pd.DataFrame) -> pd.DataFrame:
     min_close = df["close"].rolling(5).min()
     mean_close = df["close"].rolling(5).mean().replace(0, 1e-9)
     close_range = (max_close - min_close) / mean_close
-    df["is_sideways"] = close_range < 0.001
+    df["is_sideways"] = close_range < 0.0001
 
     # Combined no-trade flag
     df["no_trade"] = df["in_no_trade_window"] | ~df["is_trending"] | df["is_sideways"]

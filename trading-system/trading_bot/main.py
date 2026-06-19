@@ -88,12 +88,49 @@ registry.register("premium", premium_signals)
 
 # Path to the shared settings file written by the Streamlit dashboard
 _SETTINGS_PATH = Path(__file__).resolve().parents[1] / "config" / "settings.json"
+_POSITIONS_PATH = Path(__file__).resolve().parents[1] / "config" / "active_positions.json"
 
 # ------------------------------------------------------------------
 # Settings cache: avoids disk I/O on every tick (checks mtime instead)
 # ------------------------------------------------------------------
 _settings_cache: dict = {}
 _settings_last_mtime: float = 0.0
+
+
+def _save_positions(positions: Dict[str, Position]) -> None:
+    try:
+        _POSITIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(_POSITIONS_PATH, "w") as f:
+            data = {
+                sym: {
+                    "symbol": p.symbol,
+                    "side": p.side,
+                    "quantity": p.quantity,
+                    "entry_price": p.entry_price,
+                    "timestamp": p.timestamp,
+                    "scales_done": getattr(p, "scales_done", 0),
+                    "direction": getattr(p, "direction", "LONG" if p.side == 1 else "SHORT")
+                } for sym, p in positions.items()
+            }
+            json.dump(data, f, indent=4)
+    except Exception as e:
+        logger.error("Failed to save active positions: %s", e)
+
+def _load_positions() -> Dict[str, Position]:
+    if _POSITIONS_PATH.exists():
+        try:
+            with open(_POSITIONS_PATH, "r") as f:
+                data = json.load(f)
+                loaded = {}
+                for sym, p in data.items():
+                    pos = Position(p["symbol"], p["side"], p["quantity"], p["entry_price"], p["timestamp"])
+                    pos.scales_done = p.get("scales_done", 0)
+                    pos.direction = p.get("direction", "LONG" if p["side"] == 1 else "SHORT")
+                    loaded[sym] = pos
+                return loaded
+        except Exception as e:
+            logger.error("Failed to load active positions: %s", e)
+    return {}
 
 
 def _load_settings() -> dict:
@@ -213,8 +250,37 @@ async def run_live_bot(symbols: List[str]) -> None:
     pyramid_sizer = PyramidSizer(pct_trigger=0.2, max_scales=2)
     portfolio_risk = PortfolioRiskEngine(max_daily_dd_pct=5.0, max_weekly_dd_pct=10.0, max_consecutive_losses=3)
 
-    active_positions: Dict[str, Position] = {}
+    active_positions: Dict[str, Position] = _load_positions()
+    if active_positions:
+        logger.info("Loaded %d active positions from disk state recovery.", len(active_positions))
+        
     momentum_strategies: Dict[str, MomentumStrategy] = {}
+
+    # Preload historical data from API Bridge so strategy doesn't need to wait 50 minutes
+    import requests
+    from datetime import timedelta
+    try:
+        end_date = datetime.now().strftime("%Y-%m-%d")
+        start_date = (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d")
+        for sym in symbols:
+            # We fetch 1 Min data to match aggregator output
+            resp = requests.get(f"http://127.0.0.1:8000/api/history?symbol={sym}&start_date={start_date}&end_date={end_date}&timeframe=1")
+            if resp.status_code == 200:
+                data = resp.json().get("data", [])
+                if data:
+                    df = pd.DataFrame(data)
+                    df["timestamp"] = pd.to_datetime(df["datetime"] if "datetime" in df.columns else df.get("Datetime"))
+                    df.set_index("timestamp", inplace=True)
+                    # Lowercase columns mapping
+                    col_map = {c: c.lower() for c in df.columns}
+                    df.rename(columns=col_map, inplace=True)
+                    for col in ["open", "high", "low", "close", "volume"]:
+                        if col in df.columns:
+                            df[col] = pd.to_numeric(df[col], errors='coerce')
+                    aggregator.candles[sym] = df
+                    logger.info("Preloaded %d historical candles for %s", len(df), sym)
+    except Exception as e:
+        logger.warning("Could not preload history from API bridge: %s", e)
 
     async def on_tick(tick: Dict) -> None:
         sym = tick["symbol"]
@@ -270,7 +336,12 @@ async def run_live_bot(symbols: List[str]) -> None:
                 features = compute_features(df.tail(60)).tail(1)
                 confidence = ai_filter.predict(features)["confidence"].iloc[-1] if (ai_filter.is_trained and not features.empty) else 1.0
                 
-                decision = m_strategy.manage_active_trades(ltp, df_5min, ai_confidence=confidence * 100)
+                decision = m_strategy.manage_active_trades(
+                    ltp, 
+                    df_5min, 
+                    ai_confidence=confidence * 100,
+                    current_atr=current_atr
+                )
                 if decision and decision.get("exit"):
                     should_exit = True
                     reason = decision.get("reason", "Institutional Smart Exit")
@@ -292,7 +363,8 @@ async def run_live_bot(symbols: List[str]) -> None:
                 if is_live:
                     logger.info("EXIT %s %s for %s (%s) [LIVE]", pos.side, qty_to_close, sym, reason)
                     if not ORDER_LIMITER.allow(broker.BROKER_ID):
-                        logger.warning("EXIT order rate-limited for %s — skipping.", sym)
+                        logger.warning("EXIT order rate-limited for %s — will retry on next tick.", sym)
+                        return  # Return immediately so position isn't removed; it will retry on next tick
                     else:
                         exit_req = OrderRequest(
                             symbol=sym,
@@ -310,6 +382,7 @@ async def run_live_bot(symbols: List[str]) -> None:
                             logger.error("EXIT order validation failed for %s: %s", sym, ve)
                             audit.log(AuditEvent.VALIDATION_ERROR,
                                       {"symbol": sym, "reason": str(ve)}, severity="WARNING")
+                            return # Retry on next tick
                 else:
                     logger.info("EXIT %s %s for %s (%s) [PAPER]", pos.side, qty_to_close, sym, reason)
 
@@ -325,7 +398,7 @@ async def run_live_bot(symbols: List[str]) -> None:
                     pos.entry_price, ltp, pnl, datetime.utcnow().isoformat()
                 ))
                 # Also persist to shared state for dashboard display
-                record_trade(sym, "SELL" if pos.side == 1 else "BUY", ltp, datetime.utcnow().isoformat())
+                record_trade(sym, "SELL" if pos.side == 1 else "BUY", ltp, datetime.utcnow().isoformat(), qty=qty_to_close)
                 update_equity(risk_manager.current_equity, risk_manager.daily_pnl)
                 alerter.send_exit_alert(sym, pos.side, qty_to_close, ltp, pnl, reason)
 
@@ -333,6 +406,8 @@ async def run_live_bot(symbols: List[str]) -> None:
                     del active_positions[sym]
                 else:
                     pos.quantity -= exit_qty
+                
+                _save_positions(active_positions)
 
             # ----------------------------------------------------------------
             # 1.5. Pyramiding (Scaling In) for remaining positions
@@ -380,14 +455,18 @@ async def run_live_bot(symbols: List[str]) -> None:
                                     pos.scales_done + 1, side_str, scale_qty, sym, ltp, scale_reason)
                         pos.quantity += scale_qty
                         pos.scales_done += 1
+                    
+                    _save_positions(active_positions)
 
         # ----------------------------------------------------------------
         # 2. Aggregate tick → check for new candle bar
         # ----------------------------------------------------------------
         try:
+            old_minute = aggregator._current_minute
             aggregator.add_tick(tick)
-            if aggregator._current_minute and \
-               datetime.now(timezone.utc).replace(second=0, microsecond=0) > aggregator._current_minute:
+            
+            # TRIGGER STRATEGY EVALUATION ONLY ON MINUTE ROLLOVER
+            if old_minute is not None and aggregator._current_minute > old_minute:
 
                 # Settings already loaded at top of on_tick (cached, no disk I/O)
                 strategy_name = settings.get("active_strategy", "institutional_momentum")
@@ -427,6 +506,9 @@ async def run_live_bot(symbols: List[str]) -> None:
 
                     # ── Run selected strategy ──────────────────────────
                     logger.info("Running strategy: [%s] for %s", strategy_name, s)
+                    
+                    # DEBUG: Print last 5 closes to see why it's sideways
+                    logger.info("DEBUG CLOSES: %s", df['close'].tail(5).tolist())
 
                     # ── Premium Strategy: uses engine directly for option selection ──
                     if strategy_name == "premium":
@@ -459,6 +541,19 @@ async def run_live_bot(symbols: List[str]) -> None:
                         latest_signal = signals.iloc[-1]
                         entry_symbol  = s
                         lot_size      = 1
+                        
+                        # Auto-map to Options if it's an Index trade
+                        if latest_signal != 0 and ("INDEX" in s or s.startswith("NSE:NIFTY") or s.startswith("BSE:SENSEX")):
+                            try:
+                                from trading_bot.strategies.premium_selection.options_selector import select_option
+                                instrument = s.replace("NSE:", "").replace("BSE:", "").replace("-INDEX", "").replace("-EQ", "")
+                                opt_dir = "CE" if latest_signal == 1 else "PE"
+                                opt = select_option(instrument, ltp, opt_dir, itm_strikes=1)
+                                entry_symbol = opt.symbol
+                                lot_size = opt.lot_size
+                                logger.info("Auto-mapped %s %s signal to Option: %s", instrument, opt_dir, entry_symbol)
+                            except Exception as e:
+                                logger.error("Failed to auto-map option for %s: %s", s, e)
                         
                         if strategy_name == "institutional_ema" and 'custom_sl_pct' in df.columns:
                             sl_pct = df['custom_sl_pct'].iloc[-1] / 100.0
@@ -552,17 +647,21 @@ async def run_live_bot(symbols: List[str]) -> None:
                     alerter.send_trade_alert(entry_symbol, side_str, qty, entry_price, confidence)
 
                     # ── Track position ─────────────────────────────────
-                    active_positions[s] = Position(
+                    pos_obj = Position(
                         symbol=entry_symbol,
                         side=latest_signal,
                         entry_price=entry_price,
                         quantity=qty * lot_size,
                         entry_time=current_time,
-                        highest_price=entry_price,
-                        lowest_price=entry_price,
-                        stop_loss=sl_price,
-                        target=tgt_price,
                     )
+                    # We also manually attach direction for compatibility
+                    pos_obj.direction = "LONG" if pos_obj.side == 1 else "SHORT"
+                    
+                    active_positions[s] = pos_obj
+                    _save_positions(active_positions)
+                    
+                    # Persist Entry to state.db so Dashboard Live Feed picks it up
+                    record_trade(entry_symbol, "BUY", entry_price, current_time, qty=qty * lot_size)
                     
                     if strategy_name == "institutional_momentum" and s in momentum_strategies:
                         momentum_strategies[s].open_trade(
@@ -576,6 +675,28 @@ async def run_live_bot(symbols: List[str]) -> None:
 
         except Exception as exc:
             logger.exception("Error processing tick: %s", exc)
+
+        # ----------------------------------------------------------------
+        # 3. Calculate Unrealized M2M PNL and update dashboard
+        # ----------------------------------------------------------------
+        import time
+        if not hasattr(on_tick, "last_m2m_update"):
+            on_tick.last_m2m_update = 0
+            
+        if time.time() - on_tick.last_m2m_update > 1.0:
+            unrealized_pnl = 0.0
+            for p in active_positions.values():
+                if p.symbol == sym:
+                    m2m = (ltp - p.entry_price) * p.quantity * p.side
+                else:
+                    df_other = aggregator.get_latest_dataframe(p.symbol)
+                    last_px = df_other["close"].iloc[-1] if not df_other.empty else p.entry_price
+                    m2m = (last_px - p.entry_price) * p.quantity * p.side
+                unrealized_pnl += m2m
+            
+            total_pnl = risk_manager.daily_pnl + unrealized_pnl
+            update_equity(risk_manager.current_equity + unrealized_pnl, total_pnl)
+            on_tick.last_m2m_update = time.time()
 
     logger.info("Starting live stream for symbols: %s", ", ".join(symbols))
     await broker.stream_quotes(symbols, on_tick)

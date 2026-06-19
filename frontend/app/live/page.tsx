@@ -2,6 +2,7 @@
 
 import Sidebar from "@/components/sidebar";
 import Header from "@/components/header";
+import NewsTicker from "@/components/news-ticker";
 import { NumberInput } from "@/components/number-input";
 import { useState, useEffect, useRef, Suspense } from "react";
 import { 
@@ -17,8 +18,10 @@ import {
   Layers,
   Globe,
   Briefcase,
-  Package,
-  ChevronDown
+  ChevronDown,
+  Star,
+  Brain,
+  Package
 } from "lucide-react";
 import { useSearchParams } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
@@ -39,6 +42,7 @@ interface Trade {
   price: number;
   time: string;
   status?: string;
+  qty?: number;
 }
 
 interface Notification {
@@ -48,6 +52,52 @@ interface Notification {
 }
 
 import NativeChart from "@/components/native-chart";
+
+function formatTradeDisplay(symbol: string, price: number, side: string, qty?: number) {
+  // Parse options symbol like "NSE:NIFTY26DEC2424000CE"
+  const match = symbol.match(/^(NSE|BSE):([A-Z0-9]+?)(\d{2}[A-Z]{3}\d{2})(\d+)(CE|PE)$/i);
+  if (match) {
+    const [_, exchange, inst, expiry, strike, optType] = match;
+    const instName = inst.toUpperCase().startsWith('NIFTY') ? (inst.toUpperCase() === 'NIFTY' ? 'NIFTY50' : inst.toUpperCase()) : inst.toUpperCase();
+    const exchName = exchange.toUpperCase() === 'NSE' ? 'NSC' : exchange.toUpperCase();
+    
+    // lot calculation
+    // Since LOT_SIZES might not be hoisted, we can just safely search it manually or use the robust method
+    const baseInst = inst.toUpperCase();
+    let baseQty = 1;
+    for (const [key, value] of Object.entries(LOT_SIZES)) {
+      if (baseInst.includes(key)) {
+        baseQty = value;
+        break;
+      }
+    }
+    const lotQty = qty ? Math.round(qty / baseQty) : 1;
+    
+    // User requested ultra-professional format: NSC: NIFTY50 26DEC24 ATM 24000 120 CE BUY (Lot Qty: xx)
+    return `${exchName}: ${instName} ${expiry} ATM ${strike} ${price} ${optType} ${side} (Lot Qty: ${lotQty})`;
+  }
+  return `${symbol}`;
+}
+
+// Helper to check if Indian market is open
+function isMarketOpen() {
+  const now = new Date();
+  const options = { timeZone: 'Asia/Kolkata', hour12: false, hour: 'numeric', minute: 'numeric', weekday: 'short' } as const;
+  const formatter = new Intl.DateTimeFormat('en-US', options);
+  const parts = formatter.formatToParts(now);
+  
+  const hourStr = parts.find(p => p.type === 'hour')?.value || '0';
+  const minStr = parts.find(p => p.type === 'minute')?.value || '0';
+  const weekday = parts.find(p => p.type === 'weekday')?.value || '';
+  
+  if (weekday === 'Sat' || weekday === 'Sun') return false;
+  
+  const hour = parseInt(hourStr, 10);
+  const minute = parseInt(minStr, 10);
+  
+  const currentMins = hour * 60 + minute;
+  return currentMins >= 555 && currentMins < 930; // 09:15 AM to 03:30 PM IST
+}
 
 export default function LiveTrading() {
   return (
@@ -64,60 +114,192 @@ export default function LiveTrading() {
 
 const LOT_SIZES: Record<string, number> = {
   "NIFTY": 65,
-  "BANKNIFTY": 30,
-  "SENSEX": 20,
+  "BANKNIFTY": 15,
   "FINNIFTY": 40,
   "MIDCPNIFTY": 50,
-  "ADANIENT": 309,
-  "ADANIPORTS": 475,
+  "SENSEX": 20,
+  "AARTIIND": 1000,
+  "ABB": 250,
+  "ABBOTINDIA": 40,
+  "ABCAPITAL": 5400,
+  "ABFRL": 2600,
+  "ACC": 300,
+  "ADANIENT": 300,
+  "ADANIPORTS": 400,
+  "ALKEM": 200,
+  "AMBUJACEM": 1800,
   "APOLLOHOSP": 125,
-  "ASIANPAINT": 250,
+  "APOLLOTYRE": 1700,
+  "ASHOKLEY": 5000,
+  "ASIANPAINT": 200,
+  "ASTRAL": 348,
+  "ATUL": 75,
+  "AUBANK": 1000,
+  "AUROPHARMA": 1050,
   "AXISBANK": 625,
-  "BAJAJ-AUTO": 75,
-  "BAJAJFINSV": 250,
-  "BAJFINANCE": 750,
-  "BHARTIARTL": 475,
-  "BPCL": 1975,
-  "BRITANNIA": 125,
-  "CIPLA": 375,
-  "COALINDIA": 1350,
-  "DIVISLAB": 150,
+  "BAJAJ-AUTO": 125,
+  "BAJAJFINSV": 500,
+  "BAJFINANCE": 125,
+  "BALKRISIND": 300,
+  "BALRAMCHIN": 1600,
+  "BANDHANBNK": 2500,
+  "BANKBARODA": 5850,
+  "BATAINDIA": 375,
+  "BEL": 5700,
+  "BERGEPAINT": 1100,
+  "BHARATFORG": 500,
+  "BHARTIARTL": 950,
+  "BHEL": 5250,
+  "BIOCON": 2500,
+  "BOSCHLTD": 50,
+  "BPCL": 1800,
+  "BRITANNIA": 200,
+  "BSOFT": 1000,
+  "CANBK": 2700,
+  "CANFINHOME": 975,
+  "CHAMBLFERT": 1900,
+  "CHOLAFIN": 1250,
+  "CIPLA": 650,
+  "COALINDIA": 2100,
+  "COFORGE": 150,
+  "COLPAL": 350,
+  "CONCOR": 1000,
+  "COROMANDEL": 700,
+  "CROMPTON": 1800,
+  "CUB": 5000,
+  "CUMMINSIND": 300,
+  "DABUR": 1250,
+  "DALBHARAT": 250,
+  "DEEPAKNTR": 300,
+  "DIVISLAB": 200,
+  "DIXON": 100,
+  "DLF": 1650,
   "DRREDDY": 125,
   "EICHERMOT": 175,
+  "ESCORTS": 275,
+  "EXIDEIND": 3600,
+  "FEDERALBNK": 5000,
+  "GAIL": 4050,
+  "GLENMARK": 700,
+  "GMRINFRA": 11250,
+  "GNFC": 1300,
+  "GODREJCP": 500,
+  "GODREJPROP": 175,
+  "GRANULES": 2000,
   "GRASIM": 250,
-  "HCLTECH": 350,
-  "HDFCBANK": 275,
+  "GUJGASLTD": 1250,
+  "HAL": 300,
+  "HAVELLS": 500,
+  "HCLTECH": 700,
+  "HDFCAMC": 150,
+  "HDFCBANK": 550,
   "HDFCLIFE": 1100,
-  "HEROMOTOCO": 150,
+  "HEROMOTOCO": 300,
   "HINDALCO": 1400,
+  "HINDCOPPER": 4300,
+  "HINDPETRO": 2700,
   "HINDUNILVR": 300,
-  "ICICIBANK": 350,
+  "ICICIBANK": 700,
+  "ICICIGI": 500,
+  "ICICIPRULI": 1500,
+  "IDEA": 80000,
+  "IDFC": 10000,
+  "IDFCFIRSTB": 15000,
+  "IEX": 3750,
+  "IGL": 1375,
+  "INDHOTEL": 2000,
+  "INDIACEM": 2900,
+  "INDIAMART": 150,
+  "INDIGO": 300,
   "INDUSINDBK": 500,
+  "INDUSTOWER": 3400,
   "INFY": 400,
+  "IOC": 9750,
+  "IPCALAB": 650,
+  "IRCTC": 875,
   "ITC": 1600,
+  "JINDALSTEL": 1250,
+  "JKCEMENT": 250,
   "JSWSTEEL": 675,
+  "JUBLFOOD": 1250,
   "KOTAKBANK": 400,
-  "LT": 150,
+  "L&TFH": 4462,
+  "LALPATHLAB": 250,
+  "LAURUSLABS": 1700,
+  "LICHSGFIN": 2000,
+  "LT": 300,
   "LTIM": 150,
-  "M&M": 150,
+  "LTTS": 200,
+  "LUPIN": 850,
+  "M&M": 350,
+  "M&MFIN": 2000,
+  "MANAPPURAM": 3000,
+  "MARICO": 1200,
   "MARUTI": 50,
+  "MCDOWELL-N": 700,
+  "MCX": 200,
+  "METROPOLIS": 400,
+  "MFSL": 800,
+  "MGL": 800,
+  "MOTHERSON": 7100,
+  "MPHASIS": 275,
+  "MRF": 10,
+  "MUTHOOTFIN": 550,
+  "NATIONALUM": 7500,
+  "NAUKRI": 150,
+  "NAVINFLUOR": 150,
   "NESTLEIND": 400,
-  "NTPC": 1500,
+  "NMDC": 4500,
+  "NTPC": 3000,
+  "OBEROIRLTY": 700,
+  "OFSS": 100,
   "ONGC": 3850,
+  "PAGEIND": 15,
+  "PEL": 750,
+  "PERSISTENT": 200,
+  "PETRONET": 3000,
+  "PFC": 3875,
+  "PIDILITIND": 250,
+  "PIIND": 250,
+  "PNB": 8000,
+  "POLYCAB": 100,
   "POWERGRID": 3600,
+  "PVRINOX": 407,
+  "RAMCOCEM": 850,
+  "RBLBANK": 2500,
+  "RECLTD": 2000,
   "RELIANCE": 250,
-  "SBILIFE": 375,
+  "SAIL": 8000,
+  "SBICARD": 800,
+  "SBILIFE": 750,
   "SBIN": 750,
-  "SUNPHARMA": 350,
-  "TATACONSUM": 550,
+  "SHREECEM": 25,
+  "SHRIRAMFIN": 300,
+  "SIEMENS": 125,
+  "SRF": 375,
+  "SUNTV": 1500,
+  "SUNPHARMA": 700,
+  "SYNGENE": 1000,
+  "TATACHEM": 550,
+  "TATACOMM": 500,
+  "TATACONSUM": 900,
   "TATAMOTORS": 1425,
+  "TATAPOWER": 3375,
   "TATASTEEL": 5500,
   "TCS": 175,
   "TECHM": 600,
   "TITAN": 175,
+  "TORNTPHARM": 500,
+  "TRENT": 400,
+  "TVSMOTOR": 700,
+  "UBL": 400,
   "ULTRACEMCO": 100,
+  "UPL": 1300,
+  "VEDL": 3150,
+  "VOLTAS": 600,
   "WIPRO": 1500,
-  "JIOFIN": 2000
+  "ZEEL": 3000,
+  "ZYDUSLIFE": 900,
 };
 
 export const getBaseQty = (sym: string): number => {
@@ -128,10 +310,15 @@ export const getBaseQty = (sym: string): number => {
   return 1;
 };
 
+const ALL_TIMEFRAMES = ["1 Min", "3 Min", "5 Min", "15 Min", "30 Min", "1 Hour", "1 Week", "1 Month"];
+
 function LiveTradingContent() {
   const searchParams = useSearchParams();
   const urlSymbol = searchParams.get('symbol') || 'SENSEX';
   const defaultBaseQty = getBaseQty(urlSymbol);
+
+  const [favoriteTimeframes, setFavoriteTimeframes] = useState<string[]>(['1 Min', '5 Min', '15 Min']);
+  const [showAllTimeframes, setShowAllTimeframes] = useState(false);
 
   const [strategy, setStrategy] = useState("institutional_momentum");
   const [timeframe, setTimeframe] = useState("5 Min");
@@ -167,6 +354,7 @@ function LiveTradingContent() {
     enable_aggression_filter: false
   });
   const prevTradesRef = useRef<Trade[]>([]);
+  const isInitialFetch = useRef<boolean>(true);
 
   const addNotification = (message: string, type: 'success' | 'danger' | 'warning' | 'info') => {
     const id = Date.now();
@@ -178,6 +366,12 @@ function LiveTradingContent() {
 
   // Detect new trades and trigger notifications
   useEffect(() => {
+    if (isInitialFetch.current && trades.length > 0) {
+      isInitialFetch.current = false;
+      prevTradesRef.current = trades;
+      return;
+    }
+
     if (trades.length > prevTradesRef.current.length) {
       // New trade found!
       const newTrades = trades.filter(t => !prevTradesRef.current.some(pt => pt.id === t.id));
@@ -354,9 +548,13 @@ function LiveTradingContent() {
 
   // Fetch State (P&L, Equity, etc.)
   useEffect(() => {
+    let isMounted = true;
+    let timeoutId: NodeJS.Timeout;
+
     const fetchState = async () => {
       try {
         const res = await fetch(`/api/state?symbol=${urlSymbol}&live=${tradingMode === 'live'}`, { cache: 'no-store' });
+        if (!isMounted) return;
         const data = await res.json();
         
         setEquity(data.equity);
@@ -367,10 +565,10 @@ function LiveTradingContent() {
         // If WebSocket is disconnected or price is 0 (initial load), update from polling!
         if (!isWsConnected || currentPrice === 0) {
           if (parsedPrice && parsedPrice !== 0) {
-            setCurrentPrice(parsedPrice);
+            setCurrentPrice(prev => (isMarketOpen() || prev === 0) ? parsedPrice : prev);
           }
           if (data.changePercent) {
-            setChangePercent(data.changePercent);
+            setChangePercent(prev => (isMarketOpen() || prev === 0) ? data.changePercent : prev);
           }
         }
         
@@ -387,14 +585,26 @@ function LiveTradingContent() {
         // Equity is now handled directly by the backend in data.equity
         setIsLoading(false);
       } catch (error) {
-        console.error("Failed to fetch state:", error);
-        setIsLoading(false); // Ensure loading stops on error
+        // Suppress "Failed to fetch" console.errors during background polling 
+        // to prevent Next.js Dev Overlay from popping up during HMR or restarts
+        if (error instanceof TypeError && error.message.includes('Failed to fetch')) {
+            // Silently ignore transient network drops
+        } else {
+            console.warn("State polling issue:", error);
+        }
+        if (isMounted) setIsLoading(false); // Ensure loading stops on error
+      } finally {
+        if (isMounted) {
+          timeoutId = setTimeout(fetchState, 1000); // Poll recursively every 1s
+        }
       }
     };
 
     fetchState();
-    const interval = setInterval(fetchState, 1000); // Poll every 1s
-    return () => clearInterval(interval);
+    return () => {
+      isMounted = false;
+      clearTimeout(timeoutId);
+    };
   }, [urlSymbol]);
 
   // WebSocket for real-time price streaming (Institutional Fast Stream)
@@ -405,7 +615,8 @@ function LiveTradingContent() {
     const maxDelay = 10000;
 
     const connect = () => {
-      ws = new WebSocket(`ws://${window.location.hostname}:8000/ws/live`);
+      const hostname = window.location.hostname === 'localhost' ? '127.0.0.1' : window.location.hostname;
+      ws = new WebSocket(`ws://${hostname}:8000/ws/live`);
       
       ws.onopen = () => {
         console.log("WebSocket Connected");
@@ -425,28 +636,32 @@ function LiveTradingContent() {
         console.warn("WebSocket Connection Error - Backend might be offline");
         ws.close(); // Force onclose to trigger reconnect
       };
+      let lastWsUpdate = 0;
       ws.onmessage = (event) => {
+        // Stop processing live ticks if market is closed (freezes price updates everywhere)
+        if (!isMarketOpen()) return;
+
         const data = JSON.parse(event.data);
         if (data.NIFTY) {
-          setTickerData(prev => {
-            if (prev.NIFTY.lp === data.NIFTY.lp && 
-                prev.SENSEX.lp === data.SENSEX.lp && 
-                prev.BANKNIFTY.lp === data.BANKNIFTY.lp) {
-              return prev; // Optimization: Don't re-render if data is same
+          const now = Date.now();
+          // Reduced throttle to 50ms to allow 100ms updates to pass through instantly for ultra-fast UI
+          if (now - lastWsUpdate > 50) {
+            lastWsUpdate = now;
+            setTickerData(prev => {
+              if (prev.NIFTY.lp === data.NIFTY.lp && 
+                  prev.SENSEX.lp === data.SENSEX.lp && 
+                  prev.BANKNIFTY.lp === data.BANKNIFTY.lp) {
+                return prev; // Optimization: Don't re-render if data is same
+              }
+              return data;
+            });
+            
+            // Also update the selected symbol's price in the header if it matches
+            const selectedData = data[urlSymbol];
+            if (selectedData) {
+              setCurrentPrice(prev => prev === selectedData.lp ? prev : selectedData.lp);
+              setChangePercent(prev => prev === selectedData.chp ? prev : selectedData.chp);
             }
-            return data;
-          });
-          
-          // Also update the selected symbol's price in the header if it matches
-          const selectedData = data[urlSymbol];
-          if (selectedData) {
-            setCurrentPrice(prev => prev === selectedData.lp ? prev : selectedData.lp);
-            setChangePercent(prev => prev === selectedData.chp ? prev : selectedData.chp);
-          }
-          
-          // Update trades from WebSocket
-          if (data.trades) {
-            setTrades(data.trades);
           }
         }
       };
@@ -730,6 +945,10 @@ function LiveTradingContent() {
               </div>
             </div>
           </div>
+          
+          <div className="mb-4">
+            <NewsTicker />
+          </div>
 
           {/* TradingView & Orders Row */}
           <motion.div 
@@ -776,57 +995,59 @@ function LiveTradingContent() {
             {/* Card 3: AI Confidence */}
             <motion.div 
               variants={{ hidden: { opacity: 0, y: 20 }, show: { opacity: 1, y: 0 } }}
-              className="stat-card p-6 flex items-center justify-between relative overflow-hidden"
+              className="stat-card p-4 flex flex-col justify-between relative overflow-hidden"
             >
               <div className="absolute left-0 top-0 w-1 h-full bg-gradient-to-b from-primary to-blue-600 rounded-l-lg"></div>
-              <div className="space-y-1 pl-2">
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">🤖 AI Confidence</span>
+              
+              <div className="flex items-center justify-between w-full mb-3">
+                <div className="space-y-1 pl-2">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">🤖 AI Confidence</span>
+                  </div>
+                  <div className={`text-sm font-bold uppercase tracking-wider ${aiConfidence >= 75 ? "text-success" : aiConfidence >= 50 ? "text-warning" : "text-destructive"}`}>
+                    {aiConfidence >= 75 ? "High Conviction" : aiConfidence >= 50 ? "Mild Bias" : "Scan Mode"}
+                  </div>
+                  <div className="text-[10px] text-muted-foreground font-mono">
+                    Based on {strategy.replace('_', ' ').toUpperCase()}
+                  </div>
                 </div>
-                <div className={`text-sm font-bold uppercase tracking-wider ${aiConfidence >= 75 ? "text-success" : aiConfidence >= 50 ? "text-warning" : "text-destructive"}`}>
-                  {aiConfidence >= 75 ? "High Conviction" : aiConfidence >= 50 ? "Mild Bias" : "Scan Mode"}
-                </div>
-                <div className="text-[10px] text-muted-foreground font-mono">
-                  Based on {strategy.replace('_', ' ').toUpperCase()}
+                
+                {/* Smart Circle */}
+                <div className="relative w-14 h-14 group">
+                  <svg className="absolute inset-0 w-full h-full drop-shadow-md" viewBox="0 0 100 100">
+                    <defs>
+                      <mask id="liveProgressMask">
+                        <circle
+                          cx="50" cy="50" r="42" fill="none"
+                          stroke="#ffffff" strokeWidth="8"
+                          strokeDasharray="263.89"
+                          strokeDashoffset={263.89 - (263.89 * aiConfidence) / 100}
+                          strokeLinecap="round" transform="rotate(-90 50 50)"
+                          className="transition-all duration-1000 ease-out"
+                        />
+                      </mask>
+                    </defs>
+                    <circle cx="50" cy="50" r="42" fill="none" className="stroke-muted/30" strokeWidth="8" />
+                    
+                    <foreignObject x="0" y="0" width="100" height="100" mask="url(#liveProgressMask)">
+                      <div className="w-full h-full" style={{ background: 'conic-gradient(var(--destructive) 0%, var(--warning) 50%, var(--success) 100%)' }}></div>
+                    </foreignObject>
+                  </svg>
+                  <div className={`absolute inset-0 flex items-center justify-center text-xs font-bold font-mono group-hover:scale-110 transition-transform ${aiConfidence >= 75 ? "text-success" : aiConfidence >= 50 ? "text-warning" : "text-destructive"}`}>
+                    {isLoading ? "---" : `${aiConfidence.toFixed(0)}%`}
+                  </div>
                 </div>
               </div>
-              
-              {/* Smart Circle */}
-              <div className="relative w-16 h-16 group">
-                <svg className="w-full h-full transform -rotate-90 drop-shadow-md" viewBox="0 0 100 100">
-                  <defs>
-                    <linearGradient id="aiGradient" x1="0%" y1="100%" x2="100%" y2="0%">
-                      <stop offset="0%" stopColor="var(--destructive)" />
-                      <stop offset="50%" stopColor="var(--warning)" />
-                      <stop offset="100%" stopColor="var(--success)" />
-                    </linearGradient>
-                  </defs>
-                  {/* Background Circle */}
-                  <circle
-                    className="text-border stroke-current opacity-20"
-                    strokeWidth="8"
-                    cx="50"
-                    cy="50"
-                    r="42"
-                    fill="transparent"
-                  ></circle>
-                  {/* Progress Circle */}
-                  <circle
-                    stroke="url(#aiGradient)"
-                    strokeWidth="8"
-                    strokeDasharray="263.89"
-                    strokeDashoffset={263.89 - (263.89 * aiConfidence) / 100}
-                    strokeLinecap="round"
-                    cx="50"
-                    cy="50"
-                    r="42"
-                    fill="transparent"
-                    className="transition-all duration-1000 ease-out drop-shadow-[0_0_8px_var(--primary)]"
-                  ></circle>
-                </svg>
-                {/* Number in center */}
-                <div className={`absolute inset-0 flex items-center justify-center text-sm font-bold font-mono group-hover:scale-110 transition-transform ${aiConfidence >= 75 ? "text-success" : aiConfidence >= 50 ? "text-warning" : "text-destructive"}`}>
-                  {isLoading ? "---" : `${aiConfidence.toFixed(0)}%`}
+
+              {/* Added Sub-metrics */}
+              <div className="grid grid-cols-2 gap-2 pl-2 w-full text-[9px] font-bold uppercase tracking-widest text-muted-foreground">
+                <div className="flex flex-col bg-muted/20 p-1.5 rounded-md text-center">
+                  <span className="opacity-70 mb-0.5">Vol Sentiment</span>
+                  <span className={`text-foreground ${riskStatus === "High Risk" ? "text-destructive" : "text-success"}`}>{riskStatus === "High Risk" ? "BEARISH" : "BULLISH"}</span>
+                </div>
+                <div className="flex flex-col bg-muted/20 p-1.5 rounded-md text-center">
+                  <span className="opacity-70 mb-0.5">Trend Strength</span>
+                  <span className={`text-foreground ${aiConfidence > 50 ? "text-success" : "text-destructive"}`}>{aiConfidence > 50 ? "STRONG" : "WEAK"}</span>
                 </div>
               </div>
             </motion.div>
@@ -856,7 +1077,7 @@ function LiveTradingContent() {
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             {/* Native Custom Chart built with Lightweight-Charts */}
             <div className="lg:col-span-2 glass-card rounded-xl p-6 border border-border/20">
-              <div className="flex justify-between items-center mb-6">
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
                 <div>
                   <h3 className="font-display font-bold text-lg text-foreground flex items-center gap-2">
                     <span className="w-2 h-2 rounded-full bg-success animate-pulse"></span>
@@ -864,26 +1085,99 @@ function LiveTradingContent() {
                   </h3>
                   <p className="text-xs text-muted-foreground">Native Institutional Candlestick Chart (Live Feed)</p>
                 </div>
+
+                {/* Timeframe Selector (TradingView Style) */}
+                <div className="flex items-center bg-muted/30 rounded-lg p-1 border border-border/50 relative">
+                  {/* Starred Timeframes */}
+                  <div className="flex items-center">
+                    {ALL_TIMEFRAMES.filter(tf => favoriteTimeframes.includes(tf) || tf === timeframe).map((tf) => (
+                      <button
+                        key={`fav-${tf}`}
+                        onClick={() => setTimeframe(tf)}
+                        className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap ${
+                          timeframe === tf 
+                            ? "bg-primary text-primary-foreground shadow-sm" 
+                            : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+                        }`}
+                      >
+                        {tf}
+                      </button>
+                    ))}
+                  </div>
+                  
+                  {/* Dropdown Toggle */}
+                  <div className="relative border-l border-border/50 ml-1 pl-1">
+                    <button
+                      onClick={() => setShowAllTimeframes(!showAllTimeframes)}
+                      className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted/50 rounded-md transition-colors flex items-center justify-center"
+                    >
+                      <ChevronDown className="w-4 h-4" />
+                    </button>
+                    
+                    {/* Dropdown Menu */}
+                    <AnimatePresence>
+                      {showAllTimeframes && (
+                        <motion.div
+                          initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                          animate={{ opacity: 1, y: 0, scale: 1 }}
+                          exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                          transition={{ duration: 0.15 }}
+                          className="absolute right-0 top-full mt-2 w-48 bg-card border border-border/50 rounded-xl shadow-2xl overflow-hidden z-50 backdrop-blur-2xl"
+                        >
+                          <div className="p-2 space-y-1">
+                            {ALL_TIMEFRAMES.map((tf) => (
+                              <div key={`all-${tf}`} className="flex items-center justify-between group">
+                                <button
+                                  onClick={() => { setTimeframe(tf); setShowAllTimeframes(false); }}
+                                  className={`flex-1 text-left px-3 py-2 text-sm rounded-lg transition-colors ${
+                                    timeframe === tf ? "bg-primary/20 text-primary font-bold" : "text-foreground hover:bg-muted/80"
+                                  }`}
+                                >
+                                  {tf}
+                                </button>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (favoriteTimeframes.includes(tf)) {
+                                      setFavoriteTimeframes(prev => prev.filter(t => t !== tf));
+                                    } else {
+                                      setFavoriteTimeframes(prev => [...prev, tf]);
+                                    }
+                                  }}
+                                  className="p-2 opacity-50 group-hover:opacity-100 hover:text-warning transition-all"
+                                >
+                                  <Star className={`w-4 h-4 ${favoriteTimeframes.includes(tf) ? "fill-warning text-warning" : ""}`} />
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
+                </div>
               </div>
 
               {/* Container for Native Chart */}
               <div 
-                key={urlSymbol}
+                key={`${urlSymbol}-${timeframe}`}
                 className="w-full rounded-lg overflow-hidden border border-border/10 bg-[#090a0f]" 
               >
-                <NativeChart symbol={urlSymbol} livePrice={currentPrice} />
+                <NativeChart symbol={urlSymbol} livePrice={currentPrice} timeframe={timeframe} />
               </div>
             </div>
 
-            {/* Execution Feed */}
-            <div className="glass-card rounded-xl p-6 border border-border/20 flex flex-col h-[530px]">
-              <div className="flex justify-between items-center mb-4">
-                <h3 className="font-display font-bold text-lg text-foreground flex items-center gap-2">
-                  <Zap className="w-5 h-5 text-warning" />
-                  Live Execution Feed
-                </h3>
-                <span className="text-xs font-bold px-2 py-1 bg-muted/50 rounded-md text-muted-foreground">{trades.length} Trades</span>
-              </div>
+            {/* Right Column: Execution Feed */}
+            <div className="flex flex-col gap-6 h-[530px]">
+              {/* Execution Feed */}
+              <div className="glass-card rounded-xl p-6 border border-border/20 flex flex-col flex-1 h-full min-h-0">
+                <div className="flex justify-between items-center mb-4">
+                  <h3 className="font-display font-bold text-lg text-foreground flex items-center gap-2">
+                    <Zap className="w-5 h-5 text-warning" />
+                    Live Execution Feed
+                  </h3>
+                  <span className="text-xs font-bold px-2 py-1 bg-muted/50 rounded-md text-muted-foreground">{trades.length} Trades</span>
+                </div>
               
               <div className="flex-1 overflow-y-auto pr-2 space-y-3 custom-scrollbar">
                 <AnimatePresence mode="popLayout">
@@ -908,9 +1202,19 @@ function LiveTradingContent() {
                       <motion.div 
                         key={trade.id || i} 
                         initial={{ opacity: 0, x: -20, height: 0 }}
-                        animate={{ opacity: 1, x: 0, height: 'auto' }}
+                        animate={{ 
+                          opacity: 1, 
+                          x: 0, 
+                          height: 'auto',
+                          backgroundColor: trade.side === "BUY" 
+                            ? ['rgba(16, 185, 129, 0.2)', 'rgba(16, 185, 129, 0)'] 
+                            : ['rgba(239, 68, 68, 0.2)', 'rgba(239, 68, 68, 0)']
+                        }}
                         exit={{ opacity: 0, x: 20, height: 0 }}
-                        transition={{ type: "spring", stiffness: 500, damping: 30 }}
+                        transition={{ 
+                          type: "spring", stiffness: 500, damping: 30,
+                          backgroundColor: { duration: 1.5, ease: "easeOut" }
+                        }}
                         className={`flex items-center justify-between p-3 rounded-lg border-l-4 bg-muted/10 hover:bg-muted/30 transition-colors ${trade.side === "BUY" ? "border-l-success" : "border-l-destructive"}`}
                       >
                         <div className="flex items-center gap-3">
@@ -918,12 +1222,12 @@ function LiveTradingContent() {
                             {trade.side === "BUY" ? <ArrowUpRight className="w-4 h-4" /> : <ArrowDownRight className="w-4 h-4" />}
                           </div>
                           <div>
-                            <p className="text-sm font-bold text-foreground">{trade.symbol}</p>
-                            <p className="text-[10px] font-mono text-muted-foreground">{trade.time}</p>
+                            <p className="text-sm font-bold text-foreground tracking-tight">{formatTradeDisplay(trade.symbol, trade.price, trade.side, trade.qty)}</p>
+                            <p className="text-[10px] font-mono tabular-nums text-muted-foreground">{trade.time}</p>
                           </div>
                         </div>
                         <div className="text-right">
-                          <p className="text-sm font-mono font-bold text-foreground">₹{trade.price.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+                          <p className="text-sm font-mono tabular-nums font-bold text-foreground">₹{trade.price.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
                           <p className={`text-[10px] font-bold uppercase tracking-widest mt-0.5 ${trade.side === "BUY" ? "text-success" : "text-destructive"}`}>
                             {trade.side}
                           </p>
@@ -933,6 +1237,7 @@ function LiveTradingContent() {
                   )}
                 </AnimatePresence>
               </div>
+            </div>
             </div>
           </div>
         </main>

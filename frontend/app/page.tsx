@@ -2,6 +2,7 @@
 
 import Sidebar from "@/components/sidebar";
 import Header from "@/components/header";
+import NewsTicker from "@/components/news-ticker";
 import { useState, useEffect } from "react";
 import { 
   TrendingUp, 
@@ -341,9 +342,11 @@ export default function Dashboard() {
               </div>
             </div>
           </div>
+          
+          <NewsTicker />
 
-          {/* Stats Grid */}
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          {/* Core Metrics Grid */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
             {/* Stat Card 1 */}
             <div className="glass-card rounded-xl p-4 border border-border/20 flex flex-col justify-between">
               <div className="flex justify-between items-start">

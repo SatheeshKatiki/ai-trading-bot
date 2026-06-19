@@ -43,6 +43,18 @@ class SentimentAnalyzer:
                 feed = feedparser.parse(url)
                 for entry in feed.entries[:10]:  # Top 10 from each source
                     if hasattr(entry, 'title'):
+                        # Filter out old news (older than 72 hours)
+                        published_time = entry.get('published_parsed')
+                        if published_time:
+                            import calendar
+                            import time
+                            pub_timestamp = calendar.timegm(published_time)
+                            now_timestamp = time.time()
+                            if now_timestamp - pub_timestamp > 86400: # 24 hours in seconds
+                                continue
+                        else:
+                            continue # Skip if no date
+                            
                         all_entries.append({
                             "title_en": entry.title,
                             "published": entry.get('published', ''),

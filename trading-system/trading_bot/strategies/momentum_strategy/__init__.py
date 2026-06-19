@@ -143,9 +143,20 @@ class MomentumStrategy:
         """Register a new trade with the exit manager."""
         self.exit_manager.open_position(entry_price, stop_loss, total_lots, direction)
 
-    def manage_active_trades(self, current_price: float, df_5min: pd.DataFrame, ai_confidence: float = None) -> dict | None:
+    def manage_active_trades(
+        self, 
+        current_price: float, 
+        df_5min: pd.DataFrame, 
+        ai_confidence: float = None,
+        current_atr: float = 10.0
+    ) -> dict | None:
         """Check for exit conditions on the active position."""
-        decision = self.exit_manager.evaluate(current_price, df_5min, ai_confidence=ai_confidence)
+        decision = self.exit_manager.evaluate(
+            current_price, 
+            df_5min, 
+            ai_confidence=ai_confidence,
+            current_atr=current_atr
+        )
         if decision.should_exit:
             return {
                 "exit": True,

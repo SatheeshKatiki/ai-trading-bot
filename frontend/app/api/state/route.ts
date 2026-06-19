@@ -53,80 +53,30 @@ export async function GET(request: Request) {
     
     try {
       // Fetch all data in parallel to reduce loading time
-      const end = new Date();
-      const start = new Date();
-      start.setDate(end.getDate() - 5);
-      const startDate = start.toISOString().split('T')[0];
-      const endDate = end.toISOString().split('T')[0];
-      const pythonApiUrl = `http://localhost:8000/api/history?symbol=${symbol}&start_date=${startDate}&end_date=${endDate}&timeframe=${timeframe}`;
-
       const fetchPromises = [];
       
       // 1. State
-      fetchPromises.push(fetchWithTimeout("http://localhost:8000/api/state"));
+      fetchPromises.push(fetchWithTimeout("http://127.0.0.1:8000/api/state"));
       // 2. Funds
       if (isLive) {
-        fetchPromises.push(fetchWithTimeout("http://localhost:8000/api/funds"));
+        fetchPromises.push(fetchWithTimeout("http://127.0.0.1:8000/api/funds"));
       } else {
         fetchPromises.push(Promise.resolve(null));
       }
       // 3. Signals
-      fetchPromises.push(fetchWithTimeout(`http://localhost:8000/api/signals?symbol=${rawSymbol}`, 5000));
+      fetchPromises.push(fetchWithTimeout(`http://127.0.0.1:8000/api/signals?symbol=${rawSymbol}`, 5000));
       // 4. Quote
-      fetchPromises.push(fetchWithTimeout(`http://localhost:8000/api/quote?symbol=${symbol}`));
-      // 5. History
-      fetchPromises.push(fetchWithTimeout(pythonApiUrl, 3000));
+      // 4. Quote
+      fetchPromises.push(fetchWithTimeout(`http://127.0.0.1:8000/api/quote?symbol=${symbol}`));
 
-      const [resState, resFunds, resSignals, resQuote, resHistory] = await Promise.all(fetchPromises);
+      const [resState, resFunds, resSignals, resQuote] = await Promise.all(fetchPromises);
 
       if (resState) baseState = resState;
       fundsData = resFunds;
       signalsData = resSignals;
       quoteData = resQuote;
       
-      if (resHistory && resHistory.data) {
-        const rawData = resHistory.data;
-        
-        if (rawData && rawData.length > 0) {
-          chartData = rawData.map((item: any) => {
-            const dateObj = new Date(item.datetime);
-            if (isNaN(dateObj.getTime())) {
-              return null;
-            }
-            
-            const timestamp = Math.floor(dateObj.getTime() / 1000);
-            return {
-              time: timestamp,
-              open: item.open,
-              high: item.high,
-              low: item.low,
-              close: item.close
-            };
-          }).filter((item: any) => item !== null);
-          
-          chartData.sort((a, b) => a.time - b.time);
-          
-          const lastCandle = rawData[rawData.length - 1];
-          currentPrice = lastCandle.close;
-          
-          const lastDateStr = lastCandle.datetime.split(' ')[0];
-          const todayCandles = rawData.filter((c: any) => c.datetime.startsWith(lastDateStr));
-          
-          // Calculate change percent relative to previous day's close (Standard Broker Method)
-          const dates = Array.from(new Set(rawData.map((c: any) => c.datetime.split(' ')[0]))).sort();
-          if (dates.length >= 2) {
-            const prevDate = dates[dates.length - 2];
-            const prevDayCandles = rawData.filter((c: any) => c.datetime.startsWith(prevDate));
-            if (prevDayCandles.length > 0) {
-              const prevClose = prevDayCandles[prevDayCandles.length - 1].close;
-              changePercent = ((currentPrice - prevClose) / prevClose) * 100;
-            }
-          } else if (todayCandles.length > 0) {
-            const dayOpen = todayCandles[0].open;
-            changePercent = ((currentPrice - dayOpen) / dayOpen) * 100;
-          }
-        }
-      }
+      // Removed redundant resHistory block that used to parse chartData and changePercent
       
       // Override with real-time quote if available (Institutional Accuracy)
       if (quoteData && quoteData.d && quoteData.d.length > 0) {

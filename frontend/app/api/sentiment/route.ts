@@ -4,7 +4,7 @@ export const dynamic = 'force-dynamic';
 
 export async function GET() {
   try {
-    const res = await fetch('http://localhost:8000/api/sentiment', {
+    const res = await fetch('http://127.0.0.1:8000/api/sentiment', {
       cache: 'no-store'
     });
     

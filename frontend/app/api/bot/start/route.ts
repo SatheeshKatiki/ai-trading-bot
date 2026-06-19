@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 
 export async function POST() {
   try {
-    const res = await fetch('http://localhost:8000/api/bot/start', {
+    const res = await fetch('http://127.0.0.1:8000/api/bot/start', {
       method: 'POST'
     });
     

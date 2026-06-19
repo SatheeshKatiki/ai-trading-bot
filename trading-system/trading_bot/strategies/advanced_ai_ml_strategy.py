@@ -37,6 +37,9 @@ def generate_signals(
     if 'put_score' not in df.columns:
         df['put_score'] = None
     
+    # ---------------------------------------------------------
+    # FEATURE ENGINEERING
+    # ---------------------------------------------------------
     # Trend
     df['ema_9'] = ema(df['close'], 9)
     df['ema_21'] = ema(df['close'], 21)
@@ -48,7 +51,7 @@ def generate_signals(
     macd_df = macd(df['close'])
     df['macd_hist'] = macd_df['hist']
     
-    # Volatility (ATR) - Crucial for Capital Protection
+    # Volatility (ATR)
     high_low = df['high'] - df['low']
     high_close = abs(df['high'] - df['close'].shift())
     low_close = abs(df['low'] - df['close'].shift())
@@ -60,12 +63,23 @@ def generate_signals(
     df['upper_wick'] = df['high'] - df.apply(lambda x: max(x['open'], x['close']), axis=1)
     df['lower_wick'] = df.apply(lambda x: min(x['open'], x['close']), axis=1) - df['low']
     
+    # NEW: Volume & Order Flow Features
+    # 1. VWAP Distance (Institutional Entry Zones)
+    df['typical_price'] = (df['high'] + df['low'] + df['close']) / 3
+    df['vwap'] = (df['typical_price'] * df['volume']).cumsum() / df['volume'].cumsum()
+    # Handle division by zero or NaN volume gracefully
+    df['vwap_dist'] = np.where(df['vwap'] != 0, (df['close'] - df['vwap']) / df['vwap'] * 100, 0)
+    
+    # 2. Relative Volume (Volume Profile Anomaly Detection)
+    df['vol_ma_20'] = df['volume'].rolling(20).mean()
+    df['rel_volume'] = np.where(df['vol_ma_20'] != 0, df['volume'] / df['vol_ma_20'], 1.0)
+    
     # Target Variable: 1 if price goes UP in the next 3 candles, 0 otherwise
-    # (Predicting short term direction for Options Buying)
+    # Aggressive: we look for any upside momentum within the next 3 bars!
     df['target'] = (df['close'].shift(-3) > df['close']).astype(int)
     
     # Features list for the model
-    features = ['ema_diff', 'rsi', 'macd_hist', 'atr', 'candle_body', 'upper_wick', 'lower_wick']
+    features = ['ema_diff', 'rsi', 'macd_hist', 'atr', 'candle_body', 'upper_wick', 'lower_wick', 'vwap_dist', 'rel_volume']
     
     # Drop rows with NaN values created by indicators (excluding None/NaN score columns)
     ml_data = df.dropna(subset=features + ['target']).copy()
@@ -77,14 +91,9 @@ def generate_signals(
     X = ml_data[features]
     y = ml_data['target']
     
-    # 2. Self-Learning / Walk-Forward Training
-    # To simulate self-learning without look-ahead bias, we train on historical data
-    # and predict the latest data.
-    
-    # For the very latest candle (Live Trading):
-    # We train on all data except the last 3 candles (since we don't know their targets yet)
-    # and predict the latest candle.
-    
+    # ---------------------------------------------------------
+    # 2. XGBoost ML Modeling (Aggressive Tuning)
+    # ---------------------------------------------------------
     try:
         model_path = os.path.join("models", "xgboost_model.json")
         model = xgb.XGBClassifier()
@@ -92,10 +101,10 @@ def generate_signals(
         # Check if we need to train
         need_train = True
         if os.path.exists(model_path):
-            # Check age of model file
             import time
             mtime = os.path.getmtime(model_path)
-            if (time.time() - mtime) < 86400: # Less than 24 hours
+            # Re-train every 24 hours to stay adaptive to current market regime
+            if (time.time() - mtime) < 86400: 
                 need_train = False
                 
         X_train = X.iloc[:-3]
@@ -104,78 +113,100 @@ def generate_signals(
         if need_train:
             if len(X_train) > 5 and len(y_train.unique()) > 1:
                 print(f"[AI Strategy] Training XGBoost model on {len(X_train)} candles...")
+                # Aggressive Tuning: Deeper trees to capture micro-patterns, smaller learning rate
                 model = xgb.XGBClassifier(
-                    n_estimators=50,
-                    max_depth=3,
-                    learning_rate=0.1,
+                    n_estimators=100,
+                    max_depth=5,
+                    learning_rate=0.05,
+                    subsample=0.8,
+                    colsample_bytree=0.8,
                     objective='binary:logistic',
                     random_state=42,
                     n_jobs=1
                 )
                 model.fit(X_train, y_train)
-                # Ensure directory exists
                 os.makedirs(os.path.dirname(model_path), exist_ok=True)
                 model.save_model(model_path)
                 print(f"[AI Strategy] Model saved to {model_path}")
                 need_train = False
             else:
                 print("[AI Strategy] Not enough data to train. Using rule-based fallback.")
-                need_train = False # Force fallback logic if we couldn't train
+                need_train = False
                 
-        # If we didn't train just now, try to load the saved model
         if not need_train and os.path.exists(model_path):
             try:
                 model.load_model(model_path)
                 print("[AI Strategy] Loaded existing model from disk.")
             except Exception as e:
                 print(f"[AI Strategy] Failed to load model: {e}. Will use fallback.")
-                need_train = True # Force fallback
+                need_train = True
                 
         # Generate probabilities
         if not need_train or (os.path.exists(model_path) and not need_train):
-            # Predict probabilities for all rows
             probs = model.predict_proba(X)[:, 1]
             ml_data['ai_confidence'] = probs * 100
-            print(f"[AI Strategy] Generated probs: {probs[-5:]}")
         else:
             print("[AI Strategy] Using rule-based scoring fallback.")
-            # Fallback rule-based confidence
             ml_data['ai_confidence'] = 50.0
             for i in range(len(ml_data)):
                 conf = 50.0
                 if ml_data['ema_diff'].iloc[i] > 0: conf += 15
                 if ml_data['rsi'].iloc[i] > 50: conf += 15
                 if ml_data['macd_hist'].iloc[i] > 0: conf += 15
+                if ml_data['rel_volume'].iloc[i] > 1.2: conf += 10
                 ml_data.loc[ml_data.index[i], 'ai_confidence'] = conf
 
-        # 3. Capital Protection & Signal Generation
-        confidence_thresh = kwargs.get("ai_confidence_threshold", 75.0)
-        
+        # ---------------------------------------------------------
+        # 3. Dynamic Thresholds & Trailing SL Generation
+        # ---------------------------------------------------------
         for i in range(len(ml_data)):
             idx = ml_data.index[i]
             conf = ml_data['ai_confidence'].iloc[i]
             
             df.loc[idx, 'call_score'] = int(conf)
             df.loc[idx, 'put_score'] = int(100 - conf)
-            if i == len(ml_data) - 1:
-                print(f"[AI Strategy] Latest scores -> Call: {int(conf)}, Put: {int(100 - conf)}")
             
-            # Dynamic Stop Loss based on ATR (Capital Protection)
             atr_val = ml_data['atr'].iloc[i]
             close_val = ml_data['close'].iloc[i]
             
-            # We risk at most 1.5x ATR
-            sl_pct = (atr_val * 1.5 / close_val) * 100
-            df.loc[idx, 'custom_sl_pct'] = max(0.2, sl_pct) # Min 0.2%
+            # --- Dynamic Volatility Adjustment ---
+            # If ATR is high (> 0.2% of price), require higher confidence.
+            # Aggressive Base = 60%. Choppy Base = 75%
+            atr_pct = (atr_val / close_val) * 100
+            if atr_pct > 0.25:
+                # Highly volatile
+                dynamic_thresh = 75.0
+            elif atr_pct > 0.15:
+                # Medium volatility
+                dynamic_thresh = 65.0
+            else:
+                # Smooth trending (Low ATR)
+                dynamic_thresh = 60.0
+                
+            # Overwrite the threshold with user's kwargs if they provided a specific override
+            confidence_thresh = kwargs.get("ai_confidence_threshold", dynamic_thresh)
             
+            # --- Capital Protection Outputs ---
+            # Aggressive SL: We risk 1.2x ATR
+            sl_pct = (atr_val * 1.2 / close_val) * 100
+            df.loc[idx, 'custom_sl_pct'] = max(0.15, sl_pct) # Extremely tight min 0.15%
+            
+            # Smart Trailing SL Output: Lock profits when in favor by 1x ATR
+            df.loc[idx, 'trailing_sl_trigger'] = (atr_val * 1.0 / close_val) * 100
+            df.loc[idx, 'trailing_sl_offset'] = max(0.1, sl_pct * 0.5) # Trail closely
+            
+            # --- Signal Evaluation ---
             if conf >= confidence_thresh:
                 signals.loc[idx] = 1
             elif conf <= (100 - confidence_thresh):
                 signals.loc[idx] = -1
+                
+            if i == len(ml_data) - 1:
+                print(f"[AI Strategy] ATR: {atr_pct:.2f}% -> Dynamic Thresh: {confidence_thresh}% | Call: {int(conf)}, Put: {int(100 - conf)}")
         
     except Exception as e:
-        print(f"[AI Strategy] Error training XGBoost: {e}")
-        # Fallback to simple logic if ML fails
-        pass
+        import traceback
+        print(f"[AI Strategy] Error in ML engine: {e}")
+        traceback.print_exc()
         
     return signals

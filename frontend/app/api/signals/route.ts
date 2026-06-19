@@ -6,7 +6,7 @@ export async function GET() {
   try {
     // Forward the request to the new /api/signals endpoint on the Python bridge!
     // Defaulting to NIFTY as the primary scanner symbol
-    const pythonApiUrl = `http://localhost:8000/api/signals?symbol=NIFTY`;
+    const pythonApiUrl = `http://127.0.0.1:8000/api/signals?symbol=NIFTY`;
     
     console.log(`Forwarding signals request to Python bridge: ${pythonApiUrl}`);
     

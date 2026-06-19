@@ -88,6 +88,8 @@ export default function BrokerSettings() {
     if (type === "secret") setSecretKey(value);
   };
 
+  const [loginInitiated, setLoginInitiated] = useState(false);
+
   const handleBrokerLogin = async () => {
     try {
       const res = await fetch('/api/broker-login'); // GET method we added
@@ -95,6 +97,8 @@ export default function BrokerSettings() {
         const data = await res.json();
         if (data.url) {
           window.open(data.url, '_blank');
+          setLoginInitiated(true);
+          setTimeout(() => setLoginInitiated(false), 10000); // Hide after 10s
         } else {
           alert("Failed to get login URL");
         }
@@ -295,6 +299,13 @@ export default function BrokerSettings() {
                     <div className="p-3 rounded-lg bg-success/10 border border-success/20 flex items-center gap-2 text-[#4ade80] text-sm font-medium">
                       <Check className="w-4 h-4" />
                       Configuration saved successfully!
+                    </div>
+                  )}
+
+                  {loginInitiated && (
+                    <div className="p-3 rounded-lg bg-primary/10 border border-primary/20 flex items-center gap-2 text-primary text-sm font-medium">
+                      <Check className="w-4 h-4" />
+                      Login URL opened in a new tab! Please log in, then click "Test Connection".
                     </div>
                   )}
 

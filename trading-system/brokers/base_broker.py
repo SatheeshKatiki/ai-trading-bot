@@ -272,11 +272,14 @@ class BaseBroker(ABC):
                 
         try:
             interval = "1m"
-            if timeframe == "3 Min": interval = "2m"
+            if timeframe == "30 Sec": interval = "1m" # yfinance doesn't support 30s, fallback to 1m
+            elif timeframe == "3 Min": interval = "2m"
             elif timeframe == "5 Min": interval = "5m"
             elif timeframe == "15 Min": interval = "15m"
             elif timeframe == "1 Hour": interval = "60m"
             elif timeframe == "1 Day": interval = "1d"
+            elif timeframe == "1 Week": interval = "1wk"
+            elif timeframe == "1 Month": interval = "1mo"
             
             ticker = yf.Ticker(ticker_symbol)
             df = ticker.history(start=start_date, end=end_date, interval=interval)

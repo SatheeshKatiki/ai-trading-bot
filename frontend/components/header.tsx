@@ -1,67 +1,201 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Bell, Search, User, BookOpen, LogOut, Settings, CreditCard, Command, Activity } from "lucide-react";
+import { Bell, Search, User, BookOpen, LogOut, Settings, CreditCard, Command, Activity, ShieldAlert, XCircle } from "lucide-react";
 import { useRouter, usePathname } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import Link from "next/link";
+import { toast } from "sonner";
 
 // Institutional Level Asset Database for Autocomplete
 const INDIAN_MARKET_ASSETS = [
-  { symbol: "NIFTY", name: "NIFTY 50", type: "Index" },
-  { symbol: "SENSEX", name: "S&P BSE SENSEX", type: "Index" },
-  { symbol: "BANKNIFTY", name: "NIFTY Bank", type: "Index" },
-  { symbol: "FINNIFTY", name: "NIFTY Financial Services", type: "Index" },
-  { symbol: "RELIANCE", name: "Reliance Industries Ltd.", type: "Stock" },
-  { symbol: "ADANIENT", name: "Adani Enterprises Ltd.", type: "Stock" },
-  { symbol: "ADANIPORTS", name: "Adani Ports and SEZ Ltd.", type: "Stock" },
-  { symbol: "APOLLOHOSP", name: "Apollo Hospitals Enterprise Ltd.", type: "Stock" },
-  { symbol: "ASIANPAINT", name: "Asian Paints Ltd.", type: "Stock" },
-  { symbol: "AXISBANK", name: "Axis Bank Ltd.", type: "Stock" },
-  { symbol: "BAJAJ-AUTO", name: "Bajaj Auto Ltd.", type: "Stock" },
-  { symbol: "BAJAJFINSV", name: "Bajaj Finserv Ltd.", type: "Stock" },
-  { symbol: "BAJFINANCE", name: "Bajaj Finance Ltd.", type: "Stock" },
-  { symbol: "BHARTIARTL", name: "Bharti Airtel Ltd.", type: "Stock" },
-  { symbol: "BPCL", name: "Bharat Petroleum Corp. Ltd.", type: "Stock" },
-  { symbol: "BRITANNIA", name: "Britannia Industries Ltd.", type: "Stock" },
-  { symbol: "CIPLA", name: "Cipla Ltd.", type: "Stock" },
-  { symbol: "COALINDIA", name: "Coal India Ltd.", type: "Stock" },
-  { symbol: "DIVISLAB", name: "Divi's Laboratories Ltd.", type: "Stock" },
-  { symbol: "DRREDDY", name: "Dr. Reddy's Laboratories Ltd.", type: "Stock" },
-  { symbol: "EICHERMOT", name: "Eicher Motors Ltd.", type: "Stock" },
-  { symbol: "GRASIM", name: "Grasim Industries Ltd.", type: "Stock" },
-  { symbol: "HCLTECH", name: "HCL Technologies Ltd.", type: "Stock" },
-  { symbol: "HDFCBANK", name: "HDFC Bank Ltd.", type: "Stock" },
-  { symbol: "HDFCLIFE", name: "HDFC Life Insurance Co. Ltd.", type: "Stock" },
-  { symbol: "HEROMOTOCO", name: "Hero MotoCorp Ltd.", type: "Stock" },
-  { symbol: "HINDALCO", name: "Hindalco Industries Ltd.", type: "Stock" },
-  { symbol: "HINDUNILVR", name: "Hindustan Unilever Ltd.", type: "Stock" },
-  { symbol: "ICICIBANK", name: "ICICI Bank Ltd.", type: "Stock" },
-  { symbol: "INDUSINDBK", name: "IndusInd Bank Ltd.", type: "Stock" },
-  { symbol: "INFY", name: "Infosys Ltd.", type: "Stock" },
-  { symbol: "ITC", name: "ITC Ltd.", type: "Stock" },
-  { symbol: "JSWSTEEL", name: "JSW Steel Ltd.", type: "Stock" },
-  { symbol: "KOTAKBANK", name: "Kotak Mahindra Bank Ltd.", type: "Stock" },
-  { symbol: "LT", name: "Larsen & Toubro Ltd.", type: "Stock" },
-  { symbol: "LTIM", name: "LTIMindtree Ltd.", type: "Stock" },
-  { symbol: "M&M", name: "Mahindra & Mahindra Ltd.", type: "Stock" },
-  { symbol: "MARUTI", name: "Maruti Suzuki India Ltd.", type: "Stock" },
-  { symbol: "NESTLEIND", name: "Nestle India Ltd.", type: "Stock" },
-  { symbol: "NTPC", name: "NTPC Ltd.", type: "Stock" },
-  { symbol: "ONGC", name: "Oil & Natural Gas Corp. Ltd.", type: "Stock" },
-  { symbol: "POWERGRID", name: "Power Grid Corp. of India Ltd.", type: "Stock" },
-  { symbol: "SBILIFE", name: "SBI Life Insurance Co. Ltd.", type: "Stock" },
-  { symbol: "SBIN", name: "State Bank of India", type: "Stock" },
-  { symbol: "SUNPHARMA", name: "Sun Pharmaceutical Industries Ltd.", type: "Stock" },
-  { symbol: "TATACONSUM", name: "Tata Consumer Products Ltd.", type: "Stock" },
-  { symbol: "TATAMOTORS", name: "Tata Motors Ltd.", type: "Stock" },
-  { symbol: "TATASTEEL", name: "Tata Steel Ltd.", type: "Stock" },
-  { symbol: "TCS", name: "Tata Consultancy Services Ltd.", type: "Stock" },
-  { symbol: "TECHM", name: "Tech Mahindra Ltd.", type: "Stock" },
-  { symbol: "TITAN", name: "Titan Company Ltd.", type: "Stock" },
-  { symbol: "ULTRACEMCO", name: "UltraTech Cement Ltd.", type: "Stock" },
-  { symbol: "WIPRO", name: "Wipro Ltd.", type: "Stock" },
-  { symbol: "JIOFIN", name: "Jio Financial Services Ltd.", type: "Stock" },
+  { symbol: "NIFTY", name: "NIFTY Index", type: "Index" },
+  { symbol: "BANKNIFTY", name: "BANKNIFTY Index", type: "Index" },
+  { symbol: "FINNIFTY", name: "FINNIFTY Index", type: "Index" },
+  { symbol: "MIDCPNIFTY", name: "MIDCPNIFTY Index", type: "Index" },
+  { symbol: "SENSEX", name: "SENSEX Index", type: "Index" },
+  { symbol: "AARTIIND", name: "AARTIIND", type: "Stock" },
+  { symbol: "ABB", name: "ABB", type: "Stock" },
+  { symbol: "ABBOTINDIA", name: "ABBOTINDIA", type: "Stock" },
+  { symbol: "ABCAPITAL", name: "ABCAPITAL", type: "Stock" },
+  { symbol: "ABFRL", name: "ABFRL", type: "Stock" },
+  { symbol: "ACC", name: "ACC", type: "Stock" },
+  { symbol: "ADANIENT", name: "ADANIENT", type: "Stock" },
+  { symbol: "ADANIPORTS", name: "ADANIPORTS", type: "Stock" },
+  { symbol: "ALKEM", name: "ALKEM", type: "Stock" },
+  { symbol: "AMBUJACEM", name: "AMBUJACEM", type: "Stock" },
+  { symbol: "APOLLOHOSP", name: "APOLLOHOSP", type: "Stock" },
+  { symbol: "APOLLOTYRE", name: "APOLLOTYRE", type: "Stock" },
+  { symbol: "ASHOKLEY", name: "ASHOKLEY", type: "Stock" },
+  { symbol: "ASIANPAINT", name: "ASIANPAINT", type: "Stock" },
+  { symbol: "ASTRAL", name: "ASTRAL", type: "Stock" },
+  { symbol: "ATUL", name: "ATUL", type: "Stock" },
+  { symbol: "AUBANK", name: "AUBANK", type: "Stock" },
+  { symbol: "AUROPHARMA", name: "AUROPHARMA", type: "Stock" },
+  { symbol: "AXISBANK", name: "AXISBANK", type: "Stock" },
+  { symbol: "BAJAJ-AUTO", name: "BAJAJ-AUTO", type: "Stock" },
+  { symbol: "BAJAJFINSV", name: "BAJAJFINSV", type: "Stock" },
+  { symbol: "BAJFINANCE", name: "BAJFINANCE", type: "Stock" },
+  { symbol: "BALKRISIND", name: "BALKRISIND", type: "Stock" },
+  { symbol: "BALRAMCHIN", name: "BALRAMCHIN", type: "Stock" },
+  { symbol: "BANDHANBNK", name: "BANDHANBNK", type: "Stock" },
+  { symbol: "BANKBARODA", name: "BANKBARODA", type: "Stock" },
+  { symbol: "BATAINDIA", name: "BATAINDIA", type: "Stock" },
+  { symbol: "BEL", name: "BEL", type: "Stock" },
+  { symbol: "BERGEPAINT", name: "BERGEPAINT", type: "Stock" },
+  { symbol: "BHARATFORG", name: "BHARATFORG", type: "Stock" },
+  { symbol: "BHARTIARTL", name: "BHARTIARTL", type: "Stock" },
+  { symbol: "BHEL", name: "BHEL", type: "Stock" },
+  { symbol: "BIOCON", name: "BIOCON", type: "Stock" },
+  { symbol: "BOSCHLTD", name: "BOSCHLTD", type: "Stock" },
+  { symbol: "BPCL", name: "BPCL", type: "Stock" },
+  { symbol: "BRITANNIA", name: "BRITANNIA", type: "Stock" },
+  { symbol: "BSOFT", name: "BSOFT", type: "Stock" },
+  { symbol: "CANBK", name: "CANBK", type: "Stock" },
+  { symbol: "CANFINHOME", name: "CANFINHOME", type: "Stock" },
+  { symbol: "CHAMBLFERT", name: "CHAMBLFERT", type: "Stock" },
+  { symbol: "CHOLAFIN", name: "CHOLAFIN", type: "Stock" },
+  { symbol: "CIPLA", name: "CIPLA", type: "Stock" },
+  { symbol: "COALINDIA", name: "COALINDIA", type: "Stock" },
+  { symbol: "COFORGE", name: "COFORGE", type: "Stock" },
+  { symbol: "COLPAL", name: "COLPAL", type: "Stock" },
+  { symbol: "CONCOR", name: "CONCOR", type: "Stock" },
+  { symbol: "COROMANDEL", name: "COROMANDEL", type: "Stock" },
+  { symbol: "CROMPTON", name: "CROMPTON", type: "Stock" },
+  { symbol: "CUB", name: "CUB", type: "Stock" },
+  { symbol: "CUMMINSIND", name: "CUMMINSIND", type: "Stock" },
+  { symbol: "DABUR", name: "DABUR", type: "Stock" },
+  { symbol: "DALBHARAT", name: "DALBHARAT", type: "Stock" },
+  { symbol: "DEEPAKNTR", name: "DEEPAKNTR", type: "Stock" },
+  { symbol: "DIVISLAB", name: "DIVISLAB", type: "Stock" },
+  { symbol: "DIXON", name: "DIXON", type: "Stock" },
+  { symbol: "DLF", name: "DLF", type: "Stock" },
+  { symbol: "DRREDDY", name: "DRREDDY", type: "Stock" },
+  { symbol: "EICHERMOT", name: "EICHERMOT", type: "Stock" },
+  { symbol: "ESCORTS", name: "ESCORTS", type: "Stock" },
+  { symbol: "EXIDEIND", name: "EXIDEIND", type: "Stock" },
+  { symbol: "FEDERALBNK", name: "FEDERALBNK", type: "Stock" },
+  { symbol: "GAIL", name: "GAIL", type: "Stock" },
+  { symbol: "GLENMARK", name: "GLENMARK", type: "Stock" },
+  { symbol: "GMRINFRA", name: "GMRINFRA", type: "Stock" },
+  { symbol: "GNFC", name: "GNFC", type: "Stock" },
+  { symbol: "GODREJCP", name: "GODREJCP", type: "Stock" },
+  { symbol: "GODREJPROP", name: "GODREJPROP", type: "Stock" },
+  { symbol: "GRANULES", name: "GRANULES", type: "Stock" },
+  { symbol: "GRASIM", name: "GRASIM", type: "Stock" },
+  { symbol: "GUJGASLTD", name: "GUJGASLTD", type: "Stock" },
+  { symbol: "HAL", name: "HAL", type: "Stock" },
+  { symbol: "HAVELLS", name: "HAVELLS", type: "Stock" },
+  { symbol: "HCLTECH", name: "HCLTECH", type: "Stock" },
+  { symbol: "HDFCAMC", name: "HDFCAMC", type: "Stock" },
+  { symbol: "HDFCBANK", name: "HDFCBANK", type: "Stock" },
+  { symbol: "HDFCLIFE", name: "HDFCLIFE", type: "Stock" },
+  { symbol: "HEROMOTOCO", name: "HEROMOTOCO", type: "Stock" },
+  { symbol: "HINDALCO", name: "HINDALCO", type: "Stock" },
+  { symbol: "HINDCOPPER", name: "HINDCOPPER", type: "Stock" },
+  { symbol: "HINDPETRO", name: "HINDPETRO", type: "Stock" },
+  { symbol: "HINDUNILVR", name: "HINDUNILVR", type: "Stock" },
+  { symbol: "ICICIBANK", name: "ICICIBANK", type: "Stock" },
+  { symbol: "ICICIGI", name: "ICICIGI", type: "Stock" },
+  { symbol: "ICICIPRULI", name: "ICICIPRULI", type: "Stock" },
+  { symbol: "IDEA", name: "IDEA", type: "Stock" },
+  { symbol: "IDFC", name: "IDFC", type: "Stock" },
+  { symbol: "IDFCFIRSTB", name: "IDFCFIRSTB", type: "Stock" },
+  { symbol: "IEX", name: "IEX", type: "Stock" },
+  { symbol: "IGL", name: "IGL", type: "Stock" },
+  { symbol: "INDHOTEL", name: "INDHOTEL", type: "Stock" },
+  { symbol: "INDIACEM", name: "INDIACEM", type: "Stock" },
+  { symbol: "INDIAMART", name: "INDIAMART", type: "Stock" },
+  { symbol: "INDIGO", name: "INDIGO", type: "Stock" },
+  { symbol: "INDUSINDBK", name: "INDUSINDBK", type: "Stock" },
+  { symbol: "INDUSTOWER", name: "INDUSTOWER", type: "Stock" },
+  { symbol: "INFY", name: "INFY", type: "Stock" },
+  { symbol: "IOC", name: "IOC", type: "Stock" },
+  { symbol: "IPCALAB", name: "IPCALAB", type: "Stock" },
+  { symbol: "IRCTC", name: "IRCTC", type: "Stock" },
+  { symbol: "ITC", name: "ITC", type: "Stock" },
+  { symbol: "JINDALSTEL", name: "JINDALSTEL", type: "Stock" },
+  { symbol: "JKCEMENT", name: "JKCEMENT", type: "Stock" },
+  { symbol: "JSWSTEEL", name: "JSWSTEEL", type: "Stock" },
+  { symbol: "JUBLFOOD", name: "JUBLFOOD", type: "Stock" },
+  { symbol: "KOTAKBANK", name: "KOTAKBANK", type: "Stock" },
+  { symbol: "L&TFH", name: "L&TFH", type: "Stock" },
+  { symbol: "LALPATHLAB", name: "LALPATHLAB", type: "Stock" },
+  { symbol: "LAURUSLABS", name: "LAURUSLABS", type: "Stock" },
+  { symbol: "LICHSGFIN", name: "LICHSGFIN", type: "Stock" },
+  { symbol: "LT", name: "LT", type: "Stock" },
+  { symbol: "LTIM", name: "LTIM", type: "Stock" },
+  { symbol: "LTTS", name: "LTTS", type: "Stock" },
+  { symbol: "LUPIN", name: "LUPIN", type: "Stock" },
+  { symbol: "M&M", name: "M&M", type: "Stock" },
+  { symbol: "M&MFIN", name: "M&MFIN", type: "Stock" },
+  { symbol: "MANAPPURAM", name: "MANAPPURAM", type: "Stock" },
+  { symbol: "MARICO", name: "MARICO", type: "Stock" },
+  { symbol: "MARUTI", name: "MARUTI", type: "Stock" },
+  { symbol: "MCDOWELL-N", name: "MCDOWELL-N", type: "Stock" },
+  { symbol: "MCX", name: "MCX", type: "Stock" },
+  { symbol: "METROPOLIS", name: "METROPOLIS", type: "Stock" },
+  { symbol: "MFSL", name: "MFSL", type: "Stock" },
+  { symbol: "MGL", name: "MGL", type: "Stock" },
+  { symbol: "MOTHERSON", name: "MOTHERSON", type: "Stock" },
+  { symbol: "MPHASIS", name: "MPHASIS", type: "Stock" },
+  { symbol: "MRF", name: "MRF", type: "Stock" },
+  { symbol: "MUTHOOTFIN", name: "MUTHOOTFIN", type: "Stock" },
+  { symbol: "NATIONALUM", name: "NATIONALUM", type: "Stock" },
+  { symbol: "NAUKRI", name: "NAUKRI", type: "Stock" },
+  { symbol: "NAVINFLUOR", name: "NAVINFLUOR", type: "Stock" },
+  { symbol: "NESTLEIND", name: "NESTLEIND", type: "Stock" },
+  { symbol: "NMDC", name: "NMDC", type: "Stock" },
+  { symbol: "NTPC", name: "NTPC", type: "Stock" },
+  { symbol: "OBEROIRLTY", name: "OBEROIRLTY", type: "Stock" },
+  { symbol: "OFSS", name: "OFSS", type: "Stock" },
+  { symbol: "ONGC", name: "ONGC", type: "Stock" },
+  { symbol: "PAGEIND", name: "PAGEIND", type: "Stock" },
+  { symbol: "PEL", name: "PEL", type: "Stock" },
+  { symbol: "PERSISTENT", name: "PERSISTENT", type: "Stock" },
+  { symbol: "PETRONET", name: "PETRONET", type: "Stock" },
+  { symbol: "PFC", name: "PFC", type: "Stock" },
+  { symbol: "PIDILITIND", name: "PIDILITIND", type: "Stock" },
+  { symbol: "PIIND", name: "PIIND", type: "Stock" },
+  { symbol: "PNB", name: "PNB", type: "Stock" },
+  { symbol: "POLYCAB", name: "POLYCAB", type: "Stock" },
+  { symbol: "POWERGRID", name: "POWERGRID", type: "Stock" },
+  { symbol: "PVRINOX", name: "PVRINOX", type: "Stock" },
+  { symbol: "RAMCOCEM", name: "RAMCOCEM", type: "Stock" },
+  { symbol: "RBLBANK", name: "RBLBANK", type: "Stock" },
+  { symbol: "RECLTD", name: "RECLTD", type: "Stock" },
+  { symbol: "RELIANCE", name: "RELIANCE", type: "Stock" },
+  { symbol: "SAIL", name: "SAIL", type: "Stock" },
+  { symbol: "SBICARD", name: "SBICARD", type: "Stock" },
+  { symbol: "SBILIFE", name: "SBILIFE", type: "Stock" },
+  { symbol: "SBIN", name: "SBIN", type: "Stock" },
+  { symbol: "SHREECEM", name: "SHREECEM", type: "Stock" },
+  { symbol: "SHRIRAMFIN", name: "SHRIRAMFIN", type: "Stock" },
+  { symbol: "SIEMENS", name: "SIEMENS", type: "Stock" },
+  { symbol: "SRF", name: "SRF", type: "Stock" },
+  { symbol: "SUNTV", name: "SUNTV", type: "Stock" },
+  { symbol: "SUNPHARMA", name: "SUNPHARMA", type: "Stock" },
+  { symbol: "SYNGENE", name: "SYNGENE", type: "Stock" },
+  { symbol: "TATACHEM", name: "TATACHEM", type: "Stock" },
+  { symbol: "TATACOMM", name: "TATACOMM", type: "Stock" },
+  { symbol: "TATACONSUM", name: "TATACONSUM", type: "Stock" },
+  { symbol: "TATAMOTORS", name: "TATAMOTORS", type: "Stock" },
+  { symbol: "TATAPOWER", name: "TATAPOWER", type: "Stock" },
+  { symbol: "TATASTEEL", name: "TATASTEEL", type: "Stock" },
+  { symbol: "TCS", name: "TCS", type: "Stock" },
+  { symbol: "TECHM", name: "TECHM", type: "Stock" },
+  { symbol: "TITAN", name: "TITAN", type: "Stock" },
+  { symbol: "TORNTPHARM", name: "TORNTPHARM", type: "Stock" },
+  { symbol: "TRENT", name: "TRENT", type: "Stock" },
+  { symbol: "TVSMOTOR", name: "TVSMOTOR", type: "Stock" },
+  { symbol: "UBL", name: "UBL", type: "Stock" },
+  { symbol: "ULTRACEMCO", name: "ULTRACEMCO", type: "Stock" },
+  { symbol: "UPL", name: "UPL", type: "Stock" },
+  { symbol: "VEDL", name: "VEDL", type: "Stock" },
+  { symbol: "VOLTAS", name: "VOLTAS", type: "Stock" },
+  { symbol: "WIPRO", name: "WIPRO", type: "Stock" },
+  { symbol: "ZEEL", name: "ZEEL", type: "Stock" },
+  { symbol: "ZYDUSLIFE", name: "ZYDUSLIFE", type: "Stock" },
 ];
 
 export default function Header() {
@@ -80,6 +214,29 @@ export default function Header() {
   const [isSearchFocused, setIsSearchFocused] = useState(false);
   const [hasNotification, setHasNotification] = useState(true);
   const [isMarketOpen, setIsMarketOpen] = useState(false);
+
+  // Kill Switch State
+  const [isKillSwitchModalOpen, setIsKillSwitchModalOpen] = useState(false);
+  const [isSystemHalted, setIsSystemHalted] = useState(false);
+
+  const handleKillSwitch = () => {
+    setIsSystemHalted(true);
+    setIsKillSwitchModalOpen(false);
+    toast.error("SYSTEM HALTED. All open positions closed.");
+    localStorage.setItem("kill_switch_active", "true");
+  };
+
+  useEffect(() => {
+    if (localStorage.getItem("kill_switch_active") === "true") {
+      setIsSystemHalted(true);
+    }
+  }, []);
+
+  const resumeTrading = () => {
+    setIsSystemHalted(false);
+    toast.success("SYSTEM RESUMED. Trading engine re-activated.");
+    localStorage.removeItem("kill_switch_active");
+  };
 
   // Check Market Status (IST 9:15 to 15:30 weekdays)
   useEffect(() => {
@@ -175,7 +332,8 @@ export default function Header() {
   };
 
   return (
-    <header className="h-[var(--header-height)] bg-card/60 backdrop-blur-xl border-b border-border/50 flex items-center justify-between px-6 sticky top-0 z-50 shadow-sm transition-colors duration-300">
+    <>
+      <header className="h-[var(--header-height)] bg-card/60 backdrop-blur-xl border-b border-border/50 flex items-center justify-between px-6 sticky top-0 z-50 shadow-sm transition-colors duration-300">
       <div className="flex items-center gap-6">
         {/* Market Status Indicator */}
         <div className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-full bg-muted/30 border border-border/50">
@@ -212,12 +370,20 @@ export default function Header() {
               className="w-72 bg-muted/30 border border-border/50 rounded-lg pl-10 pr-12 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary focus:border-transparent transition-all duration-300 hover:bg-muted/50 text-foreground"
             />
             
-            {/* Keyboard shortcut hint */}
-            {!isSearchFocused && !searchQuery && (
-              <div className="absolute right-3 top-1/2 transform -translate-y-1/2 flex items-center gap-1 opacity-50 pointer-events-none">
-                <Command className="w-3 h-3" />
-                <span className="text-[10px] font-bold">K</span>
-              </div>
+            {/* Clear Search Button */}
+            {searchQuery && (
+              <button
+                type="button"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  setSearchQuery("");
+                  setShowSuggestions(false);
+                  setTimeout(() => searchInputRef.current?.focus(), 0);
+                }}
+                className="absolute right-3 top-1/2 transform -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors z-20 cursor-pointer"
+              >
+                <XCircle className="w-4 h-4" />
+              </button>
             )}
 
             {/* Autocomplete Suggestions with Framer Motion */}
@@ -257,6 +423,27 @@ export default function Header() {
       <div className="flex items-center gap-4">
         {/* Quick Actions */}
         <div className="flex items-center gap-2 mr-2">
+          {/* KILL SWITCH */}
+          {isSystemHalted ? (
+            <motion.button
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              onClick={resumeTrading}
+              className="flex items-center gap-2 px-4 py-1.5 bg-muted border border-success/50 text-success rounded-lg text-xs font-bold mr-2 hover:bg-success/10 transition-colors shadow-[0_0_10px_rgba(16,185,129,0.2)]"
+            >
+              <Activity className="w-4 h-4" /> RESUME TRADING
+            </motion.button>
+          ) : (
+            <motion.button
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              onClick={() => setIsKillSwitchModalOpen(true)}
+              className="flex items-center gap-2 px-4 py-1.5 bg-destructive/10 border border-destructive/50 text-destructive rounded-lg text-xs font-bold mr-2 hover:bg-destructive hover:text-white transition-colors animate-pulse hover:animate-none shadow-[0_0_10px_rgba(239,68,68,0.3)]"
+            >
+              <ShieldAlert className="w-4 h-4" /> KILL SWITCH
+            </motion.button>
+          )}
+
           <Link href="/analytics">
             <motion.button 
               whileHover={{ scale: 1.1, rotate: 5 }}
@@ -350,6 +537,51 @@ export default function Header() {
           </AnimatePresence>
         </div>
       </div>
-    </header>
+
+      </header>
+
+      {/* KILL SWITCH MODAL */}
+      <AnimatePresence>
+        {isKillSwitchModalOpen && (
+          <div className="fixed inset-0 z-[100]">
+            <motion.div 
+              initial={{ opacity: 0 }} 
+              animate={{ opacity: 1 }} 
+              exit={{ opacity: 0 }} 
+              className="absolute inset-0 bg-black/20"
+              onClick={() => setIsKillSwitchModalOpen(false)}
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: -10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: -10 }}
+              className="absolute top-[80px] right-[220px] w-[350px] bg-card border border-destructive/30 rounded-2xl p-6 shadow-2xl flex flex-col items-center text-center origin-top-right"
+            >
+              <div className="w-16 h-16 bg-destructive/20 rounded-full flex items-center justify-center mb-4">
+                <ShieldAlert className="w-8 h-8 text-destructive" />
+              </div>
+              <h2 className="text-xl font-black text-destructive uppercase tracking-wider mb-2">Emergency Halt</h2>
+              <p className="text-sm text-muted-foreground mb-6">
+                Are you sure you want to trigger the Kill Switch? This will instantly flatten all open positions at market price and halt all algorithmic trading.
+              </p>
+              <div className="flex gap-3 w-full">
+                <button 
+                  onClick={() => setIsKillSwitchModalOpen(false)} 
+                  className="flex-1 py-3 bg-muted hover:bg-muted/80 rounded-xl text-sm font-bold transition-colors"
+                >
+                  CANCEL
+                </button>
+                <button 
+                  onClick={handleKillSwitch}
+                  className="flex-1 py-3 bg-destructive hover:bg-destructive/90 text-white rounded-xl text-sm font-bold transition-colors shadow-lg shadow-destructive/20 flex items-center justify-center gap-2"
+                >
+                  <XCircle className="w-4 h-4" /> EXECUTE HALT
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+    </>
   );
 }
