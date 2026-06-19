@@ -397,7 +397,7 @@ function JournalContent() {
                       <RechartsTooltip 
                         contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', borderRadius: '8px', color: '#f8fafc' }}
                         itemStyle={{ color: '#10b981', fontWeight: 'bold' }}
-                        formatter={(value: number) => [`₹${value.toLocaleString('en-IN')}`, 'Total Equity']}
+                        formatter={(value: any) => [`₹${Number(value).toLocaleString('en-IN')}`, 'Total Equity']}
                         labelStyle={{ color: '#94a3b8', marginBottom: '4px' }}
                         cursor={{ stroke: '#334155', strokeWidth: 1, strokeDasharray: '4 4' }}
                       />
@@ -442,7 +442,7 @@ function JournalContent() {
                         </Pie>
                         <RechartsTooltip 
                           contentStyle={{ backgroundColor: 'hsl(var(--card))', borderColor: 'hsl(var(--border))', borderRadius: '8px' }}
-                          formatter={(value: number, name: string, props: any) => [`${value} Trades (${props.payload.winRate}% Win)`, name]}
+                          formatter={(value: any, name: any, props: any) => [`${value} Trades (${props.payload.winRate}% Win)`, name]}
                         />
                       </PieChart>
                     </ResponsiveContainer>
