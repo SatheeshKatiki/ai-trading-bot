@@ -349,6 +349,14 @@ async def run_live_bot(symbols: List[str]) -> None:
                     qty_pct = decision.get("quantity_pct", 1.0)
                     exit_qty = max(1, int(pos.quantity * qty_pct)) if qty_pct < 1.0 else pos.quantity
             else:
+                # Dynamically apply Trailing SL settings
+                if settings.get("trailing_sl", False) or settings.get("trailingSl", False):
+                    exit_engine.trailing_activation_pct = settings.get("trail_trigger", settings.get("trailTrigger", 1.0))
+                    # Optional: We could map trail_offset to atr_multiplier but ATR multiplier is a better volatility-adjusted mechanism.
+                else:
+                    # If turned off, set activation pct to an unreachable high number
+                    exit_engine.trailing_activation_pct = 9999.0
+
                 should_exit, reason, exit_qty = exit_engine.evaluate_exit(
                     pos, ltp, current_time, current_atr
                 )
@@ -415,7 +423,14 @@ async def run_live_bot(symbols: List[str]) -> None:
             if sym in active_positions:
                 pos = active_positions[sym]
                 
-                should_scale, scale_reason = pyramid_sizer.evaluate_scale(pos, ltp)
+                # Dynamically apply settings
+                should_scale = False
+                scale_reason = ""
+                
+                if settings.get("enablePyramiding", False) or settings.get("enable_pyramiding", False):
+                    pyramid_sizer.pct_trigger = settings.get("scalePct", settings.get("scale_pct", 0.2))
+                    pyramid_sizer.max_scales = settings.get("maxScales", settings.get("max_scales", 2))
+                    should_scale, scale_reason = pyramid_sizer.evaluate_scale(pos, ltp)
                 
                 if should_scale:
                     scale_qty = int(settings.get("quantity", 2)) // 2  # Scale in with half of base qty or 1 lot
@@ -581,6 +596,16 @@ async def run_live_bot(symbols: List[str]) -> None:
                     current_volatility = df["close"].pct_change().std() * 100
                     
                     # Phase 7: Portfolio Circuit Breaker
+                    if settings.get("maxDailyLossPct"):
+                        portfolio_risk.max_daily_dd_pct = settings.get("maxDailyLossPct")
+                    elif settings.get("max_daily_loss_pct"):
+                        portfolio_risk.max_daily_dd_pct = settings.get("max_daily_loss_pct")
+
+                    if settings.get("maxDailyTrades"):
+                        risk_manager.config.max_trades_per_day = settings.get("maxDailyTrades")
+                    elif settings.get("max_daily_trades"):
+                        risk_manager.config.max_trades_per_day = settings.get("max_daily_trades")
+                        
                     is_trading_allowed, halt_reason = portfolio_risk.is_trading_allowed(risk_manager.current_equity)
                     if not is_trading_allowed:
                         logger.warning("Portfolio Risk Halt for %s: %s", s, halt_reason)

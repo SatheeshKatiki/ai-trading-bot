@@ -74,15 +74,17 @@ export default function Sidebar() {
 
   return (
     <div className="w-64 h-full bg-card/80 backdrop-blur-xl border-r border-border/50 flex flex-col shadow-2xl relative z-20">
-      <div className="p-6 flex items-center justify-center border-b border-border/50 relative overflow-hidden group">
-        <div className="absolute inset-0 bg-gradient-to-r from-primary/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500"></div>
-        <motion.div 
-          className="w-full flex items-center justify-center relative z-10"
-          whileHover={{ scale: 1.05 }}
-          transition={{ duration: 0.2 }}
-        >
-          <Image src="/mana-logo.png" alt="Mana AI Logo" width={150} height={60} className="object-contain hover:drop-shadow-[0_0_8px_rgba(6,182,212,0.5)] transition-all" priority />
-        </motion.div>
+      <div className="px-2 py-8 flex items-center justify-center border-b border-border/50">
+        <div className="w-full flex items-center justify-center relative z-10">
+          <Image 
+            src="/mana-logo-v2.png" 
+            alt="Mana AI Logo" 
+            width={320} 
+            height={150} 
+            className="object-contain mix-blend-screen" 
+            priority 
+          />
+        </div>
       </div>
 
       <motion.nav 

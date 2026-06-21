@@ -1,4 +1,5 @@
-from fastapi import FastAPI, Query, HTTPException, BackgroundTasks
+from fastapi import FastAPI, Query, HTTPException, BackgroundTasks, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timedelta
 import logging
@@ -86,6 +87,14 @@ registry.register("advanced_ai", advanced_ai_signals)
 registry.register("institutional_momentum", momentum_signals)
 
 app = FastAPI(title="Broker Terminal Data Bridge & Backtester")
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Global Exception on {request.url.path}: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"status": "error", "message": f"Internal Server Error: {str(exc)}"},
+    )
 
 # Allow requests from the Next.js frontend (or any local device)
 app.add_middleware(
@@ -634,26 +643,8 @@ async def get_backtest(
             logger.warning("Broker history fetch failed: %s. Checking local cache fallback...", e)
             data = None
             
-        if not data or len(data) == 0:
-            # Portable fallback: look for a cached CSV in the project data/ directory.
-            # To enable: place any NIFTY OHLCV CSV as  trading-system/data/NIFTY_cache.csv
-            _data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
-            _csv_candidates = [
-                os.path.join(_data_dir, "NIFTY_cache.csv"),
-                os.path.join(_data_dir, "nifty_1year.csv"),
-                os.path.join(_data_dir, "NIFTY50.csv"),
-            ]
-            _loaded_from_cache = False
-            if "NIFTY" in symbol:
-                for csv_path in _csv_candidates:
-                    if os.path.exists(csv_path):
-                        logger.info("[Backtest] Loading from local CSV cache: %s", csv_path)
-                        cached_df = pd.read_csv(csv_path)
-                        data = cached_df.to_dict(orient="records")
-                        _loaded_from_cache = True
-                        break
-            if not _loaded_from_cache:
-                raise HTTPException(status_code=404, detail=f"No data returned by broker for {symbol}. Add a cached CSV to trading-system/data/ to enable offline backtesting.")
+        if not data:
+            return {"error": f"No data returned by broker for {symbol}. If using yfinance, 1 Min data is limited to the last 7 days. Ensure your broker is connected or adjust the date range."}
             
         # Convert list of dicts to DataFrame for the strategy
         df = pd.DataFrame(data)
@@ -742,7 +733,7 @@ async def get_backtest(
             slippage_bps=2.0, 
             commission_per_trade=20.0,
             multiplier=quantity,       # Dynamic quantity from UI
-            options_delta=1.0,         # Set to 1.0 to simulate Futures/Cash PnL (yesterday's behavior)
+            options_delta=0.5,         # Simulate ATM Options
             stoploss_pct=stoploss_pct,
             target_pct=target_pct,
             rejection_logs=rejection_logs,
@@ -765,6 +756,10 @@ async def get_backtest(
             json.dump(backtest_output, f, indent=4)
             
         # Read settings for target and stoploss
+        import gc
+        del df
+        gc.collect()
+        
         settings = {}
         if os.path.exists("config/settings.json"):
             with open("config/settings.json", "r") as f:
@@ -785,7 +780,7 @@ async def get_backtest(
             "strategy": strategy,
             "stats": results["stats"],
             "equityCurve": results["equityCurve"],
-            "trades": results["trades"][-20:],
+            "trades": results["trades"],
             "rejectionLogs": results.get("rejectionLogs", [])
         }
         

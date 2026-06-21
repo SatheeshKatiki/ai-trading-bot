@@ -7,7 +7,8 @@ Provides signal generation for backtesting and a strategy class for live trading
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from collections import deque
+from datetime import datetime, time as dtime
 import pandas as pd
 import numpy as np
 from typing import Tuple
@@ -186,12 +187,13 @@ def generate_signals(
     donchian_period = kwargs.get("donchian_period", 10)
     
     if enable_adaptive_donchian:
+        # VIX-based adaptation
         if daily_vix > 25.0:
-            donchian_period = int(donchian_period * 1.5)  # Longer lookback for high VIX to avoid chop
+            donchian_period = int(donchian_period * 1.5)
         elif daily_vix < 12.0:
-            donchian_period = int(donchian_period * 0.7)  # Shorter lookback for low VIX to catch tight breakouts
-
-    donchian_period = max(3, donchian_period) # Ensure minimum period
+            donchian_period = int(donchian_period * 0.7)
+    
+    donchian_period = max(3, donchian_period)
 
     if len(df) < donchian_period + 10:
         return signals, []
@@ -310,6 +312,59 @@ def generate_signals(
     # EMA Extension
     ema_extension = abs(close - ema_20) / ema_20
 
+    # ── NEW LAYER 1 INDICATORS ────────────────────────────────────────
+    # MACD Histogram (12/26/9) — measures momentum acceleration
+    ema_12 = close.ewm(span=12, adjust=False).mean()
+    ema_26 = close.ewm(span=26, adjust=False).mean()
+    macd_line = ema_12 - ema_26
+    macd_signal = macd_line.ewm(span=9, adjust=False).mean()
+    macd_hist = macd_line - macd_signal
+    macd_hist_expanding_bull = (macd_hist > 0) & (macd_hist > macd_hist.shift(1))
+    macd_hist_expanding_bear = (macd_hist < 0) & (macd_hist < macd_hist.shift(1))
+
+    # ATR-Adaptive Donchian — tighten period when ATR is spiking (volatile burst)
+    atr_ma50 = atr.rolling(50).mean()
+    atr_ratio = atr / atr_ma50.replace(0, atr_ma50.mean())
+    # During ATR spike (>1.3x avg): use tighter period to catch moves early
+    # During ATR quiet (<0.7x avg): use wider period to avoid false breakouts
+    adaptive_period = np.where(atr_ratio > 1.3, max(3, donchian_period - 3),
+                      np.where(atr_ratio < 0.7, min(20, donchian_period + 4), donchian_period))
+    adaptive_period_s = pd.Series(adaptive_period, index=df.index).astype(int)
+
+    # Breakout Candle Body Quality — reject Doji/indecision candles
+    candle_body = abs(close - df['open'])
+    body_quality = candle_body / candle_range.replace(0, 0.00001)  # 0=pure doji, 1=marubozu
+
+    # 3-Bar Momentum Persistence — last 3 candles must be directionally consistent
+    bull_persist = (close > close.shift(1)) & (close.shift(1) > close.shift(2)) & (close.shift(2) > close.shift(3))
+    bear_persist = (close < close.shift(1)) & (close.shift(1) < close.shift(2)) & (close.shift(2) < close.shift(3))
+
+    # Session Time Classification
+    if 'datetime' in df.columns:
+        dt_series = pd.to_datetime(df['datetime'])
+    elif isinstance(df.index, pd.DatetimeIndex):
+        dt_series = pd.Series(df.index, index=df.index)
+    else:
+        dt_series = None
+
+    if dt_series is not None:
+        hour_min = dt_series.dt.hour * 60 + dt_series.dt.minute
+        # Prime: 9:15-11:30 (555-690 min), Mid: 13:30-14:30 (810-870 min), Dead: 11:30-13:30
+        session_prime = (hour_min >= 555) & (hour_min <= 690)
+        session_mid   = (hour_min >= 810) & (hour_min <= 870)
+        session_dead  = (hour_min > 690) & (hour_min < 810)
+    else:
+        session_prime = pd.Series(True, index=df.index)
+        session_mid   = pd.Series(False, index=df.index)
+        session_dead  = pd.Series(False, index=df.index)
+
+    # Optional filter toggles for new layers
+    f_macd_accel   = kwargs.get("enable_macd_accel", True)   # MACD histogram expanding
+    f_body_quality = kwargs.get("enable_body_quality", True)  # Candle body > 40% range
+    f_persistence  = kwargs.get("enable_persistence", False)  # 3-bar same direction
+    f_session      = kwargs.get("enable_session_filter", False)  # Skip dead zone
+    # ─────────────────────────────────────────────────────────────────
+
     # 2. Modular Filter Flags (Task 2 & 4)
     f_ema = kwargs.get("enable_ema_filter", True)
     f_vol = kwargs.get("enable_volume_filter", False)
@@ -363,7 +418,12 @@ def generate_signals(
                 rejection_logs.append({"time": timestamp, "reason": f"REJECTED: Regime Score too low ({regime['regime_score']} - {regime['state']})"})
             continue
         if is_bull_setup:
-            # Check Filters
+            # ── Session Filter (cheapest check first) ──────────────────
+            if f_session and session_dead.iloc[i]:
+                rejection_logs.append({"time": timestamp, "reason": "REJECTED: Dead session (11:30-13:30), institutional participation low"})
+                continue
+
+            # Check Existing Filters
             if f_ema and not (close.iloc[i] > ema_200.iloc[i] and ema_20.iloc[i] > ema_50.iloc[i]):
                 rejection_logs.append({"time": timestamp, "reason": "REJECTED: EMA Trend structure is bearish/choppy"})
                 continue
@@ -401,7 +461,6 @@ def generate_signals(
                 c_price = close.iloc[i]
                 r1_val = r1.iloc[i]
                 tc_val = top_cpr.iloc[i]
-                # Reject if price is within 0.15% below R1 or Top CPR
                 if (r1_val > c_price and (r1_val - c_price)/c_price < 0.0015):
                     rejection_logs.append({"time": timestamp, "reason": "REJECTED: Approaching R1 Resistance"})
                     continue
@@ -409,9 +468,28 @@ def generate_signals(
                     rejection_logs.append({"time": timestamp, "reason": "REJECTED: Approaching Top CPR Resistance"})
                     continue
 
+            # ── NEW LAYER 1 FILTERS ────────────────────────────────────
+            if f_macd_accel and not macd_hist_expanding_bull.iloc[i]:
+                rejection_logs.append({"time": timestamp, "reason": f"REJECTED: MACD Histogram not expanding bullish (momentum decelerating)"})
+                continue
+
+            if f_body_quality and (body_quality.iloc[i] < 0.40):
+                rejection_logs.append({"time": timestamp, "reason": f"REJECTED: Breakout candle body too weak ({body_quality.iloc[i]*100:.0f}% < 40% — likely Doji)"})
+                continue
+
+            if f_persistence and not bull_persist.iloc[i]:
+                rejection_logs.append({"time": timestamp, "reason": "REJECTED: 3-bar momentum persistence not confirmed (signal may be isolated spike)"})
+                continue
+            # ──────────────────────────────────────────────────────────
+
             signals.iloc[i] = 1
 
         elif is_bear_setup:
+            # ── Session Filter ─────────────────────────────────────────
+            if f_session and session_dead.iloc[i]:
+                rejection_logs.append({"time": timestamp, "reason": "REJECTED: Dead session (11:30-13:30), institutional participation low"})
+                continue
+
             if f_ema and not (close.iloc[i] < ema_200.iloc[i] and ema_20.iloc[i] < ema_50.iloc[i]):
                 rejection_logs.append({"time": timestamp, "reason": "REJECTED: EMA Trend structure is bullish/choppy"})
                 continue
@@ -449,13 +527,26 @@ def generate_signals(
                 c_price = close.iloc[i]
                 s1_val = s1.iloc[i]
                 bc_val = bottom_cpr.iloc[i]
-                # Reject if price is within 0.15% above S1 or Bottom CPR
                 if (s1_val < c_price and (c_price - s1_val)/c_price < 0.0015):
                     rejection_logs.append({"time": timestamp, "reason": "REJECTED: Approaching S1 Support"})
                     continue
                 if (bc_val < c_price and (c_price - bc_val)/c_price < 0.0015):
                     rejection_logs.append({"time": timestamp, "reason": "REJECTED: Approaching Bottom CPR Support"})
                     continue
+
+            # ── NEW LAYER 1 FILTERS ────────────────────────────────────
+            if f_macd_accel and not macd_hist_expanding_bear.iloc[i]:
+                rejection_logs.append({"time": timestamp, "reason": f"REJECTED: MACD Histogram not expanding bearish (momentum decelerating)"})
+                continue
+
+            if f_body_quality and (body_quality.iloc[i] < 0.40):
+                rejection_logs.append({"time": timestamp, "reason": f"REJECTED: Breakdown candle body too weak ({body_quality.iloc[i]*100:.0f}% < 40% — likely Doji)"})
+                continue
+
+            if f_persistence and not bear_persist.iloc[i]:
+                rejection_logs.append({"time": timestamp, "reason": "REJECTED: 3-bar momentum persistence not confirmed (isolated breakdown)"})
+                continue
+            # ──────────────────────────────────────────────────────────
             
             signals.iloc[i] = -1
 

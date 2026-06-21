@@ -30,66 +30,92 @@ def generate_signals(
         print("[AI Strategy] Not enough data to train ML model (need at least 30 candles).")
         return signals
         
-    # We do NOT use df = df.copy() so that modifications (like scores) reflect back to the caller!
-    # Initialize score columns to ensure they are present in the original dataframe
+    # Work on a copy to avoid polluting the caller's DataFrame with feature columns.
+    # Scores and SL columns will be written back to the original df at the end.
+    df_work = df.copy()
     if 'call_score' not in df.columns:
         df['call_score'] = None
     if 'put_score' not in df.columns:
         df['put_score'] = None
     
     # ---------------------------------------------------------
-    # FEATURE ENGINEERING
+    # FEATURE ENGINEERING (on df_work copy)
     # ---------------------------------------------------------
     # Trend
-    df['ema_9'] = ema(df['close'], 9)
-    df['ema_21'] = ema(df['close'], 21)
-    df['ema_diff'] = df['ema_9'] - df['ema_21']
+    df_work['ema_9'] = ema(df_work['close'], 9)
+    df_work['ema_21'] = ema(df_work['close'], 21)
+    df_work['ema_diff'] = df_work['ema_9'] - df_work['ema_21']
     
     # Momentum
-    df['rsi'] = rsi(df['close'], 14)
+    df_work['rsi'] = rsi(df_work['close'], 14)
     
-    macd_df = macd(df['close'])
-    df['macd_hist'] = macd_df['hist']
+    macd_df = macd(df_work['close'])
+    df_work['macd_hist'] = macd_df['hist']
     
     # Volatility (ATR)
-    high_low = df['high'] - df['low']
-    high_close = abs(df['high'] - df['close'].shift())
-    low_close = abs(df['low'] - df['close'].shift())
+    high_low = df_work['high'] - df_work['low']
+    high_close = abs(df_work['high'] - df_work['close'].shift())
+    low_close = abs(df_work['low'] - df_work['close'].shift())
     ranges = pd.concat([high_low, high_close, low_close], axis=1)
-    df['atr'] = ranges.max(axis=1).rolling(14).mean()
+    df_work['atr'] = ranges.max(axis=1).rolling(14).mean()
     
-    # Price action features
-    df['candle_body'] = df['close'] - df['open']
-    df['upper_wick'] = df['high'] - df.apply(lambda x: max(x['open'], x['close']), axis=1)
-    df['lower_wick'] = df.apply(lambda x: min(x['open'], x['close']), axis=1) - df['low']
+    # Price action features (vectorised — avoids slow row-wise apply)
+    df_work['candle_body'] = df_work['close'] - df_work['open']
+    df_work['upper_wick'] = df_work['high'] - df_work[['open', 'close']].max(axis=1)
+    df_work['lower_wick'] = df_work[['open', 'close']].min(axis=1) - df_work['low']
     
-    # NEW: Volume & Order Flow Features
-    # 1. VWAP Distance (Institutional Entry Zones)
-    df['typical_price'] = (df['high'] + df['low'] + df['close']) / 3
-    df['vwap'] = (df['typical_price'] * df['volume']).cumsum() / df['volume'].cumsum()
-    # Handle division by zero or NaN volume gracefully
-    df['vwap_dist'] = np.where(df['vwap'] != 0, (df['close'] - df['vwap']) / df['vwap'] * 100, 0)
+    # Volume & Order Flow Features
+    # 1. Daily Anchored VWAP (correct institutional calculation — resets each day)
+    df_work['typical_price'] = (df_work['high'] + df_work['low'] + df_work['close']) / 3
+    dt_col = 'datetime' if 'datetime' in df_work.columns else ('time' if 'time' in df_work.columns else None)
+    if dt_col:
+        df_work['_vwap_date'] = pd.to_datetime(df_work[dt_col]).dt.date
+    elif isinstance(df_work.index, pd.DatetimeIndex):
+        df_work['_vwap_date'] = df_work.index.date
+    else:
+        df_work['_vwap_date'] = '1970-01-01'
+    df_work['_vol_price'] = df_work['typical_price'] * df_work['volume']
+    df_work['vwap'] = (
+        df_work.groupby('_vwap_date')['_vol_price'].cumsum() /
+        df_work.groupby('_vwap_date')['volume'].cumsum()
+    )
+    df_work.drop(['_vwap_date', '_vol_price'], axis=1, inplace=True)
+    df_work['vwap_dist'] = np.where(
+        df_work['vwap'] != 0,
+        (df_work['close'] - df_work['vwap']) / df_work['vwap'] * 100,
+        0
+    )
     
-    # 2. Relative Volume (Volume Profile Anomaly Detection)
-    df['vol_ma_20'] = df['volume'].rolling(20).mean()
-    df['rel_volume'] = np.where(df['vol_ma_20'] != 0, df['volume'] / df['vol_ma_20'], 1.0)
-    
-    # Target Variable: 1 if price goes UP in the next 3 candles, 0 otherwise
-    # Aggressive: we look for any upside momentum within the next 3 bars!
-    df['target'] = (df['close'].shift(-3) > df['close']).astype(int)
+    # 2. Relative Volume (anomaly detection)
+    df_work['vol_ma_20'] = df_work['volume'].rolling(20).mean()
+    df_work['rel_volume'] = np.where(df_work['vol_ma_20'] != 0, df_work['volume'] / df_work['vol_ma_20'], 1.0)
     
     # Features list for the model
     features = ['ema_diff', 'rsi', 'macd_hist', 'atr', 'candle_body', 'upper_wick', 'lower_wick', 'vwap_dist', 'rel_volume']
     
-    # Drop rows with NaN values created by indicators (excluding None/NaN score columns)
-    ml_data = df.dropna(subset=features + ['target']).copy()
+    # Create prediction data — includes ALL rows that have valid features (including live candle)
+    ml_data = df_work.dropna(subset=features).copy()
     
     if len(ml_data) < 10:
         print("[AI Strategy] Not enough valid data after indicator calculation.")
         return signals
     
-    X = ml_data[features]
-    y = ml_data['target']
+    # Target: 1 if price goes UP in next 3 candles — ONLY used for training
+    ml_data['target'] = (ml_data['close'].shift(-3) > ml_data['close']).astype(int)
+    
+    if len(ml_data) < 10:
+        print("[AI Strategy] Not enough valid data after indicator calculation.")
+        return signals
+    
+    # Walk-forward split: train on first 70% only to prevent data leakage
+    train_data = ml_data.iloc[:-3].dropna(subset=['target'])  # drop last 3 (no future target)
+    split_idx = max(5, int(len(train_data) * 0.7))
+    train_split = train_data.iloc[:split_idx]
+    
+    X_train = train_split[features]
+    y_train = train_split['target']
+    # Predict on ALL ml_data (all valid-feature rows, including live candle)
+    X_predict = ml_data[features]
     
     # ---------------------------------------------------------
     # 2. XGBoost ML Modeling (Aggressive Tuning)
@@ -107,12 +133,12 @@ def generate_signals(
             if (time.time() - mtime) < 86400: 
                 need_train = False
                 
-        X_train = X.iloc[:-3]
-        y_train = y.iloc[:-3]
+        X_train_slice = X_train.iloc[:-3] if len(X_train) > 3 else X_train
+        y_train_slice = y_train.iloc[:-3] if len(y_train) > 3 else y_train
         
         if need_train:
-            if len(X_train) > 5 and len(y_train.unique()) > 1:
-                print(f"[AI Strategy] Training XGBoost model on {len(X_train)} candles...")
+            if len(X_train_slice) > 5 and len(y_train_slice.unique()) > 1:
+                print(f"[AI Strategy] Training XGBoost model on {len(X_train_slice)} candles...")
                 # Aggressive Tuning: Deeper trees to capture micro-patterns, smaller learning rate
                 model = xgb.XGBClassifier(
                     n_estimators=100,
@@ -124,7 +150,7 @@ def generate_signals(
                     random_state=42,
                     n_jobs=1
                 )
-                model.fit(X_train, y_train)
+                model.fit(X_train_slice, y_train_slice)
                 os.makedirs(os.path.dirname(model_path), exist_ok=True)
                 model.save_model(model_path)
                 print(f"[AI Strategy] Model saved to {model_path}")
@@ -141,9 +167,9 @@ def generate_signals(
                 print(f"[AI Strategy] Failed to load model: {e}. Will use fallback.")
                 need_train = True
                 
-        # Generate probabilities
+        # Generate probabilities for ALL candles (including live)
         if not need_train or (os.path.exists(model_path) and not need_train):
-            probs = model.predict_proba(X)[:, 1]
+            probs = model.predict_proba(X_predict)[:, 1]
             ml_data['ai_confidence'] = probs * 100
         else:
             print("[AI Strategy] Using rule-based scoring fallback.")

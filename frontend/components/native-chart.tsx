@@ -65,12 +65,14 @@ interface NativeChartProps {
   symbol: string;
   livePrice?: number;
   timeframe?: string;
+  initialData?: any[];
+  disableFetch?: boolean;
 }
 
 // Global cache outside component to persist across unmounts
 const chartDataCache: Record<string, any> = {};
 
-export default function NativeChart({ symbol, livePrice, timeframe = "5 Min" }: NativeChartProps) {
+export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", initialData, disableFetch }: NativeChartProps) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
@@ -82,6 +84,7 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min" }: 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [countdown, setCountdown] = useState<string>("");
+  const [lastCandleOpen, setLastCandleOpen] = useState<number | null>(null);
   
   const lastCandleRef = useRef<any>(null);
 
@@ -261,6 +264,18 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min" }: 
     };
 
     const fetchHistory = async () => {
+      if (disableFetch && initialData) {
+        candleSeries.setData(initialData);
+        emaSeries.setData(calculateEMA(initialData, 9));
+        smaSeries.setData(calculateEMA(initialData, 21));
+        if (initialData.length > 0) {
+          lastCandleRef.current = initialData[initialData.length - 1];
+        }
+        chart.timeScale().fitContent();
+        setLoading(false);
+        return;
+      }
+
       const cacheKey = `${symbol}_${timeframe}`;
       
       if (chartDataCache[cacheKey]) {
@@ -340,6 +355,9 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min" }: 
             volumeSeriesRef.current.setData(volumeData);
           }
           
+          if (uniqueData.length > 0) {
+            setLastCandleOpen(uniqueData[uniqueData.length - 1].open);
+          }
           lastCandleRef.current = uniqueData[uniqueData.length - 1];
           chart.timeScale().fitContent();
           fetchMarkersAndLines(uniqueData, candleSeries);
@@ -405,6 +423,7 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min" }: 
       
       // CRITICAL FIX: Save the updated candle so wicks don't disappear on next tick!
       lastCandleRef.current = updatedCandle;
+      setLastCandleOpen(updatedCandle.open);
       
       seriesRef.current.update(updatedCandle);
       if (volumeSeriesRef.current) {
@@ -446,7 +465,7 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min" }: 
            {livePrice && livePrice > 0 && (
              <>
                <span className="text-muted-foreground/50 text-xs">|</span>
-               <span className={`font-mono font-bold text-sm tracking-tighter ${lastCandleRef.current && livePrice >= lastCandleRef.current.open ? 'text-emerald-400 drop-shadow-[0_0_4px_rgba(16,185,129,0.4)]' : 'text-red-400 drop-shadow-[0_0_4px_rgba(239,68,68,0.4)]'}`}>
+               <span className={`font-mono font-bold text-sm tracking-tighter ${lastCandleOpen !== null && livePrice >= lastCandleOpen ? 'text-emerald-400 drop-shadow-[0_0_4px_rgba(16,185,129,0.4)]' : 'text-red-400 drop-shadow-[0_0_4px_rgba(239,68,68,0.4)]'}`}>
                  ₹{livePrice.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                </span>
                {countdown && isMarketOpen() && (

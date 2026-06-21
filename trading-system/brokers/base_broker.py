@@ -194,66 +194,7 @@ class BaseBroker(ABC):
         import pandas as pd
         from datetime import datetime
         
-        # 1. Check local CSV cache fallback first
-        try:
-            broker_dir = os.path.dirname(os.path.abspath(__file__))
-            project_root = os.path.dirname(broker_dir)
-            data_dir = os.path.join(project_root, "data")
-            
-            csv_file = None
-            symbol_upper = symbol.upper()
-            if "NIFTY" in symbol_upper or "NSEI" in symbol_upper:
-                csv_file = os.path.join(data_dir, "NSEI_1min.csv")
-            elif "RELIANCE" in symbol_upper:
-                csv_file = os.path.join(data_dir, "RELIANCE.NS_1min.csv")
-                
-            if csv_file and os.path.exists(csv_file):
-                self.logger.info(f"Loading {symbol} historical data from local CSV: {csv_file}")
-                df = pd.read_csv(csv_file)
-                df.columns = [c.lower() for c in df.columns]
-                
-                df['datetime'] = pd.to_datetime(df['datetime'])
-                df.set_index('datetime', inplace=True)
-                df.sort_index(inplace=True)
-                
-                start_dt = pd.to_datetime(start_date)
-                end_dt = pd.to_datetime(end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
-                df = df.loc[start_dt:end_dt]
-                
-                if not df.empty:
-                    rule = "5min"
-                    if timeframe == "1 Min": rule = "1min"
-                    elif timeframe == "3 Min": rule = "3min"
-                    elif timeframe == "5 Min": rule = "5min"
-                    elif timeframe == "15 Min": rule = "15min"
-                    elif timeframe == "30 Min": rule = "30min"
-                    elif timeframe == "1 Hour": rule = "60min"
-                    elif timeframe == "1 Day": rule = "1D"
-                    
-                    resampled = df.resample(rule).agg({
-                        'open': 'first',
-                        'high': 'max',
-                        'low': 'min',
-                        'close': 'last',
-                        'volume': 'sum'
-                    }).dropna()
-                    
-                    data = []
-                    for idx, row in resampled.iterrows():
-                        data.append({
-                            "datetime": idx.strftime('%Y-%m-%d %H:%M:%S'),
-                            "open": float(row['open']),
-                            "high": float(row['high']),
-                            "low": float(row['low']),
-                            "close": float(row['close']),
-                            "volume": int(row['volume'])
-                        })
-                    self.logger.info(f"Successfully resampled {len(data)} candles from local CSV cache.")
-                    return data
-        except Exception as e:
-            self.logger.warning(f"Failed to load from local CSV cache: {e}. Falling back to yfinance...")
-
-        # 2. Fallback to yfinance
+        # 1. Fetch via yfinance (Broker API is handled by subclasses)
         self.logger.info(f"Fetching history for {symbol} via yfinance fallback.")
         import yfinance as yf
         
@@ -271,15 +212,26 @@ class BaseBroker(ABC):
                 ticker_symbol = f"{clean_symbol}.NS"
                 
         try:
+            from datetime import datetime, timedelta
             interval = "1m"
-            if timeframe == "30 Sec": interval = "1m" # yfinance doesn't support 30s, fallback to 1m
-            elif timeframe == "3 Min": interval = "2m"
-            elif timeframe == "5 Min": interval = "5m"
-            elif timeframe == "15 Min": interval = "15m"
-            elif timeframe == "1 Hour": interval = "60m"
-            elif timeframe == "1 Day": interval = "1d"
-            elif timeframe == "1 Week": interval = "1wk"
-            elif timeframe == "1 Month": interval = "1mo"
+            max_days = 730
+            if timeframe == "30 Sec": interval = "1m"; max_days = 7
+            elif timeframe == "1 Min": interval = "1m"; max_days = 7
+            elif timeframe == "3 Min": interval = "2m"; max_days = 60
+            elif timeframe == "5 Min": interval = "5m"; max_days = 60
+            elif timeframe == "15 Min": interval = "15m"; max_days = 60
+            elif timeframe == "1 Hour": interval = "60m"; max_days = 730
+            elif timeframe == "1 Day": interval = "1d"; max_days = 3650
+            elif timeframe == "1 Week": interval = "1wk"; max_days = 3650
+            elif timeframe == "1 Month": interval = "1mo"; max_days = 3650
+            
+            # Truncate start_date to max_days allowed by yfinance
+            start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+            end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+            if (end_dt - start_dt).days >= max_days:
+                start_dt = end_dt - timedelta(days=max_days - 1)
+                start_date = start_dt.strftime('%Y-%m-%d')
+                self.logger.info(f"yfinance limit: truncated start_date to {start_date} for interval {interval}")
             
             ticker = yf.Ticker(ticker_symbol)
             df = ticker.history(start=start_date, end=end_date, interval=interval)

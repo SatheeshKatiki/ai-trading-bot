@@ -348,11 +348,27 @@ function LiveTradingContent() {
   const [isWsConnected, setIsWsConnected] = useState(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [filters, setFilters] = useState({
+    enable_ema_filter: true,
+    enable_volume_filter: false,
+    enable_adx_filter: false,
+    enable_vwap_filter: true,
+    enable_rsi_filter: true,
     enable_squeeze_filter: false,
     enable_extension_filter: false,
     enable_cpr_filter: false,
     enable_aggression_filter: false
   });
+  
+  // Advanced Strategy Engine Settings
+  const [enablePyramiding, setEnablePyramiding] = useState(true);
+  const [trailingSl, setTrailingSl] = useState(true);
+  const [donchianPeriod, setDonchianPeriod] = useState(10);
+  const [scalePct, setScalePct] = useState(0.2);
+  const [maxScales, setMaxScales] = useState(2);
+  const [maxDailyLossPct, setMaxDailyLossPct] = useState(3.0);
+  const [maxDailyTrades, setMaxDailyTrades] = useState(6);
+  const [trailTrigger, setTrailTrigger] = useState(0.8);
+  const [trailOffset, setTrailOffset] = useState(0.2);
   const prevTradesRef = useRef<Trade[]>([]);
   const isInitialFetch = useRef<boolean>(true);
 
@@ -426,11 +442,26 @@ function LiveTradingContent() {
             setQuantity(data.quantity);
           }
           setFilters({
+            enable_ema_filter: data.enable_ema_filter ?? true,
+            enable_volume_filter: data.enable_volume_filter ?? false,
+            enable_adx_filter: data.enable_adx_filter ?? false,
+            enable_vwap_filter: data.enable_vwap_filter ?? true,
+            enable_rsi_filter: data.enable_rsi_filter ?? true,
             enable_squeeze_filter: data.enable_squeeze_filter || false,
             enable_extension_filter: data.enable_extension_filter || false,
             enable_cpr_filter: data.enable_cpr_filter || false,
             enable_aggression_filter: data.enable_aggression_filter || false
           });
+          
+          if (data.enable_pyramiding !== undefined) setEnablePyramiding(data.enable_pyramiding);
+          if (data.trailing_sl !== undefined) setTrailingSl(data.trailing_sl);
+          if (data.donchian_period !== undefined) setDonchianPeriod(data.donchian_period);
+          if (data.scale_pct !== undefined) setScalePct(data.scale_pct);
+          if (data.max_scales !== undefined) setMaxScales(data.max_scales);
+          if (data.max_daily_loss_pct !== undefined) setMaxDailyLossPct(data.max_daily_loss_pct);
+          if (data.max_daily_trades !== undefined) setMaxDailyTrades(data.max_daily_trades);
+          if (data.trail_trigger !== undefined) setTrailTrigger(data.trail_trigger);
+          if (data.trail_offset !== undefined) setTrailOffset(data.trail_offset);
         }
       } catch (error) {
         console.error("Failed to fetch settings:", error);
@@ -472,7 +503,7 @@ function LiveTradingContent() {
         await fetch('/api/settings', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ stoploss: newSl })
+          body: JSON.stringify({ stoploss_pct: newSl })
         });
       } catch (error) {
         console.error("Failed to update stoploss:", error);
@@ -514,6 +545,35 @@ function LiveTradingContent() {
       });
     } catch (error) {
       console.error(`Error saving filter ${key}:`, error);
+    }
+  };
+  
+  const handleAdvancedSettingChange = async (key: string, value: any, setter: React.Dispatch<React.SetStateAction<any>>) => {
+    setter(value);
+    
+    // Map camelCase UI state back to snake_case for API
+    const apiKeys: Record<string, string> = {
+      enablePyramiding: 'enable_pyramiding',
+      trailingSl: 'trailing_sl',
+      donchianPeriod: 'donchian_period',
+      scalePct: 'scale_pct',
+      maxScales: 'max_scales',
+      maxDailyLossPct: 'max_daily_loss_pct',
+      maxDailyTrades: 'max_daily_trades',
+      trailTrigger: 'trail_trigger',
+      trailOffset: 'trail_offset'
+    };
+    
+    const apiKey = apiKeys[key] || key;
+    
+    try {
+      await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ [apiKey]: value })
+      });
+    } catch (error) {
+      console.error(`Error saving setting ${key}:`, error);
     }
   };
   
@@ -885,63 +945,159 @@ function LiveTradingContent() {
 
             </div>
 
-            {/* Institutional Filters Row */}
-            <div className="flex flex-wrap items-center gap-6 px-4 py-3 bg-muted/5 border border-border/40 rounded-xl shadow-sm backdrop-blur-sm w-full">
-              <div className="text-xs font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5 border-r border-border/50 pr-4">
-                <Shield className="w-3.5 h-3.5" />
-                Institutional Filters:
-              </div>
-              
-              <div className="flex items-center gap-2">
-                <input 
-                  type="checkbox" 
-                  id="squeeze_filter" 
-                  checked={filters.enable_squeeze_filter}
-                  onChange={(e) => handleFilterChange("enable_squeeze_filter", e.target.checked)}
-                  className="w-3.5 h-3.5 rounded border-border/50 bg-background/50 focus:ring-primary focus:ring-offset-0 text-primary transition-colors cursor-pointer"
-                />
-                <label htmlFor="squeeze_filter" className={`text-xs font-medium cursor-pointer transition-colors ${filters.enable_squeeze_filter ? "text-primary" : "text-muted-foreground hover:text-foreground"}`}>
-                  Squeeze Filter
-                </label>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <input 
-                  type="checkbox" 
-                  id="extension_filter" 
-                  checked={filters.enable_extension_filter}
-                  onChange={(e) => handleFilterChange("enable_extension_filter", e.target.checked)}
-                  className="w-3.5 h-3.5 rounded border-border/50 bg-background/50 focus:ring-primary focus:ring-offset-0 text-primary transition-colors cursor-pointer"
-                />
-                <label htmlFor="extension_filter" className={`text-xs font-medium cursor-pointer transition-colors ${filters.enable_extension_filter ? "text-primary" : "text-muted-foreground hover:text-foreground"}`}>
-                  EMA Extension
-                </label>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <input 
-                  type="checkbox" 
-                  id="cpr_filter" 
-                  checked={filters.enable_cpr_filter}
-                  onChange={(e) => handleFilterChange("enable_cpr_filter", e.target.checked)}
-                  className="w-3.5 h-3.5 rounded border-border/50 bg-background/50 focus:ring-primary focus:ring-offset-0 text-primary transition-colors cursor-pointer"
-                />
-                <label htmlFor="cpr_filter" className={`text-xs font-medium cursor-pointer transition-colors ${filters.enable_cpr_filter ? "text-primary" : "text-muted-foreground hover:text-foreground"}`}>
-                  CPR Rejection
-                </label>
+            {/* Filters and Advanced Settings Block */}
+            <div className="flex flex-col gap-3 mt-4 w-full">
+              {/* Institutional Filters Row */}
+              <div className="flex flex-wrap items-center gap-4 px-4 py-3 bg-muted/5 border border-border/40 rounded-xl shadow-sm backdrop-blur-sm w-full">
+                <div className="text-xs font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5 border-r border-border/50 pr-4">
+                  <Shield className="w-3.5 h-3.5" />
+                  Institutional Filters:
+                </div>
+                
+                {[
+                  { id: "enable_ema_filter", label: "EMA Trend" },
+                  { id: "enable_volume_filter", label: "Volume" },
+                  { id: "enable_adx_filter", label: "ADX > 25" },
+                  { id: "enable_vwap_filter", label: "VWAP" },
+                  { id: "enable_rsi_filter", label: "RSI Momentum" },
+                  { id: "enable_squeeze_filter", label: "Squeeze" },
+                  { id: "enable_extension_filter", label: "EMA Ext" },
+                  { id: "enable_cpr_filter", label: "CPR Rejection" },
+                  { id: "enable_aggression_filter", label: "Aggression" },
+                ].map(filter => (
+                  <div key={filter.id} className="flex items-center gap-2">
+                    <input 
+                      type="checkbox" 
+                      id={filter.id} 
+                      checked={(filters as any)[filter.id]}
+                      onChange={(e) => handleFilterChange(filter.id, e.target.checked)}
+                      className="w-3 h-3 rounded border-border/50 bg-background/50 focus:ring-primary focus:ring-offset-0 text-primary transition-colors cursor-pointer"
+                    />
+                    <label htmlFor={filter.id} className={`text-[11px] font-medium cursor-pointer transition-colors ${(filters as any)[filter.id] ? "text-primary" : "text-muted-foreground hover:text-foreground"}`}>
+                      {filter.label}
+                    </label>
+                  </div>
+                ))}
               </div>
 
-              <div className="flex items-center gap-2">
-                <input 
-                  type="checkbox" 
-                  id="aggression_filter" 
-                  checked={filters.enable_aggression_filter}
-                  onChange={(e) => handleFilterChange("enable_aggression_filter", e.target.checked)}
-                  className="w-3.5 h-3.5 rounded border-border/50 bg-background/50 focus:ring-primary focus:ring-offset-0 text-primary transition-colors cursor-pointer"
-                />
-                <label htmlFor="aggression_filter" className={`text-xs font-medium cursor-pointer transition-colors ${filters.enable_aggression_filter ? "text-primary" : "text-muted-foreground hover:text-foreground"}`}>
-                  Candle Aggression
-                </label>
+              {/* Advanced Settings Row */}
+              <div className="flex flex-wrap items-center gap-5 px-4 py-3 bg-muted/5 border border-border/40 rounded-xl shadow-sm backdrop-blur-sm w-full">
+                <div className="text-xs font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5 border-r border-border/50 pr-4">
+                  <Target className="w-3.5 h-3.5" />
+                  Engine Settings:
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <input 
+                    type="checkbox" 
+                    id="enable_pyramiding" 
+                    checked={enablePyramiding}
+                    onChange={(e) => handleAdvancedSettingChange("enablePyramiding", e.target.checked, setEnablePyramiding)}
+                    className="w-3 h-3 rounded border-border/50 bg-background/50 focus:ring-primary focus:ring-offset-0 text-primary transition-colors cursor-pointer"
+                  />
+                  <label htmlFor="enable_pyramiding" className={`text-[11px] font-medium cursor-pointer transition-colors ${enablePyramiding ? "text-primary" : "text-muted-foreground hover:text-foreground"}`}>
+                    Pyramiding
+                  </label>
+                </div>
+
+                {enablePyramiding && (
+                  <>
+                    <div className="flex items-center gap-2 border-l border-border/50 pl-3">
+                      <span className="text-[10px] text-muted-foreground uppercase">Scale %</span>
+                      <NumberInput
+                        value={scalePct}
+                        onChange={(val) => handleAdvancedSettingChange("scalePct", val === '' ? '' : Number(val), setScalePct)}
+                        min={0}
+                        step={0.1}
+                        containerClassName="w-16 h-7 rounded-md"
+                      />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] text-muted-foreground uppercase">Max</span>
+                      <NumberInput
+                        value={maxScales}
+                        onChange={(val) => handleAdvancedSettingChange("maxScales", val === '' ? '' : Number(val), setMaxScales)}
+                        min={0}
+                        step={1}
+                        containerClassName="w-14 h-7 rounded-md"
+                      />
+                    </div>
+                  </>
+                )}
+
+                <div className="flex items-center gap-2 border-l border-border/50 pl-4">
+                  <input 
+                    type="checkbox" 
+                    id="trailing_sl" 
+                    checked={trailingSl}
+                    onChange={(e) => handleAdvancedSettingChange("trailingSl", e.target.checked, setTrailingSl)}
+                    className="w-3 h-3 rounded border-border/50 bg-background/50 focus:ring-primary focus:ring-offset-0 text-primary transition-colors cursor-pointer"
+                  />
+                  <label htmlFor="trailing_sl" className={`text-[11px] font-medium cursor-pointer transition-colors ${trailingSl ? "text-primary" : "text-muted-foreground hover:text-foreground"}`}>
+                    Trailing SL
+                  </label>
+                </div>
+
+                {trailingSl && (
+                  <>
+                    <div className="flex items-center gap-2 border-l border-border/50 pl-3">
+                      <span className="text-[10px] text-muted-foreground uppercase">Trigger %</span>
+                      <NumberInput
+                        value={trailTrigger}
+                        onChange={(val) => handleAdvancedSettingChange("trailTrigger", val === '' ? '' : Number(val), setTrailTrigger)}
+                        min={0.1}
+                        step={0.1}
+                        containerClassName="w-16 h-7 rounded-md"
+                      />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] text-muted-foreground uppercase">Offset %</span>
+                      <NumberInput
+                        value={trailOffset}
+                        onChange={(val) => handleAdvancedSettingChange("trailOffset", val === '' ? '' : Number(val), setTrailOffset)}
+                        min={0.1}
+                        step={0.1}
+                        containerClassName="w-16 h-7 rounded-md"
+                      />
+                    </div>
+                  </>
+                )}
+
+                <div className="flex items-center gap-2 border-l border-border/50 pl-4">
+                  <span className="text-[10px] text-muted-foreground uppercase">Donchian</span>
+                  <NumberInput
+                    value={donchianPeriod}
+                    onChange={(val) => handleAdvancedSettingChange("donchianPeriod", val === '' ? '' : Number(val), setDonchianPeriod)}
+                    min={1}
+                    max={250}
+                    step={1}
+                    containerClassName="w-16 h-7 rounded-md"
+                  />
+                </div>
+
+                <div className="flex items-center gap-2 border-l border-border/50 pl-4 text-destructive">
+                  <span className="text-[10px] uppercase">Max Loss %</span>
+                  <NumberInput
+                    value={maxDailyLossPct}
+                    onChange={(val) => handleAdvancedSettingChange("maxDailyLossPct", val === '' ? '' : Number(val), setMaxDailyLossPct)}
+                    min={0.5}
+                    step={0.5}
+                    ringColor="destructive"
+                    containerClassName="w-16 h-7 rounded-md"
+                  />
+                </div>
+                
+                <div className="flex items-center gap-2 border-l border-border/50 pl-4 text-destructive">
+                  <span className="text-[10px] uppercase">Max Trades</span>
+                  <NumberInput
+                    value={maxDailyTrades}
+                    onChange={(val) => handleAdvancedSettingChange("maxDailyTrades", val === '' ? '' : Number(val), setMaxDailyTrades)}
+                    min={1}
+                    step={1}
+                    ringColor="destructive"
+                    containerClassName="w-16 h-7 rounded-md"
+                  />
+                </div>
               </div>
             </div>
           </div>

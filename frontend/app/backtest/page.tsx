@@ -25,7 +25,10 @@ import {
   Database,
   Package,
   ChevronUp,
-  ChevronDown
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  AlertTriangle
 } from "lucide-react";
 import { 
   AreaChart, 
@@ -37,6 +40,8 @@ import {
   ResponsiveContainer,
   ReferenceLine
 } from "recharts";
+import { HeatmapAnalytics } from "@/components/heatmap-analytics";
+import { TradeReplayModal } from "@/components/trade-replay-modal";
 
 // Institutional Level Asset Database for Autocomplete
 const INDIAN_MARKET_ASSETS = [
@@ -187,7 +192,9 @@ export default function Backtest() {
   const [isLoading, setIsLoading] = useState(false);
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState("");
-  
+  const [selectedReplayTrade, setSelectedReplayTrade] = useState<any>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const tradesPerPage = 15;
   // Institutional Strategy Filters
   const [enableEmaFilter, setEnableEmaFilter] = useState(true);
   const [enableVolumeFilter, setEnableVolumeFilter] = useState(true);
@@ -368,6 +375,7 @@ export default function Backtest() {
     setIsLoading(true);
     setResult(null);
     setError("");
+    setCurrentPage(1);
     
     try {
       const queryParams = new URLSearchParams({
@@ -894,6 +902,29 @@ export default function Backtest() {
                     {result.stats.donchianPeriod !== undefined ? result.stats.donchianPeriod : donchianPeriod} bars
                   </div>
                 </div>
+
+                {/* Row 5: Costs & Slippage */}
+                <div className="glass-card rounded-xl p-4 border border-border/20 border-destructive/30">
+                  <span className="text-xs text-muted-foreground font-medium flex items-center gap-1">
+                    <Shield className="w-3 h-3" />
+                    Total Brokerage
+                  </span>
+                  <div className="text-2xl font-bold font-mono mt-1 text-destructive">
+                    ₹{result.stats.totalBrokerage !== undefined ? result.stats.totalBrokerage.toLocaleString('en-IN', { maximumFractionDigits: 2 }) : 0}
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1">Deducted from PnL</p>
+                </div>
+
+                <div className="glass-card rounded-xl p-4 border border-border/20 border-warning/30">
+                  <span className="text-xs text-muted-foreground font-medium flex items-center gap-1">
+                    <AlertTriangle className="w-3 h-3 text-warning" />
+                    Slippage Impact
+                  </span>
+                  <div className="text-2xl font-bold font-mono mt-1 text-warning">
+                    ₹{result.stats.totalSlippage !== undefined ? result.stats.totalSlippage.toLocaleString('en-IN', { maximumFractionDigits: 2 }) : 0}
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1">Estimated execution drag</p>
+                </div>
               </div>
 
               {/* Chart */}
@@ -961,6 +992,11 @@ export default function Backtest() {
                 </div>
               )}
 
+              {/* Heatmap Analytics (New) */}
+              <div className="mb-6">
+                <HeatmapAnalytics trades={result.trades} startDate={startDate} endDate={endDate} />
+              </div>
+
               {/* Trades Table */}
               <div className="glass-card rounded-xl p-6 border border-border/20">
                 <h3 className="font-display font-bold text-lg text-foreground mb-4">Simulated Executions ({result.trades.length})</h3>
@@ -970,27 +1006,38 @@ export default function Backtest() {
                       <tr className="text-xs uppercase text-muted-foreground border-b border-border/20">
                         <th className="pb-3 font-medium">Trade ID</th>
                         <th className="pb-3 font-medium">Type</th>
+                        <th className="pb-3 font-medium text-right">Qty</th>
                         <th className="pb-3 font-medium text-right">Entry</th>
                         <th className="pb-3 font-medium text-right">Exit</th>
                         <th className="pb-3 font-medium text-right">PnL</th>
+                        <th className="pb-3 font-medium text-center">Action</th>
                       </tr>
                     </thead>
                     <tbody>
                       {result.trades.length === 0 ? (
                         <tr>
-                          <td colSpan={5} className="py-4 text-center text-xs text-muted-foreground">No trades executed in this period.</td>
+                          <td colSpan={6} className="py-4 text-center text-xs text-muted-foreground">No trades executed in this period.</td>
                         </tr>
                       ) : (
-                        result.trades.map((trade: any, index: number) => (
+                        result.trades.slice((currentPage - 1) * tradesPerPage, currentPage * tradesPerPage).map((trade: any, index: number) => (
                           <tr key={index} className={`border-b border-border/10 last:border-0 text-xs transition-colors ${index % 2 === 0 ? 'bg-muted/10' : 'bg-transparent'} hover:bg-muted/20`}>
                             <td className="py-3 font-medium text-foreground">{trade.id}</td>
                             <td className={`py-3 font-bold ${trade.type === "BUY" ? "text-success" : "text-destructive"}`}>
-                              {trade.type}
+                              {trade.type === "BUY" ? "CE Buy (Long)" : "PE Buy (Short)"}
                             </td>
+                            <td className="py-3 text-right text-foreground font-mono">{trade.qty || "-"}</td>
                             <td className="py-3 text-right text-foreground">₹{trade.entry.toLocaleString('en-IN', { maximumFractionDigits: 2 })}</td>
                             <td className="py-3 text-right text-foreground">₹{trade.exit.toLocaleString('en-IN', { maximumFractionDigits: 2 })}</td>
                             <td className={`py-3 text-right font-bold ${trade.pnl >= 0 ? "text-success" : "text-destructive"}`}>
                               {trade.pnl >= 0 ? "+" : ""}₹{trade.pnl.toLocaleString('en-IN', { maximumFractionDigits: 2 })}
+                            </td>
+                            <td className="py-3 text-center">
+                              <button 
+                                onClick={() => setSelectedReplayTrade(trade)}
+                                className="inline-flex items-center justify-center text-xs font-medium text-primary hover:text-primary/80 bg-primary/10 hover:bg-primary/20 px-3 py-1 rounded transition-colors"
+                              >
+                                View Chart
+                              </button>
                             </td>
                           </tr>
                         ))
@@ -998,11 +1045,49 @@ export default function Backtest() {
                     </tbody>
                   </table>
                 </div>
+                
+                {/* Pagination Controls */}
+                {result.trades.length > tradesPerPage && (
+                  <div className="flex items-center justify-between mt-4 border-t border-border/10 pt-4">
+                    <span className="text-xs text-muted-foreground font-medium">
+                      Showing {(currentPage - 1) * tradesPerPage + 1} to {Math.min(currentPage * tradesPerPage, result.trades.length)} of {result.trades.length} trades
+                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <button 
+                        onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                        disabled={currentPage === 1}
+                        className="p-1.5 rounded bg-muted/20 hover:bg-muted/50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors text-foreground"
+                      >
+                        <ChevronLeft className="w-4 h-4" />
+                      </button>
+                      <span className="text-xs font-medium px-3 py-1.5 bg-muted/10 rounded text-foreground border border-border/10">
+                        Page {currentPage} of {Math.ceil(result.trades.length / tradesPerPage)}
+                      </span>
+                      <button 
+                        onClick={() => setCurrentPage(p => Math.min(Math.ceil(result.trades.length / tradesPerPage), p + 1))}
+                        disabled={currentPage === Math.ceil(result.trades.length / tradesPerPage)}
+                        className="p-1.5 rounded bg-muted/20 hover:bg-muted/50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors text-foreground"
+                      >
+                        <ChevronRight className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           )}
         </main>
       </div>
+
+      {/* Trade Replay Modal */}
+      {selectedReplayTrade && (
+        <TradeReplayModal 
+          trade={selectedReplayTrade} 
+          symbol={symbol} 
+          timeframe={timeframe} 
+          onClose={() => setSelectedReplayTrade(null)} 
+        />
+      )}
     </div>
   );
 }

@@ -400,8 +400,8 @@ class FyersBroker(BaseBroker):
         from datetime import datetime, timedelta
         
         if not self._fyers_model:
-            self.logger.warning("Fyers: not authenticated — cannot fetch historical data from Fyers.")
-            return []
+            self.logger.warning("Fyers: not authenticated — cannot fetch historical data from Fyers. Falling back to base broker...")
+            return super().get_historical_data(symbol, start_date, end_date, timeframe)
             
         try:
             # Map timeframe string to Fyers resolution

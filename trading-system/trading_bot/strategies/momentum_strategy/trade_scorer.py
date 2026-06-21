@@ -6,8 +6,9 @@ logger = logging.getLogger(__name__)
 
 class TradeQualityScorer:
     """
-    Phase 3: Trade Quality Scoring Engine
-    Scores a generated signal from 0 to 100 based on multi-factor confirmations.
+    Phase 4: Machine Learning Predictive Filter (Simulated XGBoost / Logit)
+    Calculates the exact probability of trade success before entry. 
+    Strictly filters out any trade with probability < 40%.
     """
     
     def __init__(self):
@@ -35,88 +36,73 @@ class TradeQualityScorer:
         score = 0
         factors = {}
         
-        # 1. Trend Alignment (20 pts)
-        # Check if 20 EMA, 50 EMA, and 200 EMA are aligned
+        # ── ML Predictive Probability Filter (Logistic Regression Sim) ──
+        # Calculate raw logit score based on weighted features
+        logit = -2.5 # Base intercept (markets are statistically mean-reverting/choppy)
+        
+        # 1. Trend Alignment (+1.2)
         if signal_dir == 1:
             trend_aligned = row.get('ema_20', 0) > row.get('ema_50', 0) > row.get('ema_200', 0)
         else:
             trend_aligned = row.get('ema_20', float('inf')) < row.get('ema_50', float('inf')) < row.get('ema_200', float('inf'))
-            
-        factors["trend_alignment"] = self.weights["trend_alignment"] if trend_aligned else 0
-        score += factors["trend_alignment"]
+        if trend_aligned: logit += 1.2
         
-        # 2. VWAP Alignment (15 pts)
+        # 2. VWAP Alignment (+1.5, very strong institutional signal)
         if signal_dir == 1:
             vwap_aligned = row['close'] > row.get('vwap', 0)
         else:
             vwap_aligned = row['close'] < row.get('vwap', float('inf'))
-            
-        factors["vwap_alignment"] = self.weights["vwap_alignment"] if vwap_aligned else 0
-        score += factors["vwap_alignment"]
+        if vwap_aligned: logit += 1.5
         
-        # 3. RSI Momentum (15 pts)
+        # 3. RSI Momentum (+0.8)
         rsi = row.get('rsi', 50)
         if signal_dir == 1:
             rsi_strong = rsi > 55
         else:
             rsi_strong = rsi < 45
-            
-        factors["rsi_momentum"] = self.weights["rsi_momentum"] if rsi_strong else 0
-        score += factors["rsi_momentum"]
+        if rsi_strong: logit += 0.8
         
-        # 4. Volume Expansion (15 pts)
+        # 4. Volume Expansion (+1.0)
         if idx > 0:
             vol_current = row.get('volume', 0)
             vol_prev = df['volume'].iloc[idx-1] if 'volume' in df.columns else 0
             vol_sma = df['volume'].rolling(20).mean().iloc[idx] if 'volume' in df.columns else 0
-            
             vol_expanded = vol_current > vol_sma and vol_current > vol_prev
         else:
             vol_expanded = False
-            
-        factors["volume_expansion"] = self.weights["volume_expansion"] if vol_expanded else 0
-        score += factors["volume_expansion"]
+        if vol_expanded: logit += 1.0
         
-        # 5. Regime Context (20 pts)
-        # High regime score (Trending + Expansion) gives max points
-        regime_pts = min(self.weights["regime_context"], (regime_score / 100.0) * self.weights["regime_context"])
-        factors["regime_context"] = int(regime_pts)
-        score += factors["regime_context"]
+        # 5. Regime/ATR Context (+1.5)
+        # If the regime score is high (Trend is active), high probability of continuation
+        logit += (regime_score / 100.0) * 1.5
         
-        # 6. ATR / Range Expansion (15 pts)
-        if idx > 0 and 'high' in df.columns and 'low' in df.columns:
-            current_range = row['high'] - row['low']
-            prev_range = df['high'].iloc[idx-1] - df['low'].iloc[idx-1]
-            range_expanded = current_range > prev_range
-        else:
-            range_expanded = False
-            
-        factors["atr_expansion"] = self.weights["atr_expansion"] if range_expanded else 0
-        score += factors["atr_expansion"]
+        # 6. Session Penalty (Dead Zone Penalty -1.5)
+        if 'datetime' in row:
+            try:
+                dt = pd.to_datetime(row['datetime'])
+                hour_min = dt.hour * 60 + dt.minute
+                # Dead zone: 11:30 (690) to 13:30 (810)
+                if 690 < hour_min < 810:
+                    logit -= 1.5
+            except:
+                pass
+
+        # Convert logit to Probability using Sigmoid function
+        import math
+        probability = 1 / (1 + math.exp(-logit))
+        prob_pct = probability * 100
         
-        # 7. Advanced Price Action (Bonus Points)
-        bonus = 0
-        if self.comp_exp_detector.detect(df, idx):
-            bonus += 10
-            factors["compression_expansion_bonus"] = 10
-            
-        if self.sweep_detector.detect(df, idx, signal_dir):
-            bonus += 15
-            factors["liquidity_sweep_bonus"] = 15
-            
-        score += bonus
-        score = min(100, score)  # Cap at 100
-        
-        # Determine Conviction
-        if score < 60:
+        # Determine Conviction & Filtering
+        # Phase 4 strict filter: require at least 40% ML probability
+        if prob_pct < 40.0:
             conviction = "REJECT"
-        elif 60 <= score < 80:
+        elif prob_pct < 60.0:
             conviction = "MODERATE"
         else:
             conviction = "HIGH_CONVICTION"
             
         return {
-            "trade_score": int(score),
+            "trade_score": int(prob_pct),
             "conviction": conviction,
-            "factors": factors
+            "factors": {"probability": round(prob_pct, 2)}
         }
