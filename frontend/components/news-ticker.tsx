@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect } from "react";
-import { Globe, ArrowRight } from "lucide-react";
+import { Globe } from "lucide-react";
 
 export default function NewsTicker() {
   const [sentiment, setSentiment] = useState<{

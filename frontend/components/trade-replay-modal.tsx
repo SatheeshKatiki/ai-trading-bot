@@ -44,14 +44,16 @@ export function TradeReplayModal({ trade, symbol, timeframe, onClose }: TradeRep
             const dateStrRaw = candle.datetime || candle.Datetime || candle.date || candle.time;
             let candleTimeStr = "";
             if (dateStrRaw) {
-               const d = new Date(dateStrRaw);
+               const safeDateStrRaw = dateStrRaw.includes(' ') ? dateStrRaw.replace(' ', 'T') : dateStrRaw;
+               const d = new Date(safeDateStrRaw);
                if (!isNaN(d.getTime())) {
                   candleTimeStr = d.toISOString().replace("T", " ").substring(0, 16);
                }
             }
             
             // Format for NativeChart (expects native-chart formatted payload)
-            const dateObj = new Date(dateStrRaw);
+            const safeDateStrRaw2 = dateStrRaw.includes(' ') ? dateStrRaw.replace(' ', 'T') : dateStrRaw;
+            const dateObj = new Date(safeDateStrRaw2);
             const time = (Math.floor(dateObj.getTime() / 1000) - (dateObj.getTimezoneOffset() * 60));
             
             const formattedCandle = {

@@ -14,7 +14,6 @@ import {
   PieChart, 
   Settings, 
   ShieldCheck, 
-  TrendingUp,
   Plug,
   Sliders
 } from "lucide-react";
@@ -62,7 +61,7 @@ export default function Sidebar() {
         } else {
           setIsConnected(false);
         }
-      } catch (error) {
+      } catch {
         setIsConnected(false);
       }
     };

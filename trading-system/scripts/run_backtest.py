@@ -15,13 +15,11 @@ from backtesting_engine.run import run_intraday_backtest
 from trading_bot.strategies.ema_rsi_strategy import generate_signals as ema_rsi_signals
 from trading_bot.strategies.enhanced_ai_strategy import generate_signals as enhanced_signals
 from trading_bot.strategies.premium_selection import generate_signals as premium_signals
-from trading_bot.strategies.institutional_ema_strategy import generate_signals as institutional_signals
 from trading_bot.strategies.buy_the_dip_strategy import generate_signals as buy_the_dip_signals
 
 registry.register("ema_rsi",      ema_rsi_signals)
 registry.register("enhanced_ai",  enhanced_signals)
 registry.register("premium",      premium_signals)
-registry.register("institutional_ema", institutional_signals)
 registry.register("buy_the_dip", buy_the_dip_signals)
 
 def main():

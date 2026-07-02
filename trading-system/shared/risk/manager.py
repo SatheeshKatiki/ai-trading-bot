@@ -45,6 +45,8 @@ class RiskConfig:
     min_ai_confidence: float = 0.55
     # High volatility threshold (ATR % of price)
     high_volatility_threshold: float = 3.0
+    # Maximum trades allowed per day
+    max_trades_per_day: int = 1
 
 
 class RiskManager:
@@ -126,6 +128,13 @@ class RiskManager:
         # Volatility check
         if current_volatility > self.config.high_volatility_threshold:
             return False, f"Volatility too high: {current_volatility:.2f}%"
+
+        # Max trades per day check
+        if self.config.max_trades_per_day > 0:
+            # We count already recorded (closed) trades, plus current active positions
+            # For simplicity, if total_trades >= max_trades_per_day, we block.
+            if self.total_trades >= self.config.max_trades_per_day:
+                return False, f"Max trades per day reached ({self.config.max_trades_per_day})"
 
         # Per-trade risk check
         max_risk = self.current_equity * self.config.risk_per_trade

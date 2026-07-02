@@ -116,6 +116,10 @@ class TelegramAlerter:
     # Public alert methods (all non-blocking — return immediately)
     # ------------------------------------------------------------------
 
+    def send_alert(self, msg: str) -> None:
+        """Enqueue a generic text alert (returns instantly)."""
+        self._enqueue(msg)
+
     def send_trade_alert(
         self, symbol: str, side: str, qty: int, price: float, confidence: float = 1.0
     ) -> None:

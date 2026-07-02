@@ -60,6 +60,10 @@ from trading_bot.strategies.premium_selection import (
 )
 from trading_bot.strategies.momentum_strategy import MomentumStrategy
 
+from typing import Dict, Any, Optional, Literal
+
+_m2m_last_update: float = 0.0
+
 # Import AI / Risk / Exit / Alert Modules
 from shared.ai import TradeFilterModel, compute_features
 from shared.risk import RiskManager, RiskConfig, TradeRecord
@@ -107,9 +111,13 @@ def _save_positions(positions: Dict[str, Position]) -> None:
                     "side": p.side,
                     "quantity": p.quantity,
                     "entry_price": p.entry_price,
-                    "timestamp": p.timestamp,
-                    "scales_done": getattr(p, "scales_done", 0),
-                    "direction": getattr(p, "direction", "LONG" if p.side == 1 else "SHORT")
+                    "entry_time": getattr(p, "entry_time", ""),
+                    "highest_price": getattr(p, "highest_price", p.entry_price),
+                    "lowest_price": getattr(p, "lowest_price", p.entry_price),
+                    "stop_loss": getattr(p, "stop_loss", 0.0),
+                    "target": getattr(p, "target", 0.0),
+                    "is_partially_booked": getattr(p, "is_partially_booked", False),
+                    "scales_done": getattr(p, "scales_done", 0)
                 } for sym, p in positions.items()
             }
             json.dump(data, f, indent=4)
@@ -123,9 +131,19 @@ def _load_positions() -> Dict[str, Position]:
                 data = json.load(f)
                 loaded = {}
                 for sym, p in data.items():
-                    pos = Position(p["symbol"], p["side"], p["quantity"], p["entry_price"], p["timestamp"])
+                    pos = Position(
+                        symbol=p["symbol"], 
+                        side=p["side"], 
+                        entry_price=p["entry_price"],
+                        quantity=p["quantity"], 
+                        entry_time=p.get("entry_time", p.get("timestamp", "")),
+                        highest_price=p.get("highest_price", p["entry_price"]),
+                        lowest_price=p.get("lowest_price", p["entry_price"]),
+                        stop_loss=p.get("stop_loss", 0.0),
+                        target=p.get("target", 0.0)
+                    )
+                    pos.is_partially_booked = p.get("is_partially_booked", False)
                     pos.scales_done = p.get("scales_done", 0)
-                    pos.direction = p.get("direction", "LONG" if p["side"] == 1 else "SHORT")
                     loaded[sym] = pos
                 return loaded
         except Exception as e:
@@ -282,11 +300,14 @@ async def run_live_bot(symbols: List[str]) -> None:
     except Exception as e:
         logger.warning("Could not preload history from API bridge: %s", e)
 
+    last_eval_time = 0.0
+
     async def on_tick(tick: Dict) -> None:
+        nonlocal last_eval_time
         sym = tick["symbol"]
         ltp = tick["ltp"]
         # Use IST time for all intraday comparisons (EOD exit at 15:15 IST)
-        current_time = datetime.now(_IST).strftime("%H:%M:%S")
+        current_time = datetime.now(_IST).strftime("%Y-%m-%d %H:%M:%S")
 
         # Load settings once per tick — the TTL cache (10 s) makes this free
         # (no disk I/O) on the vast majority of ticks.
@@ -318,7 +339,7 @@ async def run_live_bot(symbols: List[str]) -> None:
 
             should_exit, reason, exit_qty = False, "", None
 
-            if sentiment_score < -0.8 and pos.direction == "LONG":
+            if sentiment_score < -0.8 and pos.side == 1:
                 should_exit = True
                 reason = "Macro Panic (Sentiment Circuit Breaker)"
                 exit_qty = pos.quantity
@@ -380,7 +401,7 @@ async def run_live_bot(symbols: List[str]) -> None:
                             side=OrderSide.SELL if pos.side == 1 else OrderSide.BUY,
                         )
                         try:
-                            exit_req = validator.validate(exit_req)
+                            exit_req = validator.validator.validate(exit_req)
                             await broker.place_order_async(exit_req)
                             audit.trade(AuditEvent.TRADE_EXIT, sym,
                                         "SELL" if pos.side == 1 else "BUY",
@@ -452,7 +473,7 @@ async def run_live_bot(symbols: List[str]) -> None:
                                 side=OrderSide.BUY if pos.side == 1 else OrderSide.SELL,
                             )
                             try:
-                                scale_req = validator.validate(scale_req)
+                                scale_req = validator.validator.validate(scale_req)
                                 await broker.place_order_async(scale_req)
                                 audit.trade(AuditEvent.TRADE_ENTRY, pos.symbol,
                                             scale_req.side.value, scale_req.quantity,
@@ -477,11 +498,13 @@ async def run_live_bot(symbols: List[str]) -> None:
         # 2. Aggregate tick → check for new candle bar
         # ----------------------------------------------------------------
         try:
-            old_minute = aggregator._current_minute
             aggregator.add_tick(tick)
             
-            # TRIGGER STRATEGY EVALUATION ONLY ON MINUTE ROLLOVER
-            if old_minute is not None and aggregator._current_minute > old_minute:
+            import time
+            current_time_sec = time.time()
+            # TRIGGER STRATEGY EVALUATION EVERY 30 SECONDS
+            if current_time_sec - last_eval_time >= 30:
+                last_eval_time = current_time_sec
 
                 # Settings already loaded at top of on_tick (cached, no disk I/O)
                 strategy_name = settings.get("active_strategy", "institutional_momentum")
@@ -562,7 +585,7 @@ async def run_live_bot(symbols: List[str]) -> None:
                             try:
                                 from trading_bot.strategies.premium_selection.options_selector import select_option
                                 instrument = s.replace("NSE:", "").replace("BSE:", "").replace("-INDEX", "").replace("-EQ", "")
-                                opt_dir = "CE" if latest_signal == 1 else "PE"
+                                opt_dir: Literal['CE', 'PE'] = "CE" if latest_signal == 1 else "PE"
                                 opt = select_option(instrument, ltp, opt_dir, itm_strikes=1)
                                 entry_symbol = opt.symbol
                                 lot_size = opt.lot_size
@@ -570,9 +593,6 @@ async def run_live_bot(symbols: List[str]) -> None:
                             except Exception as e:
                                 logger.error("Failed to auto-map option for %s: %s", s, e)
                         
-                        if strategy_name == "institutional_ema" and 'custom_sl_pct' in df.columns:
-                            sl_pct = df['custom_sl_pct'].iloc[-1] / 100.0
-                            logger.info(f"Using custom SL%% from strategy: {sl_pct*100:.2f}%%")
 
                     if latest_signal == 0:
                         continue
@@ -584,27 +604,26 @@ async def run_live_bot(symbols: List[str]) -> None:
 
                     if latest_signal == 1 and sentiment_score < -0.5:
                         logger.warning("Macro Filter Blocked BUY for %s: Highly Bearish Sentiment (%.2f)", s, sentiment_score)
-                        alerter.send_telegram_alert(f"🛑 **Trade Blocked**\n\nSymbol: {s}\nReason: Highly Bearish Sentiment ({sentiment_score})")
+                        alerter.send_alert(f"🛑 **Trade Blocked**\n\nSymbol: {s}\nReason: Highly Bearish Sentiment ({sentiment_score})")
                         continue
                         
                     if latest_signal == -1 and sentiment_score > 0.5:
                         logger.warning("Macro Filter Blocked SELL for %s: Highly Bullish Sentiment (%.2f)", s, sentiment_score)
-                        alerter.send_telegram_alert(f"🛑 **Trade Blocked**\n\nSymbol: {s}\nReason: Highly Bullish Sentiment ({sentiment_score})")
+                        alerter.send_alert(f"🛑 **Trade Blocked**\n\nSymbol: {s}\nReason: Highly Bullish Sentiment ({sentiment_score})")
                         continue
 
                     # ── Risk Manager Gate ──────────────────────────────
                     current_volatility = df["close"].pct_change().std() * 100
                     
-                    # Phase 7: Portfolio Circuit Breaker
                     if settings.get("maxDailyLossPct"):
-                        portfolio_risk.max_daily_dd_pct = settings.get("maxDailyLossPct")
+                        portfolio_risk.max_daily_dd_pct = float(settings.get("maxDailyLossPct", 0.05))
                     elif settings.get("max_daily_loss_pct"):
-                        portfolio_risk.max_daily_dd_pct = settings.get("max_daily_loss_pct")
+                        portfolio_risk.max_daily_dd_pct = float(settings.get("max_daily_loss_pct", 0.05))
 
-                    if settings.get("maxDailyTrades"):
-                        risk_manager.config.max_trades_per_day = settings.get("maxDailyTrades")
-                    elif settings.get("max_daily_trades"):
-                        risk_manager.config.max_trades_per_day = settings.get("max_daily_trades")
+                    if settings.get("maxDailyTrades") is not None:
+                        risk_manager.config.max_trades_per_day = int(settings.get("maxDailyTrades", 1))
+                    elif settings.get("max_daily_trades") is not None:
+                        risk_manager.config.max_trades_per_day = int(settings.get("max_daily_trades", 1))
                         
                     is_trading_allowed, halt_reason = portfolio_risk.is_trading_allowed(risk_manager.current_equity)
                     if not is_trading_allowed:
@@ -652,7 +671,7 @@ async def run_live_bot(symbols: List[str]) -> None:
                             side=OrderSide.BUY if latest_signal == 1 else OrderSide.SELL,
                         )
                         try:
-                            entry_req = validator.validate(entry_req)
+                            entry_req = validator.validator.validate(entry_req)
                             await broker.place_order_async(entry_req)
                             audit.trade(AuditEvent.TRADE_ENTRY, entry_symbol,
                                         entry_req.side.value, entry_req.quantity,
@@ -678,9 +697,11 @@ async def run_live_bot(symbols: List[str]) -> None:
                         entry_price=entry_price,
                         quantity=qty * lot_size,
                         entry_time=current_time,
+                        highest_price=entry_price,
+                        lowest_price=entry_price,
+                        stop_loss=sl_price,
+                        target=tgt_price,
                     )
-                    # We also manually attach direction for compatibility
-                    pos_obj.direction = "LONG" if pos_obj.side == 1 else "SHORT"
                     
                     active_positions[s] = pos_obj
                     _save_positions(active_positions)
@@ -705,10 +726,9 @@ async def run_live_bot(symbols: List[str]) -> None:
         # 3. Calculate Unrealized M2M PNL and update dashboard
         # ----------------------------------------------------------------
         import time
-        if not hasattr(on_tick, "last_m2m_update"):
-            on_tick.last_m2m_update = 0
+        global _m2m_last_update
             
-        if time.time() - on_tick.last_m2m_update > 1.0:
+        if time.time() - _m2m_last_update > 1.0:
             unrealized_pnl = 0.0
             for p in active_positions.values():
                 if p.symbol == sym:
@@ -721,7 +741,7 @@ async def run_live_bot(symbols: List[str]) -> None:
             
             total_pnl = risk_manager.daily_pnl + unrealized_pnl
             update_equity(risk_manager.current_equity + unrealized_pnl, total_pnl)
-            on_tick.last_m2m_update = time.time()
+            _m2m_last_update = time.time()
 
     logger.info("Starting live stream for symbols: %s", ", ".join(symbols))
     await broker.stream_quotes(symbols, on_tick)

@@ -39,7 +39,6 @@ trading-system/
 |----------|------|-------------|
 | EMA + RSI | `ema_rsi_strategy.py` | Classic EMA crossover + RSI + SuperTrend |
 | Enhanced AI | `enhanced_ai_strategy.py` | Multi-layer confirmation + AI filter |
-| Institutional EMA | `institutional_ema_strategy.py` | VWAP + ADX + SMC + Options |
 | Advanced AI/ML | `advanced_ai_ml_strategy.py` | XGBoost ML predictions |
 | Buy the Dip | `buy_the_dip_strategy.py` | Mean reversion on dips |
 | Premium 8-Layer | `premium_selection/` | 8-layer institutional filter |

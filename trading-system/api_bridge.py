@@ -74,7 +74,6 @@ from trading_bot.strategies.registry import registry
 from trading_bot.strategies.ema_rsi_strategy import generate_signals as ema_rsi_signals
 from trading_bot.strategies.enhanced_ai_strategy import generate_signals as enhanced_signals
 from trading_bot.strategies.premium_selection import generate_signals as premium_signals
-from trading_bot.strategies.institutional_ema_strategy import generate_signals as institutional_signals
 from trading_bot.strategies.advanced_ai_ml_strategy import generate_signals as advanced_ai_signals
 from trading_bot.strategies.momentum_strategy import generate_signals as momentum_signals
 
@@ -82,7 +81,6 @@ from trading_bot.strategies.momentum_strategy import generate_signals as momentu
 registry.register("ema_rsi",      ema_rsi_signals)
 registry.register("enhanced_ai",  enhanced_signals)
 registry.register("premium",      premium_signals)
-registry.register("institutional_ema", institutional_signals)
 registry.register("advanced_ai", advanced_ai_signals)
 registry.register("institutional_momentum", momentum_signals)
 
@@ -238,7 +236,25 @@ def start_fyers_socket():
     try:
         token_path = ".fyers_tokens.json"
         if not os.path.exists(token_path):
-            logger.warning("Token not found for WebSocket")
+            logger.warning("Token not found for WebSocket. Falling back to yfinance polling for Paper Mode.")
+            import yfinance as yf
+            import time
+            while True:
+                try:
+                    data = yf.download("^NSEI ^BSESN ^NSEBANK", period="1d", interval="1m", progress=False)
+                    if not data.empty:
+                        close_data = data['Close']
+                        mapping = {"^NSEI": "NSE:NIFTY50-INDEX", "^BSESN": "BSE:SENSEX-INDEX", "^NSEBANK": "NSE:NIFTYBANK-INDEX"}
+                        for yf_sym, sym in mapping.items():
+                            if yf_sym in close_data:
+                                s_data = close_data[yf_sym].dropna()
+                                if not s_data.empty:
+                                    last_price = float(s_data.iloc[-1])
+                                    current_market_data[sym] = {"lp": last_price, "chp": 0.0}
+                    time.sleep(10)
+                except Exception as e:
+                    logger.error(f"YFinance fallback error: {e}")
+                    time.sleep(10)
             return
             
         with open(token_path, "r") as f:
@@ -353,7 +369,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 except Exception:
                     pass
                     
-            if signals_cache["data"] is None or (time.time() - signals_cache["last_updated"] > 60 and is_market_open):
+            if signals_cache["data"] is None or (time.time() - signals_cache["last_updated"] > 30 and is_market_open):
                 # Set last_updated immediately to prevent spamming tasks while it computes!
                 signals_cache["last_updated"] = time.time()
                 # Run signal update as a non-blocking background task so WS stream stays responsive
@@ -374,20 +390,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     "NSE:NIFTYBANK-INDEX": {"lp": 51000.00, "chp": 0.0}
                 })
 
-            # Simulate ultra-fast live market ticks by adding a tiny random walk
-            import random
-            
-            # Add a strong upward drift to test the Aggressive AI Strategy!
-            if not hasattr(app, "trend_ticks"):
-                app.trend_ticks = 0
-            app.trend_ticks += 1
-            
-            for k in current_market_data:
-                # Drift up by 0.1 points per tick (2 points per second) + noise to simulate a smooth trend
-                drift = random.uniform(0.05, 0.15) if app.trend_ticks < 2000 else random.uniform(-0.15, -0.05)
-                noise = random.uniform(-0.5, 0.5)
-                current_market_data[k]["lp"] += (drift + noise)
-                current_market_data[k]["lp"] = round(current_market_data[k]["lp"], 2)
+            # Live market data is now served strictly from current_market_data 
+            # which is populated by the active broker WebSocket.
                 
             # Send the latest data for NIFTY, SENSEX, BANKNIFTY and dynamic stocks
             websocket_data = {
@@ -644,7 +648,7 @@ async def get_backtest(
             data = None
             
         if not data:
-            return {"error": f"No data returned by broker for {symbol}. If using yfinance, 1 Min data is limited to the last 7 days. Ensure your broker is connected or adjust the date range."}
+            return {"error": f"No data returned by broker for {symbol}. If using yfinance, intraday data has history limits (e.g., 7 days for 1m, 60 days for 5m). Ensure your broker is connected or adjust the date range."}
             
         # Convert list of dicts to DataFrame for the strategy
         df = pd.DataFrame(data)
@@ -704,6 +708,7 @@ async def get_backtest(
                 rsi_buy_thresh=rsi_buy, 
                 rsi_sell_thresh=rsi_sell
             )
+            rejection_logs = []
         
         # Use the formal backtesting engine function for institutional accuracy
         from backtesting_engine.run import run_intraday_backtest

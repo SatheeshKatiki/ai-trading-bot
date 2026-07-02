@@ -71,7 +71,7 @@ export function NumberInput({
   };
 
   return (
-    <div className={`relative group flex items-center bg-muted/30 border border-border/50 rounded-lg focus-within:ring-1 ${ringClassMap[ringColor]} overflow-hidden h-10 transition-all ${containerClassName}`}>
+    <div className={`relative group flex items-center bg-muted/30 border border-border/50 rounded-lg focus-within:ring-1 ${ringClassMap[ringColor]} overflow-hidden transition-all ${containerClassName || 'h-10'}`}>
       {children}
       <input
         type="number"
@@ -80,7 +80,7 @@ export function NumberInput({
         step={step}
         min={min}
         max={max}
-        className={`flex-1 bg-transparent pl-3 pr-2 py-2 text-sm text-foreground focus:outline-none font-mono ${className}`}
+        className={`flex-1 w-full bg-transparent pl-3 pr-2 py-2 text-sm text-foreground focus:outline-none font-mono ${className}`}
         {...props}
       />
       {suffix && (
@@ -88,7 +88,7 @@ export function NumberInput({
           {suffix}
         </span>
       )}
-      <div className="flex flex-col h-full border-l border-border/50 w-6 opacity-0 group-hover:opacity-100 transition-opacity bg-background/20">
+      <div className="flex flex-col h-full border-l border-border/50 w-6 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity bg-background/20">
         <button 
           type="button"
           onClick={handleIncrement}

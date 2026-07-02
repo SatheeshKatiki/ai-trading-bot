@@ -172,8 +172,8 @@ export default function Backtest() {
   const [selectedAssetName, setSelectedAssetName] = useState("NIFTY 50");
   const [timeframe, setTimeframe] = useState("1 Min");
   const [strategy, setStrategy] = useState("institutional_momentum");
-  const [startDate, setStartDate] = useState("2025-05-16");
-  const [endDate, setEndDate] = useState("2026-05-16");
+  const [startDate, setStartDate] = useState("2020-01-01");
+  const [endDate, setEndDate] = useState(new Date().toISOString().split('T')[0]);
   const [datePreset, setDatePreset] = useState("all_data");
   const [initialCapital, setInitialCapital] = useState("100000");
   const [quantity, setQuantity] = useState<number | string>(65);
@@ -185,7 +185,7 @@ export default function Backtest() {
   const [scalePct, setScalePct] = useState<number | string>(0.2);
   const [maxScales, setMaxScales] = useState<number | string>(2);
   const [maxDailyLossPct, setMaxDailyLossPct] = useState<number | string>(3);
-  const [maxDailyTrades, setMaxDailyTrades] = useState<number | string>(6);
+  const [maxDailyTrades, setMaxDailyTrades] = useState<number | string>(0);
   const [inputMode, setInputMode] = useState<'lots' | 'qty'>('lots');
   const [trailTrigger, setTrailTrigger] = useState<number | string>(0.8);
   const [trailOffset, setTrailOffset] = useState<number | string>(0.2);
@@ -196,11 +196,11 @@ export default function Backtest() {
   const [currentPage, setCurrentPage] = useState(1);
   const tradesPerPage = 15;
   // Institutional Strategy Filters
-  const [enableEmaFilter, setEnableEmaFilter] = useState(true);
-  const [enableVolumeFilter, setEnableVolumeFilter] = useState(true);
-  const [enableAdxFilter, setEnableAdxFilter] = useState(true);
-  const [enableVwapFilter, setEnableVwapFilter] = useState(true);
-  const [enableRsiFilter, setEnableRsiFilter] = useState(true);
+  const [enableEmaFilter, setEnableEmaFilter] = useState(false);
+  const [enableVolumeFilter, setEnableVolumeFilter] = useState(false);
+  const [enableAdxFilter, setEnableAdxFilter] = useState(false);
+  const [enableVwapFilter, setEnableVwapFilter] = useState(false);
+  const [enableRsiFilter, setEnableRsiFilter] = useState(false);
   const [enableSqueezeFilter, setEnableSqueezeFilter] = useState(false);
   const [enableExtensionFilter, setEnableExtensionFilter] = useState(false);
   const [enableCprFilter, setEnableCprFilter] = useState(false);
@@ -323,7 +323,7 @@ export default function Backtest() {
       setScalePct(savedParams.scale_pct || 0.2);
       setMaxScales(savedParams.max_scales || 2);
       setMaxDailyLossPct(savedParams.max_daily_loss_pct ?? 3);
-      setMaxDailyTrades(savedParams.max_daily_trades ?? 6);
+      setMaxDailyTrades(savedParams.max_daily_trades !== undefined ? savedParams.max_daily_trades : 0);
       setTrailTrigger(savedParams.trail_trigger || 0.8);
       setTrailOffset(savedParams.trail_offset || 0.2);
       setSearchQuery(savedParams.symbol);
@@ -362,7 +362,7 @@ export default function Backtest() {
       scale_pct: scalePct || 0.2,
       max_scales: maxScales || 2,
       max_daily_loss_pct: maxDailyLossPct || 3,
-      max_daily_trades: maxDailyTrades || 6,
+      max_daily_trades: maxDailyTrades !== undefined ? maxDailyTrades : 0,
       trail_trigger: trailTrigger || 0.8,
       trail_offset: trailOffset || 0.2
     };
@@ -516,7 +516,7 @@ export default function Backtest() {
 
               {/* Dynamic Lot/Qty Selector */}
               <div className="pt-2 relative group">
-                <span className="absolute -top-0.5 left-2 px-1 bg-[#09090b] text-[10px] font-bold text-muted-foreground uppercase tracking-wider group-focus-within:text-primary transition-colors z-20">
+                <span className="absolute -top-0.5 left-2 px-1 bg-background text-[10px] font-bold text-muted-foreground uppercase tracking-wider group-focus-within:text-primary transition-colors z-20">
                   {inputMode === 'lots' ? 'Lots' : 'Qty.'}
                 </span>
                 <NumberInput
@@ -587,7 +587,6 @@ export default function Backtest() {
                   >
                     <option value="ema_rsi">EMA + RSI (Classic)</option>
                     <option value="enhanced_ai">Enhanced AI Strategy</option>
-                    <option value="institutional_ema">Institutional EMA</option>
                     <option value="advanced_ai">Advanced AI/ML</option>
                     <option value="premium">Premium Options Alpha</option>
                     <option value="institutional_momentum">Institutional Momentum</option>
@@ -686,10 +685,11 @@ export default function Backtest() {
                   <div>
                     <label className="block text-xs font-semibold text-orange-400 mb-1">⛔ Max Trades/Day</label>
                     <NumberInput
-                      value={maxDailyTrades}
-                      onChange={(val) => setMaxDailyTrades(val === '' ? '' : Number(val))}
-                      min={1}
+                      value={maxDailyTrades === 0 ? '' : maxDailyTrades}
+                      onChange={(val) => setMaxDailyTrades(val === '' ? 0 : Number(val))}
+                      min={0}
                       step={1}
+                      placeholder="Unlimited"
                       ringColor="destructive"
                     />
                   </div>

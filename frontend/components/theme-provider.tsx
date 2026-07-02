@@ -30,9 +30,13 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     const savedDensity = localStorage.getItem("density") || "compact";
     const savedGlass = localStorage.getItem("glassEnabled") !== "false";
 
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setThemeState(savedTheme);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setAccentColorState(savedColor);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setDensityState(savedDensity);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setGlassEnabledState(savedGlass);
     setIsMounted(true);
   }, []);

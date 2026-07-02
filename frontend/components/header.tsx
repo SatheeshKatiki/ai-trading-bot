@@ -351,10 +351,7 @@ export default function Header() {
         {/* Institutional Level Search Box in Header */}
         {pathname !== "/strategy" && (
           <div className="relative" ref={searchRef}>
-            <motion.div 
-              className={`absolute inset-0 rounded-lg bg-primary/20 -z-10 blur-sm transition-opacity duration-300 ${isSearchFocused ? 'opacity-100' : 'opacity-0'}`}
-              layoutId="search-glow"
-            />
+
             <Search className={`w-4 h-4 absolute left-3 top-1/2 transform -translate-y-1/2 transition-colors duration-300 ${isSearchFocused ? 'text-primary' : 'text-muted-foreground'}`} />
             <input
               ref={searchInputRef}

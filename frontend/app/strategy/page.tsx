@@ -62,7 +62,6 @@ export default function StrategySettings() {
   const [strategies, setStrategies] = useState([
     { id: "ema_rsi", name: "EMA + RSI (Classic)" },
     { id: "enhanced_ai", name: "Enhanced AI Strategy" },
-    { id: "institutional_ema", name: "Institutional EMA" },
     { id: "advanced_ai", name: "Advanced AI/ML" },
     { id: "premium", name: "Premium Options Alpha" },
     { id: "institutional_momentum", name: "Institutional Momentum" },
@@ -128,7 +127,6 @@ export default function StrategySettings() {
             "ema_rsi": "EMA + RSI (Classic)",
             "enhanced_ai": "Enhanced AI Strategy",
             "premium": "Premium Options Alpha",
-            "institutional_ema": "Institutional EMA",
             "advanced_ai": "Advanced AI/ML",
             "institutional_momentum": "Institutional Momentum"
           };
@@ -392,7 +390,6 @@ export default function StrategySettings() {
                             >
                               <option value="ema_rsi">EMA + RSI (Classic)</option>
                               <option value="enhanced_ai">Enhanced AI Strategy</option>
-                              <option value="institutional_ema">Institutional EMA</option>
                               <option value="advanced_ai">Advanced AI/ML</option>
                               <option value="premium">Premium Options Alpha</option>
                             </select>
@@ -422,14 +419,14 @@ export default function StrategySettings() {
                           <label className="text-xs font-bold text-muted-foreground block mb-1.5 uppercase tracking-wider">Max Trades / Day</label>
                           <div className="flex items-center border border-border rounded-lg bg-background overflow-hidden focus-within:ring-2 focus-within:ring-primary transition-all">
                             <button
-                              onClick={() => setSettings({ ...settings, max_trades_per_day: Math.max(1, (settings.max_trades_per_day || 5) - 1) })}
+                              onClick={() => setSettings({ ...settings, max_trades_per_day: Math.max(0, (settings.max_trades_per_day !== undefined ? settings.max_trades_per_day : 0) - 1) })}
                               className="px-4 py-2.5 hover:bg-muted text-muted-foreground transition-colors hover:text-foreground"
                             >
                               <Minus className="w-4 h-4" />
                             </button>
-                            <input type="text" value={settings.max_trades_per_day || 5} className="w-full bg-transparent text-center text-sm font-extrabold text-foreground focus:outline-none" readOnly />
+                            <input type="text" value={settings.max_trades_per_day === 0 || settings.max_trades_per_day === undefined ? "Unlimited" : settings.max_trades_per_day} className="w-full bg-transparent text-center text-sm font-extrabold text-foreground focus:outline-none" readOnly />
                             <button
-                              onClick={() => setSettings({ ...settings, max_trades_per_day: (settings.max_trades_per_day || 5) + 1 })}
+                              onClick={() => setSettings({ ...settings, max_trades_per_day: (settings.max_trades_per_day !== undefined ? settings.max_trades_per_day : 0) + 1 })}
                               className="px-4 py-2.5 hover:bg-muted text-muted-foreground transition-colors hover:text-foreground"
                             >
                               <Plus className="w-4 h-4" />

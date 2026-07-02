@@ -12,7 +12,6 @@ Strategies are auto-discovered by `registry.py`. Any `.py` file with a `generate
 |----------|------|-----------|----------|
 | `ema_rsi` | Trend | ⭐⭐ | Beginners, stable trends |
 | `enhanced_ai` | AI Hybrid | ⭐⭐⭐ | AI-filtered trades |
-| `institutional_ema` | Institutional | ⭐⭐⭐⭐ | Options with SMC concepts |
 | `advanced_ai` | ML | ⭐⭐⭐⭐ | XGBoost-driven decisions |
 | `buy_the_dip` | Mean Reversion | ⭐⭐ | Oversold bounces |
 | `premium_selection/` | 8-Layer Filter | ⭐⭐⭐⭐⭐ | Premium option selection |

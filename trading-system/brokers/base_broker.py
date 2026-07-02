@@ -225,13 +225,21 @@ class BaseBroker(ABC):
             elif timeframe == "1 Week": interval = "1wk"; max_days = 3650
             elif timeframe == "1 Month": interval = "1mo"; max_days = 3650
             
-            # Truncate start_date to max_days allowed by yfinance
+            # Truncate start_date to max_days allowed by yfinance (relative to today)
             start_dt = datetime.strptime(start_date, '%Y-%m-%d')
             end_dt = datetime.strptime(end_date, '%Y-%m-%d')
-            if (end_dt - start_dt).days >= max_days:
-                start_dt = end_dt - timedelta(days=max_days - 1)
+            
+            today_dt = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            oldest_allowed_dt = today_dt - timedelta(days=max_days - 1)
+            
+            if start_dt < oldest_allowed_dt:
+                start_dt = oldest_allowed_dt
                 start_date = start_dt.strftime('%Y-%m-%d')
                 self.logger.info(f"yfinance limit: truncated start_date to {start_date} for interval {interval}")
+                
+            if end_dt < oldest_allowed_dt:
+                self.logger.warning(f"yfinance limit: requested end_date {end_date} is older than allowed {max_days} days. Returning empty.")
+                return []
             
             ticker = yf.Ticker(ticker_symbol)
             df = ticker.history(start=start_date, end=end_date, interval=interval)

@@ -314,7 +314,7 @@ const ALL_TIMEFRAMES = ["1 Min", "3 Min", "5 Min", "15 Min", "30 Min", "1 Hour",
 
 function LiveTradingContent() {
   const searchParams = useSearchParams();
-  const urlSymbol = searchParams.get('symbol') || 'SENSEX';
+  const urlSymbol = searchParams.get('symbol') || 'NIFTY';
   const defaultBaseQty = getBaseQty(urlSymbol);
 
   const [favoriteTimeframes, setFavoriteTimeframes] = useState<string[]>(['1 Min', '5 Min', '15 Min']);
@@ -366,7 +366,7 @@ function LiveTradingContent() {
   const [scalePct, setScalePct] = useState(0.2);
   const [maxScales, setMaxScales] = useState(2);
   const [maxDailyLossPct, setMaxDailyLossPct] = useState(3.0);
-  const [maxDailyTrades, setMaxDailyTrades] = useState(6);
+  const [maxDailyTrades, setMaxDailyTrades] = useState(0);
   const [trailTrigger, setTrailTrigger] = useState(0.8);
   const [trailOffset, setTrailOffset] = useState(0.2);
   const prevTradesRef = useRef<Trade[]>([]);
@@ -617,12 +617,21 @@ function LiveTradingContent() {
         if (!isMounted) return;
         const data = await res.json();
         
-        setEquity(data.equity);
-        setPnl(data.pnl);
-        setTrades(data.trades || []);
+        // Only use fallback polling for trades/pnl if WS is disconnected
+        if (!isWsConnected) {
+          setEquity(data.equity);
+          setPnl(data.pnl);
+          setTrades(data.trades || []);
+          
+          if (data.signalsData && data.signalsData.confidence) {
+            setAiConfidence(data.signalsData.confidence);
+          }
+          if (data.signalsData && data.signalsData.status) {
+            setRiskStatus(data.signalsData.status);
+          }
+        }
+        
         const parsedPrice = Number(data.currentPrice);
-        // Optimization: If WebSocket is connected, let it handle live price updates.
-        // If WebSocket is disconnected or price is 0 (initial load), update from polling!
         if (!isWsConnected || currentPrice === 0) {
           if (parsedPrice && parsedPrice !== 0) {
             setCurrentPrice(prev => (isMarketOpen() || prev === 0) ? parsedPrice : prev);
@@ -632,30 +641,16 @@ function LiveTradingContent() {
           }
         }
         
-        // Extract AI Confidence if available
-        if (data.signalsData && data.signalsData.confidence) {
-          setAiConfidence(data.signalsData.confidence);
-        }
-        
-        // Extract Risk Status / Bias if available
-        if (data.signalsData && data.signalsData.status) {
-          setRiskStatus(data.signalsData.status);
-        }
-        
-        // Equity is now handled directly by the backend in data.equity
         setIsLoading(false);
       } catch (error) {
-        // Suppress "Failed to fetch" console.errors during background polling 
-        // to prevent Next.js Dev Overlay from popping up during HMR or restarts
         if (error instanceof TypeError && error.message.includes('Failed to fetch')) {
-            // Silently ignore transient network drops
         } else {
             console.warn("State polling issue:", error);
         }
-        if (isMounted) setIsLoading(false); // Ensure loading stops on error
+        if (isMounted) setIsLoading(false);
       } finally {
         if (isMounted) {
-          timeoutId = setTimeout(fetchState, 1000); // Poll recursively every 1s
+          timeoutId = setTimeout(fetchState, 5000); // Reduced polling to 5s to prevent lag
         }
       }
     };
@@ -665,7 +660,7 @@ function LiveTradingContent() {
       isMounted = false;
       clearTimeout(timeoutId);
     };
-  }, [urlSymbol]);
+  }, [urlSymbol, isWsConnected]); // Added isWsConnected to dependencies
 
   // WebSocket for real-time price streaming (Institutional Fast Stream)
   useEffect(() => {
@@ -681,42 +676,56 @@ function LiveTradingContent() {
       ws.onopen = () => {
         console.log("WebSocket Connected");
         setIsWsConnected(true);
-        reconnectDelay = 1000; // Reset delay on successful connection
+        reconnectDelay = 1000;
       };
       
       ws.onclose = () => {
         console.log(`WebSocket Disconnected. Reconnecting in ${reconnectDelay}ms...`);
         setIsWsConnected(false);
         reconnectTimeout = setTimeout(connect, reconnectDelay);
-        reconnectDelay = Math.min(reconnectDelay * 2, maxDelay); // Exponential backoff
+        reconnectDelay = Math.min(reconnectDelay * 2, maxDelay);
       };
       
       ws.onerror = (err) => {
-        // Use console.warn instead of console.error to prevent Next.js dev overlay popups when backend is offline
         console.warn("WebSocket Connection Error - Backend might be offline");
-        ws.close(); // Force onclose to trigger reconnect
+        ws.close();
       };
+      
       let lastWsUpdate = 0;
       ws.onmessage = (event) => {
-        // Stop processing live ticks if market is closed (freezes price updates everywhere)
         if (!isMarketOpen()) return;
 
         const data = JSON.parse(event.data);
+        
+        // Fast UI Updates from WS - Optimized to prevent unnecessary re-renders
+        if (data.trades) {
+          setTrades(prev => JSON.stringify(prev) === JSON.stringify(data.trades) ? prev : data.trades);
+        }
+        if (data.pnl !== undefined) {
+          setPnl(prev => prev === data.pnl ? prev : data.pnl);
+        }
+        if (data.signalsData) {
+           if (data.signalsData.confidence) {
+             setAiConfidence(prev => prev === data.signalsData.confidence ? prev : data.signalsData.confidence);
+           }
+           if (data.signalsData.status) {
+             setRiskStatus(prev => prev === data.signalsData.status ? prev : data.signalsData.status);
+           }
+        }
+        
         if (data.NIFTY) {
           const now = Date.now();
-          // Reduced throttle to 50ms to allow 100ms updates to pass through instantly for ultra-fast UI
           if (now - lastWsUpdate > 50) {
             lastWsUpdate = now;
             setTickerData(prev => {
               if (prev.NIFTY.lp === data.NIFTY.lp && 
                   prev.SENSEX.lp === data.SENSEX.lp && 
                   prev.BANKNIFTY.lp === data.BANKNIFTY.lp) {
-                return prev; // Optimization: Don't re-render if data is same
+                return prev;
               }
               return data;
             });
             
-            // Also update the selected symbol's price in the header if it matches
             const selectedData = data[urlSymbol];
             if (selectedData) {
               setCurrentPrice(prev => prev === selectedData.lp ? prev : selectedData.lp);
@@ -727,7 +736,6 @@ function LiveTradingContent() {
       };
     };
 
-    // Initial connection
     connect();
     
     return () => {
@@ -737,7 +745,21 @@ function LiveTradingContent() {
   }, [urlSymbol]);
 
 
-  // Removed TradingView initialization
+  // Filter trades for today's date in IST
+  const todayTrades = trades.filter(t => {
+    if (!t.time) return false;
+    const datePart = String(t.time).substring(0, 10);
+    
+    const now = new Date();
+    const formatter = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' });
+    const parts = formatter.formatToParts(now);
+    const y = parts.find(p => p.type === 'year')?.value;
+    const m = parts.find(p => p.type === 'month')?.value;
+    const d = parts.find(p => p.type === 'day')?.value;
+    const today = `${y}-${m}-${d}`;
+    
+    return datePart === today;
+  });
 
   return (
     <div className="flex h-screen bg-background text-foreground">
@@ -872,11 +894,11 @@ function LiveTradingContent() {
                 <select 
                   value={strategy}
                   onChange={(e) => handleStrategyChange(e.target.value)}
-                  className="select-field pl-10 pr-10 h-10 min-w-[200px] text-ellipsis overflow-hidden whitespace-nowrap appearance-none"
+                  className="select-field bg-none pl-10 pr-10 h-10 min-w-[200px] text-ellipsis overflow-hidden whitespace-nowrap appearance-none"
+                  style={{ backgroundImage: 'none' }}
                 >
                   <option value="ema_rsi">EMA + RSI (Classic)</option>
                   <option value="enhanced_ai">Enhanced AI Strategy</option>
-                  <option value="institutional_ema">Institutional EMA</option>
                   <option value="advanced_ai">Advanced AI/ML</option>
                   <option value="premium">Premium Options Alpha</option>
                   <option value="institutional_momentum">Institutional Momentum</option>
@@ -886,7 +908,7 @@ function LiveTradingContent() {
 
               {/* Dynamic Lot/Qty Selector */}
               <div className="relative group">
-                <span className="absolute -top-2.5 left-2 px-1 bg-[#09090b] text-[10px] font-bold text-muted-foreground uppercase tracking-wider group-focus-within:text-primary transition-colors z-20">
+                <span className="absolute -top-3 left-2 px-1 bg-background text-[10px] font-bold text-muted-foreground uppercase tracking-wider group-focus-within:text-primary transition-colors z-20">
                   {inputMode === 'lots' ? 'Lots' : 'Qty.'}
                 </span>
                 <NumberInput
@@ -909,7 +931,7 @@ function LiveTradingContent() {
 
               {/* Stoploss Selector */}
               <div className="relative group">
-                <span className="absolute -top-2.5 left-2 px-1 bg-[#09090b] text-[10px] font-bold text-destructive/80 uppercase tracking-wider group-focus-within:text-destructive transition-colors z-20">
+                <span className="absolute -top-3 left-2 px-1 bg-background text-[10px] font-bold text-destructive/80 uppercase tracking-wider group-focus-within:text-destructive transition-colors z-20">
                   SL %
                 </span>
                 <NumberInput
@@ -929,7 +951,8 @@ function LiveTradingContent() {
                 <select 
                   value={timeframe}
                   onChange={(e) => setTimeframe(e.target.value)}
-                  className="select-field pl-10 pr-10 h-10 min-w-[110px] appearance-none"
+                  className="select-field bg-none pl-10 pr-10 h-10 min-w-[110px] appearance-none"
+                  style={{ backgroundImage: 'none' }}
                 >
                   <option value="1 Min">1 Min</option>
                   <option value="3 Min">3 Min</option>
@@ -1009,7 +1032,7 @@ function LiveTradingContent() {
                         onChange={(val) => handleAdvancedSettingChange("scalePct", val === '' ? '' : Number(val), setScalePct)}
                         min={0}
                         step={0.1}
-                        containerClassName="w-16 h-7 rounded-md"
+                        containerClassName="w-20 h-7 rounded-md"
                       />
                     </div>
                     <div className="flex items-center gap-2">
@@ -1047,7 +1070,7 @@ function LiveTradingContent() {
                         onChange={(val) => handleAdvancedSettingChange("trailTrigger", val === '' ? '' : Number(val), setTrailTrigger)}
                         min={0.1}
                         step={0.1}
-                        containerClassName="w-16 h-7 rounded-md"
+                        containerClassName="w-20 h-7 rounded-md"
                       />
                     </div>
                     <div className="flex items-center gap-2">
@@ -1057,7 +1080,7 @@ function LiveTradingContent() {
                         onChange={(val) => handleAdvancedSettingChange("trailOffset", val === '' ? '' : Number(val), setTrailOffset)}
                         min={0.1}
                         step={0.1}
-                        containerClassName="w-16 h-7 rounded-md"
+                        containerClassName="w-20 h-7 rounded-md"
                       />
                     </div>
                   </>
@@ -1071,7 +1094,7 @@ function LiveTradingContent() {
                     min={1}
                     max={250}
                     step={1}
-                    containerClassName="w-16 h-7 rounded-md"
+                    containerClassName="w-20 h-7 rounded-md"
                   />
                 </div>
 
@@ -1083,19 +1106,20 @@ function LiveTradingContent() {
                     min={0.5}
                     step={0.5}
                     ringColor="destructive"
-                    containerClassName="w-16 h-7 rounded-md"
+                    containerClassName="w-20 h-7 rounded-md"
                   />
                 </div>
                 
                 <div className="flex items-center gap-2 border-l border-border/50 pl-4 text-destructive">
                   <span className="text-[10px] uppercase">Max Trades</span>
                   <NumberInput
-                    value={maxDailyTrades}
-                    onChange={(val) => handleAdvancedSettingChange("maxDailyTrades", val === '' ? '' : Number(val), setMaxDailyTrades)}
-                    min={1}
+                    value={maxDailyTrades === 0 ? '' : maxDailyTrades}
+                    onChange={(val) => handleAdvancedSettingChange("maxDailyTrades", val === '' ? 0 : Number(val), setMaxDailyTrades)}
+                    min={0}
                     step={1}
+                    placeholder="Unlimited"
                     ringColor="destructive"
-                    containerClassName="w-16 h-7 rounded-md"
+                    containerClassName="w-[88px] h-7 rounded-md"
                   />
                 </div>
               </div>
@@ -1332,12 +1356,12 @@ function LiveTradingContent() {
                     <Zap className="w-5 h-5 text-warning" />
                     Live Execution Feed
                   </h3>
-                  <span className="text-xs font-bold px-2 py-1 bg-muted/50 rounded-md text-muted-foreground">{trades.length} Trades</span>
+                  <span className="text-xs font-bold px-2 py-1 bg-muted/50 rounded-md text-muted-foreground">{todayTrades.length} Trades</span>
                 </div>
               
               <div className="flex-1 overflow-y-auto pr-2 space-y-3 custom-scrollbar">
                 <AnimatePresence mode="popLayout">
-                  {trades.length === 0 ? (
+                  {todayTrades.length === 0 ? (
                     <motion.div 
                       initial={{ opacity: 0, scale: 0.9 }}
                       animate={{ opacity: 1, scale: 1 }}
@@ -1354,7 +1378,7 @@ function LiveTradingContent() {
                       <p className="text-[10px] mt-1 opacity-50 uppercase tracking-wider">Awaiting Signals...</p>
                     </motion.div>
                   ) : (
-                    trades.map((trade, i) => (
+                    todayTrades.map((trade, i) => (
                       <motion.div 
                         key={trade.id || i} 
                         initial={{ opacity: 0, x: -20, height: 0 }}
@@ -1379,7 +1403,13 @@ function LiveTradingContent() {
                           </div>
                           <div>
                             <p className="text-sm font-bold text-foreground tracking-tight">{formatTradeDisplay(trade.symbol, trade.price, trade.side, trade.qty)}</p>
-                            <p className="text-[10px] font-mono tabular-nums text-muted-foreground">{trade.time}</p>
+                            <p className="text-[10px] font-mono tabular-nums text-muted-foreground">
+                              {String(trade.time).includes('T') 
+                                ? String(trade.time).split('T')[1].substring(0, 8) 
+                                : String(trade.time).includes(' ') 
+                                  ? String(trade.time).split(' ')[1] 
+                                  : trade.time}
+                            </p>
                           </div>
                         </div>
                         <div className="text-right">

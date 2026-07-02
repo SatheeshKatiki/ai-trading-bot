@@ -172,8 +172,12 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
       if (data) {
         tooltipRef.current.style.display = "block";
         const date = new Date((param.time as number) * 1000);
-        const timeStr = date.toISOString().substr(11, 5);
-        const dateStr = date.toISOString().substr(0, 10);
+        const timeStr = date.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
+        // Create YYYY-MM-DD format based on local time
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        const dateStr = `${year}-${month}-${day}`;
         const volumeStr = volData && volData.value ? (volData.value >= 1000000 ? (volData.value / 1000000).toFixed(2) + 'M' : (volData.value / 1000).toFixed(2) + 'K') : '---';
         
         tooltipRef.current.innerHTML = `
@@ -237,10 +241,11 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
             const symbolTrades = stateData.trades.filter((t: any) => t.symbol === symbol);
             
             symbolTrades.forEach((trade: any) => {
-               const dateStr = trade.entry_time;
-               if (!dateStr) return;
-               const date = new Date(dateStr);
-               const time = (Math.floor(date.getTime() / 1000) - (date.getTimezoneOffset() * 60)) as Time;
+               const dateStr = String(trade.entry_time || trade.time);
+               if (!dateStr || dateStr === "undefined" || dateStr === "null") return;
+               const safeDateStr = dateStr.includes(' ') ? dateStr.replace(' ', 'T') : dateStr;
+               const date = new Date(safeDateStr);
+               const time = Math.floor(date.getTime() / 1000) as Time;
                let closestTime = time;
                let minDiff = Infinity;
                for (const candle of chartData) {
@@ -323,9 +328,10 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
         }
 
         const formattedData = json.data.map((item: any) => {
-          const dateStr = item.datetime || item.Datetime || item.date;
-          const date = new Date(dateStr);
-          const time = (Math.floor(date.getTime() / 1000) - (date.getTimezoneOffset() * 60)) as Time;
+          const dateStr = String(item.datetime || item.Datetime || item.date);
+          const safeDateStr = dateStr.includes(' ') ? dateStr.replace(' ', 'T') : dateStr;
+          const date = new Date(safeDateStr);
+          const time = Math.floor(date.getTime() / 1000) as Time;
           return {
             time, open: parseFloat(item.open || item.Open), high: parseFloat(item.high || item.High),
             low: parseFloat(item.low || item.Low), close: parseFloat(item.close || item.Close),
@@ -387,27 +393,41 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
     if (livePrice && livePrice > 0 && seriesRef.current && lastCandleRef.current) {
       const lastCandle = lastCandleRef.current;
       
-      // Calculate timeframe in seconds
-      let timeframeSeconds = 5 * 60; // Default 5 min
-      if (timeframe.includes("Min")) {
-        timeframeSeconds = parseInt(timeframe) * 60;
-      } else if (timeframe.includes("Hour")) {
-        timeframeSeconds = parseInt(timeframe) * 60 * 60;
-      } else if (timeframe === "1 Day") {
-        timeframeSeconds = 24 * 60 * 60;
-      }
-      
       const now = new Date();
-      const currentLocalSeconds = Math.floor(now.getTime() / 1000) - (now.getTimezoneOffset() * 60);
+      
+      // Calculate exact candle start time aligned to Indian Market Open (09:15)
+      const tfVal = parseInt(timeframe.split(' ')[0] || "5");
+      let currentCandleTime: number;
+
+      if (timeframe.includes("Day")) {
+         const d = new Date(now);
+         d.setHours(0, 0, 0, 0);
+         currentCandleTime = Math.floor(d.getTime() / 1000);
+      } else {
+         const minutesSinceMidnight = now.getHours() * 60 + now.getMinutes();
+         const minutesSinceOpen = minutesSinceMidnight - (9 * 60 + 15);
+         const effectiveMins = Math.max(0, minutesSinceOpen);
+         
+         let roundedMins = 0;
+         if (timeframe.includes("Hour")) {
+             roundedMins = Math.floor(effectiveMins / 60) * 60;
+         } else {
+             roundedMins = Math.floor(effectiveMins / tfVal) * tfVal;
+         }
+         
+         const d = new Date(now);
+         d.setHours(9, 15 + roundedMins, 0, 0);
+         currentCandleTime = Math.floor(d.getTime() / 1000);
+      }
       
       let updatedCandle;
       
-      if (currentLocalSeconds >= (lastCandle.time as number) + timeframeSeconds) {
+      if (currentCandleTime > (lastCandle.time as number)) {
         updatedCandle = {
-          time: ((lastCandle.time as number) + timeframeSeconds) as Time,
-          open: lastCandle.close,
-          high: Math.max(lastCandle.close, livePrice),
-          low: Math.min(lastCandle.close, livePrice),
+          time: currentCandleTime as Time,
+          open: livePrice,
+          high: livePrice,
+          low: livePrice,
           close: livePrice,
           volume: 0
         };
