@@ -11,6 +11,32 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Literal
+import math
+import logging
+
+logger = logging.getLogger(__name__)
+
+# Basic Black-Scholes Math Helper
+def norm_cdf(x: float) -> float:
+    return (1.0 + math.erf(x / math.sqrt(2.0))) / 2.0
+
+def norm_pdf(x: float) -> float:
+    return math.exp(-0.5 * x * x) / math.sqrt(2.0 * math.pi)
+
+def calculate_greeks(spot: float, strike: float, days_to_expiry: float, vol: float = 0.15, option_type: str = "CE") -> dict:
+    t = max(days_to_expiry / 365.0, 0.0001)
+    r = 0.07 # 7% risk-free rate
+    d1 = (math.log(spot / strike) + (r + 0.5 * vol**2) * t) / (vol * math.sqrt(t))
+    d2 = d1 - vol * math.sqrt(t)
+    
+    if option_type == "CE":
+        delta = norm_cdf(d1)
+        theta = (-(spot * norm_pdf(d1) * vol) / (2 * math.sqrt(t)) - r * strike * math.exp(-r * t) * norm_cdf(d2)) / 365.0
+    else:
+        delta = norm_cdf(d1) - 1.0
+        theta = (-(spot * norm_pdf(d1) * vol) / (2 * math.sqrt(t)) + r * strike * math.exp(-r * t) * norm_cdf(-d2)) / 365.0
+        
+    return {"delta": delta, "theta": theta}
 
 
 # ──────────────────────────────────────────────
@@ -140,6 +166,21 @@ def select_option(
 
     expiry = _next_expiry(instrument.upper(), from_date)
     symbol = _build_symbol(instrument, expiry, strike, direction)
+
+    # ── GREEKS GUARD (Delta/Theta Filter) ──
+    from datetime import datetime
+    now = datetime.now()
+    days_to_expiry = (expiry - now.date()).days
+    if days_to_expiry == 0 and now.hour >= 14:
+        # Expiry day after 2 PM -> Theta is extreme, Delta drops
+        # Force going DEEP ITM to protect Delta and minimize Theta decay
+        strike = atm_strike - (2 * step) if direction == "CE" else atm_strike + (2 * step)
+        symbol = _build_symbol(instrument, expiry, strike, direction)
+        itm_strikes = 2
+        logger.warning("Greeks Guard Triggered: 0DTE after 2 PM. Forced Deep ITM (%s) to avoid Theta decay trap.", symbol)
+    else:
+        greeks = calculate_greeks(spot_price, strike, days_to_expiry, option_type=direction)
+        logger.info("Computed Greeks for %s -> Delta: %.2f | Theta: %.2f", symbol, greeks["delta"], greeks["theta"])
 
     return OptionContract(
         instrument=instrument.upper(),

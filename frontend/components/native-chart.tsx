@@ -2,7 +2,8 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { createChart, ColorType, IChartApi, ISeriesApi, Time, CandlestickSeries, LineSeries, HistogramSeries, CrosshairMode } from "lightweight-charts";
-import { RefreshCw } from "lucide-react";
+import { RefreshCw, Eye, EyeOff } from "lucide-react";
+import { useTheme } from "@/components/theme-provider";
 
 // Simple EMA function
 function calculateEMA(data: any[], period: number) {
@@ -41,22 +42,39 @@ function calculateSMA(data: any[], period: number) {
   return result;
 }
 
+// Average Volume function
+function calculateAverageVolume(data: any[], period: number) {
+  const result = [];
+  for (let i = 0; i < data.length; i++) {
+    if (i < period - 1) {
+      result.push({ time: data[i].time, value: data[i].volume || 0 }); // fallback
+      continue;
+    }
+    let sum = 0;
+    for (let j = 0; j < period; j++) {
+      sum += (data[i - j].volume || 0);
+    }
+    result.push({ time: data[i].time, value: sum / period });
+  }
+  return result;
+}
+
 // Helper to check if Indian market is open
 function isMarketOpen() {
   const now = new Date();
   const options = { timeZone: 'Asia/Kolkata', hour12: false, hour: 'numeric', minute: 'numeric', weekday: 'short' } as const;
   const formatter = new Intl.DateTimeFormat('en-US', options);
   const parts = formatter.formatToParts(now);
-  
+
   const hourStr = parts.find(p => p.type === 'hour')?.value || '0';
   const minStr = parts.find(p => p.type === 'minute')?.value || '0';
   const weekday = parts.find(p => p.type === 'weekday')?.value || '';
-  
+
   if (weekday === 'Sat' || weekday === 'Sun') return false;
-  
+
   const hour = parseInt(hourStr, 10);
   const minute = parseInt(minStr, 10);
-  
+
   const currentMins = hour * 60 + minute;
   return currentMins >= 555 && currentMins < 930; // 09:15 AM to 03:30 PM IST
 }
@@ -67,12 +85,14 @@ interface NativeChartProps {
   timeframe?: string;
   initialData?: any[];
   disableFetch?: boolean;
+  showDynamicTrend?: boolean;
 }
 
 // Global cache outside component to persist across unmounts
 const chartDataCache: Record<string, any> = {};
 
-export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", initialData, disableFetch }: NativeChartProps) {
+export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", initialData, disableFetch, showDynamicTrend = false }: NativeChartProps) {
+  const { theme } = useTheme();
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
@@ -80,13 +100,15 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
   const smaSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
   const volumeSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
-  
+
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [countdown, setCountdown] = useState<string>("");
   const [lastCandleOpen, setLastCandleOpen] = useState<number | null>(null);
-  
+  const [showMarkers, setShowMarkers] = useState(true);
+
   const lastCandleRef = useRef<any>(null);
+  const markersRef = useRef<any[]>([]);
 
   // 1. INITIALIZE CHART ONLY ONCE
   useEffect(() => {
@@ -106,18 +128,18 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
       const now = new Date();
       const currentMinutes = now.getMinutes();
       const currentSeconds = now.getSeconds();
-      
+
       let minutesToNext = minutes - (currentMinutes % minutes) - 1;
       let secondsToNext = 60 - currentSeconds;
-      
+
       if (secondsToNext === 60) {
         minutesToNext += 1;
         secondsToNext = 0;
       }
-      
+
       const mm = String(minutesToNext).padStart(2, '0');
       const ss = String(secondsToNext).padStart(2, '0');
-      
+
       setCountdown(`${mm}:${ss}`);
     }, 1000);
 
@@ -127,15 +149,17 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
   useEffect(() => {
     if (!chartContainerRef.current) return;
 
+    const isDark = theme !== "light"; // default to dark if undefined
+
     const chart = createChart(chartContainerRef.current, {
-      layout: { background: { type: ColorType.Solid, color: "transparent" }, textColor: "#9CA3AF" },
-      grid: { vertLines: { color: "rgba(255, 255, 255, 0.03)" }, horzLines: { color: "rgba(255, 255, 255, 0.03)" } },
-      timeScale: { timeVisible: true, secondsVisible: false, borderColor: "rgba(255, 255, 255, 0.1)" },
-      rightPriceScale: { borderColor: "rgba(255, 255, 255, 0.1)", autoScale: true },
+      layout: { background: { type: ColorType.Solid, color: "transparent" }, textColor: isDark ? "#9CA3AF" : "#6B7280" },
+      grid: { vertLines: { color: isDark ? "rgba(255, 255, 255, 0.03)" : "rgba(0, 0, 0, 0.05)" }, horzLines: { color: isDark ? "rgba(255, 255, 255, 0.03)" : "rgba(0, 0, 0, 0.05)" } },
+      timeScale: { timeVisible: true, secondsVisible: false, borderColor: isDark ? "rgba(255, 255, 255, 0.1)" : "rgba(0, 0, 0, 0.1)" },
+      rightPriceScale: { borderColor: isDark ? "rgba(255, 255, 255, 0.1)" : "rgba(0, 0, 0, 0.1)", autoScale: true },
       crosshair: {
         mode: CrosshairMode.Normal,
-        vertLine: { color: "rgba(255, 255, 255, 0.2)", style: 3, labelBackgroundColor: "#1E293B" },
-        horzLine: { color: "rgba(255, 255, 255, 0.2)", style: 3, labelBackgroundColor: "#1E293B" },
+        vertLine: { color: isDark ? "rgba(255, 255, 255, 0.2)" : "rgba(0, 0, 0, 0.2)", style: 3, labelBackgroundColor: isDark ? "#1E293B" : "#475569" },
+        horzLine: { color: isDark ? "rgba(255, 255, 255, 0.2)" : "rgba(0, 0, 0, 0.2)", style: 3, labelBackgroundColor: isDark ? "#1E293B" : "#475569" },
       },
     });
 
@@ -168,7 +192,7 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
       }
       const data = param.seriesData.get(candleSeries) as any;
       const volData = param.seriesData.get(volumeSeries) as any;
-      
+
       if (data) {
         tooltipRef.current.style.display = "block";
         const date = new Date((param.time as number) * 1000);
@@ -179,13 +203,13 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
         const day = String(date.getDate()).padStart(2, '0');
         const dateStr = `${year}-${month}-${day}`;
         const volumeStr = volData && volData.value ? (volData.value >= 1000000 ? (volData.value / 1000000).toFixed(2) + 'M' : (volData.value / 1000).toFixed(2) + 'K') : '---';
-        
+
         tooltipRef.current.innerHTML = `
           <div class="font-display font-bold text-foreground mb-1.5 flex items-center gap-2">
-            <span class="text-primary">${symbol.split(":")[1] || symbol}</span>
+            <span class="text-foreground">${symbol.split(":")[1] || symbol}</span>
             <span class="text-muted-foreground font-mono text-xs">${dateStr} ${timeStr}</span>
           </div>
-          <div class="flex gap-4 font-mono text-[11px] tracking-tight backdrop-blur-md bg-black/40 p-1.5 rounded-lg border border-white/5">
+          <div class="flex gap-4 font-mono text-[11px] tracking-tight backdrop-blur-md bg-background/90 p-1.5 rounded-lg border border-border shadow-md">
             <div class="flex flex-col"><span class="text-muted-foreground mb-0.5">O</span><span class="text-foreground font-medium">${data.open.toFixed(2)}</span></div>
             <div class="flex flex-col"><span class="text-muted-foreground mb-0.5">H</span><span class="text-success font-medium">${data.high.toFixed(2)}</span></div>
             <div class="flex flex-col"><span class="text-muted-foreground mb-0.5">L</span><span class="text-destructive font-medium">${data.low.toFixed(2)}</span></div>
@@ -196,33 +220,48 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
       }
     });
 
-    const handleResize = () => {
-      if (chartContainerRef.current && chartRef.current) {
-        chart.applyOptions({ width: chartContainerRef.current.clientWidth, height: chartContainerRef.current.clientHeight });
-      }
-    };
-    window.addEventListener("resize", handleResize);
-    const resizeTimeout = setTimeout(handleResize, 50);
+      // Dynamic Resize using ResizeObserver
+      const resizeObserver = new ResizeObserver((entries) => {
+        if (entries.length === 0 || entries[0].target !== chartContainerRef.current) return;
+        const newRect = entries[0].contentRect;
+        if (chartRef.current) {
+          chart.applyOptions({ width: newRect.width, height: newRect.height });
+        }
+      });
+      resizeObserver.observe(chartContainerRef.current);
 
-    return () => {
-      clearTimeout(resizeTimeout);
-      window.removeEventListener("resize", handleResize);
-      if (chartRef.current) {
+      return () => {
+        resizeObserver.disconnect();
         chart.remove();
-      }
-      chartRef.current = null;
-      seriesRef.current = null;
-      emaSeriesRef.current = null;
-      smaSeriesRef.current = null;
-      volumeSeriesRef.current = null;
-    };
+        chartRef.current = null;
+        seriesRef.current = null;
+        emaSeriesRef.current = null;
+        smaSeriesRef.current = null;
+        volumeSeriesRef.current = null;
+      };
   }, []); // Run only ONCE on mount
+
+  // Update chart theme dynamically when theme changes
+  useEffect(() => {
+    if (!chartRef.current) return;
+    const isDark = theme !== "light";
+    chartRef.current.applyOptions({
+      layout: { textColor: isDark ? "#9CA3AF" : "#6B7280" },
+      grid: { vertLines: { color: isDark ? "rgba(255, 255, 255, 0.03)" : "rgba(0, 0, 0, 0.05)" }, horzLines: { color: isDark ? "rgba(255, 255, 255, 0.03)" : "rgba(0, 0, 0, 0.05)" } },
+      timeScale: { borderColor: isDark ? "rgba(255, 255, 255, 0.1)" : "rgba(0, 0, 0, 0.1)" },
+      rightPriceScale: { borderColor: isDark ? "rgba(255, 255, 255, 0.1)" : "rgba(0, 0, 0, 0.1)" },
+      crosshair: {
+        vertLine: { color: isDark ? "rgba(255, 255, 255, 0.2)" : "rgba(0, 0, 0, 0.2)", labelBackgroundColor: isDark ? "#1E293B" : "#475569" },
+        horzLine: { color: isDark ? "rgba(255, 255, 255, 0.2)" : "rgba(0, 0, 0, 0.2)", labelBackgroundColor: isDark ? "#1E293B" : "#475569" },
+      },
+    });
+  }, [theme]);
 
   // 2. FETCH DATA WHEN SYMBOL/TIMEFRAME CHANGES
   useEffect(() => {
     let isMounted = true;
     if (!chartRef.current || !seriesRef.current || !emaSeriesRef.current || !smaSeriesRef.current) return;
-    
+
     const candleSeries = seriesRef.current;
     const emaSeries = emaSeriesRef.current;
     const smaSeries = smaSeriesRef.current;
@@ -239,28 +278,31 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
           if (stateData.trades && stateData.trades.length > 0) {
             const markers: any[] = [];
             const symbolTrades = stateData.trades.filter((t: any) => t.symbol === symbol);
-            
+
             symbolTrades.forEach((trade: any) => {
-               const dateStr = String(trade.entry_time || trade.time);
-               if (!dateStr || dateStr === "undefined" || dateStr === "null") return;
-               const safeDateStr = dateStr.includes(' ') ? dateStr.replace(' ', 'T') : dateStr;
-               const date = new Date(safeDateStr);
-               const time = Math.floor(date.getTime() / 1000) as Time;
-               let closestTime = time;
-               let minDiff = Infinity;
-               for (const candle of chartData) {
-                  const diff = Math.abs((candle.time as number) - (time as number));
-                  if (diff < minDiff) { minDiff = diff; closestTime = candle.time; }
-               }
-               if (trade.type === 'CALL BUY' || trade.type === 'BUY') {
-                  markers.push({ time: closestTime, position: 'belowBar', color: '#10B981', shape: 'arrowUp', text: 'Buy' });
-               } else if (trade.type === 'PUT BUY' || trade.type === 'SELL') {
-                  markers.push({ time: closestTime, position: 'aboveBar', color: '#EF4444', shape: 'arrowDown', text: 'Sell' });
-               }
+              const dateStr = String(trade.entry_time || trade.time);
+              if (!dateStr || dateStr === "undefined" || dateStr === "null") return;
+              const safeDateStr = dateStr.includes(' ') ? dateStr.replace(' ', 'T') : dateStr;
+              const date = new Date(safeDateStr);
+              const time = Math.floor(date.getTime() / 1000) as Time;
+              let closestTime = time;
+              let minDiff = Infinity;
+              for (const candle of chartData) {
+                const diff = Math.abs((candle.time as number) - (time as number));
+                if (diff < minDiff) { minDiff = diff; closestTime = candle.time; }
+              }
+              if (trade.type === 'CALL BUY' || trade.type === 'BUY') {
+                markers.push({ time: closestTime, position: 'belowBar', color: '#10B981', shape: 'arrowUp', text: 'Buy' });
+              } else if (trade.type === 'PUT BUY' || trade.type === 'SELL') {
+                markers.push({ time: closestTime, position: 'aboveBar', color: '#EF4444', shape: 'arrowDown', text: 'Sell' });
+              }
             });
             markers.sort((a, b) => (a.time as number) - (b.time as number));
             if (!isMounted) return;
-            (cSeries as any).setMarkers(markers);
+            markersRef.current = markers;
+            if (showMarkers) {
+              (cSeries as any).setMarkers(markers);
+            }
           }
         }
       } catch (e: any) {
@@ -282,21 +324,21 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
       }
 
       const cacheKey = `${symbol}_${timeframe}`;
-      
+
       if (chartDataCache[cacheKey]) {
-         const cached = chartDataCache[cacheKey];
-         if (!isMounted) return;
-         candleSeries.setData(cached);
-         emaSeries.setData(calculateEMA(cached, 9));
-         smaSeries.setData(calculateEMA(cached, 21));
-         lastCandleRef.current = cached[cached.length - 1];
-         chart.timeScale().fitContent();
-         setLoading(false); // Instant load!
-         fetchMarkersAndLines(cached, candleSeries);
+        const cached = chartDataCache[cacheKey];
+        if (!isMounted) return;
+        candleSeries.setData(cached);
+        emaSeries.setData(calculateEMA(cached, 9));
+        smaSeries.setData(calculateEMA(cached, 21));
+        lastCandleRef.current = cached[cached.length - 1];
+        chart.timeScale().fitContent();
+        setLoading(false); // Instant load!
+        fetchMarkersAndLines(cached, candleSeries);
       } else {
-         setLoading(true);
+        setLoading(true);
       }
-      
+
       try {
         setError(null);
         const endDate = new Date();
@@ -313,16 +355,16 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
         const hostname = window.location.hostname === 'localhost' ? '127.0.0.1' : window.location.hostname;
         const backendUrl = typeof window !== 'undefined' ? `http://${hostname}:8000` : 'http://127.0.0.1:8000';
         const res = await fetch(`${backendUrl}/api/history?symbol=${encodeURIComponent(symbol)}&start_date=${sDateStr}&end_date=${eDateStr}&timeframe=${encodeURIComponent(timeframe)}`);
-        
+
         if (!isMounted) return;
         if (!res.ok) throw new Error("Failed to fetch historical data.");
         const json = await res.json();
         if (!isMounted) return;
-        
+
         if (!json.data || !Array.isArray(json.data) || json.data.length === 0) {
           if (!chartDataCache[cacheKey]) {
-             setError(`No data available for ${timeframe}.`);
-             setLoading(false);
+            setError(`No data available for ${timeframe}.`);
+            setLoading(false);
           }
           return;
         }
@@ -348,10 +390,47 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
         if (uniqueData.length > 0) {
           chartDataCache[cacheKey] = uniqueData; // Cache it!
           if (!isMounted) return;
-          candleSeries.setData(uniqueData);
-          emaSeries.setData(calculateEMA(uniqueData, 9));
-          smaSeries.setData(calculateEMA(uniqueData, 21));
+          // Apply dynamic colors if enabled
+          let dataToSet = uniqueData;
+          const ema9Data = calculateEMA(uniqueData, 9);
+          const sma21Data = calculateSMA(uniqueData, 21);
+          const avgVol20 = calculateAverageVolume(uniqueData, 20);
           
+          if (showDynamicTrend) {
+            dataToSet = uniqueData.map((d: any, index: number) => {
+              const ema9 = ema9Data[index]?.value;
+              const sma21 = sma21Data[index]?.value;
+              const avgVol = avgVol20[index]?.value;
+              if (!ema9 || !sma21) return d;
+              
+              const isChop = Math.abs(ema9 - sma21) / sma21 < 0.0005; // 0.05% difference threshold for chop
+              const isHighVolume = d.volume && avgVol && d.volume > avgVol * 2.0; // 2x average volume
+
+              let customColor;
+              if (isChop) {
+                // Squeeze / Chop Phase (Gray)
+                customColor = d.close >= d.open ? "#6B7280" : "#4B5563"; // Gray-500 for up, Gray-600 for down
+              } else if (isHighVolume && d.close > ema9) {
+                // Bullish Institutional Surge (Electric Blue)
+                customColor = "#00E5FF";
+              } else if (isHighVolume && d.close < ema9) {
+                // Bearish Institutional Surge (Magenta / Hot Pink)
+                customColor = "#FF007F";
+              } else if (d.close >= ema9) {
+                // Normal Bullish Trend
+                customColor = d.close >= d.open ? "#00FF00" : "#059669";
+              } else {
+                // Normal Bearish Trend
+                customColor = d.close < d.open ? "#FF0000" : "#991B1B";
+              }
+              return { ...d, color: customColor, wickColor: customColor, borderColor: customColor };
+            });
+          }
+
+          candleSeries.setData(dataToSet);
+          emaSeries.setData(ema9Data);
+          smaSeries.setData(sma21Data);
+
           if (volumeSeriesRef.current) {
             const volumeData = uniqueData.map((d: any) => ({
               time: d.time,
@@ -360,7 +439,7 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
             }));
             volumeSeriesRef.current.setData(volumeData);
           }
-          
+
           if (uniqueData.length > 0) {
             setLastCandleOpen(uniqueData[uniqueData.length - 1].open);
           }
@@ -372,18 +451,25 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
       } catch (err: any) {
         console.warn("Chart data fetch failed (Backend offline?):", err.message);
         if (isMounted && !chartDataCache[cacheKey]) {
-           setError(err.message || "Could not load chart data");
-           setLoading(false);
+          setError(err.message || "Could not load chart data");
+          setLoading(false);
         }
       }
     };
 
     fetchHistory();
-    
+
     return () => {
       isMounted = false;
     };
-  }, [symbol, timeframe]);
+  }, [symbol, timeframe, showDynamicTrend]); // Deliberately omit showMarkers to prevent full re-fetch
+
+  // 2b. Handle Marker Toggle without refetching
+  useEffect(() => {
+    if (seriesRef.current) {
+      (seriesRef.current as any).setMarkers(showMarkers ? markersRef.current : []);
+    }
+  }, [showMarkers]);
 
   // 3. Handle live price updates and auto-generate new candles
   useEffect(() => {
@@ -392,59 +478,102 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
 
     if (livePrice && livePrice > 0 && seriesRef.current && lastCandleRef.current) {
       const lastCandle = lastCandleRef.current;
-      
+
       const now = new Date();
-      
+
       // Calculate exact candle start time aligned to Indian Market Open (09:15)
       const tfVal = parseInt(timeframe.split(' ')[0] || "5");
       let currentCandleTime: number;
 
       if (timeframe.includes("Day")) {
-         const d = new Date(now);
-         d.setHours(0, 0, 0, 0);
-         currentCandleTime = Math.floor(d.getTime() / 1000);
+        const d = new Date(now);
+        d.setHours(0, 0, 0, 0);
+        currentCandleTime = Math.floor(d.getTime() / 1000);
       } else {
-         const minutesSinceMidnight = now.getHours() * 60 + now.getMinutes();
-         const minutesSinceOpen = minutesSinceMidnight - (9 * 60 + 15);
-         const effectiveMins = Math.max(0, minutesSinceOpen);
-         
-         let roundedMins = 0;
-         if (timeframe.includes("Hour")) {
-             roundedMins = Math.floor(effectiveMins / 60) * 60;
-         } else {
-             roundedMins = Math.floor(effectiveMins / tfVal) * tfVal;
-         }
-         
-         const d = new Date(now);
-         d.setHours(9, 15 + roundedMins, 0, 0);
-         currentCandleTime = Math.floor(d.getTime() / 1000);
+        const minutesSinceMidnight = now.getHours() * 60 + now.getMinutes();
+        const minutesSinceOpen = minutesSinceMidnight - (9 * 60 + 15);
+        const effectiveMins = Math.max(0, minutesSinceOpen);
+
+        let roundedMins = 0;
+        if (timeframe.includes("Hour")) {
+          roundedMins = Math.floor(effectiveMins / 60) * 60;
+        } else {
+          roundedMins = Math.floor(effectiveMins / tfVal) * tfVal;
+        }
+
+        const d = new Date(now);
+        d.setHours(9, 15 + roundedMins, 0, 0);
+        currentCandleTime = Math.floor(d.getTime() / 1000);
       }
-      
+
       let updatedCandle;
-      
+
       if (currentCandleTime > (lastCandle.time as number)) {
+        // Dynamic live candle color
+        let liveColor = undefined;
+        if (showDynamicTrend && chartDataCache[`${symbol}_${timeframe}`]) {
+          const cache = chartDataCache[`${symbol}_${timeframe}`];
+          if (cache.length > 0) {
+            const ema9 = calculateEMA(cache, 9).pop()?.value;
+            const sma21 = calculateSMA(cache, 21).pop()?.value;
+            // Note: Volume surge for live candle is hard to calculate accurately before it closes, 
+            // so we rely mostly on trend and chop logic for the live ticking candle.
+            if (ema9 && sma21) {
+              const isChop = Math.abs(ema9 - sma21) / sma21 < 0.0005;
+              if (isChop) {
+                 liveColor = livePrice >= lastCandle.open ? "#6B7280" : "#4B5563";
+              } else if (livePrice >= ema9) {
+                 liveColor = livePrice >= lastCandle.open ? "#00FF00" : "#059669";
+              } else {
+                 liveColor = livePrice < lastCandle.open ? "#FF0000" : "#991B1B";
+              }
+            }
+          }
+        }
+
         updatedCandle = {
           time: currentCandleTime as Time,
           open: livePrice,
           high: livePrice,
           low: livePrice,
           close: livePrice,
-          volume: 0
+          volume: 0,
+          ...(liveColor ? { color: liveColor, wickColor: liveColor, borderColor: liveColor } : {})
         };
       } else {
         // Update the existing candle
+        let liveColor = undefined;
+        if (showDynamicTrend && chartDataCache[`${symbol}_${timeframe}`]) {
+          const cache = chartDataCache[`${symbol}_${timeframe}`];
+          if (cache.length > 0) {
+            const ema9 = calculateEMA(cache, 9).pop()?.value;
+            const sma21 = calculateSMA(cache, 21).pop()?.value;
+            if (ema9 && sma21) {
+              const isChop = Math.abs(ema9 - sma21) / sma21 < 0.0005;
+              if (isChop) {
+                 liveColor = livePrice >= lastCandle.open ? "#6B7280" : "#4B5563";
+              } else if (livePrice >= ema9) {
+                 liveColor = livePrice >= lastCandle.open ? "#00FF00" : "#059669";
+              } else {
+                 liveColor = livePrice < lastCandle.open ? "#FF0000" : "#991B1B";
+              }
+            }
+          }
+        }
+
         updatedCandle = {
           ...lastCandle,
           close: livePrice,
           high: Math.max(lastCandle.high, livePrice),
           low: Math.min(lastCandle.low, livePrice),
+          ...(liveColor ? { color: liveColor, wickColor: liveColor, borderColor: liveColor } : {})
         };
       }
-      
+
       // CRITICAL FIX: Save the updated candle so wicks don't disappear on next tick!
       lastCandleRef.current = updatedCandle;
       setLastCandleOpen(updatedCandle.open);
-      
+
       seriesRef.current.update(updatedCandle);
       if (volumeSeriesRef.current) {
         volumeSeriesRef.current.update({
@@ -453,55 +582,64 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
           color: updatedCandle.close >= updatedCandle.open ? 'rgba(16, 185, 129, 0.5)' : 'rgba(239, 68, 68, 0.5)'
         });
       }
-      
+
       // Update EMAs dynamically
       const cacheKey = `${symbol}_${timeframe}`;
       const cached = chartDataCache[cacheKey];
       if (cached && emaSeriesRef.current && smaSeriesRef.current) {
-         const lastIdx = cached.length - 1;
-         if (lastIdx >= 0) {
-             if (cached[lastIdx].time === updatedCandle.time) {
-                 cached[lastIdx] = updatedCandle;
-             } else {
-                 cached.push(updatedCandle);
-             }
-             const ema9 = calculateEMA(cached, 9);
-             const ema21 = calculateEMA(cached, 21);
-             emaSeriesRef.current.update(ema9[ema9.length - 1]);
-             smaSeriesRef.current.update(ema21[ema21.length - 1]);
-         }
+        const lastIdx = cached.length - 1;
+        if (lastIdx >= 0) {
+          if (cached[lastIdx].time === updatedCandle.time) {
+            cached[lastIdx] = updatedCandle;
+          } else {
+            cached.push(updatedCandle);
+          }
+          const ema9 = calculateEMA(cached, 9);
+          const ema21 = calculateEMA(cached, 21);
+          emaSeriesRef.current.update(ema9[ema9.length - 1]);
+          smaSeriesRef.current.update(ema21[ema21.length - 1]);
+        }
       }
-      
+
     }
   }, [livePrice, timeframe]);
 
   return (
-    <div className="w-full h-full relative" style={{ minHeight: "450px" }}>
+    <div className="w-full h-full relative flex flex-col flex-1" style={{ minHeight: "450px" }}>
       {/* Chart Header Overlay */}
       <div className="absolute top-4 left-4 z-10 pointer-events-none flex flex-col items-start gap-1">
-        <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#090a0f]/80 backdrop-blur-md border border-border/20 shadow-lg">
-           <span className="font-bold text-foreground text-sm tracking-tight">{symbol.split(':')[1]?.split('-')[0] || symbol}</span>
-           <span className="text-muted-foreground text-xs">{timeframe}</span>
-           {livePrice && livePrice > 0 && (
-             <>
-               <span className="text-muted-foreground/50 text-xs">|</span>
-               <span className={`font-mono font-bold text-sm tracking-tighter ${lastCandleOpen !== null && livePrice >= lastCandleOpen ? 'text-emerald-400 drop-shadow-[0_0_4px_rgba(16,185,129,0.4)]' : 'text-red-400 drop-shadow-[0_0_4px_rgba(239,68,68,0.4)]'}`}>
-                 ₹{livePrice.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-               </span>
-               {countdown && isMarketOpen() && (
-                 <>
-                   <span className="text-muted-foreground/50 text-xs">|</span>
-                   <span className="text-orange-400 font-mono text-xs font-semibold animate-pulse shadow-orange-500/20">{countdown}</span>
-                 </>
-               )}
-               {!isMarketOpen() && (
-                 <>
-                   <span className="text-muted-foreground/50 text-xs">|</span>
-                   <span className="text-[10px] uppercase font-bold tracking-wider text-muted-foreground px-1.5 py-0.5 rounded bg-muted/50">Market Closed</span>
-                 </>
-               )}
-             </>
-           )}
+        <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-background/80 backdrop-blur-md border border-border/20 shadow-lg">
+          <span className="font-bold text-foreground text-sm tracking-tight">{symbol.split(':')[1]?.split('-')[0] || symbol}</span>
+          <span className="text-muted-foreground text-xs">{timeframe}</span>
+          {livePrice && livePrice > 0 && (
+            <>
+              <span className="text-muted-foreground/50 text-xs">|</span>
+              <span className={`font-mono font-bold text-sm tracking-tighter ${lastCandleOpen !== null && livePrice >= lastCandleOpen ? 'text-emerald-400 drop-shadow-[0_0_4px_rgba(16,185,129,0.4)]' : 'text-red-400 drop-shadow-[0_0_4px_rgba(239,68,68,0.4)]'}`}>
+                ₹{livePrice.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </span>
+              {countdown && isMarketOpen() && (
+                <>
+                  <span className="text-muted-foreground/50 text-xs">|</span>
+                  <span className="text-orange-400 font-mono text-xs font-semibold animate-pulse shadow-orange-500/20">{countdown}</span>
+                </>
+              )}
+              {!isMarketOpen() && (
+                <>
+                  <span className="text-muted-foreground/50 text-xs">|</span>
+                  <span className="text-[10px] uppercase font-bold tracking-wider text-muted-foreground px-1.5 py-0.5 rounded bg-muted/50">Market Closed</span>
+                </>
+              )}
+            </>
+          )}
+          <div className="ml-2 pl-2 border-l border-border/50 flex items-center">
+            <button
+              onClick={() => setShowMarkers(!showMarkers)}
+              className={`p-1.5 rounded-md transition-colors ${showMarkers ? 'bg-primary/10 text-primary hover:bg-primary/20' : 'bg-muted text-muted-foreground hover:bg-muted/80'}`}
+              title={showMarkers ? "Hide Trade Markers" : "Show Trade Markers"}
+            >
+              {showMarkers ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+            </button>
+          </div>
         </div>
       </div>
 

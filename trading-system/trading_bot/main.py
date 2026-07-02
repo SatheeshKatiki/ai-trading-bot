@@ -70,6 +70,7 @@ from shared.risk import RiskManager, RiskConfig, TradeRecord
 from shared.exits import SmartExitEngine, Position, PyramidSizer
 from shared.alerts import alerter
 from trading_bot.portfolio_risk import PortfolioRiskEngine
+from trading_bot.iceberg_manager import IcebergManager
 
 # Security layer
 from shared.security import install_log_sanitizer, audit, validator
@@ -267,6 +268,7 @@ async def run_live_bot(symbols: List[str]) -> None:
     exit_engine = SmartExitEngine(atr_multiplier=1.5, partial_booking_pct=50.0)
     pyramid_sizer = PyramidSizer(pct_trigger=0.2, max_scales=2)
     portfolio_risk = PortfolioRiskEngine(max_daily_dd_pct=5.0, max_weekly_dd_pct=10.0, max_consecutive_losses=3)
+    iceberg_manager = IcebergManager(max_slice_qty=500)
 
     active_positions: Dict[str, Position] = _load_positions()
     if active_positions:
@@ -502,8 +504,8 @@ async def run_live_bot(symbols: List[str]) -> None:
             
             import time
             current_time_sec = time.time()
-            # TRIGGER STRATEGY EVALUATION EVERY 30 SECONDS
-            if current_time_sec - last_eval_time >= 30:
+            # ZERO-LATENCY HFT TRIGGER: Evaluate every 1 second instead of 30
+            if current_time_sec - last_eval_time >= 1.0:
                 last_eval_time = current_time_sec
 
                 # Settings already loaded at top of on_tick (cached, no disk I/O)
@@ -672,7 +674,7 @@ async def run_live_bot(symbols: List[str]) -> None:
                         )
                         try:
                             entry_req = validator.validator.validate(entry_req)
-                            await broker.place_order_async(entry_req)
+                            await iceberg_manager.execute_iceberg(broker, entry_req)
                             audit.trade(AuditEvent.TRADE_ENTRY, entry_symbol,
                                         entry_req.side.value, entry_req.quantity,
                                         entry_price, broker=broker.BROKER_ID)

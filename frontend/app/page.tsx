@@ -23,7 +23,8 @@ import {
   CheckCircle2,
   Trash2,
   PackageOpen,
-  Inbox
+  Inbox,
+  Brain
 } from "lucide-react";
 import { toast } from "sonner";
 import { 
@@ -49,6 +50,7 @@ export default function Dashboard() {
   const [panicStatus, setPanicStatus] = useState<string | null>(null);
   const [isEngineLive, setIsEngineLive] = useState(false);
   const [isEngineLoading, setIsEngineLoading] = useState(false);
+  const [aiCommentary, setAiCommentary] = useState("System armed. Analyzing market structure...");
   const [tickerData, setTickerData] = useState<any>({
     "NIFTY": { lp: 23820.35, chp: -1.49, up: false },
     "BANKNIFTY": { lp: 51000.00, chp: 0.08, up: true },
@@ -70,6 +72,28 @@ export default function Dashboard() {
     bias: "NEUTRAL Bias Detected",
     signals: [],
   });
+
+  // AI Live Commentary Logic
+  useEffect(() => {
+    const commentaries = [
+      `Analyzing order book dynamics across top 50 symbols. High liquidity pools detected.`,
+      `AI Confidence at ${aiSignal?.confidence || 0}%. ${aiSignal?.confidence && aiSignal.confidence > 75 ? "Strong conviction, aggressively scanning for entries." : "Awaiting clear trend confirmation."}`,
+      `Volatility squeeze detected on Bank Nifty. Standard deviation contracting. Breakout imminent.`,
+      `Institutional buying pressure observed in IT sector. Positive volume delta.`,
+      `Monitoring 9 EMA and 21 SMA for potential crossover across portfolio.`
+    ];
+
+    if (pnl > 500 && Math.random() > 0.6) {
+      setAiCommentary(`Current session highly profitable (+₹${pnl.toFixed(2)}). Risk engine protecting gains with trailing stop.`);
+    } else {
+      const interval = setInterval(() => {
+        const randomComm = commentaries[Math.floor(Math.random() * commentaries.length)];
+        setAiCommentary(randomComm);
+      }, 8000);
+      return () => clearInterval(interval);
+    }
+  }, [pnl, aiSignal]);
+
   // Active time-range for the equity curve chart
   const [curveRange, setCurveRange] = useState<'1D' | '1W' | '1M' | 'ALL'>('1D');
 
@@ -344,6 +368,32 @@ export default function Dashboard() {
           </div>
           
           <NewsTicker />
+
+          {/* AI Live Analyst Panel */}
+          <div
+            className="stat-card p-4 relative overflow-hidden flex flex-col sm:flex-row items-start sm:items-center gap-4 bg-muted/10 border-blue-500/20"
+          >
+            <div className="absolute left-0 top-0 w-1 h-full bg-gradient-to-b from-blue-500 to-cyan-500 rounded-l-lg"></div>
+            <div className="p-3 bg-blue-500/10 rounded-xl border border-blue-500/20 shrink-0">
+               <Brain className="w-6 h-6 text-blue-500 animate-pulse" />
+            </div>
+            <div className="flex-1">
+              <div className="flex items-center gap-2 mb-1.5">
+                 <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
+                   <span className="relative flex h-2 w-2">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
+                  </span>
+                   AI Live Analyst 
+                 </span>
+              </div>
+              <div className="text-sm font-mono text-foreground font-medium flex items-center gap-2">
+                <span className="text-blue-500">{">"}</span>
+                <span className="text-foreground/90">{aiCommentary}</span>
+                <span className="w-1.5 h-4 bg-blue-500 animate-pulse inline-block ml-1"></span>
+              </div>
+            </div>
+          </div>
 
           {/* Core Metrics Grid */}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">

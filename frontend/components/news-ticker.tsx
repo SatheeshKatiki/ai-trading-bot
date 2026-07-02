@@ -78,12 +78,6 @@ export default function NewsTicker() {
   const breaking = getBreakingStatus(currentHeadline);
 
   // Dynamic Styles
-  const containerStyle = breaking.active
-    ? breaking.type === 'positive'
-      ? 'border-success/50 shadow-[0_0_15px_rgba(34,197,94,0.2)]'
-      : 'border-destructive/50 shadow-[0_0_15px_rgba(239,68,68,0.2)]'
-    : 'border-border/20 shadow-sm';
-
   const badgeBg = breaking.active
     ? breaking.type === 'positive'
       ? 'bg-success/20 border-success/50'
@@ -98,13 +92,13 @@ export default function NewsTicker() {
 
   const textStyle = breaking.active
     ? breaking.type === 'positive'
-      ? 'text-success drop-shadow-[0_0_8px_rgba(34,197,94,0.8)] font-bold tracking-wide'
-      : 'text-destructive drop-shadow-[0_0_8px_rgba(239,68,68,0.8)] font-bold tracking-wide'
-    : 'text-foreground/90';
+      ? 'text-success hover:text-emerald-700 dark:hover:text-emerald-400 font-bold tracking-wide'
+      : 'text-destructive hover:text-red-700 dark:hover:text-red-400 font-bold tracking-wide'
+    : 'text-foreground/90 hover:text-foreground';
 
   return (
     <div 
-      className={`w-full flex items-center justify-between glass-card bg-card/50 backdrop-blur-md border ${containerStyle} rounded-xl p-3 overflow-hidden transition-all duration-500`}
+      className={`w-full flex items-center justify-between bg-gradient-to-r from-muted/10 via-background/40 to-muted/10 p-3 overflow-hidden transition-all duration-500`}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
     >
@@ -127,7 +121,7 @@ export default function NewsTicker() {
               href={currentHeadline?.link}
               target="_blank"
               rel="noopener noreferrer"
-              className={`text-sm font-medium ${textStyle} hover:brightness-150 transition-all truncate block w-full animate-in slide-in-from-bottom-2 fade-in duration-500`}
+              className={`text-[15px] font-semibold tracking-tight ${textStyle} transition-colors truncate block w-full animate-in slide-in-from-bottom-2 fade-in duration-500`}
               key={currentIndex}
             >
               <span className={`mr-2 ${breaking.active ? textColor : 'text-muted-foreground'} font-mono text-[11px] font-bold`}>[{currentHeadline?.published ? currentHeadline.published.substring(0, 16) : "Live"}]</span>

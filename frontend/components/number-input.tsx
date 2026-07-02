@@ -29,9 +29,9 @@ export function NumberInput({
   children,
   ...props
 }: NumberInputProps & { children?: React.ReactNode }) {
-  
+
   const [localValue, setLocalValue] = React.useState<number | string>(defaultValue !== undefined ? defaultValue : '');
-  
+
   const isControlled = controlledValue !== undefined;
   const value = isControlled ? controlledValue : localValue;
 
@@ -89,17 +89,17 @@ export function NumberInput({
         </span>
       )}
       <div className="flex flex-col h-full border-l border-border/50 w-6 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity bg-background/20">
-        <button 
+        <button
           type="button"
           onClick={handleIncrement}
-          className="flex-1 flex items-center justify-center hover:bg-muted/50 border-b border-border/50 text-muted-foreground hover:text-foreground transition-colors"
+          className="cursor-pointer flex-1 flex items-center justify-center hover:bg-muted/50 border-b border-border/50 text-muted-foreground hover:text-foreground transition-colors"
         >
           <ChevronUp className="w-3 h-3" />
         </button>
-        <button 
+        <button
           type="button"
           onClick={handleDecrement}
-          className="flex-1 flex items-center justify-center hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
+          className="cursor-pointer flex-1 flex items-center justify-center hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
         >
           <ChevronDown className="w-3 h-3" />
         </button>
