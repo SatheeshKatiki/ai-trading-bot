@@ -25,14 +25,5 @@ STEP 3: Start the Next.js Frontend (Live Dashboard)
 2. Run the frontend command:
    npm run dev
 
-
-STEP 4: Start the Streamlit Dashboard (Optional)
-------------------------------------------------
-1. Open a NEW terminal and ensure you are in the 'trading-system' folder:
-   cd "D:\Projects\AI trading Bot\trading-system"
-
-2. Run Streamlit:
-   .\venv\Scripts\python.exe -m streamlit run dashboard/app.py
-
 ==================================================
 Keep this file for reference every morning!

@@ -75,9 +75,14 @@ def generate_signals(
     else:
         df_work['_vwap_date'] = '1970-01-01'
     df_work['_vol_price'] = df_work['typical_price'] * df_work['volume']
-    df_work['vwap'] = (
-        df_work.groupby('_vwap_date')['_vol_price'].cumsum() /
-        df_work.groupby('_vwap_date')['volume'].cumsum()
+    vol_cumsum = df_work.groupby('_vwap_date')['volume'].cumsum()
+    vol_price_cumsum = df_work.groupby('_vwap_date')['_vol_price'].cumsum()
+    
+    # Safe division to prevent zero-volume candles causing NaN rows
+    df_work['vwap'] = np.where(
+        vol_cumsum != 0,
+        vol_price_cumsum / vol_cumsum.replace(0, np.nan),
+        df_work['close']
     )
     df_work.drop(['_vwap_date', '_vol_price'], axis=1, inplace=True)
     df_work['vwap_dist'] = np.where(
@@ -151,8 +156,19 @@ def generate_signals(
                     n_jobs=1
                 )
                 model.fit(X_train_slice, y_train_slice)
+                import tempfile
                 os.makedirs(os.path.dirname(model_path), exist_ok=True)
-                model.save_model(model_path)
+                
+                # Atomic save to prevent cross-process corruption during simultaneous Live+Backtest
+                temp_fd, temp_path = tempfile.mkstemp(dir=os.path.dirname(model_path), prefix="xgboost_tmp_", suffix=".json")
+                try:
+                    os.close(temp_fd) # Close immediately, XGBoost handles opening
+                    model.save_model(temp_path)
+                    os.replace(temp_path, model_path)
+                except Exception as e:
+                    if os.path.exists(temp_path):
+                        os.unlink(temp_path)
+                    raise e
                 print(f"[AI Strategy] Model saved to {model_path}")
                 need_train = False
             else:

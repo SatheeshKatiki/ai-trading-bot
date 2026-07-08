@@ -84,9 +84,10 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
     # --- Trend strength ---
     feat["adx_14"] = _adx(high, low, close, window=14)
 
-    # Replace inf/-inf with NaN (caused by division-by-zero in pct_change,
-    # volume_ratio, ATR/ADX when denominators are zero), then drop all NaN rows.
-    feat.replace([np.inf, -np.inf], np.nan, inplace=True)
+    # Replace inf/-inf with 0.0 (caused by division-by-zero in pct_change,
+    # volume_ratio, ATR/ADX when denominators are zero), to avoid dropping
+    # rows during illiquid flat-volume periods. Then drop structural NaN rows.
+    feat.replace([np.inf, -np.inf], 0.0, inplace=True)
     return feat.dropna()
 
 

@@ -18,7 +18,7 @@ export default function IndicatorsTab({ settings, setSettings }: IndicatorsTabPr
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
 
       {/* Box 1: Multi-Timeframe Indicators */}
-      <div className="glass-card p-6 rounded-2xl space-y-5 h-[400px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
+      <div className="glass-card p-6 rounded-2xl space-y-5 h-full min-h-[420px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
         <div>
           <div className="flex items-center gap-3 border-b border-border pb-3">
             <div className="p-2.5 bg-[#3b82f6]/20 rounded-xl text-[#3b82f6] shadow-lg shadow-blue-500/10">
@@ -64,7 +64,7 @@ export default function IndicatorsTab({ settings, setSettings }: IndicatorsTabPr
       </div>
 
       {/* Box 2: Custom Script Indicators */}
-      <div className="glass-card p-6 rounded-2xl space-y-5 h-[400px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
+      <div className="glass-card p-6 rounded-2xl space-y-5 h-full min-h-[420px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
         <div>
           <div className="flex items-center gap-3 border-b border-border pb-3">
             <div className="p-2.5 bg-[#10b981]/20 rounded-xl text-[#10b981] shadow-lg shadow-emerald-500/10">
@@ -110,7 +110,7 @@ export default function IndicatorsTab({ settings, setSettings }: IndicatorsTabPr
       </div>
 
       {/* Box 3: Signal Combinations */}
-      <div className="glass-card p-6 rounded-2xl space-y-5 h-[400px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
+      <div className="glass-card p-6 rounded-2xl space-y-5 h-full min-h-[420px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
         <div>
           <div className="flex items-center gap-3 border-b border-border pb-3">
             <div className="p-2.5 bg-[#f59e0b]/20 rounded-xl text-[#f59e0b] shadow-lg shadow-amber-500/10">

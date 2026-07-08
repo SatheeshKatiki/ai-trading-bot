@@ -479,7 +479,7 @@ export default function Dashboard() {
           {/* Main Content Area: High Density Grid */}
           <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
             {/* Chart Area - 2 Columns */}
-            <div className="lg:col-span-2 glass-card rounded-xl p-4 border border-border/20 flex flex-col">
+            <div className="lg:col-span-2 glass-card rounded-xl p-4 border border-border/20 flex flex-col h-full min-h-[300px]">
               <div className="flex justify-between items-center mb-4">
                 <div>
                   <h3 className="text-sm font-bold text-foreground">Performance Curve</h3>
@@ -502,7 +502,7 @@ export default function Dashboard() {
                 </div>
               </div>
 
-              <div className="h-[280px] w-full">
+              <div className="flex-1 w-full mt-4 min-h-[220px]">
                 <ResponsiveContainer width="100%" height="100%">
                   <AreaChart data={filteredCurve}>
                     <defs>
@@ -524,7 +524,7 @@ export default function Dashboard() {
             </div>
 
             {/* Active Positions Widget */}
-            <div className="lg:col-span-2 glass-card rounded-xl border border-border/20 flex flex-col overflow-hidden h-[300px]">
+            <div className="lg:col-span-2 glass-card rounded-xl border border-border/20 flex flex-col overflow-hidden h-full min-h-[300px]">
               <div className="p-3 bg-muted/20 border-b border-border/20 flex justify-between items-center">
                 <h3 className="text-xs font-bold text-foreground flex items-center gap-2">
                   <ShieldAlert className="w-3.5 h-3.5 text-primary" />
@@ -571,7 +571,7 @@ export default function Dashboard() {
             </div>
 
             {/* Bottom Row: Terminal & Scanner */}
-            <div className="lg:col-span-3 glass-card rounded-xl border border-border/20 flex flex-col overflow-hidden h-[240px] shadow-2xl transition-all duration-300">
+            <div className="lg:col-span-3 glass-card rounded-xl border border-border/20 flex flex-col overflow-hidden h-full min-h-[280px] shadow-2xl transition-all duration-300">
               <div className="p-2.5 bg-[#0a0b10] dark:bg-[#0a0b10] light:bg-slate-800 border-b border-white/5 flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <Terminal className="w-3.5 h-3.5 text-primary" />
@@ -627,7 +627,7 @@ export default function Dashboard() {
             </div>
 
             {/* AI Signal Scanner — Live from /api/signals */}
-            <div className="lg:col-span-1 glass-card rounded-xl p-4 border border-border/20 flex flex-col justify-between">
+            <div className="lg:col-span-1 glass-card rounded-xl p-4 border border-border/20 flex flex-col justify-between h-full min-h-[280px]">
               <div>
                 <div className="flex justify-between items-center mb-4">
                   <h3 className="text-xs font-bold text-foreground uppercase tracking-widest">AI Scanner</h3>

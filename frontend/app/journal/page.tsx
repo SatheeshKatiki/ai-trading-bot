@@ -381,7 +381,7 @@ function JournalContent() {
               <h3 className="font-bold text-lg flex items-center gap-2 mb-6">
                 <TrendingUp className="w-5 h-5 text-primary" /> Equity Curve
               </h3>
-              <div className="h-[250px] w-full">
+              <div className="h-full min-h-[250px] w-full">
                 {chartData.length > 0 ? (
                   <ResponsiveContainer width="100%" height="100%">
                     <AreaChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>

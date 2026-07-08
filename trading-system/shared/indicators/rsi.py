@@ -57,8 +57,9 @@ def rsi(data: SeriesOrArray, window: int = 14) -> pd.Series:
     avg_loss = loss.ewm(alpha=1 / window, adjust=False).mean()
 
     # Avoid division by zero – if avg_loss is 0, RSI is set to 100
-    rs = avg_gain / avg_loss.replace(to_replace=0, value=np.nan).ffill()
+    rs = avg_gain / avg_loss
     rsi_series = 100 - (100 / (1 + rs))
+    rsi_series = rsi_series.where(avg_loss != 0, 100.0)
 
     # For the first ``window`` points the average is not yet stable; pandas
     # already yields NaN for those positions, which matches typical RSI output.

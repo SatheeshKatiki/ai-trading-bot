@@ -12,7 +12,7 @@ export default function RiskManagementTab({ settings, setSettings }: { settings:
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
 
       {/* Box 1: Stop Loss Physics (Option Buyer's Life Insurance) */}
-      <div className="glass-card p-6 rounded-2xl space-y-5 h-[420px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
+      <div className="glass-card p-6 rounded-2xl space-y-5 h-full min-h-[420px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
         <div>
           <div className="flex items-center gap-3 border-b border-[#1f293d]/50 pb-3">
             <div className="p-2.5 bg-[#ef4444]/20 rounded-xl text-[#ef4444] shadow-lg shadow-red-500/10">
@@ -81,7 +81,7 @@ export default function RiskManagementTab({ settings, setSettings }: { settings:
       </div>
 
       {/* Box 2: Theta Protection (Time Decay Exit) */}
-      <div className="glass-card p-6 rounded-2xl space-y-5 h-[420px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
+      <div className="glass-card p-6 rounded-2xl space-y-5 h-full min-h-[420px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
         <div>
           <div className="flex items-center gap-3 border-b border-[#1f293d]/50 pb-3">
             <div className="p-2.5 bg-[#f59e0b]/20 rounded-xl text-[#f59e0b] shadow-lg shadow-amber-500/10">
@@ -124,7 +124,7 @@ export default function RiskManagementTab({ settings, setSettings }: { settings:
       </div>
 
       {/* Box 3: Profit Booking & Trailing */}
-      <div className="glass-card p-6 rounded-2xl space-y-5 h-[420px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
+      <div className="glass-card p-6 rounded-2xl space-y-5 h-full min-h-[420px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
         <div>
           <div className="flex items-center gap-3 border-b border-[#1f293d]/50 pb-3">
             <div className="p-2.5 bg-[#10b981]/20 rounded-xl text-[#10b981] shadow-lg shadow-emerald-500/10">

@@ -16,11 +16,15 @@ from trading_bot.strategies.ema_rsi_strategy import generate_signals as ema_rsi_
 from trading_bot.strategies.enhanced_ai_strategy import generate_signals as enhanced_signals
 from trading_bot.strategies.premium_selection import generate_signals as premium_signals
 from trading_bot.strategies.buy_the_dip_strategy import generate_signals as buy_the_dip_signals
+from trading_bot.strategies.momentum_strategy.signal_engine import generate_signals as momentum_signals
+from trading_bot.strategies.ema_crossover_pro_strategy import generate_signals as ema_crossover_signals
 
 registry.register("ema_rsi",      ema_rsi_signals)
 registry.register("enhanced_ai",  enhanced_signals)
 registry.register("premium",      premium_signals)
 registry.register("buy_the_dip", buy_the_dip_signals)
+registry.register("institutional_momentum", momentum_signals)
+registry.register("ema_crossover", ema_crossover_signals)
 
 def main():
     parser = argparse.ArgumentParser(description="Run Backtest for a Strategy")

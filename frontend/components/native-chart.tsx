@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useRef, useState } from "react";
-import { createChart, ColorType, IChartApi, ISeriesApi, Time, CandlestickSeries, LineSeries, HistogramSeries, CrosshairMode } from "lightweight-charts";
+import { createChart, ColorType, IChartApi, ISeriesApi, Time, CandlestickSeries, LineSeries, HistogramSeries, CrosshairMode, createSeriesMarkers } from "lightweight-charts";
 import { RefreshCw, Eye, EyeOff } from "lucide-react";
 import { useTheme } from "@/components/theme-provider";
 
@@ -109,6 +109,7 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
 
   const lastCandleRef = useRef<any>(null);
   const markersRef = useRef<any[]>([]);
+  const seriesMarkersPluginRef = useRef<any>(null);
 
   // 1. INITIALIZE CHART ONLY ONCE
   useEffect(() => {
@@ -175,6 +176,9 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
       wickUpColor: "#10B981", wickDownColor: "#EF4444",
     });
 
+    const seriesMarkers = createSeriesMarkers(candleSeries);
+    seriesMarkersPluginRef.current = seriesMarkers;
+
     const emaSeries = chart.addSeries(LineSeries, { color: '#3B82F6', lineWidth: 2, crosshairMarkerVisible: false, priceLineVisible: false });
     const ema21Series = chart.addSeries(LineSeries, { color: '#F59E0B', lineWidth: 2, crosshairMarkerVisible: false, priceLineVisible: false });
 
@@ -235,6 +239,7 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
         chart.remove();
         chartRef.current = null;
         seriesRef.current = null;
+        seriesMarkersPluginRef.current = null;
         emaSeriesRef.current = null;
         smaSeriesRef.current = null;
         volumeSeriesRef.current = null;
@@ -300,8 +305,8 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
             markers.sort((a, b) => (a.time as number) - (b.time as number));
             if (!isMounted) return;
             markersRef.current = markers;
-            if (showMarkers) {
-              (cSeries as any).setMarkers(markers);
+            if (showMarkers && seriesMarkersPluginRef.current) {
+              seriesMarkersPluginRef.current.setMarkers(markers);
             }
           }
         }
@@ -466,8 +471,8 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
 
   // 2b. Handle Marker Toggle without refetching
   useEffect(() => {
-    if (seriesRef.current) {
-      (seriesRef.current as any).setMarkers(showMarkers ? markersRef.current : []);
+    if (seriesMarkersPluginRef.current) {
+      seriesMarkersPluginRef.current.setMarkers(showMarkers ? markersRef.current : []);
     }
   }, [showMarkers]);
 

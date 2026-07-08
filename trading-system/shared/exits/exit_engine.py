@@ -138,6 +138,11 @@ class SmartExitEngine:
                         # Move stop loss to breakeven after partial booking
                         position.stop_loss = position.entry_price
                         return True, f"Partial Profit Booking (1:{self.partial_target_reward})", qty_to_book
+                    elif position.quantity == 1:
+                        position.is_partially_booked = True
+                        position.stop_loss = position.entry_price
+                        import logging
+                        logging.getLogger(__name__).info("Single lot partial target reached. Trailing SL to breakeven for %s", position.symbol)
 
         # 5. ATR Trailing Stop (Activates only after a certain profit percentage)
         profit_pct = 0.0

@@ -13,6 +13,8 @@ from datetime import date, timedelta
 from typing import Literal
 import math
 import logging
+import os
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +41,26 @@ def calculate_greeks(spot: float, strike: float, days_to_expiry: float, vol: flo
     return {"delta": delta, "theta": theta}
 
 
+def _get_dynamic_lot_size(instrument: str, default_lot_size: int) -> int:
+    """Reads lot size dynamically from dashboard settings if available."""
+    try:
+        # Resolve path to config/settings.json at project root
+        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../"))
+        settings_path = os.path.join(project_root, "config", "settings.json")
+        
+        if os.path.exists(settings_path):
+            with open(settings_path, "r") as f:
+                settings = json.load(f)
+                
+            key = f"{instrument.lower()}_lot_size"
+            if key in settings:
+                return int(settings[key])
+    except Exception as e:
+        logger.warning("Failed to read dynamic lot size for %s: %s", instrument, e)
+        
+    return default_lot_size
+
+
 # ──────────────────────────────────────────────
 # Instrument configuration registry
 # ──────────────────────────────────────────────
@@ -51,21 +73,21 @@ INSTRUMENT_CONFIG = {
         "index": True,
     },
     "BANKNIFTY": {
-        "lot_size": 15,
+        "lot_size": 30,
         "strike_step": 100,
         "expiry_day": 2,        # Wednesday
         "exchange": "NSE",
         "index": True,
     },
     "SENSEX": {
-        "lot_size": 10,
+        "lot_size": 20,
         "strike_step": 100,
         "expiry_day": 4,        # Friday
         "exchange": "BSE",
         "index": True,
     },
     "FINNIFTY": {
-        "lot_size": 40,
+        "lot_size": 60,
         "strike_step": 50,
         "expiry_day": 1,        # Tuesday
         "exchange": "NSE",
@@ -102,7 +124,7 @@ def _next_expiry(instrument: str, from_date: date | None = None) -> date:
 
     # Find next occurrence of expiry_weekday
     days_ahead = expiry_weekday - today.weekday()
-    if days_ahead <= 0:     # Target day already passed this week
+    if days_ahead < 0:     # Target day already passed this week (if 0, today is expiry!)
         days_ahead += 7
     return today + timedelta(days=days_ahead)
 
@@ -153,7 +175,7 @@ def select_option(
     """
     cfg = INSTRUMENT_CONFIG.get(instrument.upper(), INSTRUMENT_CONFIG["NIFTY"])
     step = cfg["strike_step"]
-    lot_size = cfg["lot_size"]
+    lot_size = _get_dynamic_lot_size(instrument.upper(), cfg["lot_size"])
 
     # ATM strike
     atm_strike = _round_to_strike(spot_price, step)
@@ -195,7 +217,8 @@ def select_option(
 
 def get_lot_size(instrument: str) -> int:
     """Return the fixed lot size for a given instrument."""
-    return INSTRUMENT_CONFIG.get(instrument.upper(), {}).get("lot_size", 65)
+    default = INSTRUMENT_CONFIG.get(instrument.upper(), {}).get("lot_size", 25)
+    return _get_dynamic_lot_size(instrument.upper(), default)
 
 
 def calculate_lots(

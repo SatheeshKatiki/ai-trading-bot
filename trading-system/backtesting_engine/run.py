@@ -230,7 +230,12 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
         # If daily loss limit hit → skip entries for the rest of this day
         daily_loss_pct = (daily_pnl / daily_capital_start * 100) if daily_capital_start > 0 else 0
         daily_limit_hit = daily_loss_pct <= -max_daily_loss_pct
-        daily_trades_hit = daily_trades_count >= max_daily_trades
+        
+        # Treat max_daily_trades = 0 as unlimited
+        if max_daily_trades <= 0:
+            daily_trades_hit = False
+        else:
+            daily_trades_hit = daily_trades_count >= max_daily_trades
         # ─────────────────────────────────────────────────────────────────
         
         if "last_sl_trade" not in locals():
@@ -312,18 +317,26 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
                         # Store average price directly — SL will trail from avg_price
                         position["avg_entry_price"] = avg_price
                         # Breakeven Snap: Move stop loss to the ORIGINAL entry price when pyramiding
-                        # so the first lot exits at 0 loss, and the second lot takes minimal risk.
-                        position["sl_pct"] = 0.0
+                        # ONLY IF the strategy didn't provide a custom structural Stop Loss.
+                        if not position.get("has_custom_sl", False):
+                            position["sl_pct"] = 0.0
+                        else:
+                            # Retain the original structural SL
+                            pass
 
             # Track peak profit reached for trailing stop loss
             position["max_pnl_pct"] = max(position.get("max_pnl_pct", 0.0), pnl_pct)
 
             # Use the position's current SL (may be updated by pyramiding)
-            # If sl_pct is 0.0 (breakeven snap), use a small hard floor so we still
-            # exit on adverse moves (prevents infinite hold at breakeven).
-            ml_sl_pct = custom_sls[i] if has_custom_sl and custom_sls[i] > 0 else None
-            base_sl = ml_sl_pct if ml_sl_pct is not None else stoploss_pct
-            raw_sl_pct = position.get("sl_pct", base_sl)
+            ml_sl_pct = custom_sls[i] if has_custom_sl and pd.notna(custom_sls[i]) and custom_sls[i] > 0 else None
+            
+            # If strategy provides a custom dynamic SL, ALWAYS trust it, even over Pyramiding Breakeven Snap!
+            if ml_sl_pct is not None:
+                raw_sl_pct = ml_sl_pct
+            else:
+                base_sl = stoploss_pct
+                raw_sl_pct = position.get("sl_pct", base_sl)
+                
             # After breakeven snap, sl_pct=0.0 means exit at entry — use a tiny floor
             # so the engine doesn't hold losing trades forever at breakeven
             current_sl_pct = raw_sl_pct if raw_sl_pct > 0 else min(stoploss_pct * 0.5, 0.05)
@@ -459,8 +472,10 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
                 entry_price = apply_slippage(current_price, "BUY")
 
                 # Dynamic SL/Target based on ATR (Optional) or Custom SL
+                pos_has_custom_sl = False
                 if has_custom_sl and custom_sls[i] > 0:
                     current_sl_pct = custom_sls[i]
+                    pos_has_custom_sl = True
                 elif kwargs.get("enable_dynamic_atr_sl", False):
                     atr = atr_vals[i] if has_atr else entry_price * 0.005
                     current_sl_pct = (atr * 1.5) / entry_price * 100
@@ -475,7 +490,7 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
                 score = call_scores[i] if has_scores else 0
                 actual_mult = multiplier_override if multiplier_override is not None else multiplier
 
-                position = {"type": "BUY", "entries": [(entry_price, actual_mult)], "time": current_time, "sl_pct": current_sl_pct, "target_pct": dynamic_target, "score": score}
+                position = {"type": "BUY", "entries": [(entry_price, actual_mult)], "time": current_time, "sl_pct": current_sl_pct, "target_pct": dynamic_target, "score": score, "has_custom_sl": pos_has_custom_sl}
                 capital -= commission_per_trade
                 total_brokerage += commission_per_trade
                 total_slippage += abs(current_price - entry_price) * actual_mult * options_delta
@@ -483,8 +498,10 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
                 entry_price = apply_slippage(current_price, "SELL")
 
                 # Dynamic SL/Target based on ATR (Optional) or Custom SL
+                pos_has_custom_sl = False
                 if has_custom_sl and custom_sls[i] > 0:
                     current_sl_pct = custom_sls[i]
+                    pos_has_custom_sl = True
                 elif kwargs.get("enable_dynamic_atr_sl", False):
                     atr = atr_vals[i] if has_atr else entry_price * 0.005
                     current_sl_pct = (atr * 1.5) / entry_price * 100
@@ -499,7 +516,7 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
                 score = put_scores[i] if has_scores else 0
                 actual_mult = multiplier_override if multiplier_override is not None else multiplier
 
-                position = {"type": "SELL", "entries": [(entry_price, actual_mult)], "time": current_time, "sl_pct": current_sl_pct, "target_pct": dynamic_target, "score": score}
+                position = {"type": "SELL", "entries": [(entry_price, actual_mult)], "time": current_time, "sl_pct": current_sl_pct, "target_pct": dynamic_target, "score": score, "has_custom_sl": pos_has_custom_sl}
                 capital -= commission_per_trade
                 total_brokerage += commission_per_trade
                 total_slippage += abs(current_price - entry_price) * actual_mult * options_delta

@@ -1,5 +1,5 @@
 """Alerts package initialization."""
 
-from .telegram import TelegramAlerter, alerter
+from .discord_alerter import alerter
 
-__all__ = ["TelegramAlerter", "alerter"]
+__all__ = ["alerter"]

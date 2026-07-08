@@ -76,6 +76,8 @@ from trading_bot.strategies.enhanced_ai_strategy import generate_signals as enha
 from trading_bot.strategies.premium_selection import generate_signals as premium_signals
 from trading_bot.strategies.advanced_ai_ml_strategy import generate_signals as advanced_ai_signals
 from trading_bot.strategies.momentum_strategy import generate_signals as momentum_signals
+from trading_bot.strategies.ema_crossover_pro_strategy import generate_signals as ema_crossover_signals
+from trading_bot.strategies.meta_agent_strategy import generate_signals as meta_agent_signals
 
 # Register strategies for the API
 registry.register("ema_rsi",      ema_rsi_signals)
@@ -83,6 +85,8 @@ registry.register("enhanced_ai",  enhanced_signals)
 registry.register("premium",      premium_signals)
 registry.register("advanced_ai", advanced_ai_signals)
 registry.register("institutional_momentum", momentum_signals)
+registry.register("ema_crossover", ema_crossover_signals)
+registry.register("meta_agent_swarm", meta_agent_signals)
 
 app = FastAPI(title="Broker Terminal Data Bridge & Backtester")
 
@@ -97,7 +101,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 # Allow requests from the Next.js frontend (or any local device)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -573,6 +577,7 @@ async def get_history(
     """Fetches real historical data dynamically from the ACTIVE BROKER."""
     try:
         broker = BrokerFactory.get_active_broker()
+        broker.authenticate()
         logger.info("Fetching history via broker: %s for %s", broker.DISPLAY_NAME, symbol)
         
         # Map symbol using institutional formatter
@@ -636,6 +641,7 @@ async def get_backtest(
     """Triggers a true Python backtest using the actual strategy files and broker data."""
     try:
         broker = BrokerFactory.get_active_broker()
+        broker.authenticate()
         
         # Map symbol using institutional formatter
         original_symbol = symbol
@@ -797,6 +803,7 @@ async def get_equity_data(symbol: str = "NIFTY"):
     """Returns real price action data mapped as equity data for the dashboard."""
     try:
         broker = BrokerFactory.get_active_broker()
+        broker.authenticate()
         end_date = datetime.now()
         start_date = end_date - timedelta(days=2) # Last 2 days to ensure data
         
@@ -837,6 +844,7 @@ def compute_signals(
         symbol_formatted = format_broker_symbol(symbol)
 
         broker = BrokerFactory.get_active_broker()
+        broker.authenticate()
         data = broker.get_historical_data(symbol_formatted, start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'), "5 Min")
         
         if not data:
@@ -1140,7 +1148,7 @@ async def save_settings(new_settings: dict):
             
             # Test the connection with new credentials
             process = subprocess.run(
-                [sys.executable, "scripts/automated_login.py"],
+                [sys.executable, "scripts/auth/auto_login_fyers.py"],
                 capture_output=True,
                 text=True,
                 check=False,
@@ -1180,7 +1188,7 @@ def run_login_script():
         f.write(f"Starting login script at {datetime.now()}\n")
         f.flush()
         try:
-            subprocess.run([sys.executable, "scripts/auto_login_fyers.py"], 
+            subprocess.run([sys.executable, "scripts/auth/auto_login_fyers.py"], 
                            stdout=f, stderr=f, cwd=os.getcwd())
         except Exception as e:
             f.write(f"Error running script: {str(e)}\n")
@@ -1226,7 +1234,7 @@ async def test_login():
     
     try:
         process = subprocess.run(
-            [sys.executable, "scripts/automated_login.py"],
+            [sys.executable, "scripts/auth/auto_login_fyers.py"],
             capture_output=True,
             text=True,
             check=False,
@@ -1255,7 +1263,7 @@ async def start_bot():
     try:
         # Run automated login first
         login_process = subprocess.run(
-            [sys.executable, "scripts/automated_login.py"],
+            [sys.executable, "scripts/auth/auto_login_fyers.py"],
             capture_output=True,
             text=True,
             check=False,
@@ -1347,6 +1355,104 @@ async def get_market_sentiment():
     except Exception as e:
         logger.error(f"Error fetching sentiment API: {e}")
         return {"score": 0.0, "label": "Neutral", "top_headlines": []}
+
+
+# ---------------------------------------------------------------------------
+# Authentication System (Next.js Dashboard)
+# ---------------------------------------------------------------------------
+import hashlib
+import secrets
+import time
+from pydantic import BaseModel
+from pathlib import Path
+
+_AUTH_FILE = Path("dashboard_auth.json")
+_MAX_ATTEMPTS = 5
+_LOCKOUT_SECS = 120
+_ITERATIONS = 260_000
+
+auth_state = {
+    "failed_attempts": 0,
+    "lockout_until": 0.0
+}
+
+class LoginRequest(BaseModel):
+    password: str
+
+def _hash_password(password: str, salt: str = None) -> str:
+    if salt is None:
+        salt = secrets.token_hex(16)
+    dk = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt.encode("utf-8"),
+        _ITERATIONS
+    )
+    return f"{salt}${dk.hex()}"
+
+def _verify_password(stored_password: str, provided_password: str) -> bool:
+    try:
+        salt, _ = stored_password.split("$", 1)
+    except ValueError:
+        return False
+    return stored_password == _hash_password(provided_password, salt)
+
+@app.get("/api/auth/status")
+async def auth_status():
+    has_password = _AUTH_FILE.exists()
+    locked_out = time.time() < auth_state["lockout_until"]
+    return {
+        "hasPassword": has_password,
+        "lockedOut": locked_out,
+        "lockoutSeconds": max(0, int(auth_state["lockout_until"] - time.time()))
+    }
+
+@app.post("/api/auth/setup")
+async def auth_setup(req: LoginRequest):
+    if _AUTH_FILE.exists():
+        raise HTTPException(status_code=400, detail="Password already set")
+    if not req.password or len(req.password) < 4:
+        raise HTTPException(status_code=400, detail="Password must be at least 4 characters")
+    
+    auth_data = {
+        "password_hash": _hash_password(req.password),
+        "created_at": time.time()
+    }
+    with open(_AUTH_FILE, "w", encoding="utf-8") as f:
+        json.dump(auth_data, f, indent=2)
+    return {"status": "success", "message": "Password configured successfully"}
+
+@app.post("/api/auth/login")
+async def auth_login(req: LoginRequest):
+    if not _AUTH_FILE.exists():
+        raise HTTPException(status_code=400, detail="No password configured yet")
+    
+    if time.time() < auth_state["lockout_until"]:
+        raise HTTPException(status_code=429, detail="Too many attempts. Try again later.")
+        
+    try:
+        with open(_AUTH_FILE, "r", encoding="utf-8") as f:
+            auth_data = json.load(f)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Error reading auth file")
+        
+    if _verify_password(auth_data.get("password_hash", ""), req.password):
+        auth_state["failed_attempts"] = 0 # reset
+        auth_data["last_activity_time"] = time.time()
+        try:
+            with open(_AUTH_FILE, "w", encoding="utf-8") as f:
+                json.dump(auth_data, f, indent=2)
+        except:
+            pass
+        return {"status": "success", "token": "mana_ai_auth_v1_valid"}
+    else:
+        auth_state["failed_attempts"] += 1
+        if auth_state["failed_attempts"] >= _MAX_ATTEMPTS:
+            auth_state["lockout_until"] = time.time() + _LOCKOUT_SECS
+            auth_state["failed_attempts"] = 0
+            raise HTTPException(status_code=429, detail="Too many attempts. Locked out for 2 minutes.")
+        raise HTTPException(status_code=401, detail="Invalid password")
+
 
 if __name__ == "__main__":
     import uvicorn

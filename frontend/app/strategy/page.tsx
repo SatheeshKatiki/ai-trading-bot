@@ -65,6 +65,10 @@ export default function StrategySettings() {
     { id: "advanced_ai", name: "Advanced AI/ML" },
     { id: "premium", name: "Premium Options Alpha" },
     { id: "institutional_momentum", name: "Institutional Momentum" },
+    { id: "ema_crossover", name: "Ultra-EMA Crossover Strategy" },
+    { id: "meta_agent_swarm", name: "Meta-Agent AI Swarm (5 Brains)" },
+    { id: "ultra_meta_dip_swarm", name: "Ultra Meta-Dip Swarm (6 Brains)" },
+    { id: "buy_the_dip", name: "Buy the Dip (Mean Reversion)" },
   ]);
 
   const defaultSettings: Record<string, any> = {
@@ -366,12 +370,11 @@ export default function StrategySettings() {
 
               {/* Overview Tab Content (The 8 Boxes) */}
               {activeTab === "Overview" && (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
 
                   {/* === COLUMN 1 === */}
-                  <div className="space-y-6">
                     {/* Strategy Mode */}
-                    <div className="glass-card p-6 rounded-2xl space-y-5 h-[420px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
+                    <div className="glass-card p-6 rounded-2xl space-y-5 h-full min-h-[420px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
                       <div>
                         <div className="flex items-center gap-3 border-b border-border pb-3">
                           <div className="p-2.5 bg-[#4f46e5]/20 rounded-xl text-[#4f46e5] shadow-lg shadow-indigo-500/10">
@@ -392,6 +395,11 @@ export default function StrategySettings() {
                               <option value="enhanced_ai">Enhanced AI Strategy</option>
                               <option value="advanced_ai">Advanced AI/ML</option>
                               <option value="premium">Premium Options Alpha</option>
+                              <option value="institutional_momentum">Institutional Momentum</option>
+                              <option value="ema_crossover">Ultra-EMA Crossover Strategy</option>
+                              <option value="meta_agent_swarm">Meta-Agent AI Swarm (5 Brains)</option>
+                              <option value="ultra_meta_dip_swarm">Ultra Meta-Dip Swarm (6 Brains)</option>
+                              <option value="buy_the_dip">Buy the Dip (Mean Reversion)</option>
                             </select>
                           </div>
                           <div>
@@ -441,7 +449,7 @@ export default function StrategySettings() {
                     </div>
 
                     {/* Volume Settings */}
-                    <div className="glass-card p-6 rounded-2xl space-y-5 h-[420px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
+                    <div className="glass-card p-6 rounded-2xl space-y-5 h-full min-h-[420px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
                       <div>
                         <div className="flex items-center gap-3 border-b border-border pb-3">
                           <div className="p-2.5 bg-[#ec4899]/20 rounded-xl text-[#ec4899] shadow-lg shadow-pink-500/10">
@@ -488,12 +496,9 @@ export default function StrategySettings() {
                         />
                       </div>
                     </div>
-                  </div>
-
                   {/* === COLUMN 2 === */}
-                  <div className="space-y-6">
                     {/* Strategy Parameters */}
-                    <div className="glass-card p-6 rounded-2xl space-y-5 h-[420px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
+                    <div className="glass-card p-6 rounded-2xl space-y-5 h-full min-h-[420px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
                       <div>
                         <div className="flex items-center gap-3 border-b border-border pb-3">
                           <div className="p-2.5 bg-[#3b82f6]/20 rounded-xl text-[#3b82f6] shadow-lg shadow-blue-500/10">
@@ -502,7 +507,7 @@ export default function StrategySettings() {
                           <h3 className="font-display font-extrabold text-base text-foreground">Strategy Parameters</h3>
                         </div>
 
-                        <div className="space-y-4 mt-4 overflow-y-auto max-h-[250px]">
+                        <div className="space-y-4 mt-4 overflow-y-auto max-h-full min-h-[250px]">
                           {Object.keys(strategyParams).length > 0 ? (
                             Object.keys(strategyParams).map((paramName) => (
                               <div key={paramName}>
@@ -528,7 +533,7 @@ export default function StrategySettings() {
                     </div>
 
                     {/* VWAP Settings */}
-                    <div className="glass-card p-6 rounded-2xl space-y-5 h-[420px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
+                    <div className="glass-card p-6 rounded-2xl space-y-5 h-full min-h-[420px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
                       <div>
                         <div className="flex items-center gap-3 border-b border-border pb-3">
                           <div className="p-2.5 bg-[#06b6d4]/20 rounded-xl text-[#06b6d4] shadow-lg shadow-cyan-500/10">
@@ -567,12 +572,9 @@ export default function StrategySettings() {
                         />
                       </div>
                     </div>
-                  </div>
-
                   {/* === COLUMN 3 === */}
-                  <div className="space-y-6">
                     {/* RSI Settings */}
-                    <div className="glass-card p-6 rounded-2xl space-y-5 h-[420px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
+                    <div className="glass-card p-6 rounded-2xl space-y-5 h-full min-h-[420px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
                       <div>
                         <div className="flex items-center gap-3 border-b border-border pb-3">
                           <div className="p-2.5 bg-[#10b981]/20 rounded-xl text-[#10b981] shadow-lg shadow-emerald-500/10">
@@ -624,7 +626,7 @@ export default function StrategySettings() {
                     </div>
 
                     {/* Option Chain Filters */}
-                    <div className="glass-card p-6 rounded-2xl space-y-5 h-[420px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
+                    <div className="glass-card p-6 rounded-2xl space-y-5 h-full min-h-[420px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
                       <div>
                         <div className="flex items-center gap-3 border-b border-border pb-3">
                           <div className="p-2.5 bg-[#f59e0b]/20 rounded-xl text-[#f59e0b] shadow-lg shadow-amber-500/10">
@@ -659,12 +661,9 @@ export default function StrategySettings() {
                         />
                       </div>
                     </div>
-                  </div>
-
                   {/* === COLUMN 4 === */}
-                  <div className="space-y-6">
                     {/* MACD Settings */}
-                    <div className="glass-card p-6 rounded-2xl space-y-5 h-[420px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
+                    <div className="glass-card p-6 rounded-2xl space-y-5 h-full min-h-[420px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
                       <div>
                         <div className="flex items-center gap-3 border-b border-border pb-3">
                           <div className="p-2.5 bg-[#ff9f43]/20 rounded-xl text-[#ff9f43] shadow-lg shadow-orange-500/10">
@@ -699,7 +698,7 @@ export default function StrategySettings() {
                     </div>
 
                     {/* Greeks Filters */}
-                    <div className="glass-card p-6 rounded-2xl space-y-5 h-[420px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
+                    <div className="glass-card p-6 rounded-2xl space-y-5 h-full min-h-[420px] flex flex-col justify-between hover:-translate-y-1 hover:shadow-xl hover:shadow-primary/10 transition-all duration-300">
                       <div>
                         <div className="flex items-center gap-3 border-b border-border pb-3">
                           <div className="p-2.5 bg-[#8c52ff]/20 rounded-xl text-[#8c52ff] shadow-lg shadow-purple-500/10">
@@ -728,8 +727,6 @@ export default function StrategySettings() {
                         />
                       </div>
                     </div>
-                  </div>
-
                 </div>
               )}
 

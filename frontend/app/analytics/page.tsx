@@ -161,7 +161,7 @@ export default function Analytics() {
                 <h3 className="font-display font-bold text-sm tracking-wider uppercase text-foreground">Win / Loss Ratio</h3>
                 <PieChartIcon className="w-4 h-4 text-muted-foreground group-hover:text-primary transition-colors" />
               </div>
-              <div className="h-[250px] flex justify-center items-center relative">
+              <div className="h-full min-h-[250px] flex justify-center items-center relative">
                 <ResponsiveContainer width="100%" height="100%">
                   <PieChart>
                     <defs>
@@ -216,7 +216,7 @@ export default function Analytics() {
                 <h3 className="font-display font-bold text-sm tracking-wider uppercase text-foreground">PnL by Day of Week</h3>
                 <BarChart className="w-4 h-4 text-muted-foreground group-hover:text-primary transition-colors" />
               </div>
-              <div className="h-[250px]">
+              <div className="h-full min-h-[250px]">
                 <ResponsiveContainer width="100%" height="100%">
                   <RechartsBarChart data={dayOfWeekData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                     <defs>

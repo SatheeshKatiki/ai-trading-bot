@@ -121,8 +121,8 @@ class RateLimiter:
 # Application-level singleton limiters
 # ---------------------------------------------------------------------------
 
-# Max 5 real orders per minute across all symbols (intraday typical)
-ORDER_LIMITER = RateLimiter(rate=5, per_seconds=60, burst=2)
+# Max 100 real orders per minute across all symbols (supports Iceberg Slicing)
+ORDER_LIMITER = RateLimiter(rate=100, per_seconds=60, burst=50)
 
 # Max 30 market-data requests per minute (Fyers allows 100/min)
 DATA_LIMITER  = RateLimiter(rate=30, per_seconds=60, burst=10)

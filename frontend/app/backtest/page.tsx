@@ -172,9 +172,13 @@ export default function Backtest() {
   const [selectedAssetName, setSelectedAssetName] = useState("NIFTY 50");
   const [timeframe, setTimeframe] = useState("1 Min");
   const [strategy, setStrategy] = useState("institutional_momentum");
-  const [startDate, setStartDate] = useState("2020-01-01");
+  const [startDate, setStartDate] = useState(() => {
+    const d = new Date();
+    d.setFullYear(d.getFullYear() - 1);
+    return d.toISOString().split('T')[0];
+  });
   const [endDate, setEndDate] = useState(new Date().toISOString().split('T')[0]);
-  const [datePreset, setDatePreset] = useState("all_data");
+  const [datePreset, setDatePreset] = useState("1Y");
   const [initialCapital, setInitialCapital] = useState("100000");
   const [quantity, setQuantity] = useState<number | string>(65);
   const [stoplossPct, setStoplossPct] = useState<number | string>(0.6);
@@ -590,6 +594,10 @@ export default function Backtest() {
                     <option value="advanced_ai">Advanced AI/ML</option>
                     <option value="premium">Premium Options Alpha</option>
                     <option value="institutional_momentum">Institutional Momentum</option>
+                    <option value="ema_crossover">Ultra-EMA Crossover Strategy</option>
+                    <option value="meta_agent_swarm">Meta-Agent AI Swarm (5 Brains)</option>
+                    <option value="ultra_meta_dip_swarm">Ultra Meta-Dip Swarm (6 Brains)</option>
+                    <option value="buy_the_dip">Buy the Dip (Mean Reversion)</option>
                   </select>
                 </div>
               </div>
@@ -779,14 +787,14 @@ export default function Backtest() {
           )}
 
           {isLoading && (
-            <div className="h-[400px] flex flex-col items-center justify-center gap-4 glass-card rounded-xl border border-border/20">
+            <div className="h-full min-h-[400px] flex flex-col items-center justify-center gap-4 glass-card rounded-xl border border-border/20">
               <RefreshCw className="w-8 h-8 animate-spin text-primary" />
               <p className="text-sm text-muted-foreground">Running historical simulation. Crunching candles for {symbol}...</p>
             </div>
           )}
 
           {!isLoading && !result && !error && (
-            <div className="h-[400px] flex flex-col items-center justify-center gap-2 glass-card rounded-xl border border-border/20">
+            <div className="h-full min-h-[400px] flex flex-col items-center justify-center gap-2 glass-card rounded-xl border border-border/20">
               <BarChart2 className="w-8 h-8 text-muted-foreground" />
               <p className="text-sm text-muted-foreground">Adjust your parameters and click "Run Full Backtest" to see results.</p>
             </div>
@@ -936,7 +944,7 @@ export default function Backtest() {
                   </div>
                 </div>
 
-                <div className="h-[350px] w-full">
+                <div className="h-full min-h-[350px] w-full">
                   <ResponsiveContainer width="100%" height="100%">
                       <AreaChart data={result.equityCurve}>
                         <defs>
@@ -981,7 +989,7 @@ export default function Backtest() {
                       {result.rejectionLogs.length} Filtered Events
                     </span>
                   </div>
-                  <div className="bg-muted/30 rounded-lg p-4 font-mono text-[11px] h-[300px] overflow-y-auto border border-border/20">
+                  <div className="bg-muted/30 rounded-lg p-4 font-mono text-[11px] h-full min-h-[300px] overflow-y-auto border border-border/20">
                     {result.rejectionLogs.map((log: any, idx: number) => (
                       <div key={idx} className="mb-1.5 flex gap-3 border-b border-white/5 pb-1 last:border-0">
                         <span className="text-muted-foreground">[{log.time}]</span>

@@ -434,6 +434,32 @@ class FyersBroker(BaseBroker):
             start_dt = datetime.strptime(start_date, '%Y-%m-%d')
             end_dt = datetime.strptime(end_date, '%Y-%m-%d')
             
+            import os
+            import pandas as pd
+            
+            # Check CSV Cache First
+            clean_sym = symbol.replace(':', '_')
+            clean_tf = timeframe.replace(' ', '')
+            csv_path = os.path.join(os.path.dirname(__file__), "..", "data", f"{clean_sym}_{clean_tf}.csv")
+            
+            if os.path.exists(csv_path):
+                self.logger.info("FyersBroker: Checking historical data from cache %s", csv_path)
+                try:
+                    df = pd.read_csv(csv_path)
+                    
+                    # Verify if the cache covers the requested start_date
+                    cache_min_date = df['datetime'].min()[:10]  # Get YYYY-MM-DD
+                    if cache_min_date <= start_date:
+                        # Cache has the full range!
+                        mask = (df['datetime'] >= start_date) & (df['datetime'] <= f"{end_date} 23:59:59")
+                        df_filtered = df.loc[mask]
+                        if not df_filtered.empty:
+                            return df_filtered.to_dict(orient='records')
+                    else:
+                        self.logger.info(f"Cache min date ({cache_min_date}) is newer than requested start ({start_date}). Fetching fresh.")
+                except Exception as e:
+                    self.logger.error("Failed to read cache %s: %s", csv_path, e)
+            
             all_candles = []
             current_start = start_dt
             
@@ -482,6 +508,17 @@ class FyersBroker(BaseBroker):
                     "close": float(c[4]),
                     "volume": int(c[5])
                 })
+                
+            # Save to cache
+            if result:
+                try:
+                    df = pd.DataFrame(result)
+                    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+                    df.to_csv(csv_path, index=False)
+                    self.logger.info("Saved Fyers historical data to cache: %s", csv_path)
+                except Exception as e:
+                    self.logger.error("Failed to save cache to %s: %s", csv_path, e)
+                    
             return result
         except Exception as exc:
             logger.warning(f"Fyers get_historical_data exception: {exc}. Falling back to base broker...")
@@ -509,7 +546,11 @@ class FyersBroker(BaseBroker):
         
         while True:
             try:
-                async with websockets.connect("ws://127.0.0.1:8000/ws/live") as ws:
+                async with websockets.connect(
+                    "ws://127.0.0.1:8000/ws/live",
+                    ping_interval=20,
+                    ping_timeout=20
+                ) as ws:
                     logger.info("Connected to API Bridge WebSocket!")
                     while True:
                         data = await ws.recv()

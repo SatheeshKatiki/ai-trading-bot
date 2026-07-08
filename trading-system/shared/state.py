@@ -12,6 +12,7 @@ Performance upgrades vs. original:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
 import threading
@@ -50,38 +51,38 @@ _DEFAULT_STATE: Dict[str, Any] = {
 
 def _init_db() -> None:
     """Initialize the SQLite database with tables if they don't exist."""
-    conn = sqlite3.connect(_STATE_DB)
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS state (
-            id INTEGER PRIMARY KEY,
-            equity REAL,
-            pnl REAL,
-            last_update TEXT
-        )
-    """)
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS trades (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            symbol TEXT,
-            side TEXT,
-            price REAL,
-            qty INTEGER DEFAULT 1,
-            time TEXT
-        )
-        ''')
-        
-    # Migration: Add qty column if it doesn't exist
-    try:
-        cursor.execute("ALTER TABLE trades ADD COLUMN qty INTEGER DEFAULT 1")
-    except sqlite3.OperationalError:
-        pass # Column already exists
-    # Insert default state if empty
-    cursor.execute("SELECT COUNT(*) FROM state")
-    if cursor.fetchone()[0] == 0:
-        cursor.execute("INSERT INTO state (id, equity, pnl, last_update) VALUES (1, 0.0, 0.0, ?)", (datetime.now(timezone.utc).isoformat(),))
-    conn.commit()
-    conn.close()
+    with contextlib.closing(sqlite3.connect(_STATE_DB, timeout=15.0)) as conn:
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL;")
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS state (
+                id INTEGER PRIMARY KEY,
+                equity REAL,
+                pnl REAL,
+                last_update TEXT
+            )
+        """)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS trades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT,
+                side TEXT,
+                price REAL,
+                qty INTEGER DEFAULT 1,
+                time TEXT
+            )
+            ''')
+            
+        # Migration: Add qty column if it doesn't exist
+        try:
+            cursor.execute("ALTER TABLE trades ADD COLUMN qty INTEGER DEFAULT 1")
+        except sqlite3.OperationalError:
+            pass # Column already exists
+        # Insert default state if empty
+        cursor.execute("SELECT COUNT(*) FROM state")
+        if cursor.fetchone()[0] == 0:
+            cursor.execute("INSERT INTO state (id, equity, pnl, last_update) VALUES (1, 0.0, 0.0, ?)", (datetime.now(timezone.utc).isoformat(),))
+        conn.commit()
 
 def _ensure_loaded() -> None:
     """Load state from database into the cache if not yet loaded."""
@@ -92,25 +93,24 @@ def _ensure_loaded() -> None:
     _init_db()
     
     try:
-        conn = sqlite3.connect(_STATE_DB)
-        cursor = conn.cursor()
-        
-        # Load state
-        cursor.execute("SELECT equity, pnl, last_update FROM state WHERE id = 1")
-        row = cursor.fetchone()
-        
-        # Load trades
-        cursor.execute("SELECT symbol, side, price, time, qty FROM trades ORDER BY id DESC LIMIT 100")
-        trades = [{"symbol": r[0], "side": r[1], "price": r[2], "time": r[3], "qty": r[4] if len(r)>4 else 1} for r in cursor.fetchall()]
-        trades.reverse() # Restore chronological order
-        
-        _CACHE = {
-            "equity": row[0],
-            "pnl": row[1],
-            "trades": trades,
-            "last_update": row[2]
-        }
-        conn.close()
+        with contextlib.closing(sqlite3.connect(_STATE_DB, timeout=15.0)) as conn:
+            cursor = conn.cursor()
+            
+            # Load state
+            cursor.execute("SELECT equity, pnl, last_update FROM state WHERE id = 1")
+            row = cursor.fetchone()
+            
+            # Load trades
+            cursor.execute("SELECT symbol, side, price, time, qty FROM trades ORDER BY id DESC LIMIT 100")
+            trades = [{"symbol": r[0], "side": r[1], "price": r[2], "time": r[3], "qty": r[4] if len(r)>4 else 1} for r in cursor.fetchall()]
+            trades.reverse() # Restore chronological order
+            
+            _CACHE = {
+                "equity": row[0],
+                "pnl": row[1],
+                "trades": trades,
+                "last_update": row[2]
+            }
     except Exception as exc:
         import logging
         logging.getLogger(__name__).error("Failed to load state from DB: %s", exc)
@@ -121,17 +121,16 @@ def _flush_to_disk() -> None:
     """Write the current cache to database (caller must hold _LOCK)."""
     global _dirty, _last_flush
     try:
-        conn = sqlite3.connect(_STATE_DB)
-        cursor = conn.cursor()
-        
-        # Update state
-        cursor.execute(
-            "UPDATE state SET equity = ?, pnl = ?, last_update = ? WHERE id = 1",
-            (_CACHE["equity"], _CACHE["pnl"], _CACHE["last_update"])
-        )
-        
-        conn.commit()
-        conn.close()
+        with contextlib.closing(sqlite3.connect(_STATE_DB, timeout=15.0)) as conn:
+            cursor = conn.cursor()
+            
+            # Update state
+            cursor.execute(
+                "UPDATE state SET equity = ?, pnl = ?, last_update = ? WHERE id = 1",
+                (_CACHE["equity"], _CACHE["pnl"], _CACHE["last_update"])
+            )
+            
+            conn.commit()
         
         _dirty = False
         _last_flush = time.monotonic()
@@ -167,15 +166,14 @@ def load_state(reload_trades: bool = False) -> Dict[str, Any]:
         if reload_trades:
             try:
                 import sqlite3
-                conn = sqlite3.connect(_STATE_DB)
-                cursor = conn.cursor()
-                cursor.execute("SELECT symbol, side, price, time, qty FROM trades ORDER BY id DESC LIMIT 100")
-                rows = cursor.fetchall()
-                trades = []
-                for r in rows:
-                    trades.append({"symbol": r[0], "side": r[1], "price": r[2], "time": r[3], "qty": r[4] if len(r)>4 else 1})
-                _CACHE["trades"] = trades
-                conn.close()
+                with contextlib.closing(sqlite3.connect(_STATE_DB, timeout=15.0)) as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT symbol, side, price, time, qty FROM trades ORDER BY id DESC LIMIT 100")
+                    rows = cursor.fetchall()
+                    trades = []
+                    for r in rows:
+                        trades.append({"symbol": r[0], "side": r[1], "price": r[2], "time": r[3], "qty": r[4] if len(r)>4 else 1})
+                    _CACHE["trades"] = trades
             except Exception as e:
                 pass
                 
@@ -228,23 +226,22 @@ def record_trade(symbol: str, side: str, price: float, timestamp: str, qty: int 
         
         # Persist to DB immediately
         try:
-            conn = sqlite3.connect(_STATE_DB)
-            cursor = conn.cursor()
-            
-            # Insert trade
-            cursor.execute(
-                "INSERT INTO trades (symbol, side, price, time, qty) VALUES (?, ?, ?, ?, ?)",
-                (symbol, side, price, timestamp, qty)
-            )
-            
-            # Update state (last_update)
-            cursor.execute(
-                "UPDATE state SET last_update = ? WHERE id = 1",
-                (_CACHE["last_update"],)
-            )
-            
-            conn.commit()
-            conn.close()
+            with contextlib.closing(sqlite3.connect(_STATE_DB, timeout=15.0)) as conn:
+                cursor = conn.cursor()
+                
+                # Insert trade
+                cursor.execute(
+                    "INSERT INTO trades (symbol, side, price, time, qty) VALUES (?, ?, ?, ?, ?)",
+                    (symbol, side, price, timestamp, qty)
+                )
+                
+                # Update state (last_update)
+                cursor.execute(
+                    "UPDATE state SET last_update = ? WHERE id = 1",
+                    (_CACHE["last_update"],)
+                )
+                
+                conn.commit()
         except Exception as exc:
             import logging
             logging.getLogger(__name__).error("Failed to record trade in DB: %s", exc)

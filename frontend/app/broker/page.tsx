@@ -31,8 +31,11 @@ export default function BrokerSettings() {
   // States for requested features
   const [showClientId, setShowClientId] = useState(false);
   
-  const [clientId, setClientId] = useState("FY78492-PRO");
-  const [secretKey, setSecretKey] = useState("supersecretkey12345");
+  const [clientId, setClientId] = useState("");
+  const [secretKey, setSecretKey] = useState("");
+  const [fyersUserId, setFyersUserId] = useState("");
+  const [fyersPin, setFyersPin] = useState("");
+  const [fyersTotpKey, setFyersTotpKey] = useState("");
   
   const [isSaved, setIsSaved] = useState(false);
   const [isModified, setIsModified] = useState(false);
@@ -72,11 +75,38 @@ export default function BrokerSettings() {
     }
   };
 
-  const handleSave = () => {
-    setIsSaved(true);
-    setIsModified(false);
-    setShowSuccessMessage(true); // Only show on active user click!
-    localStorage.setItem("broker_is_saved", "true");
+  const handleSave = async () => {
+    try {
+      const payload: Record<string, string> = {
+        client_id: clientId,
+        secret_key: secretKey,
+      };
+      
+      if (selectedBroker === "fyers") {
+        payload.fyers_user_id = fyersUserId;
+        payload.fyers_pin = fyersPin;
+        payload.fyers_totp_key = fyersTotpKey;
+      }
+      
+      const res = await fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      
+      if (res.ok) {
+        setIsSaved(true);
+        setIsModified(false);
+        setShowSuccessMessage(true); // Only show on active user click!
+        localStorage.setItem("broker_is_saved", "true");
+      } else {
+        const err = await res.json();
+        alert(`Failed to save: ${err.detail || "Unknown error"}`);
+      }
+    } catch (e) {
+      console.error(e);
+      alert("Failed to connect to backend");
+    }
   };
 
   const handleInputChange = (type: "client" | "secret", value: string) => {
@@ -247,6 +277,44 @@ export default function BrokerSettings() {
                       />
                     </div>
                   </div>
+
+                  {selectedBroker === "fyers" && (
+                    <>
+                      <div>
+                        <label className="text-xs font-medium text-muted-foreground block mb-1.5">Fyers User ID</label>
+                        <input
+                          type="text"
+                          value={fyersUserId}
+                          onChange={(e) => { setFyersUserId(e.target.value); setIsModified(true); }}
+                          placeholder="e.g. FY12345"
+                          className="w-full bg-muted/30 border border-border/50 rounded-lg px-4 py-2.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary focus:border-transparent"
+                        />
+                      </div>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <label className="text-xs font-medium text-muted-foreground block mb-1.5">4-Digit PIN</label>
+                          <input
+                            type="password"
+                            value={fyersPin}
+                            onChange={(e) => { setFyersPin(e.target.value); setIsModified(true); }}
+                            placeholder="e.g. 1234"
+                            maxLength={4}
+                            className="w-full bg-muted/30 border border-border/50 rounded-lg px-4 py-2.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary focus:border-transparent"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-xs font-medium text-muted-foreground block mb-1.5">TOTP Secret</label>
+                          <input
+                            type="password"
+                            value={fyersTotpKey}
+                            onChange={(e) => { setFyersTotpKey(e.target.value); setIsModified(true); }}
+                            placeholder="Base32 TOTP Key"
+                            className="w-full bg-muted/30 border border-border/50 rounded-lg px-4 py-2.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary focus:border-transparent"
+                          />
+                        </div>
+                      </div>
+                    </>
+                  )}
 
                   {selectedBroker === "angel" && (
                     <div>

@@ -45,8 +45,8 @@ class RiskConfig:
     min_ai_confidence: float = 0.55
     # High volatility threshold (ATR % of price)
     high_volatility_threshold: float = 3.0
-    # Maximum trades allowed per day
-    max_trades_per_day: int = 1
+    # Maximum trades allowed per day (0 = unlimited, controlled by loss limits)
+    max_trades_per_day: int = 0
 
 
 class RiskManager:
@@ -131,9 +131,9 @@ class RiskManager:
 
         # Max trades per day check
         if self.config.max_trades_per_day > 0:
-            # We count already recorded (closed) trades, plus current active positions
-            # For simplicity, if total_trades >= max_trades_per_day, we block.
-            if self.total_trades >= self.config.max_trades_per_day:
+            # We count already recorded (closed) trades today.
+            # Using len(self.trades_today) guarantees midnight rollover resets this correctly.
+            if len(self.trades_today) >= self.config.max_trades_per_day:
                 return False, f"Max trades per day reached ({self.config.max_trades_per_day})"
 
         # Per-trade risk check
@@ -258,6 +258,7 @@ class RiskManager:
             self.today = date.today()
             self.daily_pnl = 0.0
             self.trades_today = []
+            self.total_trades = 0
             self.consecutive_losses = 0
             if self._risk_off and "Daily" in self._risk_off_reason:
                 self.reset_risk_off()

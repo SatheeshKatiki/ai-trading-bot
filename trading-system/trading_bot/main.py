@@ -103,25 +103,37 @@ _settings_last_mtime: float = 0.0
 
 
 def _save_positions(positions: Dict[str, Position]) -> None:
+    import tempfile
+    import os
     try:
+        data = {
+            sym: {
+                "symbol": p.symbol,
+                "side": p.side,
+                "quantity": p.quantity,
+                "entry_price": p.entry_price,
+                "entry_time": getattr(p, "entry_time", ""),
+                "highest_price": getattr(p, "highest_price", p.entry_price),
+                "lowest_price": getattr(p, "lowest_price", p.entry_price),
+                "stop_loss": getattr(p, "stop_loss", 0.0),
+                "target": getattr(p, "target", 0.0),
+                "is_partially_booked": getattr(p, "is_partially_booked", False),
+                "scales_done": getattr(p, "scales_done", 0)
+            } for sym, p in positions.items()
+        }
+        
+        # Phase 7: Atomic Write prevents torn/corrupted state files on crash
         _POSITIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(_POSITIONS_PATH, "w") as f:
-            data = {
-                sym: {
-                    "symbol": p.symbol,
-                    "side": p.side,
-                    "quantity": p.quantity,
-                    "entry_price": p.entry_price,
-                    "entry_time": getattr(p, "entry_time", ""),
-                    "highest_price": getattr(p, "highest_price", p.entry_price),
-                    "lowest_price": getattr(p, "lowest_price", p.entry_price),
-                    "stop_loss": getattr(p, "stop_loss", 0.0),
-                    "target": getattr(p, "target", 0.0),
-                    "is_partially_booked": getattr(p, "is_partially_booked", False),
-                    "scales_done": getattr(p, "scales_done", 0)
-                } for sym, p in positions.items()
-            }
-            json.dump(data, f, indent=4)
+        temp_fd, temp_path = tempfile.mkstemp(dir=_POSITIONS_PATH.parent, prefix="active_positions_tmp_", suffix=".json")
+        try:
+            with os.fdopen(temp_fd, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=4)
+            os.replace(temp_path, _POSITIONS_PATH)
+        except Exception as e:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+            raise e
+            
     except Exception as e:
         logger.error("Failed to save active positions: %s", e)
 
@@ -194,27 +206,39 @@ def _load_settings() -> dict:
 class CandleAggregator:
     """Aggregate raw tick dictionaries into OHLCV DataFrames."""
 
-    def __init__(self, symbols: List[str]):
+    def __init__(self, symbols: List[str], timeframe_str: str = "5 Min"):
         self.symbols = symbols
         self._buffer: Dict[str, List[Dict]] = defaultdict(list)
-        self._current_minute: datetime | None = None
+        self._current_interval: datetime | None = None
         self.candles: Dict[str, pd.DataFrame] = {}
+        
+        # Parse timeframe to minutes
+        try:
+            if "Min" in timeframe_str:
+                self.interval_mins = int(timeframe_str.split(" ")[0])
+            elif "Hour" in timeframe_str:
+                self.interval_mins = int(timeframe_str.split(" ")[0]) * 60
+            else:
+                self.interval_mins = 1
+        except Exception:
+            self.interval_mins = 1
 
-    def _minute_floor(self, ts: datetime) -> datetime:
-        return ts.replace(second=0, microsecond=0)
+    def _interval_floor(self, ts: datetime) -> datetime:
+        # Floor to nearest interval_mins
+        return ts.replace(minute=(ts.minute // self.interval_mins) * self.interval_mins, second=0, microsecond=0)
 
     def add_tick(self, tick: Dict) -> None:
         ts = datetime.fromtimestamp(tick["timestamp"], tz=timezone.utc)
-        minute = self._minute_floor(ts)
-        if self._current_minute is None:
-            self._current_minute = minute
-        elif minute > self._current_minute:
-            self._finalize_minute()
-            self._current_minute = minute
+        minute = self._interval_floor(ts)
+        if self._current_interval is None:
+            self._current_interval = minute
+        elif minute > self._current_interval:
+            self._finalize_interval()
+            self._current_interval = minute
         symbol = tick["symbol"]
         self._buffer[symbol].append(tick)
 
-    def _finalize_minute(self) -> None:
+    def _finalize_interval(self) -> None:
         for symbol, ticks in self._buffer.items():
             if not ticks:
                 continue
@@ -225,7 +249,7 @@ class CandleAggregator:
                 "low": df["ltp"].min(),
                 "close": df["ltp"].iloc[-1],
                 "volume": df["volume"].sum(),
-                "timestamp": pd.to_datetime(self._current_minute),
+                "timestamp": pd.to_datetime(self._current_interval),
             }
             if symbol not in self.candles:
                 self.candles[symbol] = pd.DataFrame([candle]).set_index("timestamp")
@@ -233,7 +257,7 @@ class CandleAggregator:
                 self.candles[symbol] = pd.concat([
                     self.candles[symbol],
                     pd.DataFrame([candle]).set_index("timestamp"),
-                ])
+                ]).tail(2000)
         self._buffer = defaultdict(list)
 
     def get_latest_dataframe(self, symbol: str) -> pd.DataFrame:
@@ -256,11 +280,12 @@ async def run_live_bot(symbols: List[str]) -> None:
         "symbols":    symbols,
     })
 
-    aggregator = CandleAggregator(symbols)
-
-    # Read initial capital from settings — not hardcoded
+    # Read settings
     _init_settings = _load_settings()
     _initial_capital = float(_init_settings.get("initial_capital", 100_000.0))
+    _tf_str = _init_settings.get("timeframe", "5 Min")
+    
+    aggregator = CandleAggregator(symbols, _tf_str)
 
     # Initialize Core Engines
     risk_manager = RiskManager(initial_capital=_initial_capital)
@@ -281,10 +306,11 @@ async def run_live_bot(symbols: List[str]) -> None:
     from datetime import timedelta
     try:
         end_date = datetime.now().strftime("%Y-%m-%d")
-        start_date = (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d")
+        start_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
         for sym in symbols:
-            # We fetch 1 Min data to match aggregator output
-            resp = requests.get(f"http://127.0.0.1:8000/api/history?symbol={sym}&start_date={start_date}&end_date={end_date}&timeframe=1")
+            # We fetch dynamic timeframe data to match aggregator output
+            safe_tf = _tf_str.replace(" ", "+")
+            resp = requests.get(f"http://127.0.0.1:8000/api/history?symbol={sym}&start_date={start_date}&end_date={end_date}&timeframe={safe_tf}")
             if resp.status_code == 200:
                 data = resp.json().get("data", [])
                 if data:
@@ -304,6 +330,64 @@ async def run_live_bot(symbols: List[str]) -> None:
 
     last_eval_time = 0.0
 
+    async def background_iceberg_entry(broker, entry_req: OrderRequest, pos_obj: Position, s: str):
+        try:
+            executed_slices = await iceberg_manager.execute_iceberg(broker, entry_req)
+            actual_qty = sum(req.quantity for req in executed_slices)
+            if actual_qty == 0:
+                logger.error("Entry order completely failed to execute for %s. Removing ghost position.", s)
+                if s in active_positions:
+                    del active_positions[s]
+                    _save_positions(active_positions)
+            else:
+                pos_obj.quantity = actual_qty
+                _save_positions(active_positions)
+                audit.trade(AuditEvent.TRADE_ENTRY, pos_obj.symbol,
+                            entry_req.side.value, actual_qty,
+                            pos_obj.entry_price, broker=broker.BROKER_ID)
+        except Exception as e:
+            logger.error("Background Iceberg Entry Failed for %s: %s", s, e)
+            if s in active_positions:
+                del active_positions[s]
+                _save_positions(active_positions)
+
+    async def background_iceberg_exit(broker, exit_req: OrderRequest, sym: str, side: int, entry_price: float):
+        try:
+            executed_slices = await iceberg_manager.execute_iceberg(broker, exit_req)
+            actual_exit_qty = sum(req.quantity for req in executed_slices)
+            
+            if actual_exit_qty == 0:
+                logger.error("EXIT order completely failed to execute for %s. Retrying next tick.", sym)
+                return
+                
+            audit.trade(AuditEvent.TRADE_EXIT, sym,
+                        "SELL" if side == 1 else "BUY",
+                        actual_exit_qty, entry_price,
+                        broker=broker.BROKER_ID, pnl=0)
+            
+            # Note: active_positions removal/reduction is already handled synchronously in main thread
+        except Exception as e:
+            logger.error("Background Iceberg Exit Failed for %s: %s", sym, e)
+
+    async def background_iceberg_scale(broker, scale_req: OrderRequest, pos: Position, side_str: str, ltp: float):
+        try:
+            executed_slices = await iceberg_manager.execute_iceberg(broker, scale_req)
+            actual_scale_qty = sum(req.quantity for req in executed_slices)
+            
+            if actual_scale_qty == 0:
+                logger.error("SCALE order completely failed to execute for %s.", pos.symbol)
+            else:
+                audit.trade(AuditEvent.TRADE_ENTRY, pos.symbol,
+                            scale_req.side.value, actual_scale_qty,
+                            ltp, broker=broker.BROKER_ID)
+                
+                # Update position
+                pos.quantity += actual_scale_qty
+                pos.scales_done += 1
+                alerter.send_trade_alert(pos.symbol, f"PYRAMID SCALE IN {side_str}", actual_scale_qty, ltp, 1.0)
+                _save_positions(active_positions)
+        except Exception as e:
+            logger.error("Background Iceberg Scale Failed for %s: %s", pos.symbol, e)
     async def on_tick(tick: Dict) -> None:
         nonlocal last_eval_time
         sym = tick["symbol"]
@@ -380,9 +464,14 @@ async def run_live_bot(symbols: List[str]) -> None:
                     # If turned off, set activation pct to an unreachable high number
                     exit_engine.trailing_activation_pct = 9999.0
 
+                old_stop_loss = pos.stop_loss
                 should_exit, reason, exit_qty = exit_engine.evaluate_exit(
                     pos, ltp, current_time, current_atr
                 )
+                # Phase 5: Persist Trailing SL to disk immediately to prevent amnesia on reboot
+                if pos.stop_loss != old_stop_loss:
+                    logger.info("TRAILING SL MOVED for %s: %.2f -> %.2f. Saving to disk.", sym, old_stop_loss, pos.stop_loss)
+                    _save_positions(active_positions)
             
             # Close the else block for the sentiment check
             pass
@@ -397,18 +486,17 @@ async def run_live_bot(symbols: List[str]) -> None:
                         logger.warning("EXIT order rate-limited for %s — will retry on next tick.", sym)
                         return  # Return immediately so position isn't removed; it will retry on next tick
                     else:
+                        is_opt = "CE" in pos.symbol or "PE" in pos.symbol
                         exit_req = OrderRequest(
-                            symbol=sym,
+                            symbol=pos.symbol,
                             quantity=qty_to_close,
-                            side=OrderSide.SELL if pos.side == 1 else OrderSide.BUY,
+                            side=OrderSide.SELL if is_opt else (OrderSide.SELL if pos.side == 1 else OrderSide.BUY),
                         )
                         try:
                             exit_req = validator.validator.validate(exit_req)
-                            await broker.place_order_async(exit_req)
-                            audit.trade(AuditEvent.TRADE_EXIT, sym,
-                                        "SELL" if pos.side == 1 else "BUY",
-                                        qty_to_close, pos.entry_price,
-                                        broker=broker.BROKER_ID, pnl=0)
+                            asyncio.create_task(background_iceberg_exit(
+                                broker, exit_req, sym, pos.side, pos.entry_price
+                            ))
                         except ValidationError as ve:
                             logger.error("EXIT order validation failed for %s: %s", sym, ve)
                             audit.log(AuditEvent.VALIDATION_ERROR,
@@ -425,11 +513,14 @@ async def run_live_bot(symbols: List[str]) -> None:
                 
                 trade_side = "LONG" if pos.side == 1 else "SHORT"
                 risk_manager.record_trade(TradeRecord(
-                    sym, trade_side,
+                    pos.symbol, trade_side,
                     pos.entry_price, ltp, pnl, datetime.utcnow().isoformat()
                 ))
                 # Also persist to shared state for dashboard display
-                record_trade(sym, "SELL" if pos.side == 1 else "BUY", ltp, datetime.utcnow().isoformat(), qty=qty_to_close)
+                # For options, entry is BUY, exit is SELL. For futures, it reverses.
+                is_opt = "CE" in pos.symbol or "PE" in pos.symbol
+                state_action = "SELL" if is_opt else ("SELL" if pos.side == 1 else "BUY")
+                record_trade(pos.symbol, state_action, ltp, datetime.utcnow().isoformat(), qty=qty_to_close)
                 update_equity(risk_manager.current_equity, risk_manager.daily_pnl)
                 alerter.send_exit_alert(sym, pos.side, qty_to_close, ltp, pnl, reason)
 
@@ -469,23 +560,17 @@ async def run_live_bot(symbols: List[str]) -> None:
                         if not ORDER_LIMITER.allow(broker.BROKER_ID):
                             logger.warning("SCALE order rate-limited for %s — skipping.", sym)
                         else:
+                            is_opt = "CE" in pos.symbol or "PE" in pos.symbol
                             scale_req = OrderRequest(
                                 symbol=pos.symbol,
                                 quantity=scale_qty,
-                                side=OrderSide.BUY if pos.side == 1 else OrderSide.SELL,
+                                side=OrderSide.BUY if is_opt else (OrderSide.BUY if pos.side == 1 else OrderSide.SELL),
                             )
                             try:
                                 scale_req = validator.validator.validate(scale_req)
-                                await broker.place_order_async(scale_req)
-                                audit.trade(AuditEvent.TRADE_ENTRY, pos.symbol,
-                                            scale_req.side.value, scale_req.quantity,
-                                            ltp, broker=broker.BROKER_ID)
-                                
-                                # Update position
-                                pos.quantity += scale_qty
-                                pos.scales_done += 1
-                                alerter.send_trade_alert(pos.symbol, f"PYRAMID SCALE IN {side_str}", scale_qty, ltp, 1.0)
-                                
+                                asyncio.create_task(background_iceberg_scale(
+                                    broker, scale_req, pos, side_str, ltp
+                                ))
                             except ValidationError as ve:
                                 logger.error("Scale order validation failed for %s: %s", sym, ve)
                     else:
@@ -526,30 +611,20 @@ async def run_live_bot(symbols: List[str]) -> None:
                         continue
 
                     # ── AI Confidence Gate (computed first, needed by premium engine) ──
-                    # Only compute on the last 60 rows — enough for all indicator warmups.
-                    # This avoids reprocessing the full 200-500 bar history each tick.
-                    df_tail = df.tail(60)
-                    features = compute_features(df_tail).tail(1)
+                    # Phase 10: Compute features on full history to prevent Live-Simulation Skew (EMA truncation)
+                    features = compute_features(df).tail(1)
                     
-                    if ai_filter.is_trained:
+                    enable_ai = settings.get("enable_ai_filter", False)
+                    if enable_ai and ai_filter.is_trained:
                         confidence = ai_filter.predict(features)["confidence"].iloc[-1] if not features.empty else 1.0
                     else:
-                        # Fallback to pure rules-based trading if model is not trained
+                        # Fallback to pure rules-based trading if model is not trained or disabled
                         confidence = 1.0
 
-                    if confidence < min_confidence:
-                        logger.info(
-                            "AI rejected signal for %s — confidence %.2f < threshold %.2f",
-                            s, confidence, min_confidence
-                        )
-                        continue
-
                     # ── Run selected strategy ──────────────────────────
-                    logger.info("Running strategy: [%s] for %s", strategy_name, s)
+                    # We run the strategy first before applying the AI gate to avoid spamming logs 
+                    # on every tick when no actual signal was generated.
                     
-                    # DEBUG: Print last 5 closes to see why it's sideways
-                    logger.info("DEBUG CLOSES: %s", df['close'].tail(5).tolist())
-
                     # ── Premium Strategy: uses engine directly for option selection ──
                     if strategy_name == "premium":
                         instrument = s.replace("NSE:", "").replace("-INDEX", "").replace("-EQ", "")
@@ -561,7 +636,7 @@ async def run_live_bot(symbols: List[str]) -> None:
                         sig: PremiumSignal = premium_engine.evaluate(df, ai_confidence=confidence)
 
                         if not sig.is_tradeable:
-                            logger.info("Premium filter rejected %s: %s", s, sig.reject_reason)
+                            # premium engine handles its own rejection logs
                             continue
 
                         latest_signal = 1 if sig.direction == "BUY_CALL" else -1
@@ -582,6 +657,14 @@ async def run_live_bot(symbols: List[str]) -> None:
                         entry_symbol  = s
                         lot_size      = 1
                         
+                        if latest_signal != 0:
+                            if confidence < min_confidence:
+                                logger.info(
+                                    "AI rejected %s signal for %s — confidence %.2f < threshold %.2f",
+                                    strategy_name, s, confidence, min_confidence
+                                )
+                                continue
+
                         # Auto-map to Options if it's an Index trade
                         if latest_signal != 0 and ("INDEX" in s or s.startswith("NSE:NIFTY") or s.startswith("BSE:SENSEX")):
                             try:
@@ -651,7 +734,10 @@ async def run_live_bot(symbols: List[str]) -> None:
                     if "quantity" in settings:
                         qty = int(settings["quantity"])
                     else:
-                        qty = risk_manager.calculate_position_size(entry_price, sl_price) or 1
+                        # Phase 6: Fix Hyper-Leverage Bug
+                        # calculate_position_size returns total shares. Divide by lot_size to get number of lots.
+                        total_shares = risk_manager.calculate_position_size(entry_price, sl_price) or 1
+                        qty = max(1, total_shares // lot_size)
 
                     # ── Execute (Live or Paper) ────────────────────────
                     if is_live:
@@ -667,55 +753,76 @@ async def run_live_bot(symbols: List[str]) -> None:
                             )
                             continue
                         # Input validation gate
+                        is_opt = "CE" in entry_symbol or "PE" in entry_symbol
                         entry_req = OrderRequest(
                             symbol=entry_symbol,
                             quantity=qty * lot_size,
-                            side=OrderSide.BUY if latest_signal == 1 else OrderSide.SELL,
+                            side=OrderSide.BUY if is_opt else (OrderSide.BUY if latest_signal == 1 else OrderSide.SELL),
                         )
+                        actual_qty = qty * lot_size # Assume full fill initially to block duplicates
                         try:
                             entry_req = validator.validator.validate(entry_req)
-                            await iceberg_manager.execute_iceberg(broker, entry_req)
-                            audit.trade(AuditEvent.TRADE_ENTRY, entry_symbol,
-                                        entry_req.side.value, entry_req.quantity,
-                                        entry_price, broker=broker.BROKER_ID)
+                            # Create pos_obj BEFORE firing async task
+                            pos_obj = Position(
+                                symbol=entry_symbol,
+                                side=latest_signal,
+                                entry_price=entry_price,
+                                quantity=actual_qty,
+                                entry_time=current_time,
+                                highest_price=entry_price,
+                                lowest_price=entry_price,
+                                stop_loss=sl_price,
+                                target=tgt_price,
+                            )
+                            active_positions[s] = pos_obj
+                            _save_positions(active_positions)
+                            
+                            asyncio.create_task(background_iceberg_entry(
+                                broker, entry_req, pos_obj, s
+                            ))
                         except ValidationError as ve:
                             logger.error("Entry order validation failed for %s: %s", s, ve)
                             audit.log(AuditEvent.VALIDATION_ERROR,
                                       {"symbol": s, "reason": str(ve)}, severity="WARNING")
                             continue
                     else:
+                        actual_qty = qty * lot_size
                         logger.info(
                             "ENTRY %s %s qty=%d @ %.2f | SL=%.2f | TGT=%.2f | AI=%.0f%% [PAPER]",
                             side_str, entry_symbol, qty, entry_price, sl_price, tgt_price, confidence * 100
                         )
 
                     # ── Send Telegram Alert ────────────────────────────
-                    alerter.send_trade_alert(entry_symbol, side_str, qty, entry_price, confidence)
+                    alerter.send_trade_alert(entry_symbol, side_str, actual_qty // lot_size, entry_price, confidence)
 
                     # ── Track position ─────────────────────────────────
-                    pos_obj = Position(
-                        symbol=entry_symbol,
-                        side=latest_signal,
-                        entry_price=entry_price,
-                        quantity=qty * lot_size,
-                        entry_time=current_time,
-                        highest_price=entry_price,
-                        lowest_price=entry_price,
-                        stop_loss=sl_price,
-                        target=tgt_price,
-                    )
-                    
-                    active_positions[s] = pos_obj
-                    _save_positions(active_positions)
+                    if not is_live:
+                        # Paper trades add position synchronously here
+                        pos_obj = Position(
+                            symbol=entry_symbol,
+                            side=latest_signal,
+                            entry_price=entry_price,
+                            quantity=actual_qty,
+                            entry_time=current_time,
+                            highest_price=entry_price,
+                            lowest_price=entry_price,
+                            stop_loss=sl_price,
+                            target=tgt_price,
+                        )
+                        # We MUST key active_positions by the base symbol (INDEX) so that on_tick hits!
+                        active_positions[s] = pos_obj
+                        _save_positions(active_positions)
                     
                     # Persist Entry to state.db so Dashboard Live Feed picks it up
-                    record_trade(entry_symbol, "BUY", entry_price, current_time, qty=qty * lot_size)
+                    is_opt = "CE" in entry_symbol or "PE" in entry_symbol
+                    state_action = "BUY" if is_opt else ("BUY" if latest_signal == 1 else "SELL")
+                    record_trade(entry_symbol, state_action, entry_price, current_time, qty=actual_qty)
                     
                     if strategy_name == "institutional_momentum" and s in momentum_strategies:
                         momentum_strategies[s].open_trade(
                             entry_price=entry_price, 
                             stop_loss=sl_price, 
-                            total_lots=qty * lot_size, 
+                            total_lots=actual_qty, 
                             direction=latest_signal
                         )
                         
@@ -764,7 +871,13 @@ if __name__ == "__main__":
         ["NSE:NIFTY50-INDEX"],   # sensible default if not set in settings
     )
     logger.info("Starting live bot with symbols: %s", SYMBOLS)
-    try:
-        asyncio.run(run_live_bot(SYMBOLS))
-    except KeyboardInterrupt:
-        logger.info("Live bot terminated by user")
+    while True:
+        try:
+            asyncio.run(run_live_bot(SYMBOLS))
+        except KeyboardInterrupt:
+            logger.info("Live bot terminated by user")
+            break
+        except Exception as e:
+            logger.error("FATAL CRASH in Live Bot: %s. Auto-restarting in 10 seconds...", e)
+            import time
+            time.sleep(10)

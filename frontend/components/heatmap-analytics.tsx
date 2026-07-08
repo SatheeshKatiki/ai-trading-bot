@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import { Calendar, ChevronLeft, ChevronRight, Layers, TrendingUp, TrendingDown, Activity, Target, Award, DollarSign } from 'lucide-react';
 import { format, startOfWeek, endOfWeek, startOfMonth, endOfMonth, eachDayOfInterval, isSameMonth, isSameDay, eachMonthOfInterval } from 'date-fns';
 
@@ -55,6 +55,12 @@ export function HeatmapAnalytics({ trades, startDate, endDate }: HeatmapProps) {
       };
     });
   }, [trades]);
+
+  useEffect(() => {
+    if (availableMonths.length > 0) {
+      setCurrentMonthIndex(availableMonths.length - 1);
+    }
+  }, [availableMonths]);
 
   const handlePrevMonth = () => {
     if (currentMonthIndex > 0) setCurrentMonthIndex(prev => prev - 1);
@@ -141,6 +147,12 @@ export function HeatmapAnalytics({ trades, startDate, endDate }: HeatmapProps) {
                     if (dayPnl < 0) {
                       cellColor = 'bg-red-500/10 border-red-500/30 text-red-500 font-semibold hover:bg-red-500/20';
                     }
+                  }
+                  
+                  const isToday = isSameDay(day, new Date());
+                  if (isToday) {
+                    ringClass = 'ring-2 ring-primary ring-offset-2 ring-offset-background font-bold';
+                    if (!isCurrentMonth) cellColor = 'bg-primary/5 text-primary';
                   }
                   
                   return (

@@ -28,8 +28,12 @@ class IcebergManager:
         if total_qty <= self.max_slice_qty:
             # Standard execution, no slicing needed
             if ORDER_LIMITER.allow(broker.BROKER_ID):
-                await broker.place_order_async(order)
-                return [order]
+                try:
+                    await broker.place_order_async(order)
+                    return [order]
+                except Exception as e:
+                    logger.error("Standard Order failed: %s", e)
+                    return []
             else:
                 logger.warning("Order rate limit reached for %s", order.symbol)
                 return []

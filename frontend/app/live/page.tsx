@@ -439,6 +439,8 @@ function LiveTradingContent() {
       `Monitoring 9 EMA and 21 SMA for potential crossover on the ${timeframe} timeframe.`
     ];
 
+    let interval: NodeJS.Timeout | undefined;
+
     if (pnl > 500 && Math.random() > 0.6) {
       setAiCommentary(`Current session highly profitable (+₹${pnl.toFixed(2)}). Risk engine protecting gains with trailing stop.`);
     } else if (changePercent > 0.5) {
@@ -446,12 +448,15 @@ function LiveTradingContent() {
     } else if (changePercent < -0.5) {
       setAiCommentary(`Bearish dominance on ${urlSymbol} (${changePercent.toFixed(2)}%). Scanning for optimal short entry levels.`);
     } else {
-      const interval = setInterval(() => {
+      interval = setInterval(() => {
         const randomComm = commentaries[Math.floor(Math.random() * commentaries.length)];
         setAiCommentary(randomComm);
       }, 8000);
-      return () => clearInterval(interval);
     }
+
+    return () => {
+      if (interval) clearInterval(interval);
+    };
   }, [isWsConnected, urlSymbol, aiConfidence, pnl, changePercent, timeframe]);
 
   // WebSocket Connection for Live Tick Data (Dummy Implementation)
@@ -943,6 +948,10 @@ function LiveTradingContent() {
                     <option value="advanced_ai">Advanced AI/ML</option>
                     <option value="premium">Premium Options Alpha</option>
                     <option value="institutional_momentum">Institutional Momentum</option>
+                    <option value="ema_crossover">Ultra-EMA Crossover Strategy</option>
+                    <option value="meta_agent_swarm">Meta-Agent AI Swarm (5 Brains)</option>
+                    <option value="ultra_meta_dip_swarm">Ultra Meta-Dip Swarm (6 Brains)</option>
+                    <option value="buy_the_dip">Buy the Dip (Mean Reversion)</option>
                   </select>
                   <ChevronDown className="w-4 h-4 text-muted-foreground absolute right-3 top-1/2 transform -translate-y-1/2 pointer-events-none z-10 group-focus-within:text-primary transition-colors" />
                 </div>
@@ -1323,7 +1332,7 @@ function LiveTradingContent() {
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
               {/* Native Custom Chart built with Lightweight-Charts */}
-              <div className={`transition-all duration-300 ${isChartFullScreen ? 'fixed inset-4 z-[100] glass-card rounded-2xl p-6 border border-border/20 shadow-2xl flex flex-col' : 'lg:col-span-2 glass-card rounded-xl p-6 border border-border/20'}`}>
+              <div className={`transition-all duration-300 flex flex-col ${isChartFullScreen ? 'fixed inset-4 z-[100] glass-card rounded-2xl p-6 border border-border/20 shadow-2xl flex flex-col' : 'lg:col-span-2 glass-card rounded-xl p-6 border border-border/20 h-full min-h-[500px]'}`}>
                 <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
                   <div>
                     <h3 className="font-display font-bold text-lg text-foreground flex items-center gap-2">
@@ -1442,7 +1451,7 @@ function LiveTradingContent() {
                 {/* Container for Native Chart */}
                 <div
                   key={`${urlSymbol}-${timeframe}-${chartMode}`}
-                  className={`w-full rounded-lg overflow-hidden border border-border/10 bg-card dark:bg-[#090a0f] flex flex-col ${isChartFullScreen ? 'flex-1 min-h-0' : ''}`}
+                  className={`w-full flex-1 min-h-0 rounded-lg overflow-hidden border border-border/10 bg-card dark:bg-[#090a0f] flex flex-col`}
                 >
                   {chartMode === 'native' ? (
                     <NativeChart symbol={urlSymbol} livePrice={currentPrice} timeframe={timeframe} showDynamicTrend={showDynamicTrend} />
@@ -1453,7 +1462,7 @@ function LiveTradingContent() {
               </div>
 
               {/* Right Column: Execution Feed */}
-              <div className="flex flex-col gap-6 h-[530px]">
+              <div className="flex flex-col gap-6 h-full min-h-[500px]">
                 {/* Execution Feed */}
                 <div className="glass-card rounded-xl p-6 border border-border/20 flex flex-col flex-1 h-full min-h-0">
                   <div className="flex justify-between items-center mb-4">
@@ -1532,10 +1541,7 @@ function LiveTradingContent() {
               </div>
             </div>
 
-            {/* ── ADVANCED CHART SECTION ─────────────────────────────── */}
-            <div className="mt-6 rounded-xl overflow-hidden border border-border/10" style={{ height: 560 }}>
-              <AdvancedChart symbol={urlSymbol} livePrice={currentPrice} timeframe={timeframe} />
-            </div>
+            {/* ── ADVANCED CHART SECTION REMOVED (Redundant) ─────────────────────────────── */}
           </div>
         </main>
       </div>
