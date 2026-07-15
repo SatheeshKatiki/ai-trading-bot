@@ -36,7 +36,7 @@ export function TradeReplayModal({ trade, symbol, timeframe, onClose }: TradeRep
       setLoading(true);
       setError(null);
       try {
-        const res = await fetch(`http://127.0.0.1:8000/api/history?symbol=${encodeURIComponent(symbol)}&start_date=${dateStr}&end_date=${dateStr}&timeframe=${encodeURIComponent(timeframe)}`);
+        const res = await fetch(`/api/history?symbol=${encodeURIComponent(symbol)}&start_date=${dateStr}&end_date=${dateStr}&timeframe=${encodeURIComponent(timeframe)}`);
         if (!res.ok) throw new Error("Failed to fetch historical data for replay");
         const json = await res.json();
         if (json.data && Array.isArray(json.data)) {

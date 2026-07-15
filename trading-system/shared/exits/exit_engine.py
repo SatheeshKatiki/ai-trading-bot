@@ -32,6 +32,8 @@ class Position:
     target: float            # Current profit target
     is_partially_booked: bool = False
     scales_done: int = 0     # Number of times this position has been scaled into
+    lot_size: int = 1        # Lot size for quantity rounding
+    is_exiting: bool = False # Lock flag: True while background iceberg exit is in flight
 
 
 class SmartExitEngine:
@@ -105,8 +107,9 @@ class SmartExitEngine:
             position.lowest_price = min(position.lowest_price, current_price)
 
         # 2. Time-based exit (EOD Square-off)
-        # Assuming current_time and eod_exit_time are comparable strings (HH:MM:SS)
-        if current_time >= self.eod_exit_time:
+        # Extract time part if current_time contains date (e.g., "YYYY-MM-DD HH:MM:SS")
+        time_only = current_time.split(" ")[-1] if " " in current_time else current_time
+        if time_only >= self.eod_exit_time:
             logger.info("EOD Exit triggered for %s at %s", position.symbol, current_time)
             return True, "Time-based EOD Exit", None
 

@@ -173,10 +173,34 @@ class BaseBroker(ABC):
 
     @abstractmethod
     def get_market_data(self, symbols: List[str]) -> Dict[str, MarketQuote]:
-        """Fetch real-time quotes for a list of symbols.
+        """Fetch latest quotes for the given symbols.
 
-        Returns a dict keyed by symbol, each value a ``MarketQuote``.
+        Returns a dictionary mapping each symbol to its ``MarketQuote``.
         """
+
+    def get_lot_size(self, symbol: str) -> int:
+        """Fetch the current market lot size for the given symbol dynamically.
+        
+        Subclasses should override this and ideally implement an in-memory 
+        cached instrument master to return lot sizes in O(1) time without latency.
+        
+        Default implementation attempts to infer from typical equity (1) or uses
+        a safe fallback for indices.
+        """
+        # Safe fallback logic if broker doesn't implement dynamic fetching
+        if "NIFTY50" in symbol or "NIFTY-INDEX" in symbol:
+            return 65
+        elif "BANKNIFTY" in symbol or "NIFTYBANK" in symbol:
+            return 30
+        elif "FINNIFTY" in symbol:
+            return 40
+        elif "SENSEX" in symbol:
+            return 20
+        elif "MIDCPNIFTY" in symbol:
+            return 75
+        elif "RELIANCE" in symbol:
+            return 500
+        return 1  # Assume equity default
 
     def get_historical_data(
         self, 
@@ -194,73 +218,9 @@ class BaseBroker(ABC):
         import pandas as pd
         from datetime import datetime
         
-        # 1. Fetch via yfinance (Broker API is handled by subclasses)
-        self.logger.info(f"Fetching history for {symbol} via yfinance fallback.")
-        import yfinance as yf
-        
-        # Clean symbol to find correct yfinance ticker
-        clean_symbol = symbol.split(":")[-1]
-        clean_symbol = clean_symbol.replace("-EQ", "").replace("-INDEX", "")
-        
-        ticker_symbol = clean_symbol
-        if not clean_symbol.endswith(".NS") and not clean_symbol.endswith(".BO"):
-            if any(n in clean_symbol.upper() for n in ["NIFTY", "NSEI"]):
-                ticker_symbol = "^NSEI"
-            elif any(s in clean_symbol.upper() for s in ["SENSEX", "BSESN"]):
-                ticker_symbol = "^BSESN"
-            else:
-                ticker_symbol = f"{clean_symbol}.NS"
-                
-        try:
-            from datetime import datetime, timedelta
-            interval = "1m"
-            max_days = 730
-            if timeframe == "30 Sec": interval = "1m"; max_days = 7
-            elif timeframe == "1 Min": interval = "1m"; max_days = 7
-            elif timeframe == "3 Min": interval = "2m"; max_days = 60
-            elif timeframe == "5 Min": interval = "5m"; max_days = 60
-            elif timeframe == "15 Min": interval = "15m"; max_days = 60
-            elif timeframe == "1 Hour": interval = "60m"; max_days = 730
-            elif timeframe == "1 Day": interval = "1d"; max_days = 3650
-            elif timeframe == "1 Week": interval = "1wk"; max_days = 3650
-            elif timeframe == "1 Month": interval = "1mo"; max_days = 3650
-            
-            # Truncate start_date to max_days allowed by yfinance (relative to today)
-            start_dt = datetime.strptime(start_date, '%Y-%m-%d')
-            end_dt = datetime.strptime(end_date, '%Y-%m-%d')
-            
-            today_dt = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-            oldest_allowed_dt = today_dt - timedelta(days=max_days - 1)
-            
-            if start_dt < oldest_allowed_dt:
-                start_dt = oldest_allowed_dt
-                start_date = start_dt.strftime('%Y-%m-%d')
-                self.logger.info(f"yfinance limit: truncated start_date to {start_date} for interval {interval}")
-                
-            if end_dt < oldest_allowed_dt:
-                self.logger.warning(f"yfinance limit: requested end_date {end_date} is older than allowed {max_days} days. Returning empty.")
-                return []
-            
-            ticker = yf.Ticker(ticker_symbol)
-            df = ticker.history(start=start_date, end=end_date, interval=interval)
-            
-            if df.empty:
-                return []
-                
-            data = []
-            for index, row in df.iterrows():
-                data.append({
-                    "datetime": index.strftime('%Y-%m-%d %H:%M:%S'),
-                    "close": float(row['Close']),
-                    "high": float(row['High']),
-                    "low": float(row['Low']),
-                    "open": float(row['Open']),
-                    "volume": int(row['Volume'])
-                })
-            return data
-        except Exception as e:
-            self.logger.error(f"Failed to fetch yfinance fallback: {e}")
-            return []
+        # YFinance fallback removed as per user request. Only Fyers API is used now.
+        self.logger.warning(f"Fallback to yfinance disabled. Cannot fetch {symbol} history from base broker.")
+        return []
 
     # ------------------------------------------------------------------
     # Streaming  (real-time tick feed)

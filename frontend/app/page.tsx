@@ -3,6 +3,8 @@
 import Sidebar from "@/components/sidebar";
 import Header from "@/components/header";
 import NewsTicker from "@/components/news-ticker";
+import LiveTicker from "@/components/live-ticker";
+import { BtstPredictor } from "@/components/btst-predictor";
 import { useState, useEffect } from "react";
 import { 
   TrendingUp, 
@@ -51,15 +53,6 @@ export default function Dashboard() {
   const [isEngineLive, setIsEngineLive] = useState(false);
   const [isEngineLoading, setIsEngineLoading] = useState(false);
   const [aiCommentary, setAiCommentary] = useState("System armed. Analyzing market structure...");
-  const [tickerData, setTickerData] = useState<any>({
-    "NIFTY": { lp: 23820.35, chp: -1.49, up: false },
-    "BANKNIFTY": { lp: 51000.00, chp: 0.08, up: true },
-    "SENSEX": { lp: 76015.28, chp: -1.70, up: false },
-    "RELIANCE": { lp: 2950.00, chp: 0.12, up: true },
-    "TCS": { lp: 3950.00, chp: -0.45, up: false },
-  });
-  const [lastPrices, setLastPrices] = useState<any>({});
-  const [flashes, setFlashes] = useState<any>({});
   // Live AI Signal state — sourced from /api/signals
   const [aiSignal, setAiSignal] = useState<{
     confidence: number;
@@ -105,64 +98,15 @@ export default function Dashboard() {
     return curve.slice(-Math.min(curve.length, limit));
   })();
 
-  // WebSocket for Real-time Institutional Ticker
-  useEffect(() => {
-    const ws = new WebSocket('ws://127.0.0.1:8000/ws/live');
-    
-    ws.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      
-      // Update flashes for price changes
-      const newFlashes: any = {};
-      Object.keys(data).forEach(key => {
-        if (data[key] !== null && typeof data[key] === 'object' && data[key].lp) {
-          if (lastPrices[key] && data[key].lp !== lastPrices[key]) {
-            newFlashes[key] = data[key].lp > lastPrices[key] ? "up" : "down";
-          }
-        }
-      });
-
-      if (Object.keys(newFlashes).length > 0) {
-        setFlashes(newFlashes);
-        setTimeout(() => setFlashes({}), 800);
-      }
-
-      setLastPrices((prev: any) => {
-        const next = { ...prev };
-        Object.keys(data).forEach(key => {
-          if (data[key] !== null && typeof data[key] === 'object' && data[key].lp) next[key] = data[key].lp;
-        });
-        return next;
-      });
-
-      setTickerData((prev: any) => ({
-        ...prev,
-        ...Object.fromEntries(
-          Object.entries(data).filter(([_, v]) => v !== null)
-        ),
-        "NIFTY": data.NIFTY ?? prev.NIFTY,
-        "BANKNIFTY": data.BANKNIFTY ?? prev.BANKNIFTY,
-        "SENSEX": data.SENSEX ?? prev.SENSEX
-      }));
-    };
-
-    ws.onerror = (error) => {
-      console.warn('WebSocket connection attempt failed. Ensure the API bridge is running.', error);
-    };
-
-    return () => ws.close();
-  }, []); // Remove dependency to prevent reconnection loops
-
-  // Fetch live state from the API (Standard Stats)
   useEffect(() => {
     const fetchData = async () => {
       try {
         // Parallel fetching for performance
         const [stateRes, posRes, logsRes, engineRes] = await Promise.all([
-          fetch('http://127.0.0.1:8000/api/state'),
-          fetch('http://127.0.0.1:8000/api/positions'),
-          fetch('http://127.0.0.1:8000/api/logs?lines=10'),
-          fetch('http://127.0.0.1:8000/api/engine/status')
+          fetch(`/api/state`),
+          fetch(`/api/positions`),
+          fetch(`/api/logs?lines=10`),
+          fetch(`/api/engine/status`)
         ]);
  
         const stateData = await stateRes.json();
@@ -213,7 +157,7 @@ export default function Dashboard() {
     setPanicStatus("Liquidating all positions...");
     
     try {
-      const res = await fetch('http://127.0.0.1:8000/api/panic-exit', { method: 'POST' });
+      const res = await fetch(`/api/panic-exit`, { method: 'POST' });
       const data = await res.json();
       
       if (data.status === "success") {
@@ -241,7 +185,7 @@ export default function Dashboard() {
   const toggleEngine = async () => {
     setIsEngineLoading(true);
     try {
-      const res = await fetch('http://127.0.0.1:8000/api/engine/toggle', { method: 'POST' });
+      const res = await fetch(`/api/engine/toggle`, { method: 'POST' });
       const data = await res.json();
       setIsEngineLive(data.is_active);
     } catch (error) {
@@ -255,7 +199,7 @@ export default function Dashboard() {
   useEffect(() => {
     const fetchAiSignal = async () => {
       try {
-        const res = await fetch('http://127.0.0.1:8000/api/signals?symbol=NIFTY');
+        const res = await fetch(`/api/signals?symbol=NIFTY`);
         if (res.ok) {
           const data = await res.json();
           setAiSignal({
@@ -288,55 +232,7 @@ export default function Dashboard() {
         
         <main className="flex-1 overflow-y-auto p-4 space-y-4">
           {/* Global Market Ticker (LIVE STREAMING) */}
-          <div className="bg-card/50 backdrop-blur-md border border-border/50 rounded-xl overflow-hidden h-10 flex items-center shadow-inner group">
-            <div className="bg-primary/20 text-primary px-3 h-full flex items-center text-xs font-extrabold uppercase tracking-tighter border-r border-border/50 z-10">
-              <div className="flex items-center gap-1.5">
-                <div className="w-1.5 h-1.5 bg-primary rounded-full animate-pulse"></div>
-                Live Markets
-              </div>
-            </div>
-            <div className="flex-1 overflow-hidden relative">
-              <div className="flex whitespace-nowrap animate-marquee-slower gap-12 items-center px-4 hover:pause">
-                {Object.keys(tickerData).filter(k => k !== "trades" && k !== "signalsData").map((symbol, i) => {
-                  const data = tickerData[symbol];
-                  if (!data || typeof data !== 'object') return null;
-                  const isUp = data.chp >= 0;
-                  const flashClass = flashes[symbol] === "up" ? "bg-success/20 animate-pulse" : flashes[symbol] === "down" ? "bg-destructive/20 animate-pulse" : "";
-                  
-                  return (
-                    <div key={i} className={`flex items-center gap-3 px-2 py-1 rounded-md transition-all duration-300 ${flashClass}`}>
-                      <span className="text-xs font-bold text-foreground/90 tracking-tight">{symbol}</span>
-                      <span className="text-xs font-mono font-medium text-foreground">
-                        {data.lp.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                      </span>
-                      <div className={`flex items-center text-[10px] font-bold ${isUp ? "text-success" : "text-destructive"}`}>
-                        {isUp ? <ArrowUpRight className="w-2.5 h-2.5 mr-0.5" /> : <ArrowDownRight className="w-2.5 h-2.5 mr-0.5" />}
-                        {Math.abs(data.chp).toFixed(2)}%
-                      </div>
-                    </div>
-                  );
-                })}
-                {/* Duplicate for seamless loop */}
-                {Object.keys(tickerData).filter(k => k !== "trades" && k !== "signalsData").map((symbol, i) => {
-                  const data = tickerData[symbol];
-                  if (!data || typeof data !== 'object') return null;
-                  const isUp = data.chp >= 0;
-                  return (
-                    <div key={`dup-${i}`} className="flex items-center gap-3 px-2 py-1">
-                      <span className="text-xs font-bold text-foreground/90 tracking-tight">{symbol}</span>
-                      <span className="text-xs font-mono font-medium text-foreground">
-                        {data.lp.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                      </span>
-                      <div className={`flex items-center text-[10px] font-bold ${isUp ? "text-success" : "text-destructive"}`}>
-                        {isUp ? <ArrowUpRight className="w-2.5 h-2.5 mr-0.5" /> : <ArrowDownRight className="w-2.5 h-2.5 mr-0.5" />}
-                        {Math.abs(data.chp).toFixed(2)}%
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
+          <LiveTicker />
 
           {/* Header & Quick Actions */}
           <div className="flex justify-between items-center">
@@ -366,8 +262,11 @@ export default function Dashboard() {
               </div>
             </div>
           </div>
-          
           <NewsTicker />
+          
+          <div className="w-full">
+            <BtstPredictor symbol="NIFTY" />
+          </div>
 
           {/* AI Live Analyst Panel */}
           <div

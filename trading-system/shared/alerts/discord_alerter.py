@@ -38,6 +38,27 @@ class Alerter:
             daemon=True
         ).start()
 
+    def send_exit_alert(
+        self,
+        symbol: str, 
+        side: int | str, 
+        qty: int, 
+        price: float, 
+        pnl: float,
+        reason: str
+    ) -> None:
+        """
+        Dispatch an exit alert in the background.
+        """
+        if not DISCORD_WEBHOOK_URL:
+            return
+            
+        threading.Thread(
+            target=_post_discord_exit_alert,
+            args=(symbol, side, qty, price, pnl, reason),
+            daemon=True
+        ).start()
+
 alerter = Alerter()
 
 def _post_discord_alert(
@@ -96,3 +117,55 @@ def _post_discord_alert(
                 
     except Exception as e:
         logger.error(f"[Alerts] Failed to send Discord alert: {e}")
+
+def _post_discord_exit_alert(
+    symbol: str, 
+    side: int | str, 
+    qty: int, 
+    price: float, 
+    pnl: float,
+    reason: str
+) -> None:
+    """Synchronous POST request to Discord Webhook for exits."""
+    try:
+        side_label = "LONG" if side == 1 else "SHORT"
+        color = 3066993 if pnl > 0 else 15158332  # Green if profit, Red if loss
+        
+        import datetime
+        import pytz
+        ist = pytz.timezone("Asia/Kolkata")
+        trigger_time = datetime.datetime.now(ist).strftime("%Y-%m-%d %I:%M:%S %p")
+
+        # Build Discord Rich Embed
+        embed = {
+            "title": f"🎯 POSITION CLOSED: {symbol}" if pnl > 0 else f"🛑 POSITION CLOSED: {symbol}",
+            "color": color,
+            "fields": [
+                {"name": "Symbol", "value": f"{symbol} ({side_label})", "inline": True},
+                {"name": "Exit Price", "value": f"₹{price:.2f}", "inline": True},
+                {"name": "Quantity", "value": str(qty), "inline": True},
+                {"name": "Realized PnL", "value": f"₹{pnl:,.2f}", "inline": True},
+                {"name": "Reason", "value": reason, "inline": True},
+                {"name": "Triggered Time (IST)", "value": trigger_time, "inline": False},
+            ],
+            "footer": {"text": "QuantAI Execution Terminal"}
+        }
+        
+        payload = {
+            "username": "QuantAI Swarm Bot",
+            "embeds": [embed]
+        }
+        
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            DISCORD_WEBHOOK_URL, 
+            data=data, 
+            headers={'Content-Type': 'application/json', 'User-Agent': 'QuantAI/1.0'}
+        )
+        
+        with urllib.request.urlopen(req, timeout=5) as response:
+            if response.getcode() not in [200, 204]:
+                logger.warning(f"[Alerts] Discord webhook returned {response.getcode()}")
+                
+    except Exception as e:
+        logger.error(f"[Alerts] Failed to send Discord exit alert: {e}")

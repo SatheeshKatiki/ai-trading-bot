@@ -203,9 +203,8 @@ def update_equity(equity: float, pnl: float) -> None:
         _CACHE["pnl"]    = pnl
         _CACHE["last_update"] = datetime.now(timezone.utc).isoformat()
         _dirty = True
-        # Only write immediately if it has been long enough since last flush
-        if time.monotonic() - _last_flush >= _FLUSH_INTERVAL_S:
-            _flush_to_disk()
+        # Relies entirely on the background _flusher_thread to flush to disk safely.
+        # This prevents disk I/O from blocking the async trading bot event loop.
 
 
 def record_trade(symbol: str, side: str, price: float, timestamp: str, qty: int = 1) -> None:

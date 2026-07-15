@@ -23,7 +23,7 @@ import numpy as np
 import pandas as pd
 
 from shared.indicators import ema, rsi
-from trading_bot.strategies.ema_rsi_strategy import generate_signals
+from trading_bot.strategies.momentum_strategy import generate_signals
 
 # ---------------------------------------------------------------------------
 # Helper functions for performance metrics
@@ -440,14 +440,15 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
                     
                 # Calculate PnL (Partial Profits vs Full Run)
                 if kwargs.get("enable_partial_profits", False):
+                    partial_pnl = 0.0
                     rem_weight = 1.0
                     if position.get("t1_hit", False):
-                        trade_net_pnl += (entry_price * (stoploss_pct / 100)) * multiplier * options_delta * 0.3
+                        partial_pnl += (entry_price * (stoploss_pct / 100)) * multiplier * options_delta * 0.3
                         rem_weight -= 0.3
                     if position.get("t2_hit", False):
-                        trade_net_pnl += (entry_price * (stoploss_pct * 2 / 100)) * multiplier * options_delta * 0.3
+                        partial_pnl += (entry_price * (stoploss_pct * 2 / 100)) * multiplier * options_delta * 0.3
                         rem_weight -= 0.3
-                    trade_net_pnl += base_pnl * rem_weight - (commission_per_trade * (len(position["entries"]) + 1))
+                    trade_net_pnl = partial_pnl + (base_pnl * rem_weight) - (commission_per_trade * (len(position["entries"]) + 1))
 
                 capital += base_pnl
                 daily_pnl += trade_net_pnl          # ← track daily P&L

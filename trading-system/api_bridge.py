@@ -101,7 +101,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 # Allow requests from the Next.js frontend (or any local device)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -137,6 +137,7 @@ async def startup_event():
     asyncio.create_task(daily_retrain_scheduler())
 
 # Global state for live market data (Institutional Streaming)
+market_data_lock = threading.Lock()
 current_market_data = {
     "NSE:NIFTY50-INDEX": {"lp": 23820.35, "chp": -1.49},
     "BSE:SENSEX-INDEX": {"lp": 76015.28, "chp": -1.70},
@@ -254,7 +255,8 @@ def start_fyers_socket():
                                 s_data = close_data[yf_sym].dropna()
                                 if not s_data.empty:
                                     last_price = float(s_data.iloc[-1])
-                                    current_market_data[sym] = {"lp": last_price, "chp": 0.0}
+                                    with market_data_lock:
+                                        current_market_data[sym] = {"lp": last_price, "chp": 0.0}
                     time.sleep(10)
                 except Exception as e:
                     logger.error(f"YFinance fallback error: {e}")
@@ -273,10 +275,11 @@ def start_fyers_socket():
                 symbol = message.get('symbol')
                 lp = message.get('ltp')
                 if symbol and lp:
-                    current_market_data[symbol] = {
-                        "lp": lp,
-                        "chp": message.get('chp', 0.0)
-                    }
+                    with market_data_lock:
+                        current_market_data[symbol] = {
+                            "lp": lp,
+                            "chp": message.get('chp', 0.0)
+                        }
                     
         def on_error(message):
             logger.error("Fyers WS Error: %s", message)
@@ -341,6 +344,13 @@ async def lifespan(app: FastAPI):
 
 app.router.lifespan_context = lifespan
 
+
+# Trade state cache for WebSocket (prevents SQLite reads at 20fps)
+from shared.state import load_state as _load_state_fn
+_ws_trade_cache: dict = {"trades": [], "pnl": 0.0, "equity": 100000.0}
+_ws_trade_last_read: float = 0.0
+_WS_TRADE_CACHE_TTL: float = 2.0  # Refresh trades from DB at most every 2 seconds
+
 signals_cache = {"data": None, "last_updated": 0}
 
 @app.websocket("/ws/live")
@@ -397,22 +407,31 @@ async def websocket_endpoint(websocket: WebSocket):
             # Live market data is now served strictly from current_market_data 
             # which is populated by the active broker WebSocket.
                 
+            # Use lock to safely read dictionary snapshot
+            with market_data_lock:
+                snapshot = current_market_data.copy()
+
             # Send the latest data for NIFTY, SENSEX, BANKNIFTY and dynamic stocks
             websocket_data = {
-                "NIFTY": current_market_data.get("NSE:NIFTY50-INDEX", {"lp": 23820.35, "chp": -1.49}),
-                "SENSEX": current_market_data.get("BSE:SENSEX-INDEX", {"lp": 76015.28, "chp": -1.70}),
-                "BANKNIFTY": current_market_data.get("NSE:NIFTYBANK-INDEX", {"lp": 51000.00, "chp": 0.0})
+                "NIFTY": snapshot.get("NSE:NIFTY50-INDEX", {"lp": 23820.35, "chp": -1.49}),
+                "SENSEX": snapshot.get("BSE:SENSEX-INDEX", {"lp": 76015.28, "chp": -1.70}),
+                "BANKNIFTY": snapshot.get("NSE:NIFTYBANK-INDEX", {"lp": 51000.00, "chp": 0.0})
             }
             
-            for k, v in current_market_data.items():
+            for k, v in snapshot.items():
                 if k not in ["NSE:NIFTY50-INDEX", "BSE:SENSEX-INDEX", "NSE:NIFTYBANK-INDEX"]:
                     short_key = k.split(":")[1].split("-")[0] if ":" in k else k
                     websocket_data[short_key] = v
                     
-            # Add trades to WebSocket stream
-            from shared.state import load_state
-            state = load_state(reload_trades=True)
-            websocket_data["trades"] = state.get("trades", [])
+            # Add trades to WebSocket stream — cached to avoid 20fps SQLite reads
+            global _ws_trade_cache, _ws_trade_last_read
+            _now_t = time.time()
+            if _now_t - _ws_trade_last_read >= _WS_TRADE_CACHE_TTL:
+                _ws_trade_cache = _load_state_fn(reload_trades=True)
+                _ws_trade_last_read = _now_t
+            websocket_data["trades"] = _ws_trade_cache.get("trades", [])
+            websocket_data["pnl"] = _ws_trade_cache.get("pnl", 0.0)
+            websocket_data["equity"] = _ws_trade_cache.get("equity", 100000.0)
             
             # Add signalsData to WebSocket stream
             websocket_data["signalsData"] = signals_cache["data"]
@@ -420,15 +439,19 @@ async def websocket_endpoint(websocket: WebSocket):
             await websocket.send_json(websocket_data)
             await asyncio.sleep(0.05) # Institutional Ultra-fast stream (50ms / 20fps)
     except Exception as e:
-        pass
+        logger.error("WebSocket endpoint error or client disconnected: %s", e)
 
 @app.get("/health")
 async def health():
     return {"status": "ok"}
 
 @app.post("/api/panic-exit")
-async def panic_exit():
+async def panic_exit(request: Request):
     """Nuclear Option: Immediately cancels all orders and squares off all positions."""
+    if request.client and request.client.host not in ["127.0.0.1", "localhost", "::1"]:
+        logger.warning(f"Unauthorized Panic Exit attempt from {request.client.host}")
+        raise HTTPException(status_code=403, detail="Forbidden: Localhost access only")
+        
     try:
         broker = BrokerFactory.get_active_broker()
         if not broker.authenticate():
@@ -482,7 +505,10 @@ async def get_engine_status():
     return engine_state
 
 @app.post("/api/engine/toggle")
-async def toggle_engine():
+async def toggle_engine(request: Request):
+    if request.client and request.client.host not in ["127.0.0.1", "localhost", "::1"]:
+        raise HTTPException(status_code=403, detail="Forbidden: Localhost access only")
+        
     global engine_state
     engine_state["is_active"] = not engine_state["is_active"]
     if engine_state["is_active"]:
@@ -541,12 +567,16 @@ async def get_quote(
         
         # Dynamic WebSocket Subscription for real-time updates
         global fyers_socket_instance
-        if fyers_socket_instance and symbol not in current_market_data:
+        with market_data_lock:
+            needs_sub = fyers_socket_instance and symbol not in current_market_data
+            
+        if needs_sub:
             logger.info("Subscribing to %s dynamically via WebSocket...", symbol)
             try:
                 fyers_socket_instance.subscribe(symbols=[symbol], data_type="symbolData")
                 # Initialize to prevent duplicate subscriptions
-                current_market_data[symbol] = {"lp": 0.0, "chp": 0.0}
+                with market_data_lock:
+                    current_market_data[symbol] = {"lp": 0.0, "chp": 0.0}
             except Exception as e:
                 logger.warning("Failed to subscribe to %s: %s", symbol, e)
 
@@ -561,7 +591,8 @@ async def get_quote(
             lp = v.get("lp")
             chp = v.get("chp", 0.0)
             if lp:
-                current_market_data[symbol] = {"lp": lp, "chp": chp}
+                with market_data_lock:
+                    current_market_data[symbol] = {"lp": lp, "chp": chp}
                 
         return quotes
     except Exception as e:
@@ -576,6 +607,9 @@ async def get_history(
 ):
     """Fetches real historical data dynamically from the ACTIVE BROKER."""
     try:
+        with open("history_debug.txt", "a") as f:
+            f.write(f"Requested {symbol} from {start_date} to {end_date} for {timeframe}\n")
+        
         broker = BrokerFactory.get_active_broker()
         broker.authenticate()
         logger.info("Fetching history via broker: %s for %s", broker.DISPLAY_NAME, symbol)
@@ -785,11 +819,22 @@ async def get_backtest(
         results["stats"]["totalCE"] = len(call_trades)
         results["stats"]["totalPE"] = len(put_trades)
             
+        # Add Monte Carlo Simulation
+        monte_carlo_stats = {}
+        try:
+            from backtesting_engine.monte_carlo import MonteCarloSimulator
+            trades_pnl = [t.get("pnl", 0.0) for t in trades]
+            mc_sim = MonteCarloSimulator(trades_pnl, initial_capital=initial_capital)
+            monte_carlo_stats = mc_sim.simulate(num_simulations=1000, num_trades_per_sim=len(trades) if trades else 100)
+        except Exception as mc_e:
+            logger.error(f"Monte Carlo simulation failed: {mc_e}")
+            
         return {
             "symbol": symbol,
             "timeframe": timeframe,
             "strategy": strategy,
             "stats": results["stats"],
+            "monte_carlo": monte_carlo_stats,
             "equityCurve": results["equityCurve"],
             "trades": results["trades"],
             "rejectionLogs": results.get("rejectionLogs", [])
@@ -945,7 +990,7 @@ def compute_signals(
         result = {
             "confidence": confidence,
             "status": status,
-            "bias": f"{bias} Bias Detected",
+            "bias": f"{bias} BIAS",
             "trendData": trend_data,
             "signals": real_signals[-10:][::-1]
         }
@@ -960,11 +1005,13 @@ async def get_signals_api(
     symbol: str = Query("NIFTY", description="The stock ticker")
 ):
     """Returns cached AI signals instantly to avoid blocking UI."""
-    if symbol not in signals_cache_store:
-        # Trigger async computation if not cached
-        from fastapi.concurrency import run_in_threadpool
-        import asyncio
-        asyncio.create_task(run_in_threadpool(compute_signals, symbol))
+    if symbol not in signals_cache_store or signals_cache_store.get(symbol, {}).get("direction") == "CALCULATING":
+        if symbol not in signals_cache_store:
+            # Set placeholder to prevent duplicate task spawning (race condition)
+            signals_cache_store[symbol] = {"symbol": symbol, "confidence": 50, "direction": "CALCULATING"}
+            from fastapi.concurrency import run_in_threadpool
+            import asyncio
+            asyncio.create_task(run_in_threadpool(compute_signals, symbol))
         return {"symbol": symbol, "confidence": 50, "direction": "CALCULATING"}
     
     return signals_cache_store[symbol]
@@ -1035,6 +1082,22 @@ async def get_positions():
         broker = BrokerFactory.get_active_broker()
         if not broker.authenticate():
             return {"status": "error", "message": "Broker not authenticated", "positions": []}
+            
+        if broker.paper_mode:
+            # In paper mode, read positions directly from the active_positions.json file maintained by main.py
+            import os, json
+            from pathlib import Path
+            positions_path = Path(__file__).resolve().parent / "config" / "active_positions.json"
+            positions_data = []
+            if positions_path.exists():
+                try:
+                    with open(positions_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                        # data is dict: { "SYMBOL": { ...position details... } }
+                        positions_data = list(data.values())
+                except Exception as e:
+                    logger.error(f"Failed to read paper positions: {e}")
+            return {"status": "success", "positions": positions_data}
             
         positions = [asdict(p) for p in broker.get_positions()]
         return {"status": "success", "positions": positions}
@@ -1357,6 +1420,109 @@ async def get_market_sentiment():
         return {"score": 0.0, "label": "Neutral", "top_headlines": []}
 
 
+@app.get("/api/journal")
+async def get_trade_journal():
+    try:
+        import sqlite3
+        import os
+        db_path = os.path.join(os.getcwd(), 'state.db')
+        if not os.path.exists(db_path):
+            return {"trades": []}
+            
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        # Check if table exists
+        cursor.execute("SELECT count(name) FROM sqlite_master WHERE type='table' AND name='trade_journal'")
+        if cursor.fetchone()[0] == 0:
+            conn.close()
+            return {"trades": []}
+            
+        cursor.execute("SELECT * FROM trade_journal ORDER BY id DESC")
+        rows = cursor.fetchall()
+        conn.close()
+        
+        trades = [dict(row) for row in rows]
+        return {"trades": trades}
+    except Exception as e:
+        logger.error(f"Error fetching journal API: {e}")
+        return {"trades": [], "error": str(e)}
+
+@app.get("/api/option-chain")
+async def get_option_chain(symbol: str = "NSE:NIFTY50-INDEX"):
+    """
+    Returns live or simulated option chain data with Greeks.
+    In a full production environment, this fetches from Fyers API.
+    For this demo/UI visualization, we simulate realistic data around a base price.
+    """
+    try:
+        import hashlib
+        
+        def deterministic_random(seed_str, salt, min_val, max_val):
+            h = hashlib.md5((str(seed_str) + str(salt)).encode()).hexdigest()
+            # Convert first 8 chars of md5 to a float between 0 and 1
+            rand_float = int(h[:8], 16) / 4294967295.0
+            return min_val + (rand_float * (max_val - min_val))
+            
+        # Base prices
+        base_price = 24000
+        if "BANKNIFTY" in symbol:
+            base_price = 52000
+        elif "RELIANCE" in symbol:
+            base_price = 3100
+            
+        step = 50 if "NIFTY50" in symbol else 100 if "BANKNIFTY" in symbol else 20
+        num_strikes_each_side = 5
+        
+        chain = []
+        for i in range(-num_strikes_each_side, num_strikes_each_side + 1):
+            strike = base_price + (i * step)
+            
+            # Simple Greek simulation
+            distance = abs(i)
+            delta_call = max(0.01, 0.5 - (i * 0.08)) # ITM > 0.5, OTM < 0.5
+            delta_put = max(-0.99, min(-0.01, -0.5 - (i * 0.08))) 
+            
+            gamma = max(0.001, 0.02 - (distance * 0.003))
+            theta = max(0.5, 15.0 - (distance * 2.0))
+            vega = max(0.1, 8.0 - (distance * 1.2))
+            
+            call_ltp = max(0.5, 150 - (i * 30) + deterministic_random(strike, 1, -2, 2))
+            put_ltp = max(0.5, 150 + (i * 30) + deterministic_random(strike, 2, -2, 2))
+            
+            chain.append({
+                "strike": strike,
+                "call": {
+                    "ltp": round(call_ltp, 2),
+                    "volume": int(deterministic_random(strike, 3, 1000, 50000)),
+                    "oi": int(deterministic_random(strike, 4, 5000, 200000)),
+                    "delta": round(delta_call, 2),
+                    "gamma": round(gamma, 3),
+                    "theta": round(-theta, 2),
+                    "vega": round(vega, 2)
+                },
+                "put": {
+                    "ltp": round(put_ltp, 2),
+                    "volume": int(deterministic_random(strike, 5, 1000, 50000)),
+                    "oi": int(deterministic_random(strike, 6, 5000, 200000)),
+                    "delta": round(delta_put, 2),
+                    "gamma": round(gamma, 3),
+                    "theta": round(-theta, 2),
+                    "vega": round(vega, 2)
+                }
+            })
+            
+        return {
+            "symbol": symbol,
+            "underlying_price": base_price + deterministic_random(base_price, 7, -10, 10),
+            "expiry": "2026-07-25",
+            "chain": chain
+        }
+    except Exception as e:
+        logger.error(f"Error fetching option chain: {e}")
+        return {"error": str(e)}
+
 # ---------------------------------------------------------------------------
 # Authentication System (Next.js Dashboard)
 # ---------------------------------------------------------------------------
@@ -1407,6 +1573,35 @@ async def auth_status():
         "lockoutSeconds": max(0, int(auth_state["lockout_until"] - time.time()))
     }
 
+class ResetRequest(BaseModel):
+    client_id: str
+    new_password: str
+
+@app.post("/api/auth/reset")
+async def auth_reset(req: ResetRequest):
+    import dotenv
+    dotenv.load_dotenv()
+    valid_client_id = os.getenv("FYERS_CLIENT_ID")
+    
+    if not valid_client_id or req.client_id.strip() != valid_client_id.strip():
+        raise HTTPException(status_code=401, detail="Invalid Recovery Key (Client ID)")
+        
+    if not req.new_password or len(req.new_password) < 4:
+        raise HTTPException(status_code=400, detail="Password must be at least 4 characters")
+        
+    auth_data = {
+        "password_hash": _hash_password(req.new_password),
+        "created_at": time.time()
+    }
+    with open(_AUTH_FILE, "w", encoding="utf-8") as f:
+        json.dump(auth_data, f, indent=2)
+        
+    # Reset lockouts
+    auth_state["failed_attempts"] = 0
+    auth_state["lockout_until"] = 0
+    
+    return {"status": "success", "message": "Password reset successfully"}
+
 @app.post("/api/auth/setup")
 async def auth_setup(req: LoginRequest):
     if _AUTH_FILE.exists():
@@ -1427,8 +1622,9 @@ async def auth_login(req: LoginRequest):
     if not _AUTH_FILE.exists():
         raise HTTPException(status_code=400, detail="No password configured yet")
     
-    if time.time() < auth_state["lockout_until"]:
-        raise HTTPException(status_code=429, detail="Too many attempts. Try again later.")
+    # Lock disabled for now per user request
+    # if time.time() < auth_state["lockout_until"]:
+    #     raise HTTPException(status_code=429, detail="Too many attempts. Try again later.")
         
     try:
         with open(_AUTH_FILE, "r", encoding="utf-8") as f:
@@ -1446,14 +1642,142 @@ async def auth_login(req: LoginRequest):
             pass
         return {"status": "success", "token": "mana_ai_auth_v1_valid"}
     else:
-        auth_state["failed_attempts"] += 1
-        if auth_state["failed_attempts"] >= _MAX_ATTEMPTS:
-            auth_state["lockout_until"] = time.time() + _LOCKOUT_SECS
-            auth_state["failed_attempts"] = 0
-            raise HTTPException(status_code=429, detail="Too many attempts. Locked out for 2 minutes.")
+        # Lock disabled for now per user request
+        # auth_state["failed_attempts"] += 1
+        # if auth_state["failed_attempts"] >= _MAX_ATTEMPTS:
+        #     auth_state["lockout_until"] = time.time() + _LOCKOUT_SECS
+        #     auth_state["failed_attempts"] = 0
+        #     raise HTTPException(status_code=429, detail="Too many attempts. Locked out for 2 minutes.")
         raise HTTPException(status_code=401, detail="Invalid password")
+        
+@app.get("/api/btst")
+async def get_btst_prediction(symbol: str = "NIFTY"):
+    try:
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=5)
+        
+        symbol_formatted = format_broker_symbol(symbol)
+        broker = BrokerFactory.get_active_broker()
+        broker.authenticate()
+        
+        # Use 15 Min timeframe for EOD analysis
+        data = broker.get_historical_data(symbol_formatted, start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'), "15 Min")
+        
+        if not data or len(data) < 10:
+            return {"status": "scanning", "action": "AVOID", "gapUpProb": 50, "gapDownProb": 50, "reason": "Insufficient Data"}
+            
+        df = pd.DataFrame(data)
+        df.columns = [c.lower() for c in df.columns]
+        df = pd.to_numeric(df['close'], errors='coerce').fillna(method='ffill')
+        
+        # Calculate recent momentum (last 10 candles vs previous 10)
+        recent_close = df.iloc[-1]
+        past_close = df.iloc[-10] if len(df) >= 10 else df.iloc[0]
+        
+        momentum = (recent_close - past_close) / past_close * 100
+        
+        # Calculate RSI (14) roughly for EOD
+        delta = df.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs))
+        current_rsi = rsi.iloc[-1]
+        if pd.isna(current_rsi): current_rsi = 50
+        
+        # BTST Logic (Heuristic for demo, but highly effective conceptually)
+        gap_up_prob = 50
+        if momentum > 0.5 and current_rsi > 60:
+            gap_up_prob = min(85, 50 + int(momentum * 10) + int((current_rsi-50)*0.5))
+        elif momentum < -0.5 and current_rsi < 40:
+            gap_up_prob = max(15, 50 + int(momentum * 10) - int((50-current_rsi)*0.5))
+            
+        gap_down_prob = 100 - gap_up_prob
+        
+        if gap_up_prob > 65:
+            action = "CARRY CALL"
+            reason = f"Strong EOD Momentum (+{momentum:.2f}%) with RSI at {current_rsi:.1f}. High probability of Gap Up."
+        elif gap_down_prob > 65:
+            action = "CARRY PUT"
+            reason = f"Weak EOD Momentum ({momentum:.2f}%) with RSI at {current_rsi:.1f}. High probability of Gap Down."
+        else:
+            action = "AVOID"
+            reason = "Market closing in equilibrium. Overnight risk is too high without a clear directional bias."
+            
+        return {
+            "status": "active",
+            "action": action,
+            "gapUpProb": gap_up_prob,
+            "gapDownProb": gap_down_prob,
+            "reason": reason,
+            "metrics": {
+                "momentum": round(momentum, 2),
+                "rsi": round(current_rsi, 2)
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error in /api/btst: {e}")
+        return {"status": "error", "action": "AVOID", "gapUpProb": 50, "gapDownProb": 50, "reason": str(e)}
 
+@app.get("/api/option-chain")
+async def get_option_chain(symbol: str = Query("NIFTY")):
+    try:
+        # Mock logic to generate a dynamic option chain
+        base_price = 24200 if symbol == "NIFTY" else 52000 if symbol == "BANKNIFTY" else 21000
+        atm = round(base_price / 100) * 100 if symbol != "NIFTY" else round(base_price / 50) * 50
+        step = 50 if symbol == "NIFTY" else 100
+        
+        chain = []
+        for i in range(-5, 6):
+            strike = atm + (i * step)
+            # Math to generate somewhat realistic option data
+            distance = abs(i)
+            moneyness = "ITM" if i < 0 else "OTM" if i > 0 else "ATM"
+            ce_ltp = max(0.5, (5 - distance) * 40 + np.random.randint(-10, 10))
+            pe_ltp = max(0.5, (5 - distance) * 35 + np.random.randint(-10, 10))
+            
+            ce_delta = max(0.01, min(0.99, 0.5 - (i * 0.1)))
+            pe_delta = ce_delta - 1
+            
+            ce_oi = int(np.random.randint(10000, 150000) * (1 if i > 0 else 0.5))
+            pe_oi = int(np.random.randint(10000, 150000) * (1 if i < 0 else 0.5))
+
+            chain.append({
+                "strike": strike,
+                "ce": {
+                    "ltp": round(ce_ltp, 2),
+                    "oi": ce_oi,
+                    "oichg": int(ce_oi * np.random.uniform(-0.2, 0.5)),
+                    "volume": int(ce_oi * np.random.uniform(1.5, 3.0)),
+                    "delta": round(ce_delta, 2),
+                    "theta": round(np.random.uniform(-15, -5), 2),
+                    "gamma": round(max(0.001, 0.02 - distance * 0.003), 4),
+                    "vega": round(np.random.uniform(5, 20), 2)
+                },
+                "pe": {
+                    "ltp": round(pe_ltp, 2),
+                    "oi": pe_oi,
+                    "oichg": int(pe_oi * np.random.uniform(-0.2, 0.5)),
+                    "volume": int(pe_oi * np.random.uniform(1.5, 3.0)),
+                    "delta": round(pe_delta, 2),
+                    "theta": round(np.random.uniform(-15, -5), 2),
+                    "gamma": round(max(0.001, 0.02 - distance * 0.003), 4),
+                    "vega": round(np.random.uniform(5, 20), 2)
+                }
+            })
+            
+        return {
+            "symbol": symbol,
+            "expiry": (datetime.now() + timedelta(days=(3-datetime.now().weekday()) % 7)).strftime("%d-%b-%Y").upper(),
+            "atm": atm,
+            "maxPain": atm,
+            "pcr": round(np.random.uniform(0.6, 1.4), 2),
+            "chain": chain
+        }
+    except Exception as e:
+        logger.error(f"Error in /api/option-chain: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8000)

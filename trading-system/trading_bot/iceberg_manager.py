@@ -7,7 +7,7 @@ institutional footprint and minimize slippage.
 import asyncio
 import logging
 import random
-from typing import List
+from typing import List, Callable, Optional
 
 from brokers import OrderRequest, OrderSide, BaseBroker
 from shared.security.rate_limiter import ORDER_LIMITER
@@ -20,9 +20,10 @@ class IcebergManager:
         self.min_delay = min_delay_sec
         self.max_delay = max_delay_sec
 
-    async def execute_iceberg(self, broker: BaseBroker, order: OrderRequest) -> List[OrderRequest]:
+    async def execute_iceberg(self, broker: BaseBroker, order: OrderRequest, halt_check: Optional[Callable[[], bool]] = None) -> List[OrderRequest]:
         """
         Slices a large order into chunks and executes them sequentially.
+        Respects system halt flags during TWAP sleeps.
         """
         total_qty = order.quantity
         if total_qty <= self.max_slice_qty:
@@ -77,4 +78,9 @@ class IcebergManager:
                 delay = random.uniform(self.min_delay, self.max_delay)
                 await asyncio.sleep(delay)
                 
+                # Halt Execution if system panic exited or reached max drawdown during the sleep!
+                if halt_check and halt_check():
+                    logger.warning("ICEBERG ABORTED: System Halt or Panic Exit triggered mid-flight for %s!", order.symbol)
+                    break
+                    
         return executed_orders

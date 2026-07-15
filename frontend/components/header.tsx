@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Bell, Search, User, BookOpen, LogOut, Settings, CreditCard, Command, Activity, ShieldAlert, XCircle } from "lucide-react";
+import { Bell, Search, User, BookOpen, LogOut, Settings, CreditCard, Command, Activity, ShieldAlert, XCircle, Lock } from "lucide-react";
 import { useRouter, usePathname } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import Link from "next/link";
@@ -524,9 +524,15 @@ export default function Header() {
                   </button>
                 </div>
                 <div className="border-t border-border/50 py-2">
-                  <button className="w-full text-left px-4 py-2 text-sm text-destructive hover:bg-destructive/10 transition-colors flex items-center gap-3 font-medium">
-                    <LogOut className="w-4 h-4" />
-                    Log Out
+                  <button 
+                    onClick={() => {
+                      localStorage.removeItem("mana_ai_auth_token");
+                      window.location.reload();
+                    }}
+                    className="w-full text-left px-4 py-2 text-sm text-amber-500 hover:bg-amber-500/10 transition-colors flex items-center gap-3 font-medium"
+                  >
+                    <Lock className="w-4 h-4" />
+                    Lock System
                   </button>
                 </div>
               </motion.div>

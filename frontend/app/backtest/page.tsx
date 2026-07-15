@@ -935,6 +935,41 @@ export default function Backtest() {
                 </div>
               </div>
 
+              {/* Monte Carlo Risk Analysis */}
+              {result.monte_carlo && !result.monte_carlo.error && (
+                <div className="mt-8">
+                  <h3 className="font-display font-bold text-lg text-foreground flex items-center gap-2 mb-4">
+                    <Shield className="w-5 h-5 text-primary" />
+                    Monte Carlo Risk Simulator (10,000 Iterations)
+                  </h3>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div className="glass-card rounded-xl p-4 border border-border/20">
+                      <span className="text-xs text-muted-foreground font-medium">Risk of Ruin (50% Capital Loss)</span>
+                      <div className={`text-2xl font-bold font-mono mt-1 ${result.monte_carlo["risk_of_ruin_%"] > 5 ? 'text-destructive' : 'text-success'}`}>
+                        {result.monte_carlo["risk_of_ruin_%"]}%
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-1">Probability of blowing up account</p>
+                    </div>
+
+                    <div className="glass-card rounded-xl p-4 border border-border/20">
+                      <span className="text-xs text-muted-foreground font-medium">Median Max Drawdown</span>
+                      <div className="text-2xl font-bold font-mono mt-1 text-warning">
+                        {result.monte_carlo["median_max_drawdown_%"]}%
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-1">Expected max drawdown</p>
+                    </div>
+
+                    <div className="glass-card rounded-xl p-4 border border-border/20">
+                      <span className="text-xs text-muted-foreground font-medium">95th Percentile Worst Case DD</span>
+                      <div className="text-2xl font-bold font-mono mt-1 text-destructive">
+                        {result.monte_carlo["worst_case_drawdown_95th_pct_%"]}%
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-1">Stress test drawdown</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {/* Chart */}
               <div className="glass-card rounded-xl p-6 border border-border/20">
                 <div className="flex justify-between items-center mb-6">

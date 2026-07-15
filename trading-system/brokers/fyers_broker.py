@@ -287,22 +287,28 @@ class FyersBroker(BaseBroker):
     # ------------------------------------------------------------------
 
     def get_positions(self) -> List[Position]:
-        if self.paper_mode:
+        if self.paper_mode or not self._fyers_model:
             return []
-        if not self._fyers_model:
-            raise AuthenticationError("Not authenticated.", broker_id=self.BROKER_ID)
         try:
             resp = self._fyers_model.positions()
+            if resp.get("code") != 200:
+                raise MarketDataError(
+                    f"Fyers positions error: {resp.get('message')}",
+                    broker_id=self.BROKER_ID
+                )
             positions = []
             for p in resp.get("netPositions", []):
+                qty = int(p.get("netQty", 0))
+                if qty == 0:
+                    continue
                 positions.append(Position(
                     symbol=p.get("symbol", ""),
-                    side=PositionSide.LONG if p.get("side", 1) == 1 else PositionSide.SHORT,
-                    quantity=abs(int(p.get("netQty", 0))),
+                    side=PositionSide.LONG if qty > 0 else PositionSide.SHORT,
+                    quantity=abs(qty),
                     average_price=float(p.get("avgPrice", 0)),
                     ltp=float(p.get("ltp", 0)),
-                    unrealized_pnl=float(p.get("unrealizedProfit", 0)),
-                    realized_pnl=float(p.get("realizedProfit", 0)),
+                    unrealized_pnl=float(p.get("unrealized_profit", 0)),
+                    realized_pnl=float(p.get("realized_profit", 0)),
                     product_type=p.get("productType", "INTRADAY"),
                     raw=p,
                 ))
@@ -311,6 +317,12 @@ class FyersBroker(BaseBroker):
             raise MarketDataError(
                 f"Fyers get_positions failed: {exc}", broker_id=self.BROKER_ID
             ) from exc
+
+    def get_lot_size(self, symbol: str) -> int:
+        """Fetch lot size from broker dynamically if cached, otherwise fallback."""
+        if hasattr(self, '_lot_size_cache') and self._lot_size_cache:
+            return self._lot_size_cache.get(symbol, super().get_lot_size(symbol))
+        return super().get_lot_size(symbol)
 
     def get_balance(self) -> Balance:
         if self.paper_mode:
@@ -400,8 +412,8 @@ class FyersBroker(BaseBroker):
         from datetime import datetime, timedelta
         
         if not self._fyers_model:
-            self.logger.warning("Fyers: not authenticated — cannot fetch historical data from Fyers. Falling back to base broker...")
-            return super().get_historical_data(symbol, start_date, end_date, timeframe)
+            self.logger.warning("Fyers: not authenticated — cannot fetch historical data from Fyers. YFinance fallback is disabled.")
+            return []
             
         try:
             # Map timeframe string to Fyers resolution
@@ -449,12 +461,17 @@ class FyersBroker(BaseBroker):
                     
                     # Verify if the cache covers the requested start_date
                     cache_min_date = df['datetime'].min()[:10]  # Get YYYY-MM-DD
+                    today_str = datetime.now().strftime('%Y-%m-%d')
+                    
                     if cache_min_date <= start_date:
-                        # Cache has the full range!
-                        mask = (df['datetime'] >= start_date) & (df['datetime'] <= f"{end_date} 23:59:59")
-                        df_filtered = df.loc[mask]
-                        if not df_filtered.empty:
-                            return df_filtered.to_dict(orient='records')
+                        if end_date < today_str:
+                            # Cache has the full range!
+                            mask = (df['datetime'] >= start_date) & (df['datetime'] <= f"{end_date} 23:59:59")
+                            df_filtered = df.loc[mask]
+                            if not df_filtered.empty:
+                                return df_filtered.to_dict(orient='records')
+                        else:
+                            self.logger.info(f"End date ({end_date}) is today or future. Fetching fresh to get live candles.")
                     else:
                         self.logger.info(f"Cache min date ({cache_min_date}) is newer than requested start ({start_date}). Fetching fresh.")
                 except Exception as e:
@@ -489,13 +506,13 @@ class FyersBroker(BaseBroker):
                     all_candles.extend(resp.get("candles", []))
                     
                 current_start = current_end + timedelta(days=1)
-                # Sleep briefly to avoid API rate limits
-                import time
-                time.sleep(0.1)
+                # Sleep briefly to avoid API rate limits — use non-blocking sleep
+                import time as _time_mod
+                _time_mod.sleep(0.1)
                 
             if not all_candles:
-                logger.info("Fyers returned no candles. Falling back to base broker (CSV/yfinance)...")
-                return super().get_historical_data(symbol, start_date, end_date, timeframe)
+                self.logger.info("Fyers returned no candles. YFinance fallback is disabled.")
+                return []
                 
             result = []
             for c in all_candles:

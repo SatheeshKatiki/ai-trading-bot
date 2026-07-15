@@ -14,7 +14,7 @@ import {
 import { useTheme } from "@/components/theme-provider";
 
 // Crash-guard: patch formatToParts for bad klinecharts timestamps
-if (typeof Intl !== "undefined" && Intl.DateTimeFormat?.prototype) {
+if (typeof Intl !== "undefined" && Intl.DateTimeFormat?.prototype && !(Intl.DateTimeFormat.prototype as any)._isPatched) {
   const orig = Intl.DateTimeFormat.prototype.formatToParts;
   Intl.DateTimeFormat.prototype.formatToParts = function (date?: Date | number) {
     try {
@@ -25,6 +25,7 @@ if (typeof Intl !== "undefined" && Intl.DateTimeFormat?.prototype) {
       return orig.call(this, 0);
     }
   };
+  (Intl.DateTimeFormat.prototype as any)._isPatched = true;
 }
 
 // Market hours helper (IST)
@@ -62,14 +63,14 @@ const dataCache: Record<string, KLineData[]> = {};
 
 function fmtDate(d: Date) { return d.toISOString().split("T")[0]; }
 
-function setupIndicators(chart: Chart) {
+function setupIndicators(chart: Chart, ema1: number, ema2: number) {
   try { chart.removeIndicator("candle_pane", "EMA"); } catch { }
   try { chart.removeIndicator("vol_pane", "VOL"); } catch { }
 
-  // EMA 9 (blue) + EMA 21 (orange) - minimal safe styles
+  // EMA (blue) + EMA (orange) - minimal safe styles
   chart.createIndicator({
     name: "EMA",
-    calcParams: [9, 21],
+    calcParams: [ema1, ema2],
     styles: {
       lines: [
         { style: LineType.Solid, smooth: false, size: 1.5, color: "#2196F3", dashedValue: [4, 4] },
@@ -94,7 +95,7 @@ function buildStyles(isDark: boolean) {
     grid: {
       show: true,
       horizontal: { style: LineType.Dashed, size: 1, color: grid, dashedValue: [4, 4] },
-      vertical:   { style: LineType.Dashed, size: 1, color: grid, dashedValue: [4, 4] },
+      vertical: { style: LineType.Dashed, size: 1, color: grid, dashedValue: [4, 4] },
     },
     candle: {
       type: CandleType.CandleSolid,
@@ -114,7 +115,7 @@ function buildStyles(isDark: boolean) {
         },
       },
       tooltip: {
-        showRule: TooltipShowRule.FollowCross,
+        showRule: TooltipShowRule.None,
         showType: TooltipShowType.Standard,
         labels: ["Time:", "O:", "H:", "L:", "C:", "Vol:"],
         values: null, defaultValue: "n/a",
@@ -122,8 +123,17 @@ function buildStyles(isDark: boolean) {
       },
     },
     indicator: {
+      bars: [{
+        style: PolygonType.Fill,
+        borderStyle: LineType.Solid,
+        borderSize: 1,
+        borderDashedValue: [2, 2],
+        upColor: "rgba(38,166,154,0.4)",
+        downColor: "rgba(239,83,80,0.4)",
+        noChangeColor: "rgba(136,136,136,0.4)"
+      }],
       tooltip: {
-        showRule: TooltipShowRule.FollowCross, showType: TooltipShowType.Standard,
+        showRule: TooltipShowRule.None, showType: TooltipShowType.Standard,
         text: { size: 11, family: "Inter,monospace", color: axisCol, marginLeft: 4, marginTop: 4, marginRight: 4, marginBottom: 4 },
       },
     },
@@ -175,6 +185,9 @@ export default function AdvancedChart({ symbol, livePrice, timeframe }: Advanced
   const [error, setError] = useState<string | null>(null);
   const [activeTool, setActiveTool] = useState("");
   const [ohlcv, setOhlcv] = useState<{ o: number; h: number; l: number; c: number; v: number } | null>(null);
+  
+  const [ema1, setEma1] = useState(9);
+  const [ema2, setEma2] = useState(21);
 
   const bg = isDark ? "#0d1117" : "#ffffff";
   const border = isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.08)";
@@ -190,6 +203,7 @@ export default function AdvancedChart({ symbol, livePrice, timeframe }: Advanced
     });
     if (!chart) return;
     chartRef.current = chart;
+    chart.setOffsetRightDistance(60); // Professional right padding
 
     chart.setCustomApi({
       formatDate: (_dtf: Intl.DateTimeFormat, ts: number, fmt: string) => {
@@ -203,7 +217,7 @@ export default function AdvancedChart({ symbol, livePrice, timeframe }: Advanced
           const mm = d.getMinutes().toString().padStart(2, "0");
           if (fmt === "YYYY-MM-DD" || fmt === "MM-DD") return `${dd} ${mon} ${yyyy}`;
           if (fmt === "HH:mm") return `${hh}:${mm}`;
-          return `${dd} ${mon} ${yyyy}`;
+          return `${dd} ${mon} ${yyyy} ${hh}:${mm}`;
         } catch { return ""; }
       },
     });
@@ -230,6 +244,13 @@ export default function AdvancedChart({ symbol, livePrice, timeframe }: Advanced
   // Re-style on theme change
   useEffect(() => { chartRef.current?.setStyles(buildStyles(isDark)); }, [theme]);
 
+  // Update indicators on EMA change
+  useEffect(() => {
+    if (chartRef.current) {
+      setupIndicators(chartRef.current, ema1, ema2);
+    }
+  }, [ema1, ema2]);
+
   // Fetch data on symbol/timeframe change
   useEffect(() => {
     let alive = true;
@@ -240,22 +261,22 @@ export default function AdvancedChart({ symbol, livePrice, timeframe }: Advanced
     const load = async () => {
       if (dataCache[key]) {
         chart.applyNewData(dataCache[key]);
-        setupIndicators(chart);
+        setupIndicators(chart, ema1, ema2);
         lastBarRef.current = dataCache[key][dataCache[key].length - 1] ?? null;
         setLoading(false); setError(null);
         return;
       }
       setLoading(true); setError(null);
       try {
-        const end = new Date(), start = new Date();
-        if (timeframe.includes("Month")) start.setFullYear(end.getFullYear() - 10);
-        else if (timeframe.includes("Week")) start.setFullYear(end.getFullYear() - 5);
-        else if (timeframe.includes("Day")) start.setFullYear(end.getFullYear() - 2);
-        else if (timeframe.includes("Hour")) start.setDate(end.getDate() - 60);
-        else start.setDate(end.getDate() - 10);
-
-        const host = window.location.hostname === "localhost" ? "127.0.0.1" : window.location.hostname;
-        const url = `http://${host}:8000/api/history?symbol=${encodeURIComponent(symbol)}&start_date=${fmtDate(start)}&end_date=${fmtDate(end)}&timeframe=${encodeURIComponent(timeframe)}`;
+        const start = new Date();
+        start.setDate(start.getDate() - 60); // Fetch 60 days
+        const end = new Date();
+        
+        const fmtDate = (d: Date) => d.toISOString().split('T')[0];
+        
+        // Use relative API path to go through Next.js proxy
+        const url = `/api/history?symbol=${encodeURIComponent(symbol)}&start_date=${fmtDate(start)}&end_date=${fmtDate(end)}&timeframe=${encodeURIComponent(timeframe)}`;
+        
         const res = await fetch(url);
         if (!res.ok) throw new Error("Failed to fetch data");
         const json = await res.json();
@@ -275,7 +296,8 @@ export default function AdvancedChart({ symbol, livePrice, timeframe }: Advanced
         if (bars.length === 0) throw new Error("No valid bars after filtering");
         dataCache[key] = bars;
         chart.applyNewData(bars);
-        setupIndicators(chart);
+        try { chart.setBarSpace(3); } catch(e) {} // Zoom out slightly by default
+        setupIndicators(chart, ema1, ema2);
         lastBarRef.current = bars[bars.length - 1] ?? null;
         setLoading(false);
       } catch (e: any) {
@@ -293,14 +315,20 @@ export default function AdvancedChart({ symbol, livePrice, timeframe }: Advanced
     if (!livePrice || livePrice <= 0 || !chartRef.current || !lastBarRef.current || !isMarketOpen()) return;
     const tfVal = parseInt(timeframe.split(" ")[0] ?? "5", 10);
     const now = new Date();
-    const mins = now.getHours() * 60 + now.getMinutes();
-    const sinceOpen = mins - (9 * 60 + 15);
-    const slot = timeframe.includes("Hour")
-      ? Math.floor(sinceOpen / (tfVal * 60)) * (tfVal * 60)
-      : Math.floor(sinceOpen / tfVal) * tfVal;
-    const slotStart = new Date(now);
-    slotStart.setHours(9, 15 + slot, 0, 0);
-    const ts = slotStart.getTime();
+    let ts = 0;
+    if (timeframe.includes("Day") || timeframe.includes("Week") || timeframe.includes("Month")) {
+      const d = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      ts = d.getTime();
+    } else {
+      const mins = now.getHours() * 60 + now.getMinutes();
+      const sinceOpen = mins - (9 * 60 + 15);
+      const slot = timeframe.includes("Hour")
+        ? Math.floor(sinceOpen / (tfVal * 60)) * (tfVal * 60)
+        : Math.floor(sinceOpen / tfVal) * tfVal;
+      const slotStart = new Date(now);
+      slotStart.setHours(9, 15 + slot, 0, 0);
+      ts = slotStart.getTime();
+    }
     const last = lastBarRef.current;
     const bar = ts > last.timestamp
       ? { timestamp: ts, open: livePrice, high: livePrice, low: livePrice, close: livePrice, volume: 0 }
@@ -394,10 +422,34 @@ export default function AdvancedChart({ symbol, livePrice, timeframe }: Advanced
               <span>V <span style={{ color: "#8b949e" }}>{fmtVol(ohlcv.v)}</span></span>
             </span>
           )}
+
+          <div style={{ pointerEvents: "auto", display: "flex", alignItems: "center", gap: 6, marginLeft: "auto" }}>
+            <span style={{ fontSize: 10, color: axisCol, fontWeight: 600 }}>EMA 1</span>
+            <input 
+              type="number" 
+              value={ema1} 
+              onChange={(e) => setEma1(Number(e.target.value) || 1)} 
+              style={{ width: 40, height: 22, fontSize: 11, background: isDark ? "rgba(0,0,0,0.2)" : "rgba(255,255,255,0.5)", border: `1px solid ${border}`, color: axisCol, borderRadius: 4, textAlign: "center", outline: "none" }} 
+            />
+            <span style={{ fontSize: 10, color: axisCol, fontWeight: 600, marginLeft: 4 }}>EMA 2</span>
+            <input 
+              type="number" 
+              value={ema2} 
+              onChange={(e) => setEma2(Number(e.target.value) || 1)} 
+              style={{ width: 40, height: 22, fontSize: 11, background: isDark ? "rgba(0,0,0,0.2)" : "rgba(255,255,255,0.5)", border: `1px solid ${border}`, color: axisCol, borderRadius: 4, textAlign: "center", outline: "none" }} 
+            />
+          </div>
+        </div>
+
+        {/* WATERMARK */}
+        <div style={{ position: "absolute", inset: 0, top: 36, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 5, pointerEvents: "none", overflow: "hidden", containerType: "inline-size" }}>
+          <span style={{ fontSize: "14cqw", fontWeight: 900, color: isDark ? "rgba(255,255,255,0.025)" : "rgba(0,0,0,0.025)", letterSpacing: "-0.04em", userSelect: "none", whiteSpace: "nowrap" }}>
+            {symbol.split(":")[1]?.split("-")[0] ?? symbol}
+          </span>
         </div>
 
         {/* CHART CANVAS */}
-        <div ref={containerRef} style={{ position: "absolute", inset: 0, top: 36 }} />
+        <div ref={containerRef} style={{ position: "absolute", inset: 0, top: 36, zIndex: 10 }} />
 
         {/* Loading */}
         {loading && (

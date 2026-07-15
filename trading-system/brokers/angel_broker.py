@@ -189,9 +189,12 @@ class AngelBroker(BaseBroker):
         if self.paper_mode or not self._smart:
             return []
         try:
-            resp = self._smart.position()
+            data = self._smart.position()
+            if not data or not data.get("data"):
+                return []
+            
             positions = []
-            for p in (resp.get("data") or []):
+            for p in (data.get("data") or []):
                 qty = int(p.get("netqty", 0))
                 if qty == 0:
                     continue
@@ -203,7 +206,7 @@ class AngelBroker(BaseBroker):
                     ltp=float(p.get("ltp", 0)),
                     unrealized_pnl=float(p.get("unrealised", 0)),
                     realized_pnl=float(p.get("realised", 0)),
-                    product_type=p.get("producttype", "INTRADAY"),
+                    product_type=p.get("producttype", "MIS"),
                     raw=p,
                 ))
             return positions
@@ -211,6 +214,12 @@ class AngelBroker(BaseBroker):
             raise MarketDataError(
                 f"Angel get_positions failed: {exc}", broker_id=self.BROKER_ID
             ) from exc
+
+    def get_lot_size(self, symbol: str) -> int:
+        """Fetch lot size from broker dynamically if cached, otherwise fallback."""
+        if hasattr(self, '_lot_size_cache') and self._lot_size_cache:
+            return self._lot_size_cache.get(symbol, super().get_lot_size(symbol))
+        return super().get_lot_size(symbol)
 
     def get_balance(self) -> Balance:
         if self.paper_mode:

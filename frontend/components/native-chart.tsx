@@ -86,12 +86,13 @@ interface NativeChartProps {
   initialData?: any[];
   disableFetch?: boolean;
   showDynamicTrend?: boolean;
+  lastTick?: number;
 }
 
 // Global cache outside component to persist across unmounts
 const chartDataCache: Record<string, any> = {};
 
-export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", initialData, disableFetch, showDynamicTrend = false }: NativeChartProps) {
+export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", initialData, disableFetch, showDynamicTrend = false, lastTick = 0 }: NativeChartProps) {
   const { theme } = useTheme();
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -199,7 +200,9 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
 
       if (data) {
         tooltipRef.current.style.display = "block";
-        const date = new Date((param.time as number) * 1000);
+        const offset = new Date().getTimezoneOffset() * 60;
+        const trueUnixTime = (param.time as number) + offset;
+        const date = new Date(trueUnixTime * 1000);
         const timeStr = date.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
         // Create YYYY-MM-DD format based on local time
         const year = date.getFullYear();
@@ -224,26 +227,26 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
       }
     });
 
-      // Dynamic Resize using ResizeObserver
-      const resizeObserver = new ResizeObserver((entries) => {
-        if (entries.length === 0 || entries[0].target !== chartContainerRef.current) return;
-        const newRect = entries[0].contentRect;
-        if (chartRef.current) {
-          chart.applyOptions({ width: newRect.width, height: newRect.height });
-        }
-      });
-      resizeObserver.observe(chartContainerRef.current);
+    // Dynamic Resize using ResizeObserver
+    const resizeObserver = new ResizeObserver((entries) => {
+      if (entries.length === 0 || entries[0].target !== chartContainerRef.current) return;
+      const newRect = entries[0].contentRect;
+      if (chartRef.current) {
+        chart.applyOptions({ width: newRect.width, height: newRect.height });
+      }
+    });
+    resizeObserver.observe(chartContainerRef.current);
 
-      return () => {
-        resizeObserver.disconnect();
-        chart.remove();
-        chartRef.current = null;
-        seriesRef.current = null;
-        seriesMarkersPluginRef.current = null;
-        emaSeriesRef.current = null;
-        smaSeriesRef.current = null;
-        volumeSeriesRef.current = null;
-      };
+    return () => {
+      resizeObserver.disconnect();
+      chart.remove();
+      chartRef.current = null;
+      seriesRef.current = null;
+      seriesMarkersPluginRef.current = null;
+      emaSeriesRef.current = null;
+      smaSeriesRef.current = null;
+      volumeSeriesRef.current = null;
+    };
   }, []); // Run only ONCE on mount
 
   // Update chart theme dynamically when theme changes
@@ -274,26 +277,30 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
 
     const fetchMarkersAndLines = async (chartData: any[], cSeries: ISeriesApi<"Candlestick">) => {
       try {
-        const hostname = window.location.hostname === 'localhost' ? '127.0.0.1' : window.location.hostname;
-        const backendUrl = typeof window !== 'undefined' ? `http://${hostname}:8000` : 'http://127.0.0.1:8000';
-        const stateRes = await fetch(`${backendUrl}/api/state`);
+        // Use Next.js proxy
+        const stateRes = await fetch(`/api/state`);
         if (!isMounted) return;
         if (stateRes.ok) {
           const stateData = await stateRes.json();
           if (stateData.trades && stateData.trades.length > 0) {
             const markers: any[] = [];
-            const symbolTrades = stateData.trades.filter((t: any) => t.symbol === symbol);
+            const symClean = symbol.split(':')[1] || symbol;
+            const symbolTrades = stateData.trades.filter((t: any) => t.symbol && t.symbol.toUpperCase().includes(symClean.toUpperCase()));
 
             symbolTrades.forEach((trade: any) => {
               const dateStr = String(trade.entry_time || trade.time);
               if (!dateStr || dateStr === "undefined" || dateStr === "null") return;
               const safeDateStr = dateStr.includes(' ') ? dateStr.replace(' ', 'T') : dateStr;
-              const date = new Date(safeDateStr);
-              const time = Math.floor(date.getTime() / 1000) as Time;
-              let closestTime = time;
+              const d = new Date(safeDateStr);
+              // Calculate adjusted time for marker
+              const offset = d.getTimezoneOffset() * 60;
+              const trueTime = Math.floor(d.getTime() / 1000);
+              const adjustedTime = trueTime - offset;
+
+              let closestTime = adjustedTime as Time;
               let minDiff = Infinity;
               for (const candle of chartData) {
-                const diff = Math.abs((candle.time as number) - (time as number));
+                const diff = Math.abs((candle.time as number) - (adjustedTime as number));
                 if (diff < minDiff) { minDiff = diff; closestTime = candle.time; }
               }
               if (trade.type === 'CALL BUY' || trade.type === 'BUY') {
@@ -352,16 +359,14 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
         else if (timeframe.includes("Week")) startDate.setFullYear(endDate.getFullYear() - 5);
         else if (timeframe.includes("Day")) startDate.setFullYear(endDate.getFullYear() - 1);
         else if (timeframe.includes("Hour") || timeframe.includes("30 Min") || timeframe.includes("15 Min")) startDate.setDate(endDate.getDate() - 30);
-        else startDate.setDate(endDate.getDate() - 5);
+        else startDate.setDate(endDate.getDate() - 60);
 
         const sDateStr = startDate.toISOString().split("T")[0];
         const eDateStr = endDate.toISOString().split("T")[0];
 
-        const hostname = window.location.hostname === 'localhost' ? '127.0.0.1' : window.location.hostname;
-        const backendUrl = typeof window !== 'undefined' ? `http://${hostname}:8000` : 'http://127.0.0.1:8000';
-        const res = await fetch(`${backendUrl}/api/history?symbol=${encodeURIComponent(symbol)}&start_date=${sDateStr}&end_date=${eDateStr}&timeframe=${encodeURIComponent(timeframe)}`);
-
-        if (!isMounted) return;
+        // Use Next.js Proxy
+        const url = `/api/history?symbol=${encodeURIComponent(symbol)}&start_date=${sDateStr}&end_date=${eDateStr}&timeframe=${encodeURIComponent(timeframe)}`;
+        const res = await fetch(url);
         if (!res.ok) throw new Error("Failed to fetch historical data.");
         const json = await res.json();
         if (!isMounted) return;
@@ -378,7 +383,9 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
           const dateStr = String(item.datetime || item.Datetime || item.date);
           const safeDateStr = dateStr.includes(' ') ? dateStr.replace(' ', 'T') : dateStr;
           const date = new Date(safeDateStr);
-          const time = Math.floor(date.getTime() / 1000) as Time;
+          // Apply timezone offset adjustment
+          const offset = date.getTimezoneOffset() * 60;
+          const time = (Math.floor(date.getTime() / 1000) - offset) as Time;
           return {
             time, open: parseFloat(item.open || item.Open), high: parseFloat(item.high || item.High),
             low: parseFloat(item.low || item.Low), close: parseFloat(item.close || item.Close),
@@ -400,14 +407,14 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
           const ema9Data = calculateEMA(uniqueData, 9);
           const sma21Data = calculateSMA(uniqueData, 21);
           const avgVol20 = calculateAverageVolume(uniqueData, 20);
-          
+
           if (showDynamicTrend) {
             dataToSet = uniqueData.map((d: any, index: number) => {
               const ema9 = ema9Data[index]?.value;
               const sma21 = sma21Data[index]?.value;
               const avgVol = avgVol20[index]?.value;
               if (!ema9 || !sma21) return d;
-              
+
               const isChop = Math.abs(ema9 - sma21) / sma21 < 0.0005; // 0.05% difference threshold for chop
               const isHighVolume = d.volume && avgVol && d.volume > avgVol * 2.0; // 2x average volume
 
@@ -508,7 +515,9 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
 
         const d = new Date(now);
         d.setHours(9, 15 + roundedMins, 0, 0);
-        currentCandleTime = Math.floor(d.getTime() / 1000);
+        // Adjust live candle time for lightweight charts timezone
+        const offset = d.getTimezoneOffset() * 60;
+        currentCandleTime = Math.floor(d.getTime() / 1000) - offset;
       }
 
       let updatedCandle;
@@ -526,11 +535,11 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
             if (ema9 && sma21) {
               const isChop = Math.abs(ema9 - sma21) / sma21 < 0.0005;
               if (isChop) {
-                 liveColor = livePrice >= lastCandle.open ? "#6B7280" : "#4B5563";
+                liveColor = livePrice >= lastCandle.open ? "#6B7280" : "#4B5563";
               } else if (livePrice >= ema9) {
-                 liveColor = livePrice >= lastCandle.open ? "#00FF00" : "#059669";
+                liveColor = livePrice >= lastCandle.open ? "#00FF00" : "#059669";
               } else {
-                 liveColor = livePrice < lastCandle.open ? "#FF0000" : "#991B1B";
+                liveColor = livePrice < lastCandle.open ? "#FF0000" : "#991B1B";
               }
             }
           }
@@ -556,11 +565,11 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
             if (ema9 && sma21) {
               const isChop = Math.abs(ema9 - sma21) / sma21 < 0.0005;
               if (isChop) {
-                 liveColor = livePrice >= lastCandle.open ? "#6B7280" : "#4B5563";
+                liveColor = livePrice >= lastCandle.open ? "#6B7280" : "#4B5563";
               } else if (livePrice >= ema9) {
-                 liveColor = livePrice >= lastCandle.open ? "#00FF00" : "#059669";
+                liveColor = livePrice >= lastCandle.open ? "#00FF00" : "#059669";
               } else {
-                 liveColor = livePrice < lastCandle.open ? "#FF0000" : "#991B1B";
+                liveColor = livePrice < lastCandle.open ? "#FF0000" : "#991B1B";
               }
             }
           }
@@ -607,7 +616,7 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
       }
 
     }
-  }, [livePrice, timeframe]);
+  }, [livePrice, timeframe, lastTick]);
 
   return (
     <div className="w-full h-full relative flex flex-col flex-1" style={{ minHeight: "450px" }}>

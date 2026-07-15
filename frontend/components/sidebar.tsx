@@ -15,7 +15,8 @@ import {
   Settings, 
   ShieldCheck, 
   Plug,
-  Sliders
+  Sliders,
+  LineChart
 } from "lucide-react";
 import { clsx } from "clsx";
 
@@ -26,6 +27,7 @@ const menuItems = [
   { icon: Brain, label: "AI Signals", href: "/signals" },
   { icon: Sliders, label: "Strategy Settings", href: "/strategy" },
   { icon: BookOpen, label: "Trading Journal", href: "/journal" },
+  { icon: LineChart, label: "Options Desk", href: "/options" },
   { icon: PieChart, label: "Analytics", href: "/analytics" },
   { icon: Plug, label: "Broker Settings", href: "/broker" },
   { icon: ShieldCheck, label: "Risk Management", href: "/risk" },
@@ -54,10 +56,14 @@ export default function Sidebar() {
   useEffect(() => {
     const checkHealth = async () => {
       try {
-        const res = await fetch('http://127.0.0.1:8000/health');
-        const data = await res.json();
-        if (data && data.status === "ok") {
-          setIsConnected(true);
+        const res = await fetch('/api/health');
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.status === "ok") {
+            setIsConnected(true);
+          } else {
+            setIsConnected(false);
+          }
         } else {
           setIsConnected(false);
         }

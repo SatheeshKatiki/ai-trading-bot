@@ -42,21 +42,22 @@ def calculate_greeks(spot: float, strike: float, days_to_expiry: float, vol: flo
 
 
 def _get_dynamic_lot_size(instrument: str, default_lot_size: int) -> int:
-    """Reads lot size dynamically from dashboard settings if available."""
+    """Reads lot size dynamically from the active broker."""
     try:
-        # Resolve path to config/settings.json at project root
-        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../"))
-        settings_path = os.path.join(project_root, "config", "settings.json")
-        
-        if os.path.exists(settings_path):
-            with open(settings_path, "r") as f:
-                settings = json.load(f)
-                
-            key = f"{instrument.lower()}_lot_size"
-            if key in settings:
-                return int(settings[key])
+        from brokers.broker_factory import BrokerFactory
+        broker = BrokerFactory.get_active_broker()
+        if broker:
+            # Reconstruct broker symbol format: NSE:NIFTY50-INDEX
+            sym = instrument.upper()
+            if sym == "NIFTY": sym = "NIFTY50"
+            if sym == "BANKNIFTY": sym = "NIFTYBANK"
+            
+            exch = "BSE" if sym == "SENSEX" else "NSE"
+            broker_sym = f"{exch}:{sym}-INDEX"
+            
+            return broker.get_lot_size(broker_sym)
     except Exception as e:
-        logger.warning("Failed to read dynamic lot size for %s: %s", instrument, e)
+        logger.warning("Failed to fetch dynamic lot size from broker for %s: %s", instrument, e)
         
     return default_lot_size
 

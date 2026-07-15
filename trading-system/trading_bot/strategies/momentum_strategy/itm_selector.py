@@ -167,9 +167,11 @@ class ITMOptionSelector:
             expiry_date = self.get_current_expiry()
 
         # Build broker symbol (Fyers format)
-        # e.g., NSE:NIFTY2652123500CE
-        expiry_str = expiry_date.strftime("%y%m%d")
-        symbol = f"NSE:NIFTY{expiry_str}{int(strike)}{option_type}"
+        # Match format used in premium_selection/options_selector.py (e.g. NSE:NIFTY26MAY2123500CE)
+        yy = expiry_date.strftime("%y")
+        mon = expiry_date.strftime("%b").upper()
+        dd = expiry_date.strftime("%d")
+        symbol = f"NSE:NIFTY{yy}{mon}{dd}{int(strike)}{option_type}"
 
         itm_depth = abs(spot_price - strike)
 

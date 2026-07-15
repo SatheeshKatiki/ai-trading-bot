@@ -88,7 +88,9 @@ class BrokerFactory:
         with cls._lock:
             if cls._active is not None:
                 # If broker_id or live_mode has changed, refresh!
-                if cls._active.BROKER_ID != broker_id or cls._active.paper_mode == live_mode:
+                # paper_mode=True means NOT live. So mismatch = paper_mode XOR (not live_mode)
+                mode_mismatch = cls._active.paper_mode != (not live_mode)
+                if cls._active.BROKER_ID != broker_id or mode_mismatch:
                     logger.info("BrokerFactory: configuration changed, refreshing active broker.")
                     cls._close_active_unsafe()   # already under lock
                 else:

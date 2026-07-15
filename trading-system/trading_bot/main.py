@@ -106,6 +106,8 @@ def _save_positions(positions: Dict[str, Position]) -> None:
     import tempfile
     import os
     try:
+        # Create a shallow copy to prevent RuntimeError if a background task mutates active_positions
+        positions_copy = dict(positions)
         data = {
             sym: {
                 "symbol": p.symbol,
@@ -119,7 +121,7 @@ def _save_positions(positions: Dict[str, Position]) -> None:
                 "target": getattr(p, "target", 0.0),
                 "is_partially_booked": getattr(p, "is_partially_booked", False),
                 "scales_done": getattr(p, "scales_done", 0)
-            } for sym, p in positions.items()
+            } for sym, p in positions_copy.items()
         }
         
         # Phase 7: Atomic Write prevents torn/corrupted state files on crash
@@ -157,6 +159,7 @@ def _load_positions() -> Dict[str, Position]:
                     )
                     pos.is_partially_booked = p.get("is_partially_booked", False)
                     pos.scales_done = p.get("scales_done", 0)
+                    pos.is_exiting = False  # Always reset on load — no in-flight tasks survive restart
                     loaded[sym] = pos
                 return loaded
         except Exception as e:
@@ -204,12 +207,12 @@ def _load_settings() -> dict:
 
 
 class CandleAggregator:
-    """Aggregate raw tick dictionaries into OHLCV DataFrames."""
+    """Aggregate raw tick dictionaries into OHLCV DataFrames (Per-Symbol Isolated)."""
 
     def __init__(self, symbols: List[str], timeframe_str: str = "5 Min"):
         self.symbols = symbols
         self._buffer: Dict[str, List[Dict]] = defaultdict(list)
-        self._current_interval: datetime | None = None
+        self._current_interval: Dict[str, datetime | None] = defaultdict(lambda: None)
         self.candles: Dict[str, pd.DataFrame] = {}
         
         # Parse timeframe to minutes
@@ -230,35 +233,41 @@ class CandleAggregator:
     def add_tick(self, tick: Dict) -> None:
         ts = datetime.fromtimestamp(tick["timestamp"], tz=timezone.utc)
         minute = self._interval_floor(ts)
-        if self._current_interval is None:
-            self._current_interval = minute
-        elif minute > self._current_interval:
-            self._finalize_interval()
-            self._current_interval = minute
         symbol = tick["symbol"]
+        
+        current = self._current_interval[symbol]
+        if current is None:
+            self._current_interval[symbol] = minute
+        elif minute > current:
+            self._finalize_symbol_interval(symbol, current)
+            self._current_interval[symbol] = minute
+            
         self._buffer[symbol].append(tick)
 
-    def _finalize_interval(self) -> None:
-        for symbol, ticks in self._buffer.items():
-            if not ticks:
-                continue
-            df = pd.DataFrame(ticks)
-            candle = {
-                "open": df["ltp"].iloc[0],
-                "high": df["ltp"].max(),
-                "low": df["ltp"].min(),
-                "close": df["ltp"].iloc[-1],
-                "volume": df["volume"].sum(),
-                "timestamp": pd.to_datetime(self._current_interval),
-            }
-            if symbol not in self.candles:
-                self.candles[symbol] = pd.DataFrame([candle]).set_index("timestamp")
-            else:
-                self.candles[symbol] = pd.concat([
-                    self.candles[symbol],
-                    pd.DataFrame([candle]).set_index("timestamp"),
-                ]).tail(2000)
-        self._buffer = defaultdict(list)
+    def _finalize_symbol_interval(self, symbol: str, interval: datetime) -> None:
+        ticks = self._buffer.get(symbol, [])
+        if not ticks:
+            return
+            
+        df = pd.DataFrame(ticks)
+        candle = {
+            "open": df["ltp"].iloc[0],
+            "high": df["ltp"].max(),
+            "low": df["ltp"].min(),
+            "close": df["ltp"].iloc[-1],
+            "volume": df["volume"].sum(),
+            "timestamp": pd.to_datetime(interval),
+        }
+        
+        candle_df = pd.DataFrame([candle]).set_index("timestamp")
+        
+        if symbol not in self.candles:
+            self.candles[symbol] = candle_df
+        else:
+            self.candles[symbol] = pd.concat([self.candles[symbol], candle_df]).tail(2000)
+            
+        # Clear only this symbol's buffer
+        self._buffer[symbol] = []
 
     def get_latest_dataframe(self, symbol: str) -> pd.DataFrame:
         if symbol not in self.candles:
@@ -285,14 +294,29 @@ async def run_live_bot(symbols: List[str]) -> None:
     _initial_capital = float(_init_settings.get("initial_capital", 100_000.0))
     _tf_str = _init_settings.get("timeframe", "5 Min")
     
+    # Load previous PNL if from today
+    from shared.state import load_state
+    saved_state = load_state()
+    saved_pnl = saved_state.get("pnl", 0.0)
+    last_update_str = saved_state.get("last_update", "")
+    
+    # Check if last_update is from today
+    today_str = datetime.now(_IST).strftime("%Y-%m-%d")
+    if last_update_str and not last_update_str.startswith(today_str):
+        # Reset if it's a new day
+        saved_pnl = 0.0
+        logger.info("New trading day detected. Resetting session PNL to 0.0")
+    else:
+        logger.info(f"Resuming session with previous PNL: {saved_pnl}")
+        
     aggregator = CandleAggregator(symbols, _tf_str)
 
     # Initialize Core Engines
-    risk_manager = RiskManager(initial_capital=_initial_capital)
+    risk_manager = RiskManager(initial_capital=_initial_capital, daily_pnl=saved_pnl)
     ai_filter = TradeFilterModel()
     exit_engine = SmartExitEngine(atr_multiplier=1.5, partial_booking_pct=50.0)
     pyramid_sizer = PyramidSizer(pct_trigger=0.2, max_scales=2)
-    portfolio_risk = PortfolioRiskEngine(max_daily_dd_pct=5.0, max_weekly_dd_pct=10.0, max_consecutive_losses=3)
+    portfolio_risk = PortfolioRiskEngine(max_daily_dd_pct=5.0, max_weekly_dd_pct=10.0, max_consecutive_losses=3, initial_capital=_initial_capital)
     iceberg_manager = IcebergManager(max_slice_qty=500)
 
     active_positions: Dict[str, Position] = _load_positions()
@@ -301,38 +325,49 @@ async def run_live_bot(symbols: List[str]) -> None:
         
     momentum_strategies: Dict[str, MomentumStrategy] = {}
 
-    # Preload historical data from API Bridge so strategy doesn't need to wait 50 minutes
-    import requests
+    # Preload historical data using the broker directly (eliminating HTTP hop and localhost dependency)
     from datetime import timedelta
     try:
         end_date = datetime.now().strftime("%Y-%m-%d")
         start_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+        
+        if not broker.is_authenticated:
+            broker.authenticate()
+            
+        def _format_sym(s: str) -> str:
+            if ":" in s and "-" in s: return s
+            idx = {"NIFTY": "NSE:NIFTY50-INDEX", "BANKNIFTY": "NSE:NIFTYBANK-INDEX", "SENSEX": "BSE:SENSEX-INDEX"}
+            if s in idx: return idx[s]
+            exch, t = s.split(":") if ":" in s else ("NSE", s)
+            return f"{exch}:{t}-EQ"
+            
         for sym in symbols:
-            # We fetch dynamic timeframe data to match aggregator output
-            safe_tf = _tf_str.replace(" ", "+")
-            resp = requests.get(f"http://127.0.0.1:8000/api/history?symbol={sym}&start_date={start_date}&end_date={end_date}&timeframe={safe_tf}")
-            if resp.status_code == 200:
-                data = resp.json().get("data", [])
-                if data:
-                    df = pd.DataFrame(data)
-                    df["timestamp"] = pd.to_datetime(df["datetime"] if "datetime" in df.columns else df.get("Datetime"))
-                    df.set_index("timestamp", inplace=True)
-                    # Lowercase columns mapping
-                    col_map = {c: c.lower() for c in df.columns}
-                    df.rename(columns=col_map, inplace=True)
-                    for col in ["open", "high", "low", "close", "volume"]:
-                        if col in df.columns:
-                            df[col] = pd.to_numeric(df[col], errors='coerce')
-                    aggregator.candles[sym] = df
-                    logger.info("Preloaded %d historical candles for %s", len(df), sym)
+            broker_sym = _format_sym(sym)
+            data = broker.get_historical_data(broker_sym, start_date, end_date, _tf_str)
+            if data:
+                df = pd.DataFrame(data)
+                df["timestamp"] = pd.to_datetime(df["datetime"] if "datetime" in df.columns else df.get("Datetime"))
+                df.set_index("timestamp", inplace=True)
+                # Lowercase columns mapping
+                col_map = {c: c.lower() for c in df.columns}
+                df.rename(columns=col_map, inplace=True)
+                for col in ["open", "high", "low", "close", "volume"]:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
+                aggregator.candles[sym] = df
+                logger.info("Preloaded %d historical candles for %s natively via Broker", len(df), sym)
     except Exception as e:
-        logger.warning("Could not preload history from API bridge: %s", e)
+        logger.warning("Could not preload history natively from broker: %s", e)
 
     last_eval_time = 0.0
 
     async def background_iceberg_entry(broker, entry_req: OrderRequest, pos_obj: Position, s: str):
         try:
-            executed_slices = await iceberg_manager.execute_iceberg(broker, entry_req)
+            executed_slices = await iceberg_manager.execute_iceberg(
+                broker, 
+                entry_req,
+                halt_check=lambda: portfolio_risk.trading_halted
+            )
             actual_qty = sum(req.quantity for req in executed_slices)
             if actual_qty == 0:
                 logger.error("Entry order completely failed to execute for %s. Removing ghost position.", s)
@@ -351,27 +386,71 @@ async def run_live_bot(symbols: List[str]) -> None:
                 del active_positions[s]
                 _save_positions(active_positions)
 
-    async def background_iceberg_exit(broker, exit_req: OrderRequest, sym: str, side: int, entry_price: float):
+    async def background_iceberg_exit(
+        broker, exit_req: OrderRequest, sym: str, side: int, entry_price: float,
+        exit_price: float, qty_to_close: int, full_exit: bool
+    ):
+        pos = active_positions.get(sym)
         try:
-            executed_slices = await iceberg_manager.execute_iceberg(broker, exit_req)
+            executed_slices = await iceberg_manager.execute_iceberg(
+                broker, 
+                exit_req,
+                halt_check=lambda: portfolio_risk.trading_halted
+            )
             actual_exit_qty = sum(req.quantity for req in executed_slices)
             
             if actual_exit_qty == 0:
-                logger.error("EXIT order completely failed to execute for %s. Retrying next tick.", sym)
+                logger.error("EXIT order completely failed to execute for %s. Resetting is_exiting — will retry next tick.", sym)
+                # Unlock the position so it's managed again on the next tick
+                if pos:
+                    pos.is_exiting = False
                 return
+            
+            # ── Confirmed execution: now record PNL and clean up position ──
+            ltp_actual = exit_price  # Use the price that triggered the exit signal
+            pnl = (ltp_actual - entry_price) * actual_exit_qty * side
+            
+            portfolio_risk.update_pnl(pnl, risk_manager.current_equity)
+            trade_side = "LONG" if side == 1 else "SHORT"
+            risk_manager.record_trade(TradeRecord(
+                sym, trade_side,
+                entry_price, ltp_actual, pnl, datetime.now(_IST).isoformat()
+            ))
+            is_opt = "CE" in sym or "PE" in sym
+            state_action = "SELL" if is_opt else ("SELL" if side == 1 else "BUY")
+            record_trade(sym, state_action, ltp_actual, datetime.now(_IST).isoformat(), qty=actual_exit_qty)
+            update_equity(risk_manager.current_equity, risk_manager.daily_pnl)
+            alerter.send_exit_alert(sym, side, actual_exit_qty, ltp_actual, pnl, "Live Exit Confirmed")
                 
             audit.trade(AuditEvent.TRADE_EXIT, sym,
                         "SELL" if side == 1 else "BUY",
                         actual_exit_qty, entry_price,
-                        broker=broker.BROKER_ID, pnl=0)
-            
-            # Note: active_positions removal/reduction is already handled synchronously in main thread
+                        broker=broker.BROKER_ID, pnl=pnl)
+
+            # ── Remove or reduce position in shared state ──
+            if sym in active_positions:
+                pos = active_positions[sym]
+                if full_exit or actual_exit_qty >= pos.quantity:
+                    del active_positions[sym]
+                else:
+                    pos.quantity -= actual_exit_qty
+                    pos.is_exiting = False  # Partial exit: allow further management
+                _save_positions(active_positions)
+
         except Exception as e:
             logger.error("Background Iceberg Exit Failed for %s: %s", sym, e)
+            # Unlock the position so it's re-evaluated on the next tick
+            if pos:
+                pos.is_exiting = False
+
 
     async def background_iceberg_scale(broker, scale_req: OrderRequest, pos: Position, side_str: str, ltp: float):
         try:
-            executed_slices = await iceberg_manager.execute_iceberg(broker, scale_req)
+            executed_slices = await iceberg_manager.execute_iceberg(
+                broker, 
+                scale_req,
+                halt_check=lambda: portfolio_risk.trading_halted
+            )
             actual_scale_qty = sum(req.quantity for req in executed_slices)
             
             if actual_scale_qty == 0:
@@ -416,8 +495,20 @@ async def run_live_bot(symbols: List[str]) -> None:
         # ----------------------------------------------------------------
         if sym in active_positions:
             pos = active_positions[sym]
+
+            # ── Safety gate: skip if a background exit is already in flight ──
+            if pos.is_exiting:
+                return
+
             df = aggregator.get_latest_dataframe(sym)
-            current_atr = (df["high"].iloc[-1] - df["low"].iloc[-1]) if not df.empty else (ltp * 0.005)
+            # Proper 14-bar rolling ATR (not single-candle range which is too noisy)
+            if not df.empty and len(df) >= 2:
+                tr_series = (df["high"] - df["low"]).abs()
+                current_atr = tr_series.rolling(min(14, len(df))).mean().iloc[-1]
+                if pd.isna(current_atr) or current_atr <= 0:
+                    current_atr = ltp * 0.005
+            else:
+                current_atr = ltp * 0.005
 
             from shared.sentiment import get_current_sentiment
             sentiment_data = get_current_sentiment()
@@ -425,60 +516,66 @@ async def run_live_bot(symbols: List[str]) -> None:
 
             should_exit, reason, exit_qty = False, "", None
 
+            # ── Sentiment Panic: full-position exit with highest priority ──────
             if sentiment_score < -0.8 and pos.side == 1:
                 should_exit = True
                 reason = "Macro Panic (Sentiment Circuit Breaker)"
                 exit_qty = pos.quantity
-            else:
+            
+            # ── Strategy exit check: only runs if sentiment hasn't already fired ──
+            if not should_exit:
                 strategy_name = settings.get("active_strategy", "institutional_momentum")
             
-            if strategy_name == "institutional_momentum" and sym in momentum_strategies:
-                m_strategy = momentum_strategies[sym]
-                # Requires 5min dataframe for TieredExitManager
-                df_5min = df.resample('5min', label='right', closed='right').agg({
-                    'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'
-                }).dropna() if not df.empty else df
-                
-                # Fetch AI Confidence for early exit
-                features = compute_features(df.tail(60)).tail(1)
-                confidence = ai_filter.predict(features)["confidence"].iloc[-1] if (ai_filter.is_trained and not features.empty) else 1.0
-                
-                decision = m_strategy.manage_active_trades(
-                    ltp, 
-                    df_5min, 
-                    ai_confidence=confidence * 100,
-                    current_atr=current_atr
-                )
-                if decision and decision.get("exit"):
-                    should_exit = True
-                    reason = decision.get("reason", "Institutional Smart Exit")
-                    # Support partial booking
-                    qty_pct = decision.get("quantity_pct", 1.0)
-                    exit_qty = max(1, int(pos.quantity * qty_pct)) if qty_pct < 1.0 else pos.quantity
-            else:
-                # Dynamically apply Trailing SL settings
-                if settings.get("trailing_sl", False) or settings.get("trailingSl", False):
-                    exit_engine.trailing_activation_pct = settings.get("trail_trigger", settings.get("trailTrigger", 1.0))
-                    # Optional: We could map trail_offset to atr_multiplier but ATR multiplier is a better volatility-adjusted mechanism.
+                if strategy_name == "institutional_momentum" and sym in momentum_strategies:
+                    m_strategy = momentum_strategies[sym]
+                    # Requires 5min dataframe for TieredExitManager
+                    df_5min = df.resample('5min', label='right', closed='right').agg({
+                        'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'
+                    }).dropna() if not df.empty else df
+                    
+                    # Fetch AI Confidence for early exit
+                    features = compute_features(df.tail(60)).tail(1)
+                    confidence = ai_filter.predict(features)["confidence"].iloc[-1] if (ai_filter.is_trained and not features.empty) else 1.0
+                    
+                    decision = m_strategy.manage_active_trades(
+                        ltp, 
+                        df_5min, 
+                        ai_confidence=confidence * 100,
+                        current_atr=current_atr
+                    )
+                    if decision and decision.get("exit"):
+                        should_exit = True
+                        reason = decision.get("reason", "Institutional Smart Exit")
+                        qty_pct = decision.get("quantity_pct", 1.0)
+                        if qty_pct < 1.0:
+                            raw_qty = int(pos.quantity * qty_pct)
+                            lots = max(1, raw_qty // pos.lot_size)
+                            exit_qty = min(lots * pos.lot_size, pos.quantity)
+                        else:
+                            exit_qty = pos.quantity
+                        
+                        if pos.is_partially_booked and qty_pct < 1.0:
+                            pass
                 else:
-                    # If turned off, set activation pct to an unreachable high number
-                    exit_engine.trailing_activation_pct = 9999.0
+                    # Dynamically apply Trailing SL settings
+                    if settings.get("trailing_sl", False) or settings.get("trailingSl", False):
+                        exit_engine.trailing_activation_pct = settings.get("trail_trigger", settings.get("trailTrigger", 1.0))
+                    else:
+                        # If turned off, set activation pct to an unreachable high number
+                        exit_engine.trailing_activation_pct = 9999.0
 
-                old_stop_loss = pos.stop_loss
-                should_exit, reason, exit_qty = exit_engine.evaluate_exit(
-                    pos, ltp, current_time, current_atr
-                )
-                # Phase 5: Persist Trailing SL to disk immediately to prevent amnesia on reboot
-                if pos.stop_loss != old_stop_loss:
-                    logger.info("TRAILING SL MOVED for %s: %.2f -> %.2f. Saving to disk.", sym, old_stop_loss, pos.stop_loss)
-                    _save_positions(active_positions)
-            
-            # Close the else block for the sentiment check
-            pass
+                    old_stop_loss = pos.stop_loss
+                    should_exit, reason, exit_qty = exit_engine.evaluate_exit(
+                        pos, ltp, current_time, current_atr
+                    )
+                    # Phase 5: Persist Trailing SL to disk immediately to prevent amnesia on reboot
+                    if pos.stop_loss != old_stop_loss:
+                        logger.info("TRAILING SL MOVED for %s: %.2f -> %.2f. Saving to disk.", sym, old_stop_loss, pos.stop_loss)
+                        _save_positions(active_positions)
 
             if should_exit:
                 qty_to_close = exit_qty if exit_qty else pos.quantity
-                is_live = settings.get("live_trading_mode", False)   # use the cached settings
+                is_live = not broker.paper_mode   # accurately reflect the broker's operating mode
 
                 if is_live:
                     logger.info("EXIT %s %s for %s (%s) [LIVE]", pos.side, qty_to_close, sym, reason)
@@ -494,8 +591,12 @@ async def run_live_bot(symbols: List[str]) -> None:
                         )
                         try:
                             exit_req = validator.validator.validate(exit_req)
+                            # Lock the position: prevents duplicate exit signals while iceberg executes
+                            pos.is_exiting = True
+                            full_exit = (exit_qty is None or exit_qty >= pos.quantity)
                             asyncio.create_task(background_iceberg_exit(
-                                broker, exit_req, sym, pos.side, pos.entry_price
+                                broker, exit_req, sym, pos.side, pos.entry_price,
+                                exit_price=ltp, qty_to_close=qty_to_close, full_exit=full_exit
                             ))
                         except ValidationError as ve:
                             logger.error("EXIT order validation failed for %s: %s", sym, ve)
@@ -503,33 +604,29 @@ async def run_live_bot(symbols: List[str]) -> None:
                                       {"symbol": sym, "reason": str(ve)}, severity="WARNING")
                             return # Retry on next tick
                 else:
+                    # Paper Trading: synchronous execution is safe — guaranteed fill
                     logger.info("EXIT %s %s for %s (%s) [PAPER]", pos.side, qty_to_close, sym, reason)
 
-                # Record PnL & update dashboard state
-                pnl = (ltp - pos.entry_price) * qty_to_close * pos.side
-                
-                # Phase 7: Update Portfolio Risk
-                portfolio_risk.update_pnl(pnl, risk_manager.current_equity)
-                
-                trade_side = "LONG" if pos.side == 1 else "SHORT"
-                risk_manager.record_trade(TradeRecord(
-                    pos.symbol, trade_side,
-                    pos.entry_price, ltp, pnl, datetime.utcnow().isoformat()
-                ))
-                # Also persist to shared state for dashboard display
-                # For options, entry is BUY, exit is SELL. For futures, it reverses.
-                is_opt = "CE" in pos.symbol or "PE" in pos.symbol
-                state_action = "SELL" if is_opt else ("SELL" if pos.side == 1 else "BUY")
-                record_trade(pos.symbol, state_action, ltp, datetime.utcnow().isoformat(), qty=qty_to_close)
-                update_equity(risk_manager.current_equity, risk_manager.daily_pnl)
-                alerter.send_exit_alert(sym, pos.side, qty_to_close, ltp, pnl, reason)
+                    # Record PnL & update dashboard state (paper mode: immediate, no confirmation needed)
+                    pnl = (ltp - pos.entry_price) * qty_to_close * pos.side
+                    portfolio_risk.update_pnl(pnl, risk_manager.current_equity)
+                    trade_side = "LONG" if pos.side == 1 else "SHORT"
+                    risk_manager.record_trade(TradeRecord(
+                        pos.symbol, trade_side,
+                        pos.entry_price, ltp, pnl, datetime.now(_IST).isoformat()
+                    ))
+                    is_opt = "CE" in pos.symbol or "PE" in pos.symbol
+                    state_action = "SELL" if is_opt else ("SELL" if pos.side == 1 else "BUY")
+                    record_trade(pos.symbol, state_action, ltp, datetime.now(_IST).isoformat(), qty=qty_to_close)
+                    update_equity(risk_manager.current_equity, risk_manager.daily_pnl)
+                    alerter.send_exit_alert(sym, pos.side, qty_to_close, ltp, pnl, reason)
 
-                if exit_qty is None or exit_qty >= pos.quantity:
-                    del active_positions[sym]
-                else:
-                    pos.quantity -= exit_qty
-                
-                _save_positions(active_positions)
+                    if exit_qty is None or exit_qty >= pos.quantity:
+                        del active_positions[sym]
+                    else:
+                        pos.quantity -= exit_qty
+
+                    _save_positions(active_positions)
 
             # ----------------------------------------------------------------
             # 1.5. Pyramiding (Scaling In) for remaining positions
@@ -550,7 +647,7 @@ async def run_live_bot(symbols: List[str]) -> None:
                     scale_qty = int(settings.get("quantity", 2)) // 2  # Scale in with half of base qty or 1 lot
                     if scale_qty < 1: scale_qty = 1
                     
-                    is_live = settings.get("live_trading_mode", False)
+                    is_live = not broker.paper_mode
                     side_str = "BUY" if pos.side == 1 else "SELL"
                     
                     if is_live:
@@ -595,7 +692,7 @@ async def run_live_bot(symbols: List[str]) -> None:
 
                 # Settings already loaded at top of on_tick (cached, no disk I/O)
                 strategy_name = settings.get("active_strategy", "institutional_momentum")
-                is_live = settings.get("live_trading_mode", False)
+                is_live = not broker.paper_mode
                 target_pct = settings.get("target_pct", 1.0) / 100.0
                 sl_pct = settings.get("stoploss_pct", 0.5) / 100.0
 
@@ -611,8 +708,8 @@ async def run_live_bot(symbols: List[str]) -> None:
                         continue
 
                     # ── AI Confidence Gate (computed first, needed by premium engine) ──
-                    # Phase 10: Compute features on full history to prevent Live-Simulation Skew (EMA truncation)
-                    features = compute_features(df).tail(1)
+                    # Limit to last 100 rows to prevent severe CPU bottleneck and latency spikes
+                    features = compute_features(df.tail(100)).tail(1)
                     
                     enable_ai = settings.get("enable_ai_filter", False)
                     if enable_ai and ai_filter.is_trained:
@@ -705,7 +802,9 @@ async def run_live_bot(symbols: List[str]) -> None:
                     elif settings.get("max_daily_loss_pct"):
                         portfolio_risk.max_daily_dd_pct = float(settings.get("max_daily_loss_pct", 0.05))
 
-                    if settings.get("maxDailyTrades") is not None:
+                    if settings.get("max_trades_per_day") is not None:
+                        risk_manager.config.max_trades_per_day = int(settings.get("max_trades_per_day", 1))
+                    elif settings.get("maxDailyTrades") is not None:
                         risk_manager.config.max_trades_per_day = int(settings.get("maxDailyTrades", 1))
                     elif settings.get("max_daily_trades") is not None:
                         risk_manager.config.max_trades_per_day = int(settings.get("max_daily_trades", 1))
@@ -715,29 +814,31 @@ async def run_live_bot(symbols: List[str]) -> None:
                         logger.warning("Portfolio Risk Halt for %s: %s", s, halt_reason)
                         continue
                         
+                    # ── Compute Entry / SL / Target FIRST (needed for risk check) ──
+                    entry_price = df["close"].iloc[-1]
+                    side_str = "BUY CALL" if latest_signal == 1 else "BUY PUT"
+                    sl_price = entry_price * (1 - sl_pct) if latest_signal == 1 else entry_price * (1 + sl_pct)
+                    tgt_price = entry_price * (1 + target_pct) if latest_signal == 1 else entry_price * (1 - target_pct)
+
+                    if "quantity" in settings:
+                        qty = int(settings["quantity"])
+                    else:
+                        # calculate_position_size returns total shares. Divide by lot_size to get number of lots.
+                        total_shares = risk_manager.calculate_position_size(entry_price, sl_price, ai_confidence=confidence) or 1
+                        qty = max(1, total_shares // lot_size)
+
+                    # ── Risk Manager Gate ─────────────────────────────────────────
+                    # Pass actual rupee risk so the per-trade risk limit is enforced
+                    actual_risk_amount = abs(entry_price - sl_price) * qty * lot_size
                     allowed, reject_reason = risk_manager.can_trade(
                         symbol=s,
-                        risk_amount=100,
+                        risk_amount=actual_risk_amount,
                         ai_confidence=confidence,
                         current_volatility=current_volatility,
                     )
                     if not allowed:
                         logger.info("Trade BLOCKED for %s: %s", s, reject_reason)
                         continue
-
-                    # ── Compute Entry / SL / Target ────────────────────
-                    entry_price = df["close"].iloc[-1]
-                    side_str = "BUY CALL" if latest_signal == 1 else "BUY PUT"
-                    sl_price = entry_price * (1 - sl_pct) if latest_signal == 1 else entry_price * (1 + sl_pct)
-                    tgt_price = entry_price * (1 + target_pct) if latest_signal == 1 else entry_price * (1 - target_pct)
-                    
-                    if "quantity" in settings:
-                        qty = int(settings["quantity"])
-                    else:
-                        # Phase 6: Fix Hyper-Leverage Bug
-                        # calculate_position_size returns total shares. Divide by lot_size to get number of lots.
-                        total_shares = risk_manager.calculate_position_size(entry_price, sl_price) or 1
-                        qty = max(1, total_shares // lot_size)
 
                     # ── Execute (Live or Paper) ────────────────────────
                     if is_live:
@@ -773,6 +874,7 @@ async def run_live_bot(symbols: List[str]) -> None:
                                 lowest_price=entry_price,
                                 stop_loss=sl_price,
                                 target=tgt_price,
+                                lot_size=lot_size,
                             )
                             active_positions[s] = pos_obj
                             _save_positions(active_positions)
@@ -808,6 +910,7 @@ async def run_live_bot(symbols: List[str]) -> None:
                             lowest_price=entry_price,
                             stop_loss=sl_price,
                             target=tgt_price,
+                            lot_size=lot_size,
                         )
                         # We MUST key active_positions by the base symbol (INDEX) so that on_tick hits!
                         active_positions[s] = pos_obj
@@ -816,7 +919,7 @@ async def run_live_bot(symbols: List[str]) -> None:
                     # Persist Entry to state.db so Dashboard Live Feed picks it up
                     is_opt = "CE" in entry_symbol or "PE" in entry_symbol
                     state_action = "BUY" if is_opt else ("BUY" if latest_signal == 1 else "SELL")
-                    record_trade(entry_symbol, state_action, entry_price, current_time, qty=actual_qty)
+                    record_trade(entry_symbol, state_action, entry_price, datetime.now(_IST).isoformat(), qty=actual_qty)
                     
                     if strategy_name == "institutional_momentum" and s in momentum_strategies:
                         momentum_strategies[s].open_trade(

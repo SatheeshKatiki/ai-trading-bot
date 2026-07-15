@@ -209,6 +209,12 @@ class KiteBroker(BaseBroker):
                 f"Kite get_positions failed: {exc}", broker_id=self.BROKER_ID
             ) from exc
 
+    def get_lot_size(self, symbol: str) -> int:
+        """Fetch lot size from broker dynamically if cached, otherwise fallback."""
+        if hasattr(self, '_lot_size_cache') and self._lot_size_cache:
+            return self._lot_size_cache.get(symbol, super().get_lot_size(symbol))
+        return super().get_lot_size(symbol)
+
     def get_balance(self) -> Balance:
         if self.paper_mode:
             return Balance(available_cash=10_000.0, used_margin=0.0, total_balance=10_000.0)

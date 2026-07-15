@@ -13,15 +13,17 @@ class PortfolioRiskEngine:
     def __init__(self, 
                  max_daily_dd_pct: float = 5.0, 
                  max_weekly_dd_pct: float = 10.0,
-                 max_consecutive_losses: int = 3):
+                 max_consecutive_losses: int = 3,
+                 initial_capital: float = 100_000.0):
         self.max_daily_dd_pct = max_daily_dd_pct
         self.max_weekly_dd_pct = max_weekly_dd_pct
         self.max_consecutive_losses = max_consecutive_losses
         
         self.daily_pnl = 0.0
         self.weekly_pnl = 0.0
-        self.peak_capital_daily = 0.0
-        self.peak_capital_weekly = 0.0
+        # Seed from initial_capital so first drawdown check is correct from the very first trade
+        self.peak_capital_daily = initial_capital
+        self.peak_capital_weekly = initial_capital
         
         self.consecutive_losses = 0
         self.trading_halted = False

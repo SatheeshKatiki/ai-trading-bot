@@ -82,14 +82,25 @@ class TradeFilterModel:
 
     def save(self, accuracy: float = 0.0) -> None:
         """Persist the trained model to disk."""
+        import tempfile
+        import os
         _MODEL_DIR.mkdir(parents=True, exist_ok=True)
-        with open(_MODEL_PATH, "wb") as f:
-            pickle.dump({
-                "model": self.model,
-                "feature_names": self.feature_names,
-                "accuracy": accuracy,
-            }, f)
-        logger.info("Model saved to %s", _MODEL_PATH)
+        
+        temp_fd, temp_path = tempfile.mkstemp(dir=_MODEL_DIR, prefix="trade_filter_tmp_", suffix=".pkl")
+        try:
+            with os.fdopen(temp_fd, "wb") as f:
+                pickle.dump({
+                    "model": self.model,
+                    "feature_names": self.feature_names,
+                    "accuracy": accuracy,
+                }, f)
+            os.replace(temp_path, _MODEL_PATH)
+            logger.info("Model saved atomically to %s", _MODEL_PATH)
+        except Exception as e:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+            logger.error("Failed to save model: %s", e)
+            raise e
 
     # ------------------------------------------------------------------
     # Training
