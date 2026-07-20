@@ -7,7 +7,7 @@ export async function GET(request: Request) {
 
     try {
         const response = await fetch(`http://127.0.0.1:8000/api/option-chain?symbol=${symbol}`, {
-            next: { revalidate: 15 }
+            cache: 'no-store'
         });
         
         if (!response.ok) {
@@ -58,7 +58,7 @@ export async function GET(request: Request) {
         const step = symbol === "NIFTY" ? 50 : 100;
         
         const chain = [];
-        for (let i = -5; i <= 5; i++) {
+        for (let i = -20; i <= 20; i++) {
             const strike = atm + (i * step);
             const distance = Math.abs(i);
             

@@ -39,13 +39,13 @@ export default function OptionsDesk() {
       Math.abs(curr.strike - underlying) < Math.abs(prev.strike - underlying) ? curr : prev
     );
     
-    const premiumPaid = atmStrike.call.ltp + atmStrike.put.ltp;
+    const premiumPaid = (atmStrike.ce?.ltp || 0) + (atmStrike.pe?.ltp || 0);
     
     for (let price = underlying - range; price <= underlying + range; price += 50) {
       // Call Payoff = Max(0, Price - Strike) - Premium
-      const callPayoff = Math.max(0, price - atmStrike.strike) - atmStrike.call.ltp;
+      const callPayoff = Math.max(0, price - atmStrike.strike) - (atmStrike.ce?.ltp || 0);
       // Put Payoff = Max(0, Strike - Price) - Premium
-      const putPayoff = Math.max(0, atmStrike.strike - price) - atmStrike.put.ltp;
+      const putPayoff = Math.max(0, atmStrike.strike - price) - (atmStrike.pe?.ltp || 0);
       
       const totalPayoff = callPayoff + putPayoff;
       data.push({
@@ -121,7 +121,7 @@ export default function OptionsDesk() {
                     <YAxis stroke="#666" tick={{ fill: '#888' }} />
                     <RechartsTooltip 
                       contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #1e293b', borderRadius: '8px' }}
-                      formatter={(value: number) => [`₹${value}`, 'PnL']}
+                      formatter={(value: any) => [`₹${value}`, 'PnL']}
                     />
                     <ReferenceLine y={0} stroke="#666" />
                     <ReferenceLine x={Math.round(chainData?.underlying_price)} stroke="#3b82f6" strokeDasharray="3 3" label={{ position: 'top', value: 'Current Price', fill: '#3b82f6' }} />
@@ -144,7 +144,7 @@ export default function OptionsDesk() {
                   <Brain className="w-5 h-5 text-primary" /> Option Chain (Exp: {chainData?.expiry})
                 </h2>
                 <div className="text-sm font-mono text-muted-foreground">
-                  Underlying: <span className="text-foreground font-bold">{chainData?.underlying_price.toFixed(2)}</span>
+                  Underlying: <span className="text-foreground font-bold">{(chainData?.underlying_price || 0).toFixed(2)}</span>
                 </div>
               </div>
               
@@ -175,17 +175,17 @@ export default function OptionsDesk() {
                       
                       return (
                         <tr key={i} className="border-b border-border/20 hover:bg-muted/10 transition-colors">
-                          <td className={`py-3 px-2 ${isITMCall ? 'bg-success/5' : ''}`}>{row.call.delta}</td>
-                          <td className={`py-3 px-2 ${isITMCall ? 'bg-success/5' : ''}`}>{row.call.theta}</td>
-                          <td className={`py-3 px-2 ${isITMCall ? 'bg-success/5' : ''}`}>{row.call.oi}</td>
-                          <td className={`py-3 px-2 border-r border-border/50 font-bold text-success ${isITMCall ? 'bg-success/5' : ''}`}>₹{row.call.ltp}</td>
+                          <td className={`py-3 px-2 ${isITMCall ? 'bg-success/5' : ''}`}>{row.ce?.delta || 0}</td>
+                          <td className={`py-3 px-2 ${isITMCall ? 'bg-success/5' : ''}`}>{row.ce?.theta || 0}</td>
+                          <td className={`py-3 px-2 ${isITMCall ? 'bg-success/5' : ''}`}>{row.ce?.oi || 0}</td>
+                          <td className={`py-3 px-2 border-r border-border/50 font-bold text-success ${isITMCall ? 'bg-success/5' : ''}`}>₹{row.ce?.ltp || 0}</td>
                           
                           <td className="py-3 px-2 bg-muted/30 font-bold text-foreground">{row.strike}</td>
                           
-                          <td className={`py-3 px-2 border-l border-border/50 font-bold text-destructive ${isITMPut ? 'bg-destructive/5' : ''}`}>₹{row.put.ltp}</td>
-                          <td className={`py-3 px-2 ${isITMPut ? 'bg-destructive/5' : ''}`}>{row.put.oi}</td>
-                          <td className={`py-3 px-2 ${isITMPut ? 'bg-destructive/5' : ''}`}>{row.put.theta}</td>
-                          <td className={`py-3 px-2 ${isITMPut ? 'bg-destructive/5' : ''}`}>{row.put.delta}</td>
+                          <td className={`py-3 px-2 border-l border-border/50 font-bold text-destructive ${isITMPut ? 'bg-destructive/5' : ''}`}>₹{row.pe?.ltp || 0}</td>
+                          <td className={`py-3 px-2 ${isITMPut ? 'bg-destructive/5' : ''}`}>{row.pe?.oi || 0}</td>
+                          <td className={`py-3 px-2 ${isITMPut ? 'bg-destructive/5' : ''}`}>{row.pe?.theta || 0}</td>
+                          <td className={`py-3 px-2 ${isITMPut ? 'bg-destructive/5' : ''}`}>{row.pe?.delta || 0}</td>
                         </tr>
                       );
                     })}

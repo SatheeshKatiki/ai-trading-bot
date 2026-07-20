@@ -34,6 +34,7 @@ class Position:
     scales_done: int = 0     # Number of times this position has been scaled into
     lot_size: int = 1        # Lot size for quantity rounding
     is_exiting: bool = False # Lock flag: True while background iceberg exit is in flight
+    sl_order_id: str = None  # Exchange ID for the active Hard SL order
 
 
 class SmartExitEngine:

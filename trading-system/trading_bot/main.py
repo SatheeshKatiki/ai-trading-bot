@@ -53,7 +53,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared.config import CONFIG
 from shared.state import update_equity, record_trade
 # Broker layer — broker-agnostic: trading logic never imports vendor SDKs directly
-from brokers import BrokerFactory, OrderRequest, OrderSide
+from brokers import BrokerFactory, OrderRequest, OrderSide, OrderType
 from trading_bot.strategies.registry import registry
 from trading_bot.strategies.premium_selection import (
     PremiumSignalEngine, PremiumSignal, generate_signals as premium_signals
@@ -181,8 +181,9 @@ def _load_settings() -> dict:
         "rsi_window": 14,
         "rsi_buy": 60,
         "rsi_sell": 40,
-        "target_pct": 1.0,
-        "stoploss_pct": 0.5,
+        "target_pct": 500.0,
+        "stoploss_pct": 15.0,
+        "auto_trade_enabled": True,
     }
     
     if _SETTINGS_PATH.is_file():
@@ -360,15 +361,17 @@ async def run_live_bot(symbols: List[str]) -> None:
         logger.warning("Could not preload history natively from broker: %s", e)
 
     last_eval_time = 0.0
+    _iceberg_semaphore = asyncio.Semaphore(3)
 
     async def background_iceberg_entry(broker, entry_req: OrderRequest, pos_obj: Position, s: str):
         try:
-            executed_slices = await iceberg_manager.execute_iceberg(
-                broker, 
-                entry_req,
-                halt_check=lambda: portfolio_risk.trading_halted
-            )
-            actual_qty = sum(req.quantity for req in executed_slices)
+            async with _iceberg_semaphore:
+                executed_slices = await iceberg_manager.execute_iceberg(
+                    broker, 
+                    entry_req,
+                    halt_check=lambda: portfolio_risk.trading_halted
+                )
+                actual_qty = sum(resp.quantity for resp in executed_slices)
             if actual_qty == 0:
                 logger.error("Entry order completely failed to execute for %s. Removing ghost position.", s)
                 if s in active_positions:
@@ -376,6 +379,39 @@ async def run_live_bot(symbols: List[str]) -> None:
                     _save_positions(active_positions)
             else:
                 pos_obj.quantity = actual_qty
+                
+                # Fetch actual filled price to track Slippage
+                await asyncio.sleep(1.0) # Give broker time to update order book
+                total_cost = 0.0
+                valid_slices = 0
+                for resp in executed_slices:
+                    if resp.order_id:
+                        status = broker.get_order_status(resp.order_id)
+                        if status and status.traded_price > 0:
+                            total_cost += status.traded_price * resp.quantity
+                            valid_slices += resp.quantity
+                
+                if valid_slices > 0:
+                    pos_obj.entry_price = total_cost / valid_slices
+                    logger.info("Actual Entry Price for %s resolved to %.2f (Slippage adjusted)", s, pos_obj.entry_price)
+
+                # Place Hard Stop-Loss at Exchange
+                sl_req = OrderRequest(
+                    symbol=s,
+                    quantity=actual_qty,
+                    side=OrderSide.SELL if pos_obj.side == 1 else OrderSide.BUY,
+                    order_type=OrderType.STOPLOSS,
+                    trigger_price=pos_obj.stop_loss,
+                    price=pos_obj.stop_loss, # Limit price same as trigger for SL-Limit, or 0 for SL-Mkt
+                )
+                try:
+                    sl_resp = await broker.place_order_async(sl_req)
+                    if sl_resp and sl_resp.order_id:
+                        pos_obj.sl_order_id = sl_resp.order_id
+                        logger.info("Hard SL placed at Exchange for %s at %.2f (ID: %s)", s, pos_obj.stop_loss, sl_resp.order_id)
+                except Exception as sl_e:
+                    logger.error("Failed to place Hard SL for %s: %s", s, sl_e)
+                
                 _save_positions(active_positions)
                 audit.trade(AuditEvent.TRADE_ENTRY, pos_obj.symbol,
                             entry_req.side.value, actual_qty,
@@ -390,14 +426,23 @@ async def run_live_bot(symbols: List[str]) -> None:
         broker, exit_req: OrderRequest, sym: str, side: int, entry_price: float,
         exit_price: float, qty_to_close: int, full_exit: bool
     ):
-        pos = active_positions.get(sym)
         try:
-            executed_slices = await iceberg_manager.execute_iceberg(
-                broker, 
-                exit_req,
-                halt_check=lambda: portfolio_risk.trading_halted
-            )
-            actual_exit_qty = sum(req.quantity for req in executed_slices)
+            async with _iceberg_semaphore:
+                pos = active_positions.get(sym)
+                if pos and getattr(pos, 'sl_order_id', None):
+                    try:
+                        broker.cancel_order(pos.sl_order_id)
+                        logger.info("Cancelled Hard SL order (ID: %s) for %s before exit", pos.sl_order_id, sym)
+                        pos.sl_order_id = None
+                    except Exception as e:
+                        logger.error("Failed to cancel Hard SL for %s: %s", sym, e)
+                
+                executed_slices = await iceberg_manager.execute_iceberg(
+                    broker, 
+                    exit_req,
+                    halt_check=lambda: portfolio_risk.trading_halted
+                )
+                actual_exit_qty = sum(resp.quantity for resp in executed_slices)
             
             if actual_exit_qty == 0:
                 logger.error("EXIT order completely failed to execute for %s. Resetting is_exiting — will retry next tick.", sym)
@@ -406,8 +451,21 @@ async def run_live_bot(symbols: List[str]) -> None:
                     pos.is_exiting = False
                 return
             
+            # Fetch actual filled price to track Slippage
+            await asyncio.sleep(1.0)
+            total_value = 0.0
+            valid_slices = 0
+            for resp in executed_slices:
+                if resp.order_id:
+                    status = broker.get_order_status(resp.order_id)
+                    if status and status.traded_price > 0:
+                        total_value += status.traded_price * resp.quantity
+                        valid_slices += resp.quantity
+            
+            ltp_actual = total_value / valid_slices if valid_slices > 0 else exit_price
+            logger.info("Actual Exit Price for %s resolved to %.2f (Slippage adjusted)", sym, ltp_actual)
+            
             # ── Confirmed execution: now record PNL and clean up position ──
-            ltp_actual = exit_price  # Use the price that triggered the exit signal
             pnl = (ltp_actual - entry_price) * actual_exit_qty * side
             
             portfolio_risk.update_pnl(pnl, risk_manager.current_equity)
@@ -446,12 +504,13 @@ async def run_live_bot(symbols: List[str]) -> None:
 
     async def background_iceberg_scale(broker, scale_req: OrderRequest, pos: Position, side_str: str, ltp: float):
         try:
-            executed_slices = await iceberg_manager.execute_iceberg(
-                broker, 
-                scale_req,
-                halt_check=lambda: portfolio_risk.trading_halted
-            )
-            actual_scale_qty = sum(req.quantity for req in executed_slices)
+            async with _iceberg_semaphore:
+                executed_slices = await iceberg_manager.execute_iceberg(
+                    broker, 
+                    scale_req,
+                    halt_check=lambda: portfolio_risk.trading_halted
+                )
+                actual_scale_qty = sum(req.quantity for req in executed_slices)
             
             if actual_scale_qty == 0:
                 logger.error("SCALE order completely failed to execute for %s.", pos.symbol)
@@ -461,10 +520,11 @@ async def run_live_bot(symbols: List[str]) -> None:
                             ltp, broker=broker.BROKER_ID)
                 
                 # Update position
-                pos.quantity += actual_scale_qty
-                pos.scales_done += 1
-                alerter.send_trade_alert(pos.symbol, f"PYRAMID SCALE IN {side_str}", actual_scale_qty, ltp, 1.0)
-                _save_positions(active_positions)
+                if pos.symbol in active_positions:
+                    pos.quantity += actual_scale_qty
+                    pos.scales_done += 1
+                    alerter.send_trade_alert(pos.symbol, f"PYRAMID SCALE IN {side_str}", actual_scale_qty, ltp, 1.0)
+                    _save_positions(active_positions)
         except Exception as e:
             logger.error("Background Iceberg Scale Failed for %s: %s", pos.symbol, e)
     async def on_tick(tick: Dict) -> None:
@@ -477,6 +537,13 @@ async def run_live_bot(symbols: List[str]) -> None:
         # Load settings once per tick — the TTL cache (10 s) makes this free
         # (no disk I/O) on the vast majority of ticks.
         settings = _load_settings()
+        
+        # ----------------------------------------------------------------
+        # 🚨 Emergency Halt Check (Advanced Wiring)
+        # ----------------------------------------------------------------
+        if not settings.get("is_active", True):
+            # Engine is halted. Do not process ticks or place new trades.
+            return
 
         # ----------------------------------------------------------------
         # Lazy Strategy Initialization
@@ -485,19 +552,35 @@ async def run_live_bot(symbols: List[str]) -> None:
         if strategy_name == "institutional_momentum" and sym not in momentum_strategies:
             momentum_strategies[sym] = MomentumStrategy(
                 capital=_initial_capital,
-                target_pct=settings.get("target_pct", 1.0),
-                stoploss_pct=settings.get("stoploss_pct", 0.5),
+                target_pct=settings.get("target_pct", 500.0),
+                stoploss_pct=settings.get("stoploss_pct", 15.0),
                 default_lots=settings.get("quantity", 1)
             )
 
         # ----------------------------------------------------------------
-        # 1. Intra-candle Exit Evaluation for existing positions
+        # 1. Evaluate Exit Conditions for Open Positions
         # ----------------------------------------------------------------
-        if sym in active_positions:
-            pos = active_positions[sym]
+        open_position = None
+        base_symbol_key = None
+        
+        # We must match the incoming market tick with the correct open position.
+        for base_sym, position in active_positions.items():
+            if position.symbol == sym:
+                # The incoming tick matches the option or stock we are holding
+                open_position = position
+                base_symbol_key = base_sym
+                break
+            
+            # Fallback for plain index/equity positions
+            is_option = "CE" in position.symbol or "PE" in position.symbol
+            if base_sym == sym and not is_option:
+                open_position = position
+                base_symbol_key = base_sym
+                break
 
+        if open_position:
             # ── Safety gate: skip if a background exit is already in flight ──
-            if pos.is_exiting:
+            if open_position.is_exiting:
                 return
 
             df = aggregator.get_latest_dataframe(sym)
@@ -517,12 +600,48 @@ async def run_live_bot(symbols: List[str]) -> None:
             should_exit, reason, exit_qty = False, "", None
 
             # ── Sentiment Panic: full-position exit with highest priority ──────
-            if sentiment_score < -0.8 and pos.side == 1:
+            if sentiment_score < -0.8 and open_position.side == 1:
                 should_exit = True
                 reason = "Macro Panic (Sentiment Circuit Breaker)"
-                exit_qty = pos.quantity
+                exit_qty = open_position.quantity
             
             # ── Strategy exit check: only runs if sentiment hasn't already fired ──
+            if not should_exit:
+                # --- Hard Target % Interceptor ---
+                if open_position.target and open_position.target > 0:
+                    is_opt_pos = "CE" in open_position.symbol or "PE" in open_position.symbol
+                    if is_opt_pos:
+                        if ltp >= open_position.target:
+                            should_exit = True
+                            reason = f"Hard TP Reached (LTP {ltp:.2f} >= TGT {open_position.target:.2f})"
+                            exit_qty = open_position.quantity
+                    else:
+                        if open_position.side == 1 and ltp >= open_position.target:
+                            should_exit = True
+                            reason = f"Hard TP Reached (LTP {ltp:.2f} >= TGT {open_position.target:.2f})"
+                            exit_qty = open_position.quantity
+                        elif open_position.side == -1 and ltp <= open_position.target:
+                            should_exit = True
+                            reason = f"Hard TP Reached (LTP {ltp:.2f} <= TGT {open_position.target:.2f})"
+                            exit_qty = open_position.quantity
+
+                # --- Hard Stop Loss Interceptor ---
+                if not should_exit and open_position.stop_loss and open_position.stop_loss > 0:
+                    if is_opt_pos:
+                        if ltp <= open_position.stop_loss:
+                            should_exit = True
+                            reason = f"Hard SL Hit (LTP {ltp:.2f} <= SL {open_position.stop_loss:.2f})"
+                            exit_qty = open_position.quantity
+                    else:
+                        if open_position.side == 1 and ltp <= open_position.stop_loss:
+                            should_exit = True
+                            reason = f"Hard SL Hit (LTP {ltp:.2f} <= SL {open_position.stop_loss:.2f})"
+                            exit_qty = open_position.quantity
+                        elif open_position.side == -1 and ltp >= open_position.stop_loss:
+                            should_exit = True
+                            reason = f"Hard SL Hit (LTP {ltp:.2f} >= SL {open_position.stop_loss:.2f})"
+                            exit_qty = open_position.quantity
+
             if not should_exit:
                 strategy_name = settings.get("active_strategy", "institutional_momentum")
             
@@ -548,13 +667,13 @@ async def run_live_bot(symbols: List[str]) -> None:
                         reason = decision.get("reason", "Institutional Smart Exit")
                         qty_pct = decision.get("quantity_pct", 1.0)
                         if qty_pct < 1.0:
-                            raw_qty = int(pos.quantity * qty_pct)
-                            lots = max(1, raw_qty // pos.lot_size)
-                            exit_qty = min(lots * pos.lot_size, pos.quantity)
+                            raw_qty = int(open_position.quantity * qty_pct)
+                            lots = max(1, raw_qty // open_position.lot_size)
+                            exit_qty = min(lots * open_position.lot_size, open_position.quantity)
                         else:
-                            exit_qty = pos.quantity
+                            exit_qty = open_position.quantity
                         
-                        if pos.is_partially_booked and qty_pct < 1.0:
+                        if open_position.is_partially_booked and qty_pct < 1.0:
                             pass
                 else:
                     # Dynamically apply Trailing SL settings
@@ -564,67 +683,67 @@ async def run_live_bot(symbols: List[str]) -> None:
                         # If turned off, set activation pct to an unreachable high number
                         exit_engine.trailing_activation_pct = 9999.0
 
-                    old_stop_loss = pos.stop_loss
+                    old_stop_loss = open_position.stop_loss
                     should_exit, reason, exit_qty = exit_engine.evaluate_exit(
-                        pos, ltp, current_time, current_atr
+                        open_position, ltp, current_time, current_atr
                     )
                     # Phase 5: Persist Trailing SL to disk immediately to prevent amnesia on reboot
-                    if pos.stop_loss != old_stop_loss:
-                        logger.info("TRAILING SL MOVED for %s: %.2f -> %.2f. Saving to disk.", sym, old_stop_loss, pos.stop_loss)
+                    if open_position.stop_loss != old_stop_loss:
+                        logger.info("TRAILING SL MOVED for %s: %.2f -> %.2f. Saving to disk.", sym, old_stop_loss, open_position.stop_loss)
                         _save_positions(active_positions)
 
             if should_exit:
-                qty_to_close = exit_qty if exit_qty else pos.quantity
+                qty_to_close = exit_qty if exit_qty else open_position.quantity
                 is_live = not broker.paper_mode   # accurately reflect the broker's operating mode
 
                 if is_live:
-                    logger.info("EXIT %s %s for %s (%s) [LIVE]", pos.side, qty_to_close, sym, reason)
+                    logger.info("EXIT %s %s for %s (%s) [LIVE]", open_position.side, qty_to_close, sym, reason)
                     if not ORDER_LIMITER.allow(broker.BROKER_ID):
                         logger.warning("EXIT order rate-limited for %s — will retry on next tick.", sym)
                         return  # Return immediately so position isn't removed; it will retry on next tick
                     else:
-                        is_opt = "CE" in pos.symbol or "PE" in pos.symbol
+                        is_opt = "CE" in open_position.symbol or "PE" in open_position.symbol
                         exit_req = OrderRequest(
-                            symbol=pos.symbol,
+                            symbol=open_position.symbol,
                             quantity=qty_to_close,
-                            side=OrderSide.SELL if is_opt else (OrderSide.SELL if pos.side == 1 else OrderSide.BUY),
+                            side=OrderSide.SELL if is_opt else (OrderSide.SELL if open_position.side == 1 else OrderSide.BUY),
                         )
                         try:
                             exit_req = validator.validator.validate(exit_req)
                             # Lock the position: prevents duplicate exit signals while iceberg executes
-                            pos.is_exiting = True
-                            full_exit = (exit_qty is None or exit_qty >= pos.quantity)
+                            open_position.is_exiting = True
+                            full_exit = (exit_qty is None or exit_qty >= open_position.quantity)
                             asyncio.create_task(background_iceberg_exit(
-                                broker, exit_req, sym, pos.side, pos.entry_price,
+                                broker, exit_req, base_symbol_key, open_position.side, open_position.entry_price,
                                 exit_price=ltp, qty_to_close=qty_to_close, full_exit=full_exit
                             ))
                         except ValidationError as ve:
-                            logger.error("EXIT order validation failed for %s: %s", sym, ve)
+                            logger.error("EXIT order validation failed for %s: %s", base_symbol_key, ve)
                             audit.log(AuditEvent.VALIDATION_ERROR,
                                       {"symbol": sym, "reason": str(ve)}, severity="WARNING")
                             return # Retry on next tick
                 else:
                     # Paper Trading: synchronous execution is safe — guaranteed fill
-                    logger.info("EXIT %s %s for %s (%s) [PAPER]", pos.side, qty_to_close, sym, reason)
+                    logger.info("EXIT %s %s for %s (%s) [PAPER]", open_position.side, qty_to_close, sym, reason)
 
                     # Record PnL & update dashboard state (paper mode: immediate, no confirmation needed)
-                    pnl = (ltp - pos.entry_price) * qty_to_close * pos.side
+                    pnl = (ltp - open_position.entry_price) * qty_to_close * open_position.side
                     portfolio_risk.update_pnl(pnl, risk_manager.current_equity)
-                    trade_side = "LONG" if pos.side == 1 else "SHORT"
+                    trade_side = "LONG" if open_position.side == 1 else "SHORT"
                     risk_manager.record_trade(TradeRecord(
-                        pos.symbol, trade_side,
-                        pos.entry_price, ltp, pnl, datetime.now(_IST).isoformat()
+                        open_position.symbol, trade_side,
+                        open_position.entry_price, ltp, pnl, datetime.now(_IST).isoformat()
                     ))
-                    is_opt = "CE" in pos.symbol or "PE" in pos.symbol
-                    state_action = "SELL" if is_opt else ("SELL" if pos.side == 1 else "BUY")
-                    record_trade(pos.symbol, state_action, ltp, datetime.now(_IST).isoformat(), qty=qty_to_close)
+                    is_opt = "CE" in open_position.symbol or "PE" in open_position.symbol
+                    state_action = "SELL" if is_opt else ("SELL" if open_position.side == 1 else "BUY")
+                    record_trade(open_position.symbol, state_action, ltp, datetime.now(_IST).isoformat(), qty=qty_to_close)
                     update_equity(risk_manager.current_equity, risk_manager.daily_pnl)
-                    alerter.send_exit_alert(sym, pos.side, qty_to_close, ltp, pnl, reason)
+                    alerter.send_exit_alert(sym, open_position.side, qty_to_close, ltp, pnl, reason)
 
-                    if exit_qty is None or exit_qty >= pos.quantity:
+                    if exit_qty is None or exit_qty >= open_position.quantity:
                         del active_positions[sym]
                     else:
-                        pos.quantity -= exit_qty
+                        open_position.quantity -= exit_qty
 
                     _save_positions(active_positions)
 
@@ -686,15 +805,15 @@ async def run_live_bot(symbols: List[str]) -> None:
             
             import time
             current_time_sec = time.time()
-            # ZERO-LATENCY HFT TRIGGER: Evaluate every 1 second instead of 30
-            if current_time_sec - last_eval_time >= 1.0:
+            # ZERO-LATENCY HFT TRIGGER: Evaluate every 200ms for ultra-fast execution
+            if current_time_sec - last_eval_time >= 0.2:
                 last_eval_time = current_time_sec
 
                 # Settings already loaded at top of on_tick (cached, no disk I/O)
                 strategy_name = settings.get("active_strategy", "institutional_momentum")
                 is_live = not broker.paper_mode
-                target_pct = settings.get("target_pct", 1.0) / 100.0
-                sl_pct = settings.get("stoploss_pct", 0.5) / 100.0
+                target_pct = settings.get("target_pct", 500.0) / 100.0
+                sl_pct = settings.get("stoploss_pct", 15.0) / 100.0
 
                 # AI confidence threshold: stricter for enhanced_ai strategy
                 min_confidence = 0.85 if strategy_name == "enhanced_ai" else 0.60
@@ -814,22 +933,43 @@ async def run_live_bot(symbols: List[str]) -> None:
                         logger.warning("Portfolio Risk Halt for %s: %s", s, halt_reason)
                         continue
                         
-                    # ── Compute Entry / SL / Target FIRST (needed for risk check) ──
-                    entry_price = df["close"].iloc[-1]
+                    # ── Compute Entry Premium, Stop Loss, and Target ──
+                    entry_premium = df["close"].iloc[-1] # Default to index price
                     side_str = "BUY CALL" if latest_signal == 1 else "BUY PUT"
-                    sl_price = entry_price * (1 - sl_pct) if latest_signal == 1 else entry_price * (1 + sl_pct)
-                    tgt_price = entry_price * (1 + target_pct) if latest_signal == 1 else entry_price * (1 - target_pct)
-
-                    if "quantity" in settings:
-                        qty = int(settings["quantity"])
+                    
+                    is_option_trade = "CE" in entry_symbol or "PE" in entry_symbol
+                    
+                    if is_option_trade:
+                        # Fetch the Live Option Premium to calculate P&L correctly
+                        try:
+                            live_quotes = broker.get_market_data([entry_symbol])
+                            if entry_symbol in live_quotes and live_quotes[entry_symbol].ltp > 0:
+                                entry_premium = live_quotes[entry_symbol].ltp
+                            else:
+                                logger.warning("Could not fetch live option premium for %s. Using index price as fallback.", entry_symbol)
+                        except Exception as e:
+                            logger.error("Error fetching live option premium: %s", e)
+                            
+                        # Option buying means we buy premium, so target is UP and SL is DOWN
+                        sl_price = entry_premium * (1 - sl_pct)
+                        tgt_price = entry_premium * (1 + target_pct)
                     else:
-                        # calculate_position_size returns total shares. Divide by lot_size to get number of lots.
-                        total_shares = risk_manager.calculate_position_size(entry_price, sl_price, ai_confidence=confidence) or 1
-                        qty = max(1, total_shares // lot_size)
+                        sl_price = entry_premium * (1 - sl_pct) if latest_signal == 1 else entry_premium * (1 + sl_pct)
+                        tgt_price = entry_premium * (1 + target_pct) if latest_signal == 1 else entry_premium * (1 - target_pct)
+
+                    # ── Compute Quantity ──
+                    if "quantity" in settings and int(settings["quantity"]) > 0:
+                        total_shares = int(settings["quantity"])
+                    else:
+                        # Calculate position size based on risk amount
+                        total_shares = risk_manager.calculate_position_size(entry_premium, sl_price, ai_confidence=confidence) or 1
+                        
+                    number_of_lots = max(1, total_shares // lot_size)
+                    total_quantity = number_of_lots * lot_size
 
                     # ── Risk Manager Gate ─────────────────────────────────────────
                     # Pass actual rupee risk so the per-trade risk limit is enforced
-                    actual_risk_amount = abs(entry_price - sl_price) * qty * lot_size
+                    actual_risk_amount = abs(entry_premium - sl_price) * total_quantity
                     allowed, reject_reason = risk_manager.can_trade(
                         symbol=s,
                         risk_amount=actual_risk_amount,
@@ -840,11 +980,15 @@ async def run_live_bot(symbols: List[str]) -> None:
                         logger.info("Trade BLOCKED for %s: %s", s, reject_reason)
                         continue
 
+                    if not settings.get("auto_trade_enabled", True):
+                        logger.info("Auto trades disabled (Manual Mode) - Skipping execution for %s.", s)
+                        continue
+
                     # ── Execute (Live or Paper) ────────────────────────
                     if is_live:
                         logger.info(
-                            "ENTRY %s %s qty=%d @ %.2f | SL=%.2f | TGT=%.2f | AI=%.0f%% [LIVE]",
-                            side_str, entry_symbol, qty, entry_price, sl_price, tgt_price, confidence * 100
+                            "ENTRY %s %s quantity=%d @ %.2f | SL=%.2f | TGT=%.2f | AI=%.0f%% [LIVE]",
+                            side_str, entry_symbol, total_quantity, entry_premium, sl_price, tgt_price, confidence * 100
                         )
                         # Rate-limit guard
                         if not ORDER_LIMITER.allow(broker.BROKER_ID):
@@ -854,24 +998,23 @@ async def run_live_bot(symbols: List[str]) -> None:
                             )
                             continue
                         # Input validation gate
-                        is_opt = "CE" in entry_symbol or "PE" in entry_symbol
+                        is_option = "CE" in entry_symbol or "PE" in entry_symbol
                         entry_req = OrderRequest(
                             symbol=entry_symbol,
-                            quantity=qty * lot_size,
-                            side=OrderSide.BUY if is_opt else (OrderSide.BUY if latest_signal == 1 else OrderSide.SELL),
+                            quantity=total_quantity,
+                            side=OrderSide.BUY if is_option_trade else (OrderSide.BUY if latest_signal == 1 else OrderSide.SELL),
                         )
-                        actual_qty = qty * lot_size # Assume full fill initially to block duplicates
                         try:
                             entry_req = validator.validator.validate(entry_req)
-                            # Create pos_obj BEFORE firing async task
+                            # Create position object for tracking
                             pos_obj = Position(
                                 symbol=entry_symbol,
                                 side=latest_signal,
-                                entry_price=entry_price,
-                                quantity=actual_qty,
+                                entry_price=entry_premium,
+                                quantity=total_quantity,
                                 entry_time=current_time,
-                                highest_price=entry_price,
-                                lowest_price=entry_price,
+                                highest_price=entry_premium,
+                                lowest_price=entry_premium,
                                 stop_loss=sl_price,
                                 target=tgt_price,
                                 lot_size=lot_size,
@@ -888,14 +1031,13 @@ async def run_live_bot(symbols: List[str]) -> None:
                                       {"symbol": s, "reason": str(ve)}, severity="WARNING")
                             continue
                     else:
-                        actual_qty = qty * lot_size
                         logger.info(
                             "ENTRY %s %s qty=%d @ %.2f | SL=%.2f | TGT=%.2f | AI=%.0f%% [PAPER]",
-                            side_str, entry_symbol, qty, entry_price, sl_price, tgt_price, confidence * 100
+                            side_str, entry_symbol, total_quantity, entry_premium, sl_price, tgt_price, confidence * 100
                         )
 
                     # ── Send Telegram Alert ────────────────────────────
-                    alerter.send_trade_alert(entry_symbol, side_str, actual_qty // lot_size, entry_price, confidence)
+                    alerter.send_trade_alert(entry_symbol, side_str, total_quantity // lot_size, entry_premium, confidence)
 
                     # ── Track position ─────────────────────────────────
                     if not is_live:
@@ -903,11 +1045,11 @@ async def run_live_bot(symbols: List[str]) -> None:
                         pos_obj = Position(
                             symbol=entry_symbol,
                             side=latest_signal,
-                            entry_price=entry_price,
-                            quantity=actual_qty,
+                            entry_price=entry_premium,
+                            quantity=total_quantity,
                             entry_time=current_time,
-                            highest_price=entry_price,
-                            lowest_price=entry_price,
+                            highest_price=entry_premium,
+                            lowest_price=entry_premium,
                             stop_loss=sl_price,
                             target=tgt_price,
                             lot_size=lot_size,
@@ -917,15 +1059,14 @@ async def run_live_bot(symbols: List[str]) -> None:
                         _save_positions(active_positions)
                     
                     # Persist Entry to state.db so Dashboard Live Feed picks it up
-                    is_opt = "CE" in entry_symbol or "PE" in entry_symbol
-                    state_action = "BUY" if is_opt else ("BUY" if latest_signal == 1 else "SELL")
-                    record_trade(entry_symbol, state_action, entry_price, datetime.now(_IST).isoformat(), qty=actual_qty)
+                    state_action = "BUY" if is_option_trade else ("BUY" if latest_signal == 1 else "SELL")
+                    record_trade(entry_symbol, state_action, entry_premium, datetime.now(_IST).isoformat(), qty=total_quantity)
                     
                     if strategy_name == "institutional_momentum" and s in momentum_strategies:
                         momentum_strategies[s].open_trade(
-                            entry_price=entry_price, 
+                            entry_price=entry_premium, 
                             stop_loss=sl_price, 
-                            total_lots=actual_qty, 
+                            total_lots=total_quantity, 
                             direction=latest_signal
                         )
                         
@@ -940,23 +1081,70 @@ async def run_live_bot(symbols: List[str]) -> None:
         import time
         global _m2m_last_update
             
-        if time.time() - _m2m_last_update > 1.0:
-            unrealized_pnl = 0.0
-            for p in active_positions.values():
-                if p.symbol == sym:
-                    m2m = (ltp - p.entry_price) * p.quantity * p.side
-                else:
-                    df_other = aggregator.get_latest_dataframe(p.symbol)
-                    last_px = df_other["close"].iloc[-1] if not df_other.empty else p.entry_price
-                    m2m = (last_px - p.entry_price) * p.quantity * p.side
-                unrealized_pnl += m2m
+        if time.time() - _m2m_last_update > 0.05:
+            total_unrealized_pnl = 0.0
             
-            total_pnl = risk_manager.daily_pnl + unrealized_pnl
-            update_equity(risk_manager.current_equity + unrealized_pnl, total_pnl)
+            for position in active_positions.values():
+                entry_premium = position.entry_price
+                total_quantity = position.quantity
+                
+                # Get the live premium for this specific position
+                if position.symbol == sym:
+                    current_premium = ltp
+                else:
+                    # Look up the latest premium from our data aggregator
+                    option_data = aggregator.get_latest_dataframe(position.symbol)
+                    if not option_data.empty:
+                        current_premium = option_data["close"].iloc[-1]
+                    else:
+                        current_premium = entry_premium
+                
+                # P&L = (Current Premium - Entry Premium) * Total Quantity
+                premium_difference = current_premium - entry_premium
+                position_pnl = premium_difference * total_quantity * position.side
+                
+                total_unrealized_pnl += position_pnl
+            
+            total_portfolio_pnl = risk_manager.daily_pnl + total_unrealized_pnl
+            update_equity(risk_manager.current_equity + total_unrealized_pnl, total_portfolio_pnl)
             _m2m_last_update = time.time()
 
+    async def sync_broker_state():
+        if not hasattr(broker, 'get_positions'):
+            return
+        logger.info("Re-syncing with broker state after WebSocket reconnect...")
+        try:
+            broker_positions = broker.get_positions()
+            broker_pos_dict = {p.symbol: p for p in broker_positions}
+            
+            for sym, local_pos in list(active_positions.items()):
+                # If local says we have a position, but broker says we don't or it's flat
+                if sym not in broker_pos_dict or broker_pos_dict[sym].quantity == 0:
+                    logger.warning("STATE MISMATCH: Local position %s exists but broker is flat. Resolving locally.", sym)
+                    
+                    # Assume it hit Hard SL or target while offline
+                    ltp_actual = local_pos.stop_loss # Fallback to SL price as exit if unknown
+                    # We could fetch actual trades, but for safety, just clear it with neutral PNL or assumed SL
+                    pnl = (ltp_actual - local_pos.entry_price) * local_pos.quantity * local_pos.side
+                    
+                    portfolio_risk.update_pnl(pnl, risk_manager.current_equity)
+                    trade_side = "LONG" if local_pos.side == 1 else "SHORT"
+                    risk_manager.record_trade(TradeRecord(
+                        sym, trade_side,
+                        local_pos.entry_price, ltp_actual, pnl, datetime.now(_IST).isoformat()
+                    ))
+                    
+                    is_opt = "CE" in sym or "PE" in sym
+                    state_action = "SELL" if is_opt else ("SELL" if local_pos.side == 1 else "BUY")
+                    record_trade(sym, state_action, ltp_actual, datetime.now(_IST).isoformat(), qty=local_pos.quantity)
+                    
+                    del active_positions[sym]
+                    _save_positions(active_positions)
+        except Exception as e:
+            logger.error("Failed to sync broker state: %s", e)
+
     logger.info("Starting live stream for symbols: %s", ", ".join(symbols))
-    await broker.stream_quotes(symbols, on_tick)
+    await broker.stream_quotes(symbols, on_tick, on_reconnect=sync_broker_state)
 
 
 if __name__ == "__main__":

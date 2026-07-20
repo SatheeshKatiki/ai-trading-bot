@@ -6100,3 +6100,4 @@
 {"level":"DEBUG","location":"[debug:90] fyers_logger","message":{"Status Code":200,"API":"/history"},"timestamp":"2026-06-14 16:46:24,127+0530","service":"FyersAPIRequest"}
 {"level":"DEBUG","location":"[debug:90] fyers_logger","message":{"Status Code":200,"API":"/history"},"timestamp":"2026-06-14 16:46:24,416+0530","service":"FyersAPIRequest"}
 {"level":"DEBUG","location":"[debug:90] fyers_logger","message":{"Status Code":200,"API":"/history"},"timestamp":"2026-06-14 16:46:24,693+0530","service":"FyersAPIRequest"}
+{"level":"DEBUG","location":"[debug:90] fyers_logger","message":{"Status Code":200,"API":"/history"},"timestamp":"2026-07-18 00:35:37,980+0530","service":"FyersAPIRequest"}

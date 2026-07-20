@@ -172,6 +172,17 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
     position = None
     capital = initial_capital
     equity_curve = []
+    
+    # ── Data Continuity Validation ───────────────────────────────────────
+    if 'datetime' in df.columns and len(df) > 100:
+        dates = pd.to_datetime(df['datetime']).dt.date.unique()
+        if len(dates) > 1:
+            diffs = pd.Series(dates).diff().dt.days.dropna()
+            max_gap = diffs.max()
+            if max_gap > 14:  # A gap of more than 14 days (e.g., missed 100-day chunk) is abnormal
+                logger.warning(f"Data Continuity Warning: Found a massive gap of {max_gap} days in the dataset!")
+                kwargs["rejection_logs"] = kwargs.get("rejection_logs", []) + [f"Data Continuity Warning: Massive {max_gap}-day gap detected!"]
+    # ─────────────────────────────────────────────────────────────────────
     # ── Daily Risk Controls ──────────────────────────────────────────────
     max_daily_loss_pct  = kwargs.get("max_daily_loss_pct", 3.0)   # stop trading day if capital drops X%
     max_daily_trades    = kwargs.get("max_daily_trades", 6)         # max trades per day
@@ -192,8 +203,10 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
     closes = df['close'].to_numpy()
     if 'datetime' in df.columns:
         times = df['datetime'].apply(lambda x: str(x)[:16] if isinstance(x, str) else "00:00").to_numpy()
+        total_trading_days = len(set([str(x)[:10] for x in df['datetime']]))
     else:
         times = ["00:00"] * len(df)
+        total_trading_days = 0
 
     sig_vals = signals.to_numpy()
     has_st = 'st_direction' in df.columns
@@ -580,6 +593,7 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
         "profitFactor": profit_factor,
         "winRate": f"{(win_rate * 100):.1f}" if trades else "0.0",
         "totalTrades": len(trades),
+        "totalTradingDays": total_trading_days,
         "successTrades": len(winning_trades),
         "failedTrades": len(losing_trades),
         "stoplossTrades": sum(1 for t in trades if t.get("exit_reason") in ("STOPLOSS", "TRAILING_SL")),

@@ -831,7 +831,12 @@ export default function Backtest() {
                 {/* Row 2: Execution Stats */}
                 <div className="glass-card rounded-xl p-4 border border-border/20">
                   <span className="text-xs text-muted-foreground font-medium">Total Trades</span>
-                  <div className="text-2xl font-bold font-mono mt-1 text-foreground">{result.stats.totalTrades}</div>
+                  <div className="flex items-baseline gap-2 mt-1">
+                    <span className="text-2xl font-bold font-mono text-foreground">{result.stats.totalTrades}</span>
+                    {result.stats.totalTradingDays !== undefined && (
+                      <span className="text-xs font-mono text-muted-foreground">in {result.stats.totalTradingDays} days</span>
+                    )}
+                  </div>
                 </div>
 
                 <div className="glass-card rounded-xl p-4 border border-border/20">
@@ -979,8 +984,8 @@ export default function Backtest() {
                   </div>
                 </div>
 
-                <div className="h-full min-h-[350px] w-full">
-                  <ResponsiveContainer width="100%" height="100%">
+                <div className="w-full mt-4">
+                  <ResponsiveContainer width="100%" height={350}>
                       <AreaChart data={result.equityCurve}>
                         <defs>
                           <linearGradient id="backtestColor" x1="0" y1="0" x2="0" y2="1">

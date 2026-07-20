@@ -1,4 +1,10 @@
 import { create } from 'zustand';
+import { toast } from 'sonner';
+
+let reconnectAttempts = 0;
+let rAF_id: number | null = null;
+let pendingUpdates: Partial<LiveMarketState> = {};
+let pendingTickerUpdates: Record<string, TickerData> = {};
 
 export interface TickerData {
     lp: number;
@@ -26,6 +32,7 @@ export interface LiveMarketState {
     riskStatus: string;
     isWsConnected: boolean;
     aiCommentary: string;
+    lastPingTime: number;
     
     // Actions
     setTickerData: (data: Record<string, TickerData> | ((prev: Record<string, TickerData>) => Record<string, TickerData>)) => void;
@@ -38,6 +45,7 @@ export interface LiveMarketState {
     setRiskStatus: (status: string | ((prev: string) => string)) => void;
     setIsWsConnected: (connected: boolean | ((prev: boolean) => boolean)) => void;
     setAiCommentary: (commentary: string | ((prev: string) => string)) => void;
+    setLastPingTime: (time: number | ((prev: number) => number)) => void;
     
     // WebSocket
     ws: WebSocket | null;
@@ -60,6 +68,7 @@ export const useLiveMarketStore = create<LiveMarketState>((set, get) => ({
     riskStatus: "ACTIVE",
     isWsConnected: false,
     aiCommentary: "System armed. Analyzing market structure...",
+    lastPingTime: Date.now(),
     
     setTickerData: (data) => set((state) => ({ tickerData: { ...state.tickerData, ...(typeof data === 'function' ? data(state.tickerData) : data) } })),
     setCurrentPrice: (price) => set((state) => ({ currentPrice: typeof price === 'function' ? price(state.currentPrice) : price })),
@@ -71,12 +80,15 @@ export const useLiveMarketStore = create<LiveMarketState>((set, get) => ({
     setRiskStatus: (status) => set((state) => ({ riskStatus: typeof status === 'function' ? status(state.riskStatus) : status })),
     setIsWsConnected: (connected) => set((state) => ({ isWsConnected: typeof connected === 'function' ? connected(state.isWsConnected) : connected })),
     setAiCommentary: (commentary) => set((state) => ({ aiCommentary: typeof commentary === 'function' ? commentary(state.aiCommentary) : commentary })),
+    setLastPingTime: (time) => set((state) => ({ lastPingTime: typeof time === 'function' ? time(state.lastPingTime) : time })),
     
     ws: null,
     connectWs: (urlSymbol: string) => {
         const currentWs = get().ws;
         if (currentWs) {
             currentWs.onclose = null;
+            currentWs.onmessage = null; // Prevent ghost messages
+            currentWs.onerror = null;
             currentWs.close();
         }
 
@@ -89,43 +101,70 @@ export const useLiveMarketStore = create<LiveMarketState>((set, get) => ({
         const ws = new WebSocket(wsUrl);
         
         ws.onopen = () => {
+            if (reconnectAttempts > 0) {
+                toast.success('Live connection restored.');
+            }
+            reconnectAttempts = 0;
             set({ isWsConnected: true, ws });
         };
         
         ws.onmessage = (event) => {
+            // Ignore messages from ghost connections if a new WS was created
+            if (get().ws !== ws) return;
+            
             try {
                 const data = JSON.parse(event.data);
                 
+                // Update ping time
+                get().setLastPingTime(Date.now());
+                
                 if (data.NIFTY) {
-                    set((state) => ({
-                        tickerData: {
-                            ...state.tickerData,
-                            NIFTY: data.NIFTY,
-                            SENSEX: data.SENSEX || state.tickerData.SENSEX,
-                            BANKNIFTY: data.BANKNIFTY || state.tickerData.BANKNIFTY
-                        }
-                    }));
+                    pendingTickerUpdates.NIFTY = data.NIFTY;
+                    if (data.SENSEX) pendingTickerUpdates.SENSEX = data.SENSEX;
+                    if (data.BANKNIFTY) pendingTickerUpdates.BANKNIFTY = data.BANKNIFTY;
                 }
                 
                 if (data[urlSymbol]) {
-                    set({
-                        currentPrice: data[urlSymbol].lp,
-                        changePercent: data[urlSymbol].chp
-                    });
+                    pendingUpdates.currentPrice = data[urlSymbol].lp;
+                    pendingUpdates.changePercent = data[urlSymbol].chp;
                 }
                 
-                const updates: Partial<LiveMarketState> = {};
-                if (data.pnl !== undefined) updates.pnl = data.pnl;
-                if (data.equity !== undefined) updates.equity = data.equity;
-                if (data.trades) updates.trades = data.trades;
+                if (data.pnl !== undefined) pendingUpdates.pnl = data.pnl;
+                if (data.equity !== undefined) pendingUpdates.equity = data.equity;
+                if (data.trades) pendingUpdates.trades = data.trades;
                 
                 if (data.signalsData && data.signalsData.confidence !== undefined) {
-                    updates.aiConfidence = data.signalsData.confidence;
-                    updates.riskStatus = data.signalsData.status;
+                    pendingUpdates.aiConfidence = data.signalsData.confidence;
+                    // Fix: Do not overwrite riskStatus with AI Signal Status
                 }
                 
-                if (Object.keys(updates).length > 0) {
-                    set(updates);
+                // Throttle React state updates to 1 frame (approx 16ms)
+                if (typeof window !== 'undefined' && !rAF_id) {
+                    rAF_id = window.requestAnimationFrame(() => {
+                        const state = get();
+                        set({
+                            ...pendingUpdates,
+                            tickerData: Object.keys(pendingTickerUpdates).length > 0 ? {
+                                ...state.tickerData,
+                                ...pendingTickerUpdates
+                            } : state.tickerData
+                        });
+                        
+                        pendingUpdates = {};
+                        pendingTickerUpdates = {};
+                        rAF_id = null;
+                    });
+                } else if (typeof window === 'undefined') {
+                    // Fallback for SSR/Node environment
+                    set({
+                        ...pendingUpdates,
+                        tickerData: Object.keys(pendingTickerUpdates).length > 0 ? {
+                            ...get().tickerData,
+                            ...pendingTickerUpdates
+                        } : get().tickerData
+                    });
+                    pendingUpdates = {};
+                    pendingTickerUpdates = {};
                 }
             } catch (err) {
                 // Ignore parse errors
@@ -133,9 +172,23 @@ export const useLiveMarketStore = create<LiveMarketState>((set, get) => ({
         };
         
         ws.onclose = () => {
-            set({ isWsConnected: false, ws: null });
-            // Attempt reconnect after 3 seconds
-            setTimeout(() => get().connectWs(urlSymbol), 3000);
+            if (get().ws === ws) {
+                set({ isWsConnected: false, ws: null });
+            }
+            
+            // Exponential backoff
+            reconnectAttempts++;
+            const backoffTime = Math.min(1000 * Math.pow(2, reconnectAttempts - 1), 30000); // 1s, 2s, 4s... max 30s
+            
+            if (reconnectAttempts === 1) {
+                toast.error('Connection lost. Reconnecting...');
+            }
+            
+            setTimeout(() => {
+                if (!get().isWsConnected) {
+                    get().connectWs(urlSymbol);
+                }
+            }, backoffTime);
         };
     },
     
@@ -143,6 +196,7 @@ export const useLiveMarketStore = create<LiveMarketState>((set, get) => ({
         const currentWs = get().ws;
         if (currentWs) {
             currentWs.onclose = null; // Prevent reconnect loop
+            currentWs.onmessage = null;
             currentWs.close();
             set({ ws: null, isWsConnected: false });
         }

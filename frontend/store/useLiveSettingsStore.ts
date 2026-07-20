@@ -2,12 +2,14 @@ import { create } from 'zustand';
 
 interface LiveSettingsState {
     tradingMode: string;
+    autoMode: boolean;
     strategy: string;
     inputMode: 'lots' | 'qty';
     quantity: number;
     stoploss: number;
     timeframe: string;
-    
+    lotSizes: Record<string, number>;
+
     // Filters
     filters: {
         enable_ema_filter: boolean;
@@ -20,7 +22,7 @@ interface LiveSettingsState {
         enable_cpr_filter: boolean;
         enable_aggression_filter: boolean;
     };
-    
+
     // Engine Settings
     enablePyramiding: boolean;
     scalePct: number;
@@ -34,14 +36,16 @@ interface LiveSettingsState {
 
     // Actions
     setTradingMode: (mode: string) => void;
+    setAutoMode: (mode: boolean) => void;
     setStrategy: (strategy: string) => void;
     setInputMode: (mode: 'lots' | 'qty') => void;
-    setQuantity: (quantity: number) => void;
-    setStoploss: (stoploss: number) => void;
-    setTimeframe: (timeframe: string) => void;
+    setQuantity: (qty: number) => void;
+    setStoploss: (sl: number) => void;
+    setTimeframe: (tf: string) => void;
+    setLotSizes: (lotSizes: Record<string, number>) => void;
     setFilters: (filters: Partial<LiveSettingsState['filters']>) => void;
     setFilter: (key: keyof LiveSettingsState['filters'], value: boolean) => void;
-    
+
     setEnablePyramiding: (value: boolean) => void;
     setScalePct: (value: number) => void;
     setMaxScales: (value: number) => void;
@@ -55,12 +59,14 @@ interface LiveSettingsState {
 
 export const useLiveSettingsStore = create<LiveSettingsState>((set) => ({
     tradingMode: 'paper',
+    autoMode: true,
     strategy: 'institutional_momentum',
     inputMode: 'lots',
     quantity: 0,
-    stoploss: 0.5,
-    timeframe: '5 Min',
-    
+    stoploss: 1.2,
+    timeframe: "5 Min",
+    lotSizes: { NIFTY: 65, BANKNIFTY: 15, FINNIFTY: 25, SENSEX: 10, MIDCPNIFTY: 50 },
+
     filters: {
         enable_ema_filter: true,
         enable_volume_filter: false,
@@ -72,7 +78,7 @@ export const useLiveSettingsStore = create<LiveSettingsState>((set) => ({
         enable_cpr_filter: false,
         enable_aggression_filter: false
     },
-    
+
     enablePyramiding: false,
     scalePct: 0.5,
     maxScales: 3,
@@ -84,15 +90,17 @@ export const useLiveSettingsStore = create<LiveSettingsState>((set) => ({
     maxDailyTrades: 0,
 
     setTradingMode: (mode) => set({ tradingMode: mode }),
+    setAutoMode: (mode) => set({ autoMode: mode }),
     setStrategy: (strategy) => set({ strategy }),
     setInputMode: (mode) => set({ inputMode: mode }),
-    setQuantity: (quantity) => set({ quantity }),
-    setStoploss: (stoploss) => set({ stoploss }),
-    setTimeframe: (timeframe) => set({ timeframe }),
-    
+    setQuantity: (qty) => set({ quantity: qty }),
+    setStoploss: (sl) => set({ stoploss: sl }),
+    setTimeframe: (tf) => set({ timeframe: tf }),
+    setLotSizes: (lotSizes) => set({ lotSizes }),
+
     setFilters: (newFilters) => set((state) => ({ filters: { ...state.filters, ...newFilters } })),
     setFilter: (key, value) => set((state) => ({ filters: { ...state.filters, [key]: value } })),
-    
+
     setEnablePyramiding: (value) => set({ enablePyramiding: value }),
     setScalePct: (value) => set({ scalePct: value }),
     setMaxScales: (value) => set({ maxScales: value }),

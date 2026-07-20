@@ -16,7 +16,9 @@ import {
   ShieldCheck, 
   Plug,
   Sliders,
-  LineChart
+  LineChart,
+  FileText,
+  Info
 } from "lucide-react";
 import { clsx } from "clsx";
 
@@ -32,6 +34,8 @@ const menuItems = [
   { icon: Plug, label: "Broker Settings", href: "/broker" },
   { icon: ShieldCheck, label: "Risk Management", href: "/risk" },
   { icon: Settings, label: "Settings", href: "/settings" },
+  { icon: FileText, label: "Documentation", href: "/docs" },
+  { icon: Info, label: "About", href: "/about" },
 ];
 
 const containerVariants = {

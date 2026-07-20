@@ -136,6 +136,10 @@ class BaseBroker(ABC):
     def cancel_order(self, order_id: str) -> Dict[str, Any]:
         """Cancel a pending order by ID."""
 
+    @abstractmethod
+    def get_order_status(self, order_id: str) -> Optional[OrderBookEntry]:
+        """Fetch the exact status and fill details for a specific order ID."""
+
     def modify_order(
         self,
         order_id: str,
@@ -187,7 +191,22 @@ class BaseBroker(ABC):
         Default implementation attempts to infer from typical equity (1) or uses
         a safe fallback for indices.
         """
-        # Safe fallback logic if broker doesn't implement dynamic fetching
+        # Attempt to read from settings.json dynamic fetch
+        try:
+            import os
+            import json
+            settings_path = os.path.join(os.path.dirname(__file__), "..", "settings.json")
+            if os.path.exists(settings_path):
+                with open(settings_path, 'r') as f:
+                    settings = json.load(f)
+                    lot_sizes = settings.get("lot_sizes", {})
+                    for base_name, lot in lot_sizes.items():
+                        if base_name in symbol:
+                            return lot
+        except Exception:
+            pass
+
+        # Safe fallback logic if broker doesn't implement dynamic fetching and settings not found
         if "NIFTY50" in symbol or "NIFTY-INDEX" in symbol:
             return 65
         elif "BANKNIFTY" in symbol or "NIFTYBANK" in symbol:
@@ -231,6 +250,7 @@ class BaseBroker(ABC):
         self,
         symbols: List[str],
         on_tick: Callable[[Dict[str, Any]], Awaitable[None]],
+        on_reconnect: Optional[Callable[[], Awaitable[None]]] = None,
     ) -> None:
         """Stream live ticks and invoke ``on_tick`` for each message.
 

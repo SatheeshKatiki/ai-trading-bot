@@ -59,6 +59,21 @@ def _get_dynamic_lot_size(instrument: str, default_lot_size: int) -> int:
     except Exception as e:
         logger.warning("Failed to fetch dynamic lot size from broker for %s: %s", instrument, e)
         
+    # Read from settings.json as fallback
+    try:
+        import os
+        import json
+        settings_path = os.path.join(os.path.dirname(__file__), "..", "..", "..", "settings.json")
+        if os.path.exists(settings_path):
+            with open(settings_path, 'r') as f:
+                settings = json.load(f)
+                lot_sizes = settings.get("lot_sizes", {})
+                for base_name, lot in lot_sizes.items():
+                    if base_name in instrument.upper():
+                        return lot
+    except Exception:
+        pass
+        
     return default_lot_size
 
 

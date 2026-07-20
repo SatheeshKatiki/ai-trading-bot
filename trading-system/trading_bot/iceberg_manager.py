@@ -20,7 +20,7 @@ class IcebergManager:
         self.min_delay = min_delay_sec
         self.max_delay = max_delay_sec
 
-    async def execute_iceberg(self, broker: BaseBroker, order: OrderRequest, halt_check: Optional[Callable[[], bool]] = None) -> List[OrderRequest]:
+    async def execute_iceberg(self, broker: BaseBroker, order: OrderRequest, halt_check: Optional[Callable[[], bool]] = None) -> List[OrderResponse]:
         """
         Slices a large order into chunks and executes them sequentially.
         Respects system halt flags during TWAP sleeps.
@@ -30,8 +30,8 @@ class IcebergManager:
             # Standard execution, no slicing needed
             if ORDER_LIMITER.allow(broker.BROKER_ID):
                 try:
-                    await broker.place_order_async(order)
-                    return [order]
+                    resp = await broker.place_order_async(order)
+                    return [resp]
                 except Exception as e:
                     logger.error("Standard Order failed: %s", e)
                     return []
@@ -64,8 +64,8 @@ class IcebergManager:
             
             if ORDER_LIMITER.allow(broker.BROKER_ID):
                 try:
-                    await broker.place_order_async(slice_order)
-                    executed_orders.append(slice_order)
+                    resp = await broker.place_order_async(slice_order)
+                    executed_orders.append(resp)
                     logger.info("Iceberg Slice %d/%d: Executed %d qty for %s", 
                                 i+1, len(slices), chunk_qty, order.symbol)
                 except Exception as e:
@@ -80,7 +80,7 @@ class IcebergManager:
                 
                 # Halt Execution if system panic exited or reached max drawdown during the sleep!
                 if halt_check and halt_check():
-                    logger.warning("ICEBERG ABORTED: System Halt or Panic Exit triggered mid-flight for %s!", order.symbol)
+                    logger.warning("System HALT detected during Iceberg execution! Stopping remaining slices.")
                     break
                     
         return executed_orders

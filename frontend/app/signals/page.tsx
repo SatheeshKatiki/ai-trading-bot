@@ -54,7 +54,7 @@ export default function Signals() {
     };
 
     fetchSignals();
-    const interval = setInterval(fetchSignals, 5000); // Faster refresh for institutional feel
+    const interval = setInterval(fetchSignals, 1500); // Ultra-fast refresh for institutional feel
     return () => clearInterval(interval);
   }, []);
 

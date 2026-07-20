@@ -1,20 +1,22 @@
-import { NextResponse } from 'next/server';
+import { NextResponse } from "next/server";
 
-export const dynamic = 'force-dynamic';
+export const dynamic = "force-dynamic";
+export const fetchCache = "force-no-store";
 
 export async function GET(request: Request) {
   try {
     const { search } = new URL(request.url);
     const url = `http://127.0.0.1:8000/api/history${search}`;
-    const res = await fetch(url);
+    const res = await fetch(url, { cache: "no-store", next: { revalidate: 0 } });
     
     if (!res.ok) {
-      return NextResponse.json({ error: 'Backend error' }, { status: res.status });
+      return NextResponse.json({ error: "Backend error" }, { status: res.status });
     }
+    
     const data = await res.json();
     return NextResponse.json(data);
   } catch (error) {
-    console.error('Error in proxy:', error);
-    return NextResponse.json({ error: 'Failed to connect to backend' }, { status: 500 });
+    console.error("Error in proxy:", error);
+    return NextResponse.json({ error: "Failed to connect to backend" }, { status: 500 });
   }
 }

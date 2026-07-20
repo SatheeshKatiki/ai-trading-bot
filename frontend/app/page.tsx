@@ -147,7 +147,7 @@ export default function Dashboard() {
     };
 
     fetchData();
-    const interval = setInterval(fetchData, 3000); // Institutional speed: every 3s
+    const interval = setInterval(fetchData, 1000); // Institutional ultra-fast speed: every 1s
     
     return () => clearInterval(interval);
   }, []);
@@ -214,7 +214,7 @@ export default function Dashboard() {
       }
     };
     fetchAiSignal();
-    const interval = setInterval(fetchAiSignal, 30_000);
+    const interval = setInterval(fetchAiSignal, 5000);
     return () => clearInterval(interval);
   }, []);
 

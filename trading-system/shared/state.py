@@ -16,6 +16,7 @@ import contextlib
 import json
 import sqlite3
 import threading
+import queue
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,8 +27,8 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _STATE_DB      = _PROJECT_ROOT / "state.db"
 
 # Flush interval for equity-only updates (seconds).
-# Trades always flush immediately regardless of this setting.
-_FLUSH_INTERVAL_S: float = 3.0
+# Set to 0.05 (20 FPS) for ultra-low latency real-time PNL updates to the UI.
+_FLUSH_INTERVAL_S: float = 0.05
 
 # ------------------------------------------------------------------
 # In-memory cache + lock
@@ -36,6 +37,8 @@ _LOCK  = threading.Lock()
 _CACHE: Dict[str, Any] = {}
 _dirty = False           # True when cache differs from what's on disk
 _last_flush: float = 0.0 # monotonic timestamp of last disk write
+
+_db_queue = queue.Queue() # Thread-safe queue for DB operations
 
 _DEFAULT_STATE: Dict[str, Any] = {
     "equity": 0.0,
@@ -140,12 +143,34 @@ def _flush_to_disk() -> None:
 
 
 def _background_flusher() -> None:
-    """Daemon thread: periodically flush dirty state to disk."""
+    """Daemon thread: periodically flush dirty state to disk and process queued trades."""
     while True:
-        time.sleep(_FLUSH_INTERVAL_S)
-        with _LOCK:
-            if _dirty:
-                _flush_to_disk()
+        try:
+            # Block for up to _FLUSH_INTERVAL_S seconds waiting for a trade
+            trade = _db_queue.get(timeout=_FLUSH_INTERVAL_S)
+            if trade:
+                try:
+                    with contextlib.closing(sqlite3.connect(_STATE_DB, timeout=15.0)) as conn:
+                        cursor = conn.cursor()
+                        cursor.execute(
+                            "INSERT INTO trades (symbol, side, price, time, qty) VALUES (?, ?, ?, ?, ?)",
+                            (trade['symbol'], trade['side'], trade['price'], trade['time'], trade['qty'])
+                        )
+                        cursor.execute(
+                            "UPDATE state SET last_update = ? WHERE id = 1",
+                            (trade['last_update'],)
+                        )
+                        conn.commit()
+                except Exception as exc:
+                    import logging
+                    logging.getLogger(__name__).error("Failed to write trade to DB: %s", exc)
+                finally:
+                    _db_queue.task_done()
+        except queue.Empty:
+            # Timeout reached, check if we need to flush regular equity state
+            with _LOCK:
+                if _dirty:
+                    _flush_to_disk()
 
 
 # Start the background flusher once at import time
@@ -159,17 +184,26 @@ _flusher_thread.start()
 # Public API  (same signatures as before — fully backward-compatible)
 # ------------------------------------------------------------------
 
-def load_state(reload_trades: bool = False) -> Dict[str, Any]:
+def load_state(reload_trades: bool = False, reload_state: bool = False) -> Dict[str, Any]:
     """Return a copy of the current state.  Reads from in-memory cache."""
     with _LOCK:
         _ensure_loaded()
-        if reload_trades:
+        if reload_state or reload_trades:
             try:
                 import sqlite3
                 with contextlib.closing(sqlite3.connect(_STATE_DB, timeout=15.0)) as conn:
                     cursor = conn.cursor()
-                    cursor.execute("SELECT symbol, side, price, time, qty FROM trades ORDER BY id DESC LIMIT 100")
-                    rows = cursor.fetchall()
+                    if reload_state:
+                        cursor.execute("SELECT equity, pnl, last_update FROM state WHERE id = 1")
+                        row = cursor.fetchone()
+                        if row:
+                            _CACHE["equity"] = row[0]
+                            _CACHE["pnl"] = row[1]
+                            _CACHE["last_update"] = row[2]
+                    
+                    if reload_trades:
+                        cursor.execute("SELECT symbol, side, price, time, qty FROM trades ORDER BY id DESC LIMIT 100")
+                        rows = cursor.fetchall()
                     trades = []
                     for r in rows:
                         trades.append({"symbol": r[0], "side": r[1], "price": r[2], "time": r[3], "qty": r[4] if len(r)>4 else 1})
@@ -223,24 +257,12 @@ def record_trade(symbol: str, side: str, price: float, timestamp: str, qty: int 
             _CACHE["trades"] = _CACHE["trades"][-100:]
         _CACHE["last_update"] = datetime.now(timezone.utc).isoformat()
         
-        # Persist to DB immediately
-        try:
-            with contextlib.closing(sqlite3.connect(_STATE_DB, timeout=15.0)) as conn:
-                cursor = conn.cursor()
-                
-                # Insert trade
-                cursor.execute(
-                    "INSERT INTO trades (symbol, side, price, time, qty) VALUES (?, ?, ?, ?, ?)",
-                    (symbol, side, price, timestamp, qty)
-                )
-                
-                # Update state (last_update)
-                cursor.execute(
-                    "UPDATE state SET last_update = ? WHERE id = 1",
-                    (_CACHE["last_update"],)
-                )
-                
-                conn.commit()
-        except Exception as exc:
-            import logging
-            logging.getLogger(__name__).error("Failed to record trade in DB: %s", exc)
+        # Enqueue the trade for the background worker to insert sequentially
+        _db_queue.put({
+            'symbol': symbol,
+            'side': side,
+            'price': price,
+            'time': timestamp,
+            'qty': qty,
+            'last_update': _CACHE["last_update"]
+        })

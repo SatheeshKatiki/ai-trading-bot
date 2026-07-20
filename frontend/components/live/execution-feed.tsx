@@ -24,8 +24,18 @@ export function ExecutionFeed() {
     const trades = useLiveMarketStore(state => state.trades);
     const todayTrades = trades.filter(t => {
         if (!t.time) return false;
-        const today = new Date().toISOString().split('T')[0];
-        return String(t.time).startsWith(today);
+        // Use IST timezone (not UTC) to avoid date rollover issues after 6:30 PM IST
+        const formatter = new Intl.DateTimeFormat('en-IN', {
+            timeZone: 'Asia/Kolkata',
+            year: 'numeric', month: '2-digit', day: '2-digit'
+        });
+        const parts = formatter.formatToParts(new Date());
+        const y = parts.find(p => p.type === 'year')?.value;
+        const m = parts.find(p => p.type === 'month')?.value;
+        const d = parts.find(p => p.type === 'day')?.value;
+        const todayIST = `${y}-${m}-${d}`;
+        const tradeDateStr = String(t.time).substring(0, 10);
+        return tradeDateStr === todayIST;
     });
 
     return (

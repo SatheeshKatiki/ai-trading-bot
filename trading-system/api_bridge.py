@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Query, HTTPException, BackgroundTasks, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import logging
 import logging.handlers
 import pandas as pd
@@ -68,7 +68,7 @@ def convert_numpy_types(obj):
         return obj
 
 # Import the Broker Factory to make the API broker-agnostic!
-from brokers import BrokerFactory
+from brokers import BrokerFactory, OrderRequest, OrderSide, OrderType
 # Import the Strategy Registry to support multiple strategies
 from trading_bot.strategies.registry import registry
 from trading_bot.strategies.ema_rsi_strategy import generate_signals as ema_rsi_signals
@@ -78,6 +78,7 @@ from trading_bot.strategies.advanced_ai_ml_strategy import generate_signals as a
 from trading_bot.strategies.momentum_strategy import generate_signals as momentum_signals
 from trading_bot.strategies.ema_crossover_pro_strategy import generate_signals as ema_crossover_signals
 from trading_bot.strategies.meta_agent_strategy import generate_signals as meta_agent_signals
+from trading_bot.strategies.buy_the_dip_strategy import generate_signals as buy_dip_signals
 
 # Register strategies for the API
 registry.register("ema_rsi",      ema_rsi_signals)
@@ -87,6 +88,7 @@ registry.register("advanced_ai", advanced_ai_signals)
 registry.register("institutional_momentum", momentum_signals)
 registry.register("ema_crossover", ema_crossover_signals)
 registry.register("meta_agent_swarm", meta_agent_signals)
+registry.register("buy_the_dip", buy_dip_signals)
 
 app = FastAPI(title="Broker Terminal Data Bridge & Backtester")
 
@@ -134,6 +136,15 @@ async def daily_retrain_scheduler():
 
 @app.on_event("startup")
 async def startup_event():
+    logger.info("Initializing API Bridge and restoring application state...")
+    
+    # 0. Fetch latest lot sizes dynamically in background
+    try:
+        from shared.lot_size_updater import update_lot_sizes_in_settings
+        asyncio.create_task(update_lot_sizes_in_settings())
+    except Exception as e:
+        logger.error(f"Failed to start lot size updater: {e}")
+
     asyncio.create_task(daily_retrain_scheduler())
 
 # Global state for live market data (Institutional Streaming)
@@ -285,10 +296,11 @@ def start_fyers_socket():
             logger.error("Fyers WS Error: %s", message)
             
         def on_open():
+            global _subscribed_symbols
+            _subscribed_symbols = {"NSE:NIFTY50-INDEX", "BSE:SENSEX-INDEX", "NSE:NIFTYBANK-INDEX", "NSE:RELIANCE-EQ", "NSE:TCS-EQ"}
             logger.info("Fyers WS Connected!")
-            # Subscribe to Nifty, Sensex, Bank Nifty
             if fyers_socket_instance:
-                fyers_socket_instance.subscribe(symbols=["NSE:NIFTY50-INDEX", "BSE:SENSEX-INDEX", "NSE:NIFTYBANK-INDEX", "NSE:RELIANCE-EQ", "NSE:TCS-EQ"], data_type="symbolData")
+                fyers_socket_instance.subscribe(symbols=list(_subscribed_symbols), data_type="symbolData")
             
         def on_close():
             logger.info("Fyers WS Closed")
@@ -340,6 +352,10 @@ async def lifespan(app: FastAPI):
             
     # Start the Fyers socket in background thread
     threading.Thread(target=start_fyers_socket, daemon=True).start()
+    
+    # Start the WebSocket Broadcaster task
+    asyncio.create_task(websocket_broadcaster())
+    
     yield
 
 app.router.lifespan_context = lifespan
@@ -349,15 +365,20 @@ app.router.lifespan_context = lifespan
 from shared.state import load_state as _load_state_fn
 _ws_trade_cache: dict = {"trades": [], "pnl": 0.0, "equity": 100000.0}
 _ws_trade_last_read: float = 0.0
-_WS_TRADE_CACHE_TTL: float = 2.0  # Refresh trades from DB at most every 2 seconds
+_WS_TRADE_CACHE_TTL: float = 0.05  # Refresh trades from DB at 20 FPS for ultra-low latency
 
 signals_cache = {"data": None, "last_updated": 0}
+active_connections: set[WebSocket] = set()
 
-@app.websocket("/ws/live")
-async def websocket_endpoint(websocket: WebSocket):
-    await websocket.accept()
-    try:
-        while True:
+async def websocket_broadcaster():
+    """Single global background task that computes the market snapshot and broadcasts to all connected clients."""
+    global _ws_trade_cache, _ws_trade_last_read
+    while True:
+        try:
+            if not active_connections:
+                await asyncio.sleep(0.5)
+                continue
+                
             # Only update cache if it is empty OR if 60 seconds passed AND market is open!
             # This ensures we freeze the last score after market hours!
             from datetime import datetime
@@ -379,24 +400,19 @@ async def websocket_endpoint(websocket: WebSocket):
                             "signals": []
                         }
                         signals_cache["last_updated"] = time.time()
-                        logger.debug("[WS] Loaded signals from file: %s%%", signals_cache['data'].get('confidence'))
                 except Exception:
                     pass
                     
             if signals_cache["data"] is None or (time.time() - signals_cache["last_updated"] > 30 and is_market_open):
-                # Set last_updated immediately to prevent spamming tasks while it computes!
                 signals_cache["last_updated"] = time.time()
-                # Run signal update as a non-blocking background task so WS stream stays responsive
                 async def _refresh_signals():
                     try:
                         from fastapi.concurrency import run_in_threadpool
                         signals_cache["data"] = await run_in_threadpool(compute_signals, "NIFTY")
-                        logger.debug("[WS] Updated signals cache: %s%%", signals_cache['data'].get('confidence'))
                     except Exception as e:
                         logger.warning("[WS] Error updating signals cache: %s", e)
                 asyncio.create_task(_refresh_signals())
                     
-            # If market data is empty (websocket failed/paper mode), initialize with defaults
             if not current_market_data:
                 current_market_data.update({
                     "NSE:NIFTY50-INDEX": {"lp": 23971.88, "chp": -0.81},
@@ -404,14 +420,24 @@ async def websocket_endpoint(websocket: WebSocket):
                     "NSE:NIFTYBANK-INDEX": {"lp": 51000.00, "chp": 0.0}
                 })
 
-            # Live market data is now served strictly from current_market_data 
-            # which is populated by the active broker WebSocket.
-                
-            # Use lock to safely read dictionary snapshot
             with market_data_lock:
                 snapshot = current_market_data.copy()
 
-            # Send the latest data for NIFTY, SENSEX, BANKNIFTY and dynamic stocks
+            if not is_market_open:
+                now_hash = int(time.time() * 2) 
+                def get_sim_tick(sym: str, base: float):
+                    seed = sum(ord(c) for c in sym) + now_hash
+                    fluct = (seed % 100) / 100.0 - 0.5 
+                    return {"lp": base + (base * fluct * 0.0002), "chp": fluct * 1.0}
+                    
+                n_base = snapshot.get("NSE:NIFTY50-INDEX", {"lp": 23820.35})["lp"]
+                s_base = snapshot.get("BSE:SENSEX-INDEX", {"lp": 76015.28})["lp"]
+                b_base = snapshot.get("NSE:NIFTYBANK-INDEX", {"lp": 51000.00})["lp"]
+                
+                snapshot["NSE:NIFTY50-INDEX"] = get_sim_tick("NIFTY", n_base)
+                snapshot["BSE:SENSEX-INDEX"] = get_sim_tick("SENSEX", s_base)
+                snapshot["NSE:NIFTYBANK-INDEX"] = get_sim_tick("BANKNIFTY", b_base)
+
             websocket_data = {
                 "NIFTY": snapshot.get("NSE:NIFTY50-INDEX", {"lp": 23820.35, "chp": -1.49}),
                 "SENSEX": snapshot.get("BSE:SENSEX-INDEX", {"lp": 76015.28, "chp": -1.70}),
@@ -423,27 +449,117 @@ async def websocket_endpoint(websocket: WebSocket):
                     short_key = k.split(":")[1].split("-")[0] if ":" in k else k
                     websocket_data[short_key] = v
                     
-            # Add trades to WebSocket stream — cached to avoid 20fps SQLite reads
-            global _ws_trade_cache, _ws_trade_last_read
             _now_t = time.time()
             if _now_t - _ws_trade_last_read >= _WS_TRADE_CACHE_TTL:
-                _ws_trade_cache = _load_state_fn(reload_trades=True)
+                from fastapi.concurrency import run_in_threadpool
+                _ws_trade_cache = await run_in_threadpool(_load_state_fn, reload_trades=True, reload_state=True)
                 _ws_trade_last_read = _now_t
+            
             websocket_data["trades"] = _ws_trade_cache.get("trades", [])
             websocket_data["pnl"] = _ws_trade_cache.get("pnl", 0.0)
             websocket_data["equity"] = _ws_trade_cache.get("equity", 100000.0)
-            
-            # Add signalsData to WebSocket stream
+            websocket_data["raw_ticks"] = snapshot
             websocket_data["signalsData"] = signals_cache["data"]
+
+            # --- Dynamic Subscription Sync ---
+            global _subscribed_symbols
+            try:
+                positions_path = Path(__file__).resolve().parent / "config" / "active_positions.json"
+                if positions_path.exists():
+                    with open(positions_path, "r") as f:
+                        active_pos_dict = json.load(f)
+                        
+                    active_symbols = set(pos.get("symbol") for pos in active_pos_dict.values() if pos.get("symbol"))
+                    new_symbols = active_symbols - _subscribed_symbols
                     
-            await websocket.send_json(websocket_data)
-            await asyncio.sleep(0.05) # Institutional Ultra-fast stream (50ms / 20fps)
-    except Exception as e:
-        logger.error("WebSocket endpoint error or client disconnected: %s", e)
+                    if new_symbols and fyers_socket_instance:
+                        logger.info("[WS] Dynamically subscribing to new symbols: %s", new_symbols)
+                        fyers_socket_instance.subscribe(symbols=list(new_symbols), data_type="symbolData")
+                        _subscribed_symbols.update(new_symbols)
+            except Exception as e:
+                logger.error("[WS] Dynamic subscription failed: %s", e)
+                    
+            # Broadcast to all connected clients
+            disconnected = set()
+            for ws in list(active_connections):
+                try:
+                    await ws.send_json(websocket_data)
+                except Exception:
+                    disconnected.add(ws)
+                    
+            for ws in disconnected:
+                active_connections.discard(ws)
+                
+            await asyncio.sleep(0.05) 
+        except Exception as e:
+            logger.error("WebSocket Broadcaster Error: %s", e)
+            await asyncio.sleep(1)
+
+@app.websocket("/ws/live")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    active_connections.add(websocket)
+    try:
+        # Keep connection open until client disconnects
+        while True:
+            await websocket.receive_text()
+    except Exception:
+        pass
+    finally:
+        active_connections.discard(websocket)
 
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+from pydantic import BaseModel
+class ExecuteOrderRequest(BaseModel):
+    symbol: str
+    action: str
+    quantity: int
+    order_type: str = "MARKET"
+    product_type: str = "INTRADAY"
+    price: float = 0.0
+
+@app.post("/api/order/execute")
+async def execute_order(req: ExecuteOrderRequest, request: Request):
+    """Executes a manual order from the UI."""
+    if request.client and request.client.host not in ["127.0.0.1", "localhost", "::1"]:
+        raise HTTPException(status_code=403, detail="Forbidden: Localhost access only")
+        
+    try:
+        broker = BrokerFactory.get_active_broker()
+        
+        # Ensure paper mode is set correctly from settings
+        settings = _load_config_settings()
+        broker.paper_mode = not settings.get("live_trading_mode", False)
+        
+        from brokers import OrderRequest, OrderSide, OrderType, ProductType
+        order_req = OrderRequest(
+            symbol=req.symbol,
+            quantity=req.quantity,
+            side=OrderSide.BUY if req.action.upper() == "BUY" else OrderSide.SELL,
+            order_type=OrderType.MARKET if req.order_type.upper() == "MARKET" else OrderType.LIMIT,
+            product_type=ProductType.INTRADAY if req.product_type.upper() == "INTRADAY" else ProductType.MARGIN,
+            price=req.price
+        )
+        
+        response = broker.place_order(order_req)
+        
+        # Add to SQLite DB and global trades list for UI reflection
+        from shared.state import record_trade
+        record_trade(
+            symbol=req.symbol, 
+            side=req.action.upper(), 
+            price=response.price or req.price or 0.0, 
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            qty=req.quantity
+        )
+            
+        return {"status": "success", "order_id": response.order_id, "message": response.message}
+    except Exception as e:
+        logger.error(f"Order Execution Failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/panic-exit")
 async def panic_exit(request: Request):
@@ -475,13 +591,12 @@ async def panic_exit(request: Request):
                 # Opposite side market order
                 side = "SELL" if pos.quantity > 0 else "BUY"
                 qty = abs(pos.quantity)
-                broker.place_order(
+                broker.place_order(OrderRequest(
                     symbol=pos.symbol,
-                    side=side,
+                    side=OrderSide.SELL if side == "SELL" else OrderSide.BUY,
                     quantity=qty,
-                    order_type="MARKET",
-                    product="INTRADAY"
-                )
+                    order_type=OrderType.MARKET,
+                ))
                 closed_count += 1
         
         # 3. Log the nuclear event
@@ -650,7 +765,7 @@ async def get_backtest(
     timeframe: str = Query("5 Min", description="Timeframe"),
     strategy: str = Query("ema_rsi", description="Strategy name"),
     initial_capital: float = Query(100000.0, description="Initial Capital"),
-    quantity: int = Query(65, description="Trading quantity/lot size"),
+    quantity: int = Query(25, description="Trading quantity/lot size"),
     stoploss_pct: float = Query(1.2, description="Stoploss %"),
     target_pct: float = Query(2.5, description="Target %"),
     enable_ema_filter: bool = Query(True),
@@ -946,29 +1061,24 @@ def compute_signals(
                     "reason": f"Institutional crossover with score {int(put_scores.iloc[i])}"
                 })
 
-        try:
-            import pytz
-            ist = pytz.timezone('Asia/Kolkata')
-            now = datetime.now(ist)
-        except Exception:
-            now = datetime.now() 
-            
-        market_open = now.replace(hour=9, minute=15, second=0, microsecond=0)
-        market_close = now.replace(hour=15, minute=30, second=0, microsecond=0)
-        is_market_open = market_open <= now <= market_close and now.weekday() < 5
+        # Always use the most recent scores (last candle) for the current state,
+        # whether the market is open or closed. Using old non-zero scores causes 
+        # stale "Bearish" or "Bullish" signals after hours!
+        valid_calls = call_scores.dropna()
+        valid_puts = put_scores.dropna()
+        last_call_score = int(valid_calls.iloc[-1]) if len(valid_calls) > 0 else 0
+        last_put_score = int(valid_puts.iloc[-1]) if len(valid_puts) > 0 else 0
         
-        if is_market_open:
-            valid_calls = call_scores.dropna()
-            valid_puts = put_scores.dropna()
-            last_call_score = int(valid_calls.iloc[-1]) if len(valid_calls) > 0 else 0
-            last_put_score = int(valid_puts.iloc[-1]) if len(valid_puts) > 0 else 0
-            confidence = max(last_call_score, last_put_score)
-        else:
-            active_call_scores = call_scores[call_scores > 0]
-            active_put_scores = put_scores[put_scores > 0]
-            last_call_score = int(active_call_scores.iloc[-1]) if len(active_call_scores) > 0 else 0
-            last_put_score = int(active_put_scores.iloc[-1]) if len(active_put_scores) > 0 else 0
-            confidence = max(last_call_score, last_put_score)
+        # If both are exactly 0 (flat close), calculate a micro-trend from the last few candles
+        # to give a slight bias instead of a dead 0% neutral, unless it's truly completely flat.
+        if last_call_score == 0 and last_put_score == 0 and len(df) > 5:
+            recent_trend = df['close'].iloc[-1] - df['close'].iloc[-5]
+            if recent_trend > 0:
+                last_call_score = min(40, int((recent_trend / df['close'].iloc[-5]) * 5000))
+            elif recent_trend < 0:
+                last_put_score = min(40, int((abs(recent_trend) / df['close'].iloc[-5]) * 5000))
+                
+        confidence = max(last_call_score, last_put_score)
         
         bias = "NEUTRAL"
         status = "Scanning..."
@@ -980,41 +1090,66 @@ def compute_signals(
             bias = "SELL"
             status = "Institutional Put Buy Setup"
         else:
-            if last_call_score > last_put_score:
+            # If scores are very close (within 5 points) and not extremely strong, use actual recent price trend as tie-breaker!
+            if abs(last_call_score - last_put_score) <= 8 and max(last_call_score, last_put_score) < 65 and len(df) >= 4:
+                recent_trend = df['close'].iloc[-1] - df['close'].iloc[-4]
+                if recent_trend > 0:
+                    bias = "BULLISH"
+                    status = "Mild Bullish Bias"
+                elif recent_trend < 0:
+                    bias = "BEARISH"
+                    status = "Mild Bearish Bias"
+                else:
+                    bias = "NEUTRAL"
+                    status = "Awaiting Setup"
+            elif last_call_score > last_put_score:
                 bias = "BULLISH"
                 status = "Mild Bullish Bias"
-            else:
+            elif last_put_score > last_call_score:
                 bias = "BEARISH"
                 status = "Mild Bearish Bias"
+            else:
+                bias = "NEUTRAL"
+                status = "Awaiting Setup"
         
         result = {
             "confidence": confidence,
             "status": status,
             "bias": f"{bias} BIAS",
             "trendData": trend_data,
-            "signals": real_signals[-10:][::-1]
+            "signals": real_signals[-10:][::-1],
+            "timestamp": time.time()
         }
         signals_cache_store[symbol] = result
         return result
     except Exception as e:
         logger.error("Error in compute_signals: %s", e)
-        return {"error": str(e), "confidence": 50, "direction": "NEUTRAL"}
+        err_res = {"error": str(e), "confidence": 50, "direction": "NEUTRAL", "timestamp": time.time(), "bias": "ERROR", "status": "Connection Error"}
+        signals_cache_store[symbol] = err_res
+        return err_res
 
 @app.get("/api/signals")
 async def get_signals_api(
     symbol: str = Query("NIFTY", description="The stock ticker")
 ):
     """Returns cached AI signals instantly to avoid blocking UI."""
-    if symbol not in signals_cache_store or signals_cache_store.get(symbol, {}).get("direction") == "CALCULATING":
-        if symbol not in signals_cache_store:
-            # Set placeholder to prevent duplicate task spawning (race condition)
-            signals_cache_store[symbol] = {"symbol": symbol, "confidence": 50, "direction": "CALCULATING"}
-            from fastapi.concurrency import run_in_threadpool
-            import asyncio
-            asyncio.create_task(run_in_threadpool(compute_signals, symbol))
-        return {"symbol": symbol, "confidence": 50, "direction": "CALCULATING"}
+    cached = signals_cache_store.get(symbol, {})
+    is_calculating = cached.get("direction") == "CALCULATING"
     
-    return signals_cache_store[symbol]
+    # Refresh cache if older than 30 seconds
+    needs_refresh = False
+    if not cached or (not is_calculating and "timestamp" in cached and time.time() - cached["timestamp"] > 30):
+        needs_refresh = True
+        
+    if needs_refresh:
+        # Prevent race conditions by marking as calculating immediately
+        signals_cache_store[symbol] = {**cached, "direction": "CALCULATING"} if cached else {"symbol": symbol, "confidence": 50, "direction": "CALCULATING"}
+        from fastapi.concurrency import run_in_threadpool
+        import asyncio
+        asyncio.create_task(run_in_threadpool(compute_signals, symbol))
+        return cached if cached else {"symbol": symbol, "confidence": 50, "direction": "CALCULATING"}
+        
+    return cached
 
 @app.get("/api/test_connection")
 async def test_connection():
@@ -1453,69 +1588,134 @@ async def get_trade_journal():
 async def get_option_chain(symbol: str = "NSE:NIFTY50-INDEX"):
     """
     Returns live or simulated option chain data with Greeks.
-    In a full production environment, this fetches from Fyers API.
-    For this demo/UI visualization, we simulate realistic data around a base price.
+    This generates a fully dynamic Option Chain mathematically synchronized to the real-time Live Spot Price using the Black-Scholes pricing model.
     """
     try:
+        import hashlib
+        import math
+        import os
+        import json
+        
+        # Black-Scholes Math Engine
+        def norm_cdf(x):
+            return (1.0 + math.erf(x / math.sqrt(2.0))) / 2.0
+
+        def norm_pdf(x):
+            return (1.0 / math.sqrt(2.0 * math.pi)) * math.exp(-0.5 * x * x)
+
+        def black_scholes(S, K, T, r, sigma, option_type="call"):
+            if T <= 0.0001:
+                return (max(0.0, S - K) if option_type == "call" else max(0.0, K - S),
+                        1.0 if option_type == "call" and S > K else (0.0 if option_type == "call" else (-1.0 if S < K else 0.0)),
+                        0.0, 0.0, 0.0)
+
+            d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
+            d2 = d1 - sigma * math.sqrt(T)
+
+            if option_type == "call":
+                price = S * norm_cdf(d1) - K * math.exp(-r * T) * norm_cdf(d2)
+                delta = norm_cdf(d1)
+                theta = (- (S * norm_pdf(d1) * sigma) / (2 * math.sqrt(T)) - r * K * math.exp(-r * T) * norm_cdf(d2)) / 365.0
+            else:
+                price = K * math.exp(-r * T) * norm_cdf(-d2) - S * norm_cdf(-d1)
+                delta = norm_cdf(d1) - 1.0
+                theta = (- (S * norm_pdf(d1) * sigma) / (2 * math.sqrt(T)) + r * K * math.exp(-r * T) * norm_cdf(-d2)) / 365.0
+                
+            gamma = norm_pdf(d1) / (S * sigma * math.sqrt(T))
+            vega = S * norm_pdf(d1) * math.sqrt(T) / 100.0
+            return price, delta, gamma, theta, vega
         import hashlib
         
         def deterministic_random(seed_str, salt, min_val, max_val):
             h = hashlib.md5((str(seed_str) + str(salt)).encode()).hexdigest()
-            # Convert first 8 chars of md5 to a float between 0 and 1
             rand_float = int(h[:8], 16) / 4294967295.0
             return min_val + (rand_float * (max_val - min_val))
             
-        # Base prices
-        base_price = 24000
-        if "BANKNIFTY" in symbol:
-            base_price = 52000
-        elif "RELIANCE" in symbol:
-            base_price = 3100
-            
-        step = 50 if "NIFTY50" in symbol else 100 if "BANKNIFTY" in symbol else 20
-        num_strikes_each_side = 5
+        # 1. Fetch Real Live Spot Price
+        base_price = 24000.0
+        try:
+            token_path = ".fyers_tokens.json"
+            if os.path.exists(token_path):
+                with open(token_path, "r") as f:
+                    token_data = json.load(f)
+                    token = token_data.get("access_token")
+                if token:
+                    from fyers_apiv3 import fyersModel
+                    client_id = _get_fyers_client_id()
+                    fyers = fyersModel.FyersModel(client_id=client_id, is_async=False, token=token, log_path="")
+                    
+                    query_symbol = "NSE:NIFTY50-INDEX"
+                    if "BANKNIFTY" in symbol:
+                        query_symbol = "NSE:NIFTYBANK-INDEX"
+                    elif "FINNIFTY" in symbol:
+                        query_symbol = "NSE:FINNIFTY-INDEX"
+                        
+                    quotes = fyers.quotes(data={"symbols": query_symbol})
+                    if quotes and "d" in quotes and len(quotes["d"]) > 0:
+                        base_price = float(quotes["d"][0]["v"]["lp"])
+        except Exception as e:
+            logger.warning(f"Could not fetch real base price for options desk, falling back to defaults: {e}")
+            if "BANKNIFTY" in symbol:
+                base_price = 52000.0
+            elif "RELIANCE" in symbol:
+                base_price = 3100.0
+                
+        # 2. Determine Strike Step and ATM Strike
+        step = 50 if "NIFTY50" in symbol or symbol == "NIFTY" else 100 if "BANKNIFTY" in symbol else 50
+        atm_strike = round(base_price / step) * step
+        num_strikes_each_side = 20
+        
+        # 3. Parameters for Black-Scholes
+        r = 0.07          # 7% Risk-Free Rate in India
+        T = 0.02          # Approx 7 days to expiry
+        base_iv = 0.15    # 15% Base Implied Volatility
         
         chain = []
         for i in range(-num_strikes_each_side, num_strikes_each_side + 1):
-            strike = base_price + (i * step)
+            strike = atm_strike + (i * step)
             
-            # Simple Greek simulation
-            distance = abs(i)
-            delta_call = max(0.01, 0.5 - (i * 0.08)) # ITM > 0.5, OTM < 0.5
-            delta_put = max(-0.99, min(-0.01, -0.5 - (i * 0.08))) 
+            # Add IV Skew (OTM Puts have higher IV usually)
+            iv_skew_call = base_iv + max(0, (strike - base_price) / base_price * 0.5)
+            iv_skew_put  = base_iv + max(0, (base_price - strike) / base_price * 0.8)
             
-            gamma = max(0.001, 0.02 - (distance * 0.003))
-            theta = max(0.5, 15.0 - (distance * 2.0))
-            vega = max(0.1, 8.0 - (distance * 1.2))
+            # Calculate actual mathematical Greeks and Prices
+            c_price, c_delta, c_gamma, c_theta, c_vega = black_scholes(base_price, strike, T, r, iv_skew_call, "call")
+            p_price, p_delta, p_gamma, p_theta, p_vega = black_scholes(base_price, strike, T, r, iv_skew_put, "put")
             
-            call_ltp = max(0.5, 150 - (i * 30) + deterministic_random(strike, 1, -2, 2))
-            put_ltp = max(0.5, 150 + (i * 30) + deterministic_random(strike, 2, -2, 2))
+            # Add slight noise to price to simulate bid/ask spread or live trading variance
+            c_price = max(0.05, c_price + deterministic_random(strike, 1, -1.0, 1.0))
+            p_price = max(0.05, p_price + deterministic_random(strike, 2, -1.0, 1.0))
             
             chain.append({
                 "strike": strike,
                 "call": {
-                    "ltp": round(call_ltp, 2),
-                    "volume": int(deterministic_random(strike, 3, 1000, 50000)),
-                    "oi": int(deterministic_random(strike, 4, 5000, 200000)),
-                    "delta": round(delta_call, 2),
-                    "gamma": round(gamma, 3),
-                    "theta": round(-theta, 2),
-                    "vega": round(vega, 2)
+                    "ltp": round(c_price, 2),
+                    "volume": int(deterministic_random(strike, 3, 10000, 500000)),
+                    "oi": int(deterministic_random(strike, 4, 50000, 2000000)),
+                    "oichg": int(deterministic_random(strike, 14, -50000, 100000)),
+                    "delta": round(c_delta, 2),
+                    "gamma": round(c_gamma, 4),
+                    "theta": round(c_theta, 2),
+                    "vega": round(c_vega, 2)
                 },
                 "put": {
-                    "ltp": round(put_ltp, 2),
-                    "volume": int(deterministic_random(strike, 5, 1000, 50000)),
-                    "oi": int(deterministic_random(strike, 6, 5000, 200000)),
-                    "delta": round(delta_put, 2),
-                    "gamma": round(gamma, 3),
-                    "theta": round(-theta, 2),
-                    "vega": round(vega, 2)
+                    "ltp": round(p_price, 2),
+                    "volume": int(deterministic_random(strike, 5, 10000, 500000)),
+                    "oi": int(deterministic_random(strike, 6, 50000, 2000000)),
+                    "oichg": int(deterministic_random(strike, 16, -50000, 100000)),
+                    "delta": round(p_delta, 2),
+                    "gamma": round(p_gamma, 4),
+                    "theta": round(p_theta, 2),
+                    "vega": round(p_vega, 2)
                 }
             })
             
         return {
             "symbol": symbol,
-            "underlying_price": base_price + deterministic_random(base_price, 7, -10, 10),
+            "underlying_price": base_price,
+            "atm": atm_strike,
+            "maxPain": atm_strike,
+            "pcr": round(deterministic_random(base_price, 99, 0.6, 1.4), 2),
             "expiry": "2026-07-25",
             "chain": chain
         }
@@ -1668,16 +1868,20 @@ async def get_btst_prediction(symbol: str = "NIFTY"):
             
         df = pd.DataFrame(data)
         df.columns = [c.lower() for c in df.columns]
-        df = pd.to_numeric(df['close'], errors='coerce').fillna(method='ffill')
+        df_close = pd.to_numeric(df['close'], errors='coerce').ffill()
         
-        # Calculate recent momentum (last 10 candles vs previous 10)
-        recent_close = df.iloc[-1]
-        past_close = df.iloc[-10] if len(df) >= 10 else df.iloc[0]
+        # Calculate Intraday Daily Momentum (last 25 candles = ~1 full day in 15min)
+        recent_close = df_close.iloc[-1]
+        day_open = df_close.iloc[-25] if len(df_close) >= 25 else df_close.iloc[0]
         
-        momentum = (recent_close - past_close) / past_close * 100
+        # Calculate Late Day Momentum (last 4 candles = last 1 hour)
+        late_day_open = df_close.iloc[-4] if len(df_close) >= 4 else df_close.iloc[0]
+        
+        daily_momentum = (recent_close - day_open) / day_open * 100
+        late_momentum = (recent_close - late_day_open) / late_day_open * 100
         
         # Calculate RSI (14) roughly for EOD
-        delta = df.diff()
+        delta = df_close.diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
         rs = gain / loss
@@ -1685,21 +1889,21 @@ async def get_btst_prediction(symbol: str = "NIFTY"):
         current_rsi = rsi.iloc[-1]
         if pd.isna(current_rsi): current_rsi = 50
         
-        # BTST Logic (Heuristic for demo, but highly effective conceptually)
+        # Advanced BTST Logic combining Daily Trend + Late Day Surge
         gap_up_prob = 50
-        if momentum > 0.5 and current_rsi > 60:
-            gap_up_prob = min(85, 50 + int(momentum * 10) + int((current_rsi-50)*0.5))
-        elif momentum < -0.5 and current_rsi < 40:
-            gap_up_prob = max(15, 50 + int(momentum * 10) - int((50-current_rsi)*0.5))
+        if daily_momentum > 0.4 and late_momentum > -0.15 and current_rsi > 55:
+            gap_up_prob = min(90, 55 + int(daily_momentum * 15) + int(late_momentum * 20))
+        elif daily_momentum < -0.4 and late_momentum < 0.15 and current_rsi < 45:
+            gap_up_prob = max(10, 45 + int(daily_momentum * 15) + int(late_momentum * 20))
             
         gap_down_prob = 100 - gap_up_prob
         
-        if gap_up_prob > 65:
+        if gap_up_prob >= 65:
             action = "CARRY CALL"
-            reason = f"Strong EOD Momentum (+{momentum:.2f}%) with RSI at {current_rsi:.1f}. High probability of Gap Up."
-        elif gap_down_prob > 65:
+            reason = f"Strong Daily Rally (+{daily_momentum:.2f}%) holding well into EOD. High probability of Gap Up."
+        elif gap_down_prob >= 65:
             action = "CARRY PUT"
-            reason = f"Weak EOD Momentum ({momentum:.2f}%) with RSI at {current_rsi:.1f}. High probability of Gap Down."
+            reason = f"Strong Daily Selloff ({daily_momentum:.2f}%) holding weak into EOD. High probability of Gap Down."
         else:
             action = "AVOID"
             reason = "Market closing in equilibrium. Overnight risk is too high without a clear directional bias."
@@ -1711,72 +1915,13 @@ async def get_btst_prediction(symbol: str = "NIFTY"):
             "gapDownProb": gap_down_prob,
             "reason": reason,
             "metrics": {
-                "momentum": round(momentum, 2),
+                "momentum": round(daily_momentum, 2),
                 "rsi": round(current_rsi, 2)
             }
         }
     except Exception as e:
         logger.error(f"Error in /api/btst: {e}")
         return {"status": "error", "action": "AVOID", "gapUpProb": 50, "gapDownProb": 50, "reason": str(e)}
-
-@app.get("/api/option-chain")
-async def get_option_chain(symbol: str = Query("NIFTY")):
-    try:
-        # Mock logic to generate a dynamic option chain
-        base_price = 24200 if symbol == "NIFTY" else 52000 if symbol == "BANKNIFTY" else 21000
-        atm = round(base_price / 100) * 100 if symbol != "NIFTY" else round(base_price / 50) * 50
-        step = 50 if symbol == "NIFTY" else 100
-        
-        chain = []
-        for i in range(-5, 6):
-            strike = atm + (i * step)
-            # Math to generate somewhat realistic option data
-            distance = abs(i)
-            moneyness = "ITM" if i < 0 else "OTM" if i > 0 else "ATM"
-            ce_ltp = max(0.5, (5 - distance) * 40 + np.random.randint(-10, 10))
-            pe_ltp = max(0.5, (5 - distance) * 35 + np.random.randint(-10, 10))
-            
-            ce_delta = max(0.01, min(0.99, 0.5 - (i * 0.1)))
-            pe_delta = ce_delta - 1
-            
-            ce_oi = int(np.random.randint(10000, 150000) * (1 if i > 0 else 0.5))
-            pe_oi = int(np.random.randint(10000, 150000) * (1 if i < 0 else 0.5))
-
-            chain.append({
-                "strike": strike,
-                "ce": {
-                    "ltp": round(ce_ltp, 2),
-                    "oi": ce_oi,
-                    "oichg": int(ce_oi * np.random.uniform(-0.2, 0.5)),
-                    "volume": int(ce_oi * np.random.uniform(1.5, 3.0)),
-                    "delta": round(ce_delta, 2),
-                    "theta": round(np.random.uniform(-15, -5), 2),
-                    "gamma": round(max(0.001, 0.02 - distance * 0.003), 4),
-                    "vega": round(np.random.uniform(5, 20), 2)
-                },
-                "pe": {
-                    "ltp": round(pe_ltp, 2),
-                    "oi": pe_oi,
-                    "oichg": int(pe_oi * np.random.uniform(-0.2, 0.5)),
-                    "volume": int(pe_oi * np.random.uniform(1.5, 3.0)),
-                    "delta": round(pe_delta, 2),
-                    "theta": round(np.random.uniform(-15, -5), 2),
-                    "gamma": round(max(0.001, 0.02 - distance * 0.003), 4),
-                    "vega": round(np.random.uniform(5, 20), 2)
-                }
-            })
-            
-        return {
-            "symbol": symbol,
-            "expiry": (datetime.now() + timedelta(days=(3-datetime.now().weekday()) % 7)).strftime("%d-%b-%Y").upper(),
-            "atm": atm,
-            "maxPain": atm,
-            "pcr": round(np.random.uniform(0.6, 1.4), 2),
-            "chain": chain
-        }
-    except Exception as e:
-        logger.error(f"Error in /api/option-chain: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn

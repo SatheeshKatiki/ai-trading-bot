@@ -201,7 +201,7 @@ const INDIAN_MARKET_ASSETS = [
 export default function Header() {
   const router = useRouter();
   const pathname = usePathname();
-  
+
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -248,11 +248,11 @@ export default function Header() {
       const hours = istTime.getHours();
       const minutes = istTime.getMinutes();
       const timeInMinutes = hours * 60 + minutes;
-      
+
       const isOpen = day >= 1 && day <= 5 && timeInMinutes >= (9 * 60 + 15) && timeInMinutes <= (15 * 60 + 30);
       setIsMarketOpen(isOpen);
     };
-    
+
     checkMarketStatus();
     const interval = setInterval(checkMarketStatus, 60000);
     return () => clearInterval(interval);
@@ -288,8 +288,8 @@ export default function Header() {
   const handleSearchChange = (query: string) => {
     setSearchQuery(query);
     if (query.length > 0) {
-      const filtered = INDIAN_MARKET_ASSETS.filter(asset => 
-        asset.symbol.toLowerCase().includes(query.toLowerCase()) || 
+      const filtered = INDIAN_MARKET_ASSETS.filter(asset =>
+        asset.symbol.toLowerCase().includes(query.toLowerCase()) ||
         asset.name.toLowerCase().includes(query.toLowerCase())
       );
       setSuggestions(filtered);
@@ -304,11 +304,11 @@ export default function Header() {
     setSearchQuery(asset.symbol);
     setShowSuggestions(false);
     setIsSearchFocused(false);
-    
+
     // Update the URL to include the selected symbol
     const params = new URLSearchParams(window.location.search);
     params.set('symbol', asset.symbol);
-    
+
     router.push(`${pathname}?${params.toString()}`);
   };
 
@@ -318,10 +318,10 @@ export default function Header() {
       const sym = searchQuery.trim().toUpperCase();
       setShowSuggestions(false);
       setIsSearchFocused(false);
-      
+
       const params = new URLSearchParams(window.location.search);
       params.set('symbol', sym);
-      
+
       router.push(`${pathname}?${params.toString()}`);
     }
     if (e.key === 'Escape') {
@@ -334,212 +334,212 @@ export default function Header() {
   return (
     <>
       <header className="h-[var(--header-height)] bg-card/60 backdrop-blur-xl border-b border-border/50 flex items-center justify-between px-6 sticky top-0 z-50 shadow-sm transition-colors duration-300">
-      <div className="flex items-center gap-6">
-        {/* Market Status Indicator */}
-        <div className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-full bg-muted/30 border border-border/50">
-          <div className="relative flex h-2 w-2">
-            {isMarketOpen && (
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-75"></span>
-            )}
-            <span className={`relative inline-flex rounded-full h-2 w-2 transition-colors duration-300 ${isMarketOpen ? 'bg-success shadow-[0_0_8px_var(--success)]' : 'bg-muted-foreground'}`}></span>
+        <div className="flex items-center gap-6">
+          {/* Market Status Indicator */}
+          <div className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-full bg-muted/30 border border-border/50">
+            <div className="relative flex h-2 w-2">
+              {isMarketOpen && (
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-75"></span>
+              )}
+              <span className={`relative inline-flex rounded-full h-2 w-2 transition-colors duration-300 ${isMarketOpen ? 'bg-success shadow-[0_0_8px_var(--success)]' : 'bg-muted-foreground'}`}></span>
+            </div>
+            <span className="text-[10px] uppercase font-bold tracking-wider text-muted-foreground">
+              {isMarketOpen ? 'Market Open' : 'Market Closed'}
+            </span>
           </div>
-          <span className="text-[10px] uppercase font-bold tracking-wider text-muted-foreground">
-            {isMarketOpen ? 'Market Open' : 'Market Closed'}
-          </span>
+
+          {/* Institutional Level Search Box in Header */}
+          {pathname !== "/strategy" && (
+            <div className="relative" ref={searchRef}>
+
+              <Search className={`w-4 h-4 absolute left-3 top-1/2 transform -translate-y-1/2 transition-colors duration-300 ${isSearchFocused ? 'text-primary' : 'text-muted-foreground'}`} />
+              <input
+                ref={searchInputRef}
+                type="text"
+                value={searchQuery}
+                onChange={(e) => handleSearchChange(e.target.value)}
+                onFocus={() => {
+                  setIsSearchFocused(true);
+                  if (searchQuery) handleSearchChange(searchQuery);
+                }}
+                onKeyDown={handleKeyDown}
+                placeholder="Search symbols..."
+                className="w-72 bg-muted/30 border border-border/50 rounded-lg pl-10 pr-12 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary focus:border-transparent transition-all duration-300 hover:bg-muted/50 text-foreground"
+              />
+
+              {/* Clear Search Button */}
+              {searchQuery && (
+                <button
+                  type="button"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    setSearchQuery("");
+                    setShowSuggestions(false);
+                    setTimeout(() => searchInputRef.current?.focus(), 0);
+                  }}
+                  className="absolute right-3 top-1/2 transform -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors z-20 cursor-pointer"
+                >
+                  <XCircle className="w-4 h-4" />
+                </button>
+              )}
+
+              {/* Autocomplete Suggestions with Framer Motion */}
+              <AnimatePresence>
+                {showSuggestions && suggestions.length > 0 && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -10, scale: 0.95 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: -10, scale: 0.95 }}
+                    transition={{ duration: 0.15, ease: "easeOut" }}
+                    className="absolute z-50 mt-2 w-full max-h-[400px] bg-card border border-border/50 rounded-xl shadow-2xl overflow-y-auto backdrop-blur-2xl"
+                  >
+                    <div className="p-2 space-y-1">
+                      {suggestions.map((asset) => (
+                        <button
+                          key={asset.symbol}
+                          onClick={() => selectAsset(asset)}
+                          className="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-muted/80 transition-colors flex justify-between items-center group"
+                        >
+                          <div className="flex flex-col">
+                            <span className="font-bold text-foreground group-hover:text-primary transition-colors">{asset.symbol}</span>
+                            <span className="text-[11px] text-muted-foreground">{asset.name}</span>
+                          </div>
+                          <span className={`text-[10px] px-2 py-1 rounded-md font-bold uppercase tracking-wider ${asset.type === 'Index' ? 'bg-primary/10 text-primary' : 'bg-success/10 text-success'}`}>
+                            {asset.type}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          )}
         </div>
 
-        {/* Institutional Level Search Box in Header */}
-        {pathname !== "/strategy" && (
-          <div className="relative" ref={searchRef}>
-
-            <Search className={`w-4 h-4 absolute left-3 top-1/2 transform -translate-y-1/2 transition-colors duration-300 ${isSearchFocused ? 'text-primary' : 'text-muted-foreground'}`} />
-            <input
-              ref={searchInputRef}
-              type="text"
-              value={searchQuery}
-              onChange={(e) => handleSearchChange(e.target.value)}
-              onFocus={() => {
-                setIsSearchFocused(true);
-                if (searchQuery) handleSearchChange(searchQuery);
-              }}
-              onKeyDown={handleKeyDown}
-              placeholder="Search symbols..."
-              className="w-72 bg-muted/30 border border-border/50 rounded-lg pl-10 pr-12 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary focus:border-transparent transition-all duration-300 hover:bg-muted/50 text-foreground"
-            />
-            
-            {/* Clear Search Button */}
-            {searchQuery && (
-              <button
-                type="button"
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  setSearchQuery("");
-                  setShowSuggestions(false);
-                  setTimeout(() => searchInputRef.current?.focus(), 0);
-                }}
-                className="absolute right-3 top-1/2 transform -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors z-20 cursor-pointer"
+        <div className="flex items-center gap-4">
+          {/* Quick Actions */}
+          <div className="flex items-center gap-2 mr-2">
+            {/* KILL SWITCH */}
+            {isSystemHalted ? (
+              <motion.button
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                onClick={resumeTrading}
+                className="flex items-center gap-2 px-4 py-1.5 bg-muted border border-success/50 text-success rounded-lg text-xs font-bold mr-2 hover:bg-success/10 transition-colors shadow-[0_0_10px_rgba(16,185,129,0.2)]"
               >
-                <XCircle className="w-4 h-4" />
-              </button>
+                <Activity className="w-4 h-4" /> RESUME TRADING
+              </motion.button>
+            ) : (
+              <motion.button
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                onClick={() => setIsKillSwitchModalOpen(true)}
+                className="flex items-center gap-2 px-4 py-1.5 bg-destructive/10 border border-destructive/50 text-destructive rounded-lg text-xs font-bold mr-2 hover:bg-destructive hover:text-white transition-colors animate-pulse hover:animate-none shadow-[0_0_10px_rgba(239,68,68,0.3)]"
+              >
+                <ShieldAlert className="w-4 h-4" /> KILL SWITCH
+              </motion.button>
             )}
 
-            {/* Autocomplete Suggestions with Framer Motion */}
+            <Link href="/analytics">
+              <motion.button
+                whileHover={{ scale: 1.1, rotate: 5 }}
+                whileTap={{ scale: 0.95 }}
+                title="Analytics"
+                className="p-2 rounded-lg hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <Activity className="w-5 h-5" />
+              </motion.button>
+            </Link>
+            <Link href="/journal">
+              <motion.button
+                whileHover={{ scale: 1.1, rotate: 12 }}
+                whileTap={{ scale: 0.95 }}
+                title="Trading Journal"
+                className="p-2 rounded-lg hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <BookOpen className="w-5 h-5" />
+              </motion.button>
+            </Link>
+            <motion.button
+              whileHover={{ scale: 1.1 }}
+              whileTap={{ scale: 0.95 }}
+              onClick={() => setHasNotification(!hasNotification)}
+              className="p-2 rounded-lg hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors relative"
+            >
+              <motion.div animate={hasNotification ? { rotate: [0, -10, 10, -10, 10, 0] } : {}} transition={{ duration: 0.5, repeat: hasNotification ? Infinity : 0, repeatDelay: 3 }}>
+                <Bell className="w-5 h-5" />
+              </motion.div>
+              {hasNotification && (
+                <span className="absolute top-2 right-2 w-2 h-2 bg-destructive rounded-full shadow-[0_0_8px_var(--destructive)]"></span>
+              )}
+            </motion.button>
+          </div>
+
+          <div className="h-8 w-px bg-border/50"></div>
+
+          {/* User Profile Area with Dropdown */}
+          <div className="relative" ref={menuRef}>
+            <motion.div
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
+              onClick={() => setIsUserMenuOpen(!isUserMenuOpen)}
+              className="flex items-center gap-3 cursor-pointer p-1.5 rounded-lg hover:bg-muted/50 transition-colors duration-200"
+            >
+              <div className="w-9 h-9 rounded-full bg-gradient-to-br from-primary to-accent flex items-center justify-center border border-border shadow-sm">
+                <User className="w-5 h-5 text-white" />
+              </div>
+              <div className="hidden md:block">
+                <p className="text-sm font-bold text-foreground leading-none mb-1">Trader X</p>
+                <p className="text-[10px] uppercase tracking-wider text-primary font-bold">Ultra Pro</p>
+              </div>
+            </motion.div>
+
+            {/* User Dropdown Menu with Framer Motion */}
             <AnimatePresence>
-              {showSuggestions && suggestions.length > 0 && (
-                <motion.div 
-                  initial={{ opacity: 0, y: -10, scale: 0.95 }}
+              {isUserMenuOpen && (
+                <motion.div
+                  initial={{ opacity: 0, y: 10, scale: 0.95 }}
                   animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, y: -10, scale: 0.95 }}
-                  transition={{ duration: 0.15, ease: "easeOut" }}
-                  className="absolute z-50 mt-2 w-full max-h-[400px] bg-card border border-border/50 rounded-xl shadow-2xl overflow-y-auto backdrop-blur-2xl"
+                  exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                  transition={{ duration: 0.15 }}
+                  className="absolute right-0 mt-2 w-56 bg-card border border-border/50 rounded-xl shadow-2xl overflow-hidden z-50 backdrop-blur-2xl"
                 >
-                  <div className="p-2 space-y-1">
-                    {suggestions.map((asset) => (
-                      <button
-                        key={asset.symbol}
-                        onClick={() => selectAsset(asset)}
-                        className="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-muted/80 transition-colors flex justify-between items-center group"
-                      >
-                        <div className="flex flex-col">
-                          <span className="font-bold text-foreground group-hover:text-primary transition-colors">{asset.symbol}</span>
-                          <span className="text-[11px] text-muted-foreground">{asset.name}</span>
-                        </div>
-                        <span className={`text-[10px] px-2 py-1 rounded-md font-bold uppercase tracking-wider ${asset.type === 'Index' ? 'bg-primary/10 text-primary' : 'bg-success/10 text-success'}`}>
-                          {asset.type}
-                        </span>
-                      </button>
-                    ))}
+                  <div className="px-4 py-4 border-b border-border/50 bg-muted/10">
+                    <p className="text-sm font-bold text-foreground">Trader X</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">quant.trader@ai.bot</p>
+                  </div>
+                  <div className="py-2">
+                    <button className="w-full text-left px-4 py-2 text-sm text-foreground hover:bg-muted transition-colors flex items-center gap-3">
+                      <User className="w-4 h-4 text-muted-foreground" />
+                      Profile
+                    </button>
+                    <button className="w-full text-left px-4 py-2 text-sm text-foreground hover:bg-muted transition-colors flex items-center gap-3">
+                      <Settings className="w-4 h-4 text-muted-foreground" />
+                      Settings
+                    </button>
+                    <button className="w-full text-left px-4 py-2 text-sm text-foreground hover:bg-muted transition-colors flex items-center gap-3">
+                      <CreditCard className="w-4 h-4 text-muted-foreground" />
+                      Billing
+                    </button>
+                  </div>
+                  <div className="border-t border-border/50 py-2">
+                    <button
+                      onClick={() => {
+                        localStorage.removeItem("mana_ai_auth_token");
+                        window.location.reload();
+                      }}
+                      className="w-full text-left px-4 py-2 text-sm text-amber-500 hover:bg-amber-500/10 transition-colors flex items-center gap-3 font-medium"
+                    >
+                      <Lock className="w-4 h-4" />
+                      Lock System
+                    </button>
                   </div>
                 </motion.div>
               )}
             </AnimatePresence>
           </div>
-        )}
-      </div>
-
-      <div className="flex items-center gap-4">
-        {/* Quick Actions */}
-        <div className="flex items-center gap-2 mr-2">
-          {/* KILL SWITCH */}
-          {isSystemHalted ? (
-            <motion.button
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              onClick={resumeTrading}
-              className="flex items-center gap-2 px-4 py-1.5 bg-muted border border-success/50 text-success rounded-lg text-xs font-bold mr-2 hover:bg-success/10 transition-colors shadow-[0_0_10px_rgba(16,185,129,0.2)]"
-            >
-              <Activity className="w-4 h-4" /> RESUME TRADING
-            </motion.button>
-          ) : (
-            <motion.button
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              onClick={() => setIsKillSwitchModalOpen(true)}
-              className="flex items-center gap-2 px-4 py-1.5 bg-destructive/10 border border-destructive/50 text-destructive rounded-lg text-xs font-bold mr-2 hover:bg-destructive hover:text-white transition-colors animate-pulse hover:animate-none shadow-[0_0_10px_rgba(239,68,68,0.3)]"
-            >
-              <ShieldAlert className="w-4 h-4" /> KILL SWITCH
-            </motion.button>
-          )}
-
-          <Link href="/analytics">
-            <motion.button 
-              whileHover={{ scale: 1.1, rotate: 5 }}
-              whileTap={{ scale: 0.95 }}
-              title="Analytics" 
-              className="p-2 rounded-lg hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
-            >
-              <Activity className="w-5 h-5" />
-            </motion.button>
-          </Link>
-          <Link href="/journal">
-            <motion.button 
-              whileHover={{ scale: 1.1, rotate: 12 }}
-              whileTap={{ scale: 0.95 }}
-              title="Trading Journal" 
-              className="p-2 rounded-lg hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
-            >
-              <BookOpen className="w-5 h-5" />
-            </motion.button>
-          </Link>
-          <motion.button 
-            whileHover={{ scale: 1.1 }}
-            whileTap={{ scale: 0.95 }}
-            onClick={() => setHasNotification(!hasNotification)}
-            className="p-2 rounded-lg hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors relative"
-          >
-            <motion.div animate={hasNotification ? { rotate: [0, -10, 10, -10, 10, 0] } : {}} transition={{ duration: 0.5, repeat: hasNotification ? Infinity : 0, repeatDelay: 3 }}>
-              <Bell className="w-5 h-5" />
-            </motion.div>
-            {hasNotification && (
-              <span className="absolute top-2 right-2 w-2 h-2 bg-destructive rounded-full shadow-[0_0_8px_var(--destructive)]"></span>
-            )}
-          </motion.button>
         </div>
-        
-        <div className="h-8 w-px bg-border/50"></div>
-        
-        {/* User Profile Area with Dropdown */}
-        <div className="relative" ref={menuRef}>
-          <motion.div 
-            whileHover={{ scale: 1.02 }}
-            whileTap={{ scale: 0.98 }}
-            onClick={() => setIsUserMenuOpen(!isUserMenuOpen)}
-            className="flex items-center gap-3 cursor-pointer p-1.5 rounded-lg hover:bg-muted/50 transition-colors duration-200"
-          >
-            <div className="w-9 h-9 rounded-full bg-gradient-to-br from-primary to-accent flex items-center justify-center border border-border shadow-sm">
-              <User className="w-5 h-5 text-white" />
-            </div>
-            <div className="hidden md:block">
-              <p className="text-sm font-bold text-foreground leading-none mb-1">Trader X</p>
-              <p className="text-[10px] uppercase tracking-wider text-primary font-bold">Ultra Pro</p>
-            </div>
-          </motion.div>
-
-          {/* User Dropdown Menu with Framer Motion */}
-          <AnimatePresence>
-            {isUserMenuOpen && (
-              <motion.div 
-                initial={{ opacity: 0, y: 10, scale: 0.95 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, y: 10, scale: 0.95 }}
-                transition={{ duration: 0.15 }}
-                className="absolute right-0 mt-2 w-56 bg-card border border-border/50 rounded-xl shadow-2xl overflow-hidden z-50 backdrop-blur-2xl"
-              >
-                <div className="px-4 py-4 border-b border-border/50 bg-muted/10">
-                  <p className="text-sm font-bold text-foreground">Trader X</p>
-                  <p className="text-xs text-muted-foreground mt-0.5">quant.trader@ai.bot</p>
-                </div>
-                <div className="py-2">
-                  <button className="w-full text-left px-4 py-2 text-sm text-foreground hover:bg-muted transition-colors flex items-center gap-3">
-                    <User className="w-4 h-4 text-muted-foreground" />
-                    Profile
-                  </button>
-                  <button className="w-full text-left px-4 py-2 text-sm text-foreground hover:bg-muted transition-colors flex items-center gap-3">
-                    <Settings className="w-4 h-4 text-muted-foreground" />
-                    Settings
-                  </button>
-                  <button className="w-full text-left px-4 py-2 text-sm text-foreground hover:bg-muted transition-colors flex items-center gap-3">
-                    <CreditCard className="w-4 h-4 text-muted-foreground" />
-                    Billing
-                  </button>
-                </div>
-                <div className="border-t border-border/50 py-2">
-                  <button 
-                    onClick={() => {
-                      localStorage.removeItem("mana_ai_auth_token");
-                      window.location.reload();
-                    }}
-                    className="w-full text-left px-4 py-2 text-sm text-amber-500 hover:bg-amber-500/10 transition-colors flex items-center gap-3 font-medium"
-                  >
-                    <Lock className="w-4 h-4" />
-                    Lock System
-                  </button>
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
-      </div>
 
       </header>
 
@@ -547,14 +547,14 @@ export default function Header() {
       <AnimatePresence>
         {isKillSwitchModalOpen && (
           <div className="fixed inset-0 z-[100]">
-            <motion.div 
-              initial={{ opacity: 0 }} 
-              animate={{ opacity: 1 }} 
-              exit={{ opacity: 0 }} 
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
               className="absolute inset-0 bg-black/20"
               onClick={() => setIsKillSwitchModalOpen(false)}
             />
-            <motion.div 
+            <motion.div
               initial={{ opacity: 0, scale: 0.95, y: -10 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: -10 }}
@@ -568,13 +568,13 @@ export default function Header() {
                 Are you sure you want to trigger the Kill Switch? This will instantly flatten all open positions at market price and halt all algorithmic trading.
               </p>
               <div className="flex gap-3 w-full">
-                <button 
-                  onClick={() => setIsKillSwitchModalOpen(false)} 
+                <button
+                  onClick={() => setIsKillSwitchModalOpen(false)}
                   className="flex-1 py-3 bg-muted hover:bg-muted/80 rounded-xl text-sm font-bold transition-colors"
                 >
                   CANCEL
                 </button>
-                <button 
+                <button
                   onClick={handleKillSwitch}
                   className="flex-1 py-3 bg-destructive hover:bg-destructive/90 text-white rounded-xl text-sm font-bold transition-colors shadow-lg shadow-destructive/20 flex items-center justify-center gap-2"
                 >

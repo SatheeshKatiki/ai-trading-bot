@@ -204,23 +204,7 @@ export default function AdvancedChart({ symbol, livePrice, timeframe }: Advanced
     if (!chart) return;
     chartRef.current = chart;
     chart.setOffsetRightDistance(60); // Professional right padding
-
-    chart.setCustomApi({
-      formatDate: (_dtf: Intl.DateTimeFormat, ts: number, fmt: string) => {
-        try {
-          if (!isFinite(ts) || ts < 0) return "";
-          const d = new Date(ts);
-          const dd = d.getDate().toString().padStart(2, "0");
-          const mon = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][d.getMonth()];
-          const yyyy = d.getFullYear();
-          const hh = d.getHours().toString().padStart(2, "0");
-          const mm = d.getMinutes().toString().padStart(2, "0");
-          if (fmt === "YYYY-MM-DD" || fmt === "MM-DD") return `${dd} ${mon} ${yyyy}`;
-          if (fmt === "HH:mm") return `${hh}:${mm}`;
-          return `${dd} ${mon} ${yyyy} ${hh}:${mm}`;
-        } catch { return ""; }
-      },
-    });
+    chart.setOffsetRightDistance(60); // Professional right padding
 
     chart.subscribeAction(ActionType.OnCrosshairChange, (data: any) => {
       if (data?.kLineData) {
@@ -352,38 +336,47 @@ export default function AdvancedChart({ symbol, livePrice, timeframe }: Advanced
 
   return (
     <div style={{ width: "100%", height: "100%", display: "flex", background: bg, overflow: "hidden", minHeight: 450 }}>
-      {/* LEFT TOOLBAR */}
-      <div style={{ width: 44, borderRight: `1px solid ${border}`, display: "flex", flexDirection: "column", alignItems: "center", paddingTop: 8, gap: 2, background: isDark ? "#0d1117" : "#fafafa", flexShrink: 0, zIndex: 10 }}>
-        {DRAWING_TOOLS.map((t, i) => {
-          const Icon = t.icon;
-          const active = activeTool === t.id;
-          const showSep = i > 0 && DRAWING_TOOLS[i - 1].group !== t.group;
-          return (
-            <React.Fragment key={t.id}>
-              {showSep && <div style={{ width: 28, height: 1, background: border, margin: "2px 0" }} />}
-              <button
-                title={t.label}
-                onClick={() => selectTool(t.id)}
-                style={{
-                  width: 34, height: 34, borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center",
-                  background: active ? "rgba(38,166,154,0.15)" : "transparent",
-                  border: `1px solid ${active ? "rgba(38,166,154,0.4)" : "transparent"}`,
-                  color: active ? "#26a69a" : axisCol, cursor: "pointer", transition: "all 0.15s",
-                }}
-              >
-                <Icon size={15} strokeWidth={active ? 2.5 : 1.75} />
-              </button>
-            </React.Fragment>
-          );
-        })}
-        <div style={{ flex: 1 }} />
-        <button
-          title="Clear drawings"
-          onClick={() => { chartRef.current?.removeOverlay({}); setActiveTool(""); }}
-          style={{ width: 34, height: 34, borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center", background: "transparent", border: "1px solid transparent", color: axisCol, cursor: "pointer", marginBottom: 8 }}
-        >
-          <Trash2 size={14} strokeWidth={1.75} />
-        </button>
+      {/* LEFT TOOLBAR (Auto-hide on hover) */}
+      <div 
+        className="group absolute top-0 bottom-0 left-0 z-50 flex"
+        style={{ width: '48px', transform: 'translateX(-36px)', transition: 'transform 0.2s ease-in-out' }}
+        onMouseEnter={(e) => e.currentTarget.style.transform = 'translateX(0)'}
+        onMouseLeave={(e) => e.currentTarget.style.transform = 'translateX(-36px)'}
+      >
+        <div style={{ width: 44, borderRight: `1px solid ${border}`, display: "flex", flexDirection: "column", alignItems: "center", paddingTop: 8, gap: 2, background: isDark ? "rgba(13,17,23,0.95)" : "rgba(250,250,250,0.95)", backdropFilter: "blur(8px)", flexShrink: 0, height: "100%", boxShadow: "2px 0 8px rgba(0,0,0,0.1)" }}>
+          {DRAWING_TOOLS.map((t, i) => {
+            const Icon = t.icon;
+            const active = activeTool === t.id;
+            const showSep = i > 0 && DRAWING_TOOLS[i - 1].group !== t.group;
+            return (
+              <React.Fragment key={t.id}>
+                {showSep && <div style={{ width: 28, height: 1, background: border, margin: "2px 0" }} />}
+                <button
+                  title={t.label}
+                  onClick={() => selectTool(t.id)}
+                  style={{
+                    width: 34, height: 34, borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center",
+                    background: active ? "rgba(38,166,154,0.15)" : "transparent",
+                    border: `1px solid ${active ? "rgba(38,166,154,0.4)" : "transparent"}`,
+                    color: active ? "#26a69a" : axisCol, cursor: "pointer", transition: "all 0.15s",
+                  }}
+                >
+                  <Icon size={15} strokeWidth={active ? 2.5 : 1.75} />
+                </button>
+              </React.Fragment>
+            );
+          })}
+          <div style={{ flex: 1 }} />
+          <button
+            title="Clear drawings"
+            onClick={() => { chartRef.current?.removeOverlay(); setActiveTool(""); }}
+            style={{ width: 34, height: 34, borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center", background: "transparent", border: "1px solid transparent", color: axisCol, cursor: "pointer", marginBottom: 8 }}
+          >
+            <Trash2 size={14} strokeWidth={1.75} />
+          </button>
+        </div>
+        {/* Hover trigger zone */}
+        <div style={{ width: 4, height: "100%", cursor: "ew-resize", background: "transparent" }} />
       </div>
 
       {/* CHART AREA */}

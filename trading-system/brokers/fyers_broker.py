@@ -54,7 +54,7 @@ class FyersBroker(BaseBroker):
             supports_options=True,
             supports_futures=True,
             supports_streaming=True,
-            credential_fields=[
+            credential_fields=[  # type: ignore
                 {"key": "client_id",    "label": "Client ID",     "secret": False},
                 {"key": "secret_key",   "label": "Secret Key",    "secret": True},
                 {"key": "redirect_uri", "label": "Redirect URI",  "secret": False,
@@ -66,7 +66,7 @@ class FyersBroker(BaseBroker):
 
     def __init__(self, credentials: Dict[str, str], paper_mode: bool = False) -> None:
         super().__init__(credentials, paper_mode)
-        self._fyers_model = None   # Lazy-loaded after authenticate()
+        self._fyers_model: Any = None   # Lazy-loaded after authenticate()
 
     # ------------------------------------------------------------------
     # Authentication
@@ -85,11 +85,12 @@ class FyersBroker(BaseBroker):
                 except ImportError:
                     from fyers_api import fyersModel
                     
-                self._fyers_model = fyersModel.FyersModel(
-                    client_id=self.credentials.get("client_id", ""),
-                    token=token,
-                    log_path="",
-                )
+                kwargs = {
+                    "client_id": self.credentials.get("client_id", ""),
+                    "token": token,
+                    "log_path": "",
+                }
+                self._fyers_model = fyersModel.FyersModel(**kwargs)  # type: ignore
                 logger.info("Fyers: Initialized model in paper mode for data fetching.")
             return True
 
@@ -108,11 +109,12 @@ class FyersBroker(BaseBroker):
             except ImportError:
                 from fyers_api import fyersModel   # type: ignore[import]
                 
-            self._fyers_model = fyersModel.FyersModel(
-                client_id=self.credentials.get("client_id", ""),
-                token=token,
-                log_path="",
-            )
+            kwargs = {
+                "client_id": self.credentials.get("client_id", ""),
+                "token": token,
+                "log_path": "",
+            }
+            self._fyers_model = fyersModel.FyersModel(**kwargs)  # type: ignore
             self._authenticated = True
             logger.info("Fyers: authenticated successfully.")
             return True
@@ -132,23 +134,25 @@ class FyersBroker(BaseBroker):
                 from fyers_api import fyersModel   # type: ignore[import]
                 
             try:
-                session = fyersModel.SessionModel(
-                    client_id=self.credentials.get("client_id", ""),
-                    secret_key=self.credentials.get("secret_key", ""),
-                    redirect_uri=self.credentials.get("redirect_uri", "https://localhost"),
-                    response_type="code",
-                    grant_type="authorization_code",
-                )
+                kwargs = {
+                    "client_id": self.credentials.get("client_id", ""),
+                    "secret_key": self.credentials.get("secret_key", ""),
+                    "redirect_uri": self.credentials.get("redirect_uri", "https://localhost"),
+                    "response_type": "code",
+                    "grant_type": "authorization_code",
+                }
+                session = fyersModel.SessionModel(**kwargs)  # type: ignore
             except AttributeError:
                 # Fallback for versions where SessionModel is in the session module
-                from fyers_api import session as fyers_session
-                session = fyers_session.SessionModel(
-                    client_id=self.credentials.get("client_id", ""),
-                    secret_key=self.credentials.get("secret_key", ""),
-                    redirect_uri=self.credentials.get("redirect_uri", "https://localhost"),
-                    response_type="code",
-                    grant_type="authorization_code",
-                )
+                from fyers_api import session as fyers_session  # type: ignore
+                kwargs = {
+                    "client_id": self.credentials.get("client_id", ""),
+                    "secret_key": self.credentials.get("secret_key", ""),
+                    "redirect_uri": self.credentials.get("redirect_uri", "https://localhost"),
+                    "response_type": "code",
+                    "grant_type": "authorization_code",
+                }
+                session = fyers_session.SessionModel(**kwargs)  # type: ignore
             return session.generate_authcode()
         except Exception as exc:
             logger.error("Could not generate Fyers login URL: %s", exc)
@@ -163,22 +167,24 @@ class FyersBroker(BaseBroker):
                 from fyers_api import fyersModel   # type: ignore[import]
                 
             try:
-                session = fyersModel.SessionModel(
-                    client_id=self.credentials.get("client_id", ""),
-                    secret_key=self.credentials.get("secret_key", ""),
-                    redirect_uri=self.credentials.get("redirect_uri", "https://localhost"),
-                    response_type="code",
-                    grant_type="authorization_code",
-                )
+                kwargs = {
+                    "client_id": self.credentials.get("client_id", ""),
+                    "secret_key": self.credentials.get("secret_key", ""),
+                    "redirect_uri": self.credentials.get("redirect_uri", "https://localhost"),
+                    "response_type": "code",
+                    "grant_type": "authorization_code",
+                }
+                session = fyersModel.SessionModel(**kwargs)  # type: ignore
             except AttributeError:
-                from fyers_api import session as fyers_session
-                session = fyers_session.SessionModel(
-                    client_id=self.credentials.get("client_id", ""),
-                    secret_key=self.credentials.get("secret_key", ""),
-                    redirect_uri=self.credentials.get("redirect_uri", "https://localhost"),
-                    response_type="code",
-                    grant_type="authorization_code",
-                )
+                from fyers_api import session as fyers_session  # type: ignore
+                kwargs = {
+                    "client_id": self.credentials.get("client_id", ""),
+                    "secret_key": self.credentials.get("secret_key", ""),
+                    "redirect_uri": self.credentials.get("redirect_uri", "https://localhost"),
+                    "response_type": "code",
+                    "grant_type": "authorization_code",
+                }
+                session = fyers_session.SessionModel(**kwargs)  # type: ignore
             session.set_token(auth_code)
             resp  = session.generate_token()
             token = resp.get("access_token", "")
@@ -354,6 +360,13 @@ class FyersBroker(BaseBroker):
         try:
             resp   = self._fyers_model.orderbook()
             orders = []
+            
+            def _map_status(fyers_status: int) -> OrderStatus:
+                if fyers_status == 2: return OrderStatus.COMPLETE
+                if fyers_status in (1, 6): return OrderStatus.CANCELLED
+                if fyers_status == 4: return OrderStatus.REJECTED
+                return OrderStatus.OPEN
+
             for o in resp.get("orderBook", []):
                 orders.append(OrderBookEntry(
                     order_id=o.get("id", ""),
@@ -361,7 +374,8 @@ class FyersBroker(BaseBroker):
                     side=OrderSide.BUY if o.get("side", 1) == 1 else OrderSide.SELL,
                     quantity=int(o.get("qty", 0)),
                     price=float(o.get("limitPrice", 0)),
-                    status=OrderStatus.OPEN,
+                    traded_price=float(o.get("tradedPrice", 0.0)),
+                    status=_map_status(o.get("status", 5)),
                     order_type=OrderType.MARKET if o.get("type", 2) == 2 else OrderType.LIMIT,
                     raw=o,
                 ))
@@ -371,12 +385,22 @@ class FyersBroker(BaseBroker):
                 f"Fyers get_order_book failed: {exc}", broker_id=self.BROKER_ID
             ) from exc
 
+    def get_order_status(self, order_id: str) -> Optional[OrderBookEntry]:
+        """Fetch the exact status and fill details for a specific order ID."""
+        if self.paper_mode:
+            return None
+        orders = self.get_order_book()
+        for order in orders:
+            if order.order_id == order_id:
+                return order
+        return None
+
     # ------------------------------------------------------------------
     # Market data
     # ------------------------------------------------------------------
 
     def get_market_data(self, symbols: List[str]) -> Dict[str, MarketQuote]:
-        if self.paper_mode or not self._fyers_model:
+        if not self._fyers_model:
             return {}
         try:
             resp   = self._fyers_model.quotes({"symbols": ",".join(symbols)})
@@ -461,21 +485,38 @@ class FyersBroker(BaseBroker):
                     
                     # Verify if the cache covers the requested start_date
                     cache_min_date = df['datetime'].min()[:10]  # Get YYYY-MM-DD
+                    cache_max_date = df['datetime'].max()[:10]  # Get YYYY-MM-DD
                     today_str = datetime.now().strftime('%Y-%m-%d')
                     
                     if cache_min_date <= start_date:
-                        if end_date < today_str:
-                            # Cache has the full range!
+                        # Allow cache fully ONLY if end_date is strictly in the past AND cache covers it
+                        if end_date < today_str and cache_max_date >= end_date:
                             mask = (df['datetime'] >= start_date) & (df['datetime'] <= f"{end_date} 23:59:59")
                             df_filtered = df.loc[mask]
                             if not df_filtered.empty:
+                                self.logger.info("FyersBroker: Cache hit! Range fully covered.")
                                 return df_filtered.to_dict(orient='records')
+                        
+                        # We have partial cache OR end_date is today (ongoing day). We must fetch from API.
+                        self.logger.info(f"Cache max date ({cache_max_date}). Fetching fresh data for remaining/ongoing days.")
+                        
+                        # Adjust start_dt so we don't refetch everything!
+                        if cache_max_date < today_str:
+                            missing_start_dt = datetime.strptime(cache_max_date, '%Y-%m-%d') + timedelta(days=1)
                         else:
-                            self.logger.info(f"End date ({end_date}) is today or future. Fetching fresh to get live candles.")
+                            missing_start_dt = datetime.strptime(cache_max_date, '%Y-%m-%d')
+                            
+                        if missing_start_dt <= end_dt:
+                            start_dt = missing_start_dt
+                            self.logger.info(f"Adjusted API fetch start date to {start_dt.strftime('%Y-%m-%d')}")
                     else:
                         self.logger.info(f"Cache min date ({cache_min_date}) is newer than requested start ({start_date}). Fetching fresh.")
+                        df = None # Discard cache, fetch everything
                 except Exception as e:
                     self.logger.error("Failed to read cache %s: %s", csv_path, e)
+                    df = None
+            else:
+                df = None
             
             all_candles = []
             current_start = start_dt
@@ -495,20 +536,29 @@ class FyersBroker(BaseBroker):
                     "cont_flag": "1"
                 }
                 
-                resp = self._fyers_model.history(data)
+                import time as _time_mod
+                chunk_success = False
                 
-                if resp.get("s") != "ok":
-                    if "No data available" in str(resp):
-                        pass # Ignore empty chunks
+                for attempt in range(3):
+                    resp = self._fyers_model.history(data)
+                    if resp.get("s") == "ok":
+                        all_candles.extend(resp.get("candles", []))
+                        chunk_success = True
+                        break
+                    elif "No data available" in str(resp):
+                        chunk_success = True # Ignore empty chunks gracefully
+                        break
                     else:
-                        logger.warning(f"Fyers history API chunk failed: {resp.get('message', 'Unknown error')}")
-                else:
-                    all_candles.extend(resp.get("candles", []))
+                        err_msg = resp.get('message', 'Unknown error')
+                        logger.warning(f"Fyers history API chunk failed (Attempt {attempt+1}): {err_msg}")
+                        _time_mod.sleep(1.0 * (attempt + 1)) # Exponential backoff: 1s, 2s
+                        
+                if not chunk_success:
+                    raise Exception(f"Failed to fetch Fyers history chunk {data['range_from']} to {data['range_to']} after retries. Aborting to prevent data corruption.")
                     
                 current_start = current_end + timedelta(days=1)
-                # Sleep briefly to avoid API rate limits — use non-blocking sleep
-                import time as _time_mod
-                _time_mod.sleep(0.1)
+                # Sleep briefly to avoid API rate limits for subsequent requests
+                _time_mod.sleep(0.5)
                 
             if not all_candles:
                 self.logger.info("Fyers returned no candles. YFinance fallback is disabled.")
@@ -526,15 +576,36 @@ class FyersBroker(BaseBroker):
                     "volume": int(c[5])
                 })
                 
-            # Save to cache
+            # Save to cache and combine with existing
             if result:
                 try:
-                    df = pd.DataFrame(result)
+                    new_df = pd.DataFrame(result)
                     os.makedirs(os.path.dirname(csv_path), exist_ok=True)
-                    df.to_csv(csv_path, index=False)
-                    self.logger.info("Saved Fyers historical data to cache: %s", csv_path)
+                    if df is not None and not df.empty:
+                        # Append to existing cache and drop duplicates
+                        combined_df = pd.concat([df, new_df]).drop_duplicates(subset=['datetime']).sort_values('datetime')
+                        combined_df.to_csv(csv_path, index=False)
+                        self.logger.info("Appended missing Fyers historical data to cache: %s", csv_path)
+                        
+                        # Apply start/end filter on the COMBINED dataset
+                        mask = (combined_df['datetime'] >= start_date) & (combined_df['datetime'] <= f"{end_date} 23:59:59")
+                        final_filtered = combined_df.loc[mask]
+                        return final_filtered.to_dict(orient='records')
+                    else:
+                        new_df.to_csv(csv_path, index=False)
+                        self.logger.info("Saved Fyers historical data to fresh cache: %s", csv_path)
+                        
+                        # Apply start/end filter on the fresh dataset
+                        mask = (new_df['datetime'] >= start_date) & (new_df['datetime'] <= f"{end_date} 23:59:59")
+                        final_filtered = new_df.loc[mask]
+                        return final_filtered.to_dict(orient='records')
                 except Exception as e:
                     self.logger.error("Failed to save cache to %s: %s", csv_path, e)
+                    
+            elif df is not None and not df.empty:
+                # If no new candles but cache exists, just return the filtered cache
+                mask = (df['datetime'] >= start_date) & (df['datetime'] <= f"{end_date} 23:59:59")
+                return df.loc[mask].to_dict(orient='records')
                     
             return result
         except Exception as exc:
@@ -554,6 +625,7 @@ class FyersBroker(BaseBroker):
         self,
         symbols: List[str],
         on_tick: Callable[[Dict[str, Any]], Awaitable[None]],
+        on_reconnect: Optional[Callable[[], Awaitable[None]]] = None,
     ) -> None:
         logger.info("Fyers: Connecting to API Bridge WebSocket for real market data...")
         import websockets
@@ -563,6 +635,8 @@ class FyersBroker(BaseBroker):
         
         while True:
             try:
+                if on_reconnect:
+                    await on_reconnect()
                 async with websockets.connect(
                     "ws://127.0.0.1:8000/ws/live",
                     ping_interval=20,
@@ -573,25 +647,14 @@ class FyersBroker(BaseBroker):
                         data = await ws.recv()
                         msg = json.loads(data)
                         
-                        for sym, val in msg.items():
-                            if sym in ["trades", "signalsData"]:
-                                continue
-                            long_sym = sym
-                            if sym == "NIFTY":
-                                long_sym = "NSE:NIFTY50-INDEX"
-                            elif sym == "BANKNIFTY":
-                                long_sym = "NSE:NIFTYBANK-INDEX"
-                            elif sym == "SENSEX":
-                                long_sym = "BSE:SENSEX-INDEX"
-                            elif sym == "RELIANCE":
-                                long_sym = "NSE:RELIANCE-EQ"
-                            elif ":" not in sym:
-                                long_sym = f"NSE:{sym}-EQ"
-                                
-                            if long_sym in symbols:
-                                import time
-                                await on_tick({"symbol": long_sym, "ltp": val["lp"], "timestamp": int(time.time()), "volume": 0})
-                                
+                        raw_ticks = msg.get("raw_ticks", {})
+                        if not raw_ticks:
+                            continue
+                            
+                        for sym, val in raw_ticks.items():
+                            # Emit ALL raw ticks so both base indices and options reach the aggregator!
+                            import time
+                            await on_tick({"symbol": sym, "ltp": val["lp"], "timestamp": int(time.time()), "volume": 0})
             except Exception as e:
                 logger.error("API Bridge WebSocket disconnected or failed: %s. Retrying in 5 seconds...", e)
                 await asyncio.sleep(5)
