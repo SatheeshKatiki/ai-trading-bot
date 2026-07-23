@@ -83,9 +83,9 @@ export default function LiveTicker() {
       </div>
       <div className="flex-1 overflow-hidden relative">
         <div className="flex whitespace-nowrap animate-marquee-slower gap-12 items-center px-4 hover:pause">
-          {Object.keys(tickerData).filter(k => k !== "trades" && k !== "signalsData").map((symbol, i) => {
+          {Object.keys(tickerData).filter(k => k !== "trades" && k !== "signalsData" && k !== "raw_ticks").map((symbol, i) => {
             const data = tickerData[symbol];
-            if (!data || typeof data !== 'object') return null;
+            if (!data || typeof data !== 'object' || data.lp === undefined) return null;
             const isUp = data.chp >= 0;
             const flashClass = flashes[symbol] === "up" ? "bg-success/20 animate-pulse" : flashes[symbol] === "down" ? "bg-destructive/20 animate-pulse" : "";
             
@@ -103,9 +103,9 @@ export default function LiveTicker() {
             );
           })}
           {/* Duplicate for seamless loop */}
-          {Object.keys(tickerData).filter(k => k !== "trades" && k !== "signalsData").map((symbol, i) => {
+          {Object.keys(tickerData).filter(k => k !== "trades" && k !== "signalsData" && k !== "raw_ticks").map((symbol, i) => {
             const data = tickerData[symbol];
-            if (!data || typeof data !== 'object') return null;
+            if (!data || typeof data !== 'object' || data.lp === undefined) return null;
             const isUp = data.chp >= 0;
             return (
               <div key={`dup-${i}`} className="flex items-center gap-3 px-2 py-1">

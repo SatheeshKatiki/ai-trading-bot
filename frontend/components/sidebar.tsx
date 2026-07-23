@@ -108,6 +108,7 @@ export default function Sidebar() {
             <motion.div key={item.href} variants={itemVariants}>
               <Link
                 href={item.href}
+                prefetch={true}
                 className={clsx(
                   "group relative flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-300 outline-none",
                   isActive 

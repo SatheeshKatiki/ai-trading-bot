@@ -17,10 +17,10 @@ export async function POST(request: Request) {
     
     const res = await fetch(`http://127.0.0.1:8000/api/auth/setup`, fetchOptions);
     
-    if (!res.ok) {
-      return NextResponse.json({ error: 'Backend error' }, { status: res.status });
-    }
     const data = await res.json();
+    if (!res.ok) {
+      return NextResponse.json(data, { status: res.status });
+    }
     return NextResponse.json(data);
   } catch (error) {
     console.error('Error in proxy:', error);

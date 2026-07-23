@@ -31,7 +31,7 @@ function MergedAiSignalComponent({ symbol = "NIFTY" }: MergedAiSignalProps) {
                 if (data && !data.error) {
                     setSignalData(data);
                 } else if (data && data.error) {
-                    setSignalData({ confidence: 0, status: "Error", bias: data.error });
+                    setSignalData({ confidence: 0, status: data.error, bias: "NO SIGNAL" });
                 }
             } catch (error) {
                 console.error("Failed to fetch AI signal:", error);
@@ -99,7 +99,7 @@ function MergedAiSignalComponent({ symbol = "NIFTY" }: MergedAiSignalProps) {
             <div className="relative z-10 flex flex-nowrap items-center justify-between gap-2 2xl:gap-8">
 
                 {/* 1. Main Signal Bias & Status */}
-                <div className="flex items-center gap-3 2xl:gap-5 flex-1 min-w-0">
+                <div className="flex items-center gap-3 2xl:gap-5 flex-1 min-w-0 overflow-hidden">
                     <div className={`w-14 h-14 2xl:w-16 2xl:h-16 shrink-0 rounded-full flex items-center justify-center bg-background/50 border ${borderColor} relative`}>
                         <Icon className={`w-6 h-6 2xl:w-8 2xl:h-8 ${iconColor}`} />
                         {/* Direction Arrow Badge */}
@@ -107,7 +107,7 @@ function MergedAiSignalComponent({ symbol = "NIFTY" }: MergedAiSignalProps) {
                             <DirectionIcon className="w-4 h-4 2xl:w-5 2xl:h-5" strokeWidth={3} />
                         </div>
                     </div>
-                    <div className="min-w-0">
+                    <div className="min-w-0 flex-1 overflow-hidden">
                         <div className="flex items-center gap-3 mb-1">
                             <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider flex items-center gap-1 whitespace-nowrap">
                                 <Target className="w-3 h-3 shrink-0" /> AI Market Direction
@@ -123,7 +123,7 @@ function MergedAiSignalComponent({ symbol = "NIFTY" }: MergedAiSignalProps) {
                 </div>
 
                 {/* 2. Sub Metrics (Vol Sentiment & Trend) */}
-                <div className="flex gap-1.5 2xl:gap-4 items-center bg-background/40 px-2 py-1.5 2xl:px-6 2xl:py-4 rounded-xl border border-border/20 flex-shrink-0 justify-center">
+                <div className="hidden lg:flex gap-1.5 2xl:gap-4 items-center bg-background/40 px-2 py-1.5 2xl:px-6 2xl:py-4 rounded-xl border border-border/20 flex-shrink-0 justify-center">
                     <div className="flex flex-col items-center justify-center border-r border-border/20 pr-1.5 2xl:pr-6">
                         <span className="text-[9px] text-muted-foreground font-bold uppercase tracking-wider mb-1">Vol Sentiment</span>
                         <span className={`text-[10px] 2xl:text-xs font-mono font-bold ${isBullish ? 'text-emerald-500' : isBearish ? 'text-rose-500' : 'text-warning'}`}>
