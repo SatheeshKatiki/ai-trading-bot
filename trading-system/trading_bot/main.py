@@ -59,6 +59,7 @@ from trading_bot.strategies.premium_selection import (
     PremiumSignalEngine, PremiumSignal, generate_signals as premium_signals
 )
 from trading_bot.strategies.momentum_strategy import MomentumStrategy
+from trading_bot.strategies.drl_strategy import generate_signals as drl_signals
 
 from typing import Dict, Any, Optional, Literal
 
@@ -90,6 +91,7 @@ logger = logging.getLogger(__name__)
 
 # Register strategies that are not auto-discovered (e.g., from subpackages)
 registry.register("premium", premium_signals)
+registry.register("drl_strategy", drl_signals)
 
 # Path to the shared settings file written by the Streamlit dashboard
 _SETTINGS_PATH = Path(__file__).resolve().parents[1] / "config" / "settings.json"
