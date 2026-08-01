@@ -40,7 +40,7 @@ os.environ["NO_PROXY"] = "*"
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Any, Optional, Literal
 
 import pandas as pd
 import pytz
@@ -64,8 +64,6 @@ from trading_bot.strategies.premium_selection import (
 from trading_bot.strategies.momentum_strategy import MomentumStrategy
 from trading_bot.strategies.drl_strategy import generate_signals as drl_signals
 from trading_bot.strategies.marl_strategy import generate_signals as marl_signals
-
-from typing import Dict, Any, Optional, Literal
 
 _m2m_last_update: float = 0.0
 
@@ -424,7 +422,6 @@ async def run_live_bot(symbols: List[str]) -> None:
                 _save_positions(active_positions)
                 
                 # Persist Entry to state.db ONLY after broker confirms execution
-                from datetime import datetime
                 state_action = "BUY" if is_option_trade else ("BUY" if pos_obj.side == 1 else "SELL")
                 record_trade(pos_obj.symbol, state_action, pos_obj.entry_price, datetime.now(_IST).isoformat(), qty=actual_qty)
                 update_equity(risk_manager.current_equity, risk_manager.daily_pnl)
@@ -1217,7 +1214,6 @@ async def run_live_bot(symbols: List[str]) -> None:
                             _save_positions(active_positions)
                             
                             # Persist Paper Entry to state.db
-                            from datetime import datetime
                             state_action = "BUY" if is_option_trade else ("BUY" if latest_signal == 1 else "SELL")
                             record_trade(entry_symbol, state_action, entry_premium, datetime.now(_IST).isoformat(), qty=total_quantity)
                             update_equity(risk_manager.current_equity, risk_manager.daily_pnl)
