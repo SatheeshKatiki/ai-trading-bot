@@ -103,6 +103,35 @@ class MARLStrategy:
 
 _marl_instance = None
 
+
+def _get_marl_instance() -> "MARLStrategy":
+    global _marl_instance
+    if _marl_instance is None:
+        _marl_instance = MARLStrategy()
+    return _marl_instance
+
+
+def record_trade_outcome(pnl: float) -> None:
+    """Feed a closed MARL_Ultra trade's PNL into the shared RiskAgent's
+    Capital Protection Mode consecutive-loss tracker.
+
+    Root-cause fix: RiskAgent.record_trade_result() previously had zero
+    call sites anywhere in the codebase, so the documented "half-size
+    after 2 losses / stop after 3 losses" brake never engaged. The
+    live trading loop (trading_bot/main.py) calls this on every
+    position close.
+    """
+    risk_agent = _get_marl_instance().master_agent.risk_agent
+    risk_agent.record_trade_result(pnl)
+
+
+def is_capital_protection_blocking_entries() -> bool:
+    """True once MARL_Ultra has hit 3+ consecutive losing trades and new
+    entries should be blocked, per RiskAgent's documented stop rule."""
+    risk_agent = _get_marl_instance().master_agent.risk_agent
+    return risk_agent.get_position_size_multiplier() == 0.0
+
+
 def generate_signals(df: pd.DataFrame, **kwargs) -> pd.Series:
     """
     Ultra-Professional MARL signal generator — Post-Audit v3.
@@ -220,6 +249,20 @@ def generate_signals(df: pd.DataFrame, **kwargs) -> pd.Series:
     episode_starts  = torch.tensor([False], dtype=torch.float32, device=device)
     features_tensor = torch.tensor(features_array, dtype=torch.float32, device=device)
     signals_arr     = np.zeros(n, dtype=int)
+
+    # Capital Protection Mode: block new entries once RiskAgent has recorded
+    # 3+ consecutive live-trade losses (see record_trade_outcome(), called
+    # from trading_bot/main.py on every position close). This is checked
+    # once per call rather than per-bar since it can't change mid-call, and
+    # is a live-trading-only signal — a fresh backtest process/run always
+    # starts with a clean RiskAgent (0 consecutive losses) since backtesting
+    # doesn't feed trade outcomes back into it, so this never fires there.
+    capital_protection_blocked = is_capital_protection_blocking_entries()
+    if capital_protection_blocked:
+        logger.warning(
+            "MARL_Ultra: Capital Protection Mode active (3+ consecutive "
+            "losses) — new entry signals are blocked this call."
+        )
     
     # Signal balance tracker — rolling window of raw (pre-filter) LSTM outputs
     # Used to detect and correct 1-directional bias
@@ -294,6 +337,10 @@ def generate_signals(df: pd.DataFrame, **kwargs) -> pd.Series:
                 if pct_above_ema > EMA_COUNTER_TREND_BLOCK_PCT:
                     continue  # Price deeply above EMA — counter-trend SELL, skip
             
+            # ── Filter 6: Capital Protection Mode ──────────────────────────
+            if capital_protection_blocked:
+                continue
+
             if act_val == 1:
                 signals_arr[i] = 1
             elif act_val == 2:

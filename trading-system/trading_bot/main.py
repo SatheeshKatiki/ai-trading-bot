@@ -530,7 +530,14 @@ async def run_live_bot(symbols: List[str]) -> None:
             
             # ── Confirmed execution: now record PNL and clean up position ──
             pnl = (ltp_actual - entry_price) * actual_exit_qty * side
-            
+
+            if _load_settings().get("active_strategy") == "MARL_Ultra":
+                try:
+                    from trading_bot.strategies.marl_strategy import record_trade_outcome
+                    record_trade_outcome(pnl)
+                except Exception as mrl_exc:
+                    logger.error("Failed to record MARL trade outcome: %s", mrl_exc)
+
             portfolio_risk.update_pnl(pnl, risk_manager.current_equity)
             trade_side = "LONG" if side == 1 else "SHORT"
             risk_manager.record_trade(TradeRecord(
@@ -814,6 +821,14 @@ async def run_live_bot(symbols: List[str]) -> None:
 
                     # Record PnL & update dashboard state (paper mode: immediate, no confirmation needed)
                     pnl = (ltp - open_position.entry_price) * qty_to_close * open_position.side
+
+                    if settings.get("active_strategy") == "MARL_Ultra":
+                        try:
+                            from trading_bot.strategies.marl_strategy import record_trade_outcome
+                            record_trade_outcome(pnl)
+                        except Exception as mrl_exc:
+                            logger.error("Failed to record MARL trade outcome: %s", mrl_exc)
+
                     portfolio_risk.update_pnl(pnl, risk_manager.current_equity)
                     trade_side = "LONG" if open_position.side == 1 else "SHORT"
                     risk_manager.record_trade(TradeRecord(
