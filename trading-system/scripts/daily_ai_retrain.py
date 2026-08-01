@@ -74,18 +74,34 @@ async def retrain_ai():
         model = TradeFilterModel()
         
         # Train generates labels automatically using close prices and forward returns!
+        # NOTE: train() only deploys the new model if it passes the accuracy
+        # gate (not meaningfully worse than the currently-live model) — a
+        # successful train() call no longer guarantees the live model changed.
         metrics = model.train(features=df_features, ohlcv_df=df_raw, test_size=0.15)
-        
+
         accuracy = metrics['accuracy'] * 100
-        logger.info(f"Retraining successful! New Validation Accuracy: {accuracy:.2f}%")
-        
+        deployed = metrics['deployed']
+
+        if deployed:
+            logger.info(f"Retraining successful! New Validation Accuracy: {accuracy:.2f}%")
+            status_line = "Status: `Hot-reloaded into Live Engine`"
+        else:
+            previous_accuracy = metrics['previous_accuracy'] * 100
+            logger.warning(
+                f"Retrain REJECTED: new accuracy {accuracy:.2f}%% did not clear the "
+                f"deployment gate against the existing model ({previous_accuracy:.2f}%%). "
+                f"Reason: {metrics['reject_reason']}"
+            )
+            status_line = f"Status: `REJECTED — kept existing model ({previous_accuracy:.2f}% accuracy)`"
+
         # Send Telegram alert
+        header = "🧠 **AI Model Retrained**" if deployed else "⚠️ **AI Retrain Rejected**"
         message = (
-            f"🧠 **AI Model Retrained Successfully**\n\n"
+            f"{header}\n\n"
             f"Symbol: `{symbol}`\n"
             f"Data Points: `{len(df_raw)} bars (30 Days)`\n"
-            f"Validation Accuracy: `{accuracy:.2f}%`\n"
-            f"Status: `Hot-reloaded into Live Engine`"
+            f"New Model Accuracy: `{accuracy:.2f}%`\n"
+            f"{status_line}"
         )
         alerter.send_telegram_alert(message)
         
