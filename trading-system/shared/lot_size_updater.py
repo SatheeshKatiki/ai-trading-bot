@@ -2,6 +2,7 @@ import asyncio
 import logging
 import json
 import os
+import tempfile
 import aiohttp
 
 logger = logging.getLogger(__name__)
@@ -78,8 +79,21 @@ async def update_lot_sizes_in_settings():
 
             if existing_lots != merged_lots:
                 settings["lot_sizes"] = merged_lots
-                with open(settings_path, 'w') as f:
-                    json.dump(settings, f, indent=4)
+                # Atomic write (temp file + rename) — the live engine reads
+                # this same file concurrently on an mtime check
+                # (trading_bot/main.py's _load_settings()); a direct
+                # open(..., 'w') here could hand it a truncated/invalid file
+                # if a crash or concurrent read landed mid-write.
+                settings_dir = os.path.dirname(settings_path) or "."
+                fd, tmp_path = tempfile.mkstemp(dir=settings_dir, prefix="settings_tmp_", suffix=".json")
+                try:
+                    with os.fdopen(fd, "w") as f:
+                        json.dump(settings, f, indent=4)
+                    os.replace(tmp_path, settings_path)
+                except Exception:
+                    if os.path.exists(tmp_path):
+                        os.unlink(tmp_path)
+                    raise
                 logger.info("Updated settings.json with new lot sizes.")
             else:
                 logger.info("Lot sizes in settings.json are already up to date.")
