@@ -680,9 +680,18 @@ async def run_live_bot(symbols: List[str]) -> None:
             should_exit, reason, exit_qty = False, "", None
 
             # ── Sentiment Panic: full-position exit with highest priority ──────
+            # Symmetric both ways: a long position is at risk from a bearish
+            # panic (score < -0.8), and a short position is equally at risk
+            # from a bullish squeeze (score > 0.8) — the circuit breaker
+            # previously only protected longs, leaving shorts fully exposed
+            # to the mirror-image blowup scenario.
             if sentiment_score < -0.8 and open_position.side == 1:
                 should_exit = True
                 reason = "Macro Panic (Sentiment Circuit Breaker)"
+                exit_qty = open_position.quantity
+            elif sentiment_score > 0.8 and open_position.side == -1:
+                should_exit = True
+                reason = "Bullish Squeeze (Sentiment Circuit Breaker)"
                 exit_qty = open_position.quantity
             
             # ── Strategy exit check: only runs if sentiment hasn't already fired ──
