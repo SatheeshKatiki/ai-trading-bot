@@ -45,7 +45,7 @@ class DRLStrategy:
                 latest.get('atr', 0),
                 latest.get('vol_change', 0)
             ], dtype=np.float32)
-        except KeyError as e:
+        except KeyError:
             return None
         return features
 
@@ -57,9 +57,8 @@ class DRLStrategy:
         if features is None:
             return 0
             
-        current_price = df.iloc[-1]['close']
         profit_pct = 0.0
-            
+
         obs = np.append(features, [self.current_position, profit_pct]).astype(np.float32)
         
         action, self.lstm_states = self.model.predict(

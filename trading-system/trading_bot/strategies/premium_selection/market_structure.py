@@ -48,13 +48,11 @@ def compute_market_structure(
     # --- Pullback detection ---
     # Bullish pullback: there was a recent breakout, price dipped ≥ 1 bar, now recovering
     recent_breakout = df["breakout_bullish"].shift(1).rolling(pullback_bars).max().fillna(False).astype(bool)
-    price_dipped    = df["low"] < df["close"].shift(1)      # price came down at least once
     recovering      = df["close"] > df["open"]              # current bar is bullish (recovery)
     df["pullback_bullish"] = recent_breakout & recovering
 
     # Bearish pullback: there was a recent breakdown, price bounced, now resuming down
     recent_breakdown = df["breakdown_bearish"].shift(1).rolling(pullback_bars).max().fillna(False).astype(bool)
-    price_bounced    = df["high"] > df["close"].shift(1)
     resuming_down    = df["close"] < df["open"]
     df["pullback_bearish"] = recent_breakdown & resuming_down
 

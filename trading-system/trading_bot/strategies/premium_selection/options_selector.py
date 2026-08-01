@@ -10,7 +10,7 @@ Selects the correct option contract for execution:
 from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import Literal
+from typing import Literal, Any
 import math
 import logging
 import os

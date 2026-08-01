@@ -220,7 +220,6 @@ class FyersClient:
         import random
 
         prices = {sym: 1000.0 + random.uniform(-100, 100) for sym in symbols}
-        tick_interval = 1.0 / max(len(symbols), 1)   # spread ticks evenly in 1 s
 
         while True:
             ts = time.time()

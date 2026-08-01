@@ -671,7 +671,6 @@ class FyersBroker(BaseBroker):
     ) -> None:
         logger.info("Fyers: Connecting to API Bridge WebSocket for real market data...")
         import websockets
-        import json
         import os
         os.environ["NO_PROXY"] = "localhost,127.0.0.1"
         

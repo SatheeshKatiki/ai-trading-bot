@@ -857,7 +857,6 @@ async def get_history(
         logger.info("Fetching history via broker: %s for %s", broker.DISPLAY_NAME, symbol)
         
         # Map symbol using institutional formatter
-        original_symbol = symbol
         symbol = format_broker_symbol(symbol)
             
         data = broker.get_historical_data(symbol, start_date, end_date, timeframe)
@@ -923,7 +922,6 @@ async def get_backtest(
         broker.authenticate()
         
         # Map symbol using institutional formatter
-        original_symbol = symbol
         symbol = format_broker_symbol(symbol)
             
         try:
@@ -1819,8 +1817,7 @@ async def get_option_chain(symbol: str = "NSE:NIFTY50-INDEX"):
             gamma = norm_pdf(d1) / (S * sigma * math.sqrt(T))
             vega = S * norm_pdf(d1) * math.sqrt(T) / 100.0
             return price, delta, gamma, theta, vega
-        import hashlib
-        
+
         def deterministic_random(seed_str, salt, min_val, max_val):
             h = hashlib.md5((str(seed_str) + str(salt)).encode()).hexdigest()
             rand_float = int(h[:8], 16) / 4294967295.0
@@ -1921,7 +1918,6 @@ async def get_option_chain(symbol: str = "NSE:NIFTY50-INDEX"):
 # ---------------------------------------------------------------------------
 import hashlib
 import secrets
-import time
 import re
 import tempfile
 from pydantic import BaseModel

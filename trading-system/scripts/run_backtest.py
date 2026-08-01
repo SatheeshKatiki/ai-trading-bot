@@ -41,9 +41,7 @@ def main():
 
     # Fetch Data
     broker = BrokerFactory.get_active_broker()
-    
-    from datetime import datetime, timedelta
-    
+
     end_date = datetime.now()
     # If today is Sunday (6) or Saturday (5), move back to Friday
     if end_date.weekday() == 6:

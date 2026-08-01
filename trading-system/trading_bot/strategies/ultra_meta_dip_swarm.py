@@ -54,7 +54,6 @@ def generate_signals(df: pd.DataFrame, **kwargs) -> pd.Series:
     
     # Brain 1: Trend (EMA)
     ema_fast = df['close'].ewm(span=20, adjust=False).mean()
-    ema_slow = df['close'].ewm(span=50, adjust=False).mean()
     call_scores += np.where(df['close'] > ema_fast, 20, 0)
     put_scores += np.where(df['close'] < ema_fast, 20, 0)
     

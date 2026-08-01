@@ -57,20 +57,18 @@ jobs:
       - name: Lint — check for syntax errors (ruff, fast)
         run: |
           pip install ruff --quiet
-          ruff check . --select E9,F8,F4 --ignore F401 || true
+          ruff check . --select E9,F8,F4 --ignore F401
 
-      - name: Run indicator unit tests
-        run: |
-          python -m pytest tests/test_backtest.py -v --tb=short -x \
-            -k "not test_bt" || true   # skip live-broker test in CI
-
-      - name: Run API bridge tests (offline, using TestClient)
+      - name: Run backend test suite (offline, using TestClient)
         env:
           # Provide dummy env so broker init doesn't fail
           FYERS_CLIENT_ID: CI_TEST_ID
           FYERS_SECRET_KEY: CI_TEST_KEY
         run: |
-          python -m pytest tests/test_api_bridge.py -v --tb=short || true
+          # -k "not test_bt" skips the one test that needs live broker
+          # credentials (tests/test_backtest.py::test_bt); every other
+          # collectible test under tests/ runs and must pass.
+          python -m pytest tests/ -v --tb=short -k "not test_bt"
 
       - name: Run indicator smoke tests
         run: |
@@ -132,7 +130,6 @@ jobs:
 
       - name: TypeScript type-check
         run: npx tsc --noEmit
-        continue-on-error: true   # warn but don't block — tighten once clean
 
       - name: Next.js production build
         run: npm run build

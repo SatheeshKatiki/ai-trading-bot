@@ -270,7 +270,6 @@ class BaseBroker(ABC):
         (exit evaluation, signal checks) are never starved.
         """
         prices = {sym: 1000.0 + random.uniform(-100, 100) for sym in symbols}
-        interval_per_sym = tick_interval / max(len(symbols), 1)
 
         while True:
             ts = time.time()
