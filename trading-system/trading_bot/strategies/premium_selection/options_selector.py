@@ -15,7 +15,6 @@ import math
 import logging
 import os
 import json
-from functools import lru_cache
 
 logger = logging.getLogger(__name__)
 
@@ -42,9 +41,36 @@ def calculate_greeks(spot: float, strike: float, days_to_expiry: float, vol: flo
     return {"delta": delta, "theta": theta}
 
 
-@lru_cache(maxsize=128)
+_LOT_SIZE_CACHE: dict = {}
+_LOT_SIZE_CACHE_TTL_S = 300.0  # re-check every 5 minutes
+
+
 def _get_dynamic_lot_size(instrument: str, default_lot_size: int) -> int:
-    """Reads lot size dynamically from the active broker."""
+    """Reads lot size dynamically from the active broker.
+
+    Root-cause fix (Medium audit finding): this used to be wrapped in
+    @lru_cache(maxsize=128), which caches forever for the life of the
+    process — any intraday lot-size revision from the exchange (has
+    happened historically for NIFTY/BANKNIFTY) would be silently
+    ignored until the next restart. Replaced with a time-based cache:
+    still avoids hitting the broker/settings.json on every call (this
+    runs once per option-contract selection, not per tick), but
+    re-checks every _LOT_SIZE_CACHE_TTL_S seconds instead of never.
+    """
+    import time
+    cache_key = (instrument, default_lot_size)
+    cached = _LOT_SIZE_CACHE.get(cache_key)
+    now = time.monotonic()
+    if cached is not None and (now - cached[1]) < _LOT_SIZE_CACHE_TTL_S:
+        return cached[0]
+
+    value = _fetch_dynamic_lot_size(instrument, default_lot_size)
+    _LOT_SIZE_CACHE[cache_key] = (value, now)
+    return value
+
+
+def _fetch_dynamic_lot_size(instrument: str, default_lot_size: int) -> int:
+    """Uncached lookup — always does the real broker/settings.json read."""
     try:
         from brokers.broker_factory import BrokerFactory
         broker = BrokerFactory.get_active_broker()
