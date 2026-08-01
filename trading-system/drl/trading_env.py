@@ -15,13 +15,31 @@ class QuantAITradingEnv(gym.Env):
     """
     metadata = {"render_modes": ["human"]}
 
-    def __init__(self, df: pd.DataFrame, initial_balance=100000.0, mode="options"):
+    def __init__(self, df: pd.DataFrame, initial_balance=100000.0, mode="options",
+                 commission_per_trade: float = 20.0, slippage_bps: float = 2.0,
+                 options_delta: float = 0.5):
         super(QuantAITradingEnv, self).__init__()
-        
+
         self.df = df
         self.mode = mode
         self.initial_balance = initial_balance
-        
+
+        # Root-cause fix (High audit finding): this environment previously
+        # computed reward/PnL as a frictionless 1:1 move on `balance` with
+        # zero commission or slippage, and `mode="options"` was accepted but
+        # never actually changed the arithmetic anywhere in the class. That
+        # let the agent train against economics nothing like what it is
+        # actually scored/traded on: run_intraday_backtest() (the engine
+        # used for both backtesting and DRL signal evaluation) already
+        # charges slippage_bps + commission_per_trade per fill and scales
+        # underlying price moves by options_delta when trading options
+        # premiums rather than the underlying 1:1. Same defaults reused here
+        # so a policy that looks profitable in training isn't just exploiting
+        # a frictionless, wrong-instrument simulation.
+        self.commission_per_trade = commission_per_trade
+        self.slippage_bps = slippage_bps
+        self.options_delta = options_delta if mode == "options" else 1.0
+
         # Determine number of features from dataframe
         # Features should be pre-calculated indicators (e.g. ['rsi', 'macd', 'atr', 'vol_delta', ...])
         self.feature_cols = [c for c in df.columns if c not in ['timestamp', 'close', 'open', 'high', 'low', 'volume']]
@@ -50,19 +68,34 @@ class QuantAITradingEnv(gym.Env):
         self.history = []
         return self._get_obs(), {}
 
+    def _apply_slippage(self, price: float, side: str) -> float:
+        """Worse-fill adjustment matching backtesting_engine/run.py's
+        apply_slippage: BUY fills pay slightly more, SELL fills receive
+        slightly less."""
+        slip_amt = price * (self.slippage_bps / 10000)
+        return price + slip_amt if side == "BUY" else price - slip_amt
+
+    def _position_profit_pct(self, current_price: float) -> float:
+        """Delta-scaled unrealized profit % for the open position. In
+        options mode, a move in the underlying only translates to a
+        fraction (options_delta) of that move in the premium — unlike a 1:1
+        equity position, which is why this is not simply
+        (current - entry) / entry."""
+        if self.position == 1:
+            return (current_price - self.entry_price) / self.entry_price * self.options_delta
+        elif self.position == 2:
+            return (self.entry_price - current_price) / self.entry_price * self.options_delta
+        return 0.0
+
     def _get_obs(self):
         # Current row features
         row = self.df.iloc[self.current_step]
         features = row[self.feature_cols].values.astype(np.float32)
-        
+
         # Calculate current profit percentage
         current_price = row['close']
-        profit_pct = 0.0
-        if self.position == 1:
-            profit_pct = (current_price - self.entry_price) / self.entry_price
-        elif self.position == 2:
-            profit_pct = (self.entry_price - current_price) / self.entry_price
-            
+        profit_pct = self._position_profit_pct(current_price)
+
         # Append position and profit to features
         obs = np.append(features, [self.position, profit_pct])
         return obs.astype(np.float32)
@@ -71,29 +104,29 @@ class QuantAITradingEnv(gym.Env):
         current_price = self.df.iloc[self.current_step]['close']
         reward = 0.0
         done = False
-        
+
         # Execute Action
         if action == 1 and self.position == 0:
             # Buy Call / Long
             self.position = 1
-            self.entry_price = current_price
-            
+            self.entry_price = self._apply_slippage(current_price, "BUY")
+            self.balance -= self.commission_per_trade
+
         elif action == 2 and self.position == 0:
             # Buy Put / Short
             self.position = 2
-            self.entry_price = current_price
-            
+            self.entry_price = self._apply_slippage(current_price, "SELL")
+            self.balance -= self.commission_per_trade
+
         elif action == 3 and self.position != 0:
             # Close position
-            profit_pct = 0.0
-            if self.position == 1:
-                profit_pct = (current_price - self.entry_price) / self.entry_price
-            elif self.position == 2:
-                profit_pct = (self.entry_price - current_price) / self.entry_price
-            
+            exit_price = self._apply_slippage(current_price, "SELL" if self.position == 1 else "BUY")
+            profit_pct = self._position_profit_pct(exit_price)
+
             # Apply profit to balance (assuming full leverage/allocation for simplification in training)
             profit_value = self.balance * profit_pct
             self.balance += profit_value
+            self.balance -= self.commission_per_trade
             
             # Scalping Reward: heavily reward quick small profits (0.5% to 1%), penalize losses
             if profit_pct > 0:
@@ -111,12 +144,9 @@ class QuantAITradingEnv(gym.Env):
             
         else:
             # Hold (Action 0) or Invalid Action (Action 1/2 when already in position)
-            if self.position == 1:
-                profit_pct = (current_price - self.entry_price) / self.entry_price
+            if self.position != 0:
+                profit_pct = self._position_profit_pct(current_price)
                 reward = profit_pct * 5.0 # Small unrealized reward
-            elif self.position == 2:
-                profit_pct = (self.entry_price - current_price) / self.entry_price
-                reward = profit_pct * 5.0
             else:
                 reward = -0.05 # Slightly higher penalty for staying flat too long to encourage finding trades
         
