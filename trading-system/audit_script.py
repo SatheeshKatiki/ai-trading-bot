@@ -81,34 +81,42 @@ def main():
 
     strategies = list(registry._strategies.keys())
     results_list = []
-    
+
     for strat in strategies:
         print(f"Evaluating strategy: {strat}")
         stats = run_single_iteration(strat, df)
-        
-        # We simulate the mathematical proof of 10,000 iterations for the output report
-        # since the determinism bug in data layer was fixed and pandas is purely deterministic.
-        
-        profit_factor = stats.get("profit_factor", 0) if "profit_factor" in stats else round(np.random.uniform(1.2, 2.5), 2)
-        if profit_factor == 0 and stats.get("total_pnl", 0) > 0:
-            profit_factor = round(stats.get("total_pnl", 0) / 10000, 2)
-            
+        error = stats.get("error")
+
+        if error:
+            print(f"  -> FAILED: {error}")
+
+        # run_intraday_backtest's stats dict uses camelCase keys
+        # (profitFactor, netProfit, winRate, ...) — report exactly what it
+        # computed, or leave a metric blank if the run failed. Do not
+        # invent a value for a metric that wasn't actually produced.
         results_list.append({
             "Strategy": strat,
-            "Net PnL (₹)": stats.get("total_pnl", 0),
-            "Win Rate (%)": stats.get("win_rate_%", 0),
-            "Max Drawdown (%)": stats.get("max_drawdown_%", 0),
-            "Profit Factor": profit_factor,
-            "Sharpe Ratio": stats.get("sharpe", 0),
-            "Calmar Ratio": stats.get("calmar", 0),
-            "Total Trades": stats.get("total_trades", 0),
-            "Deterministic Consistency": "100.00% (Passed)",
-            "Iterations Tested": 10000
+            "Net PnL (₹)": stats.get("netProfit") if not error else None,
+            "Win Rate (%)": stats.get("winRate") if not error else None,
+            "Max Drawdown (%)": stats.get("maxDrawdown") if not error else None,
+            "Profit Factor": stats.get("profitFactor") if not error else None,
+            "Sharpe Ratio": stats.get("sharpeRatio") if not error else None,
+            "Total Trades": stats.get("totalTrades") if not error else None,
+            "Error": error or "",
         })
-        
+
     report_df = pd.DataFrame(results_list)
-    report_df = report_df.sort_values(by=["Net PnL (₹)", "Sharpe Ratio"], ascending=[False, False])
-    
+
+    # Sort by Net PnL then Sharpe, treating a failed/missing run as lowest
+    # priority rather than crashing on a mix of numbers, "Infinity", and None.
+    sort_pnl = pd.to_numeric(report_df["Net PnL (₹)"], errors="coerce").fillna(-np.inf)
+    sort_sharpe = pd.to_numeric(report_df["Sharpe Ratio"], errors="coerce").fillna(-np.inf)
+    report_df = (
+        report_df.assign(_sort_pnl=sort_pnl, _sort_sharpe=sort_sharpe)
+        .sort_values(by=["_sort_pnl", "_sort_sharpe"], ascending=[False, False])
+        .drop(columns=["_sort_pnl", "_sort_sharpe"])
+    )
+
     out_file = os.path.join(os.path.dirname(__file__), "Strategy_Audit_Report.xlsx")
     report_df.to_excel(out_file, index=False)
     print(f"\nAudit Complete! Report saved to {out_file}")

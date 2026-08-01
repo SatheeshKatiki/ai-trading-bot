@@ -27,6 +27,9 @@ fyers-apiv3                    # Fyers Securities (default, active)
 matplotlib>=3.8.0
 plotly>=5.0.0
 
+# Excel report output (audit_script.py's Strategy_Audit_Report.xlsx)
+openpyxl>=3.1.0
+
 # Async & websockets
 websockets>=12.0
 
