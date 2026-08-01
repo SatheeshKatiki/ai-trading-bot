@@ -114,7 +114,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   // Password Complexity Validation Rules
-  const passwordLengthValid = password.length >= 8 && password.length <= 15;
+  // Max raised from 15 -> 128: an unnecessarily small cap combined with
+  // requiring all 4 character classes needlessly shrinks the keyspace for
+  // an otherwise-valid password. Matches api_bridge.py's
+  // _validate_password_complexity (server-side is the authoritative check;
+  // this must stay in sync so a password valid here isn't rejected there).
+  const passwordLengthValid = password.length >= 8 && password.length <= 128;
   const passwordHasUpper = /[A-Z]/.test(password);
   const passwordHasLower = /[a-z]/.test(password);
   const passwordHasNumber = /[0-9]/.test(password);
@@ -140,7 +145,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const getPasswordStrength = (pass: string) => {
     let score = 0;
     if (!pass) return 0;
-    if (pass.length >= 8 && pass.length <= 15) score += 25;
+    if (pass.length >= 8 && pass.length <= 128) score += 25;
     if (/[A-Z]/.test(pass)) score += 25;
     if (/[a-z]/.test(pass) && /[0-9]/.test(pass)) score += 25;
     if (/[^A-Za-z0-9]/.test(pass)) score += 25;
@@ -594,7 +599,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
                         disabled={submitting}
-                        maxLength={15}
+                        maxLength={128}
                         placeholder="Enter Password"
                         className="block w-full rounded-xl border border-white/10 bg-white/5 py-2.5 pl-11 pr-12 text-sm text-white placeholder-white/20 outline-none transition-all focus:border-emerald-500/50 focus:bg-white/10 focus:ring-4 focus:ring-emerald-500/10"
                       />
@@ -610,7 +615,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
                     {/* PASSWORD STRENGTH BAR & HELPER */}
                     <p className="mt-1.5 text-[11px] text-muted-foreground/70 leading-normal">
-                      Password must be 8–15 characters long and include uppercase, lowercase, number, and special character.
+                      Password must be 8–128 characters long and include uppercase, lowercase, number, and special character.
                     </p>
 
                     {password.length > 0 && (
@@ -746,7 +751,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
                         disabled={submitting}
-                        maxLength={15}
+                        maxLength={128}
                         placeholder="Enter Password"
                         className="block w-full rounded-xl border border-white/10 bg-white/5 py-3 pl-11 pr-12 text-sm text-white placeholder-white/20 outline-none transition-all focus:border-emerald-500/50"
                       />

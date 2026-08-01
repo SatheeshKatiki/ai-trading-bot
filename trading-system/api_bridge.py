@@ -2050,9 +2050,22 @@ def _send_welcome_email_async(email: str, name: str, user_id: str):
         logger.error("Failed to send welcome email to %s: %s", email, e)
 
 def _validate_password_complexity(password: str) -> None:
-    """Enforces 8-15 characters with uppercase, lowercase, number, and special character."""
-    if not password or len(password) < 8 or len(password) > 15:
-        raise HTTPException(status_code=400, detail="Password must be between 8 and 15 characters long.")
+    """Enforces 8-128 characters with uppercase, lowercase, number, and
+    special character.
+
+    Root-cause fix: was previously capped at 15 characters while also
+    requiring all 4 character classes — an unnecessarily small max that
+    needlessly shrinks the keyspace for a password meeting the complexity
+    rules (longer passwords are generally more secure, not less; NIST
+    800-63B explicitly recommends allowing long passwords rather than
+    artificially capping them). Hashing uses hashlib.pbkdf2_hmac (see
+    _hash_password), which has no length limitation like bcrypt's 72-byte
+    cap, so raising the max has no hashing-side side effect. 128 is a
+    generous, standard-practice ceiling that still bounds worst-case
+    input size.
+    """
+    if not password or len(password) < 8 or len(password) > 128:
+        raise HTTPException(status_code=400, detail="Password must be between 8 and 128 characters long.")
     if not re.search(r"[A-Z]", password):
         raise HTTPException(status_code=400, detail="Password must contain at least one uppercase letter.")
     if not re.search(r"[a-z]", password):
