@@ -1128,10 +1128,20 @@ async def run_live_bot(symbols: List[str]) -> None:
                         total_quantity = number_of_lots * lot_size
                         
                         # SECURITY SANITY GUARD: Max order value limit protection
+                        # Root-cause fix: options entries are placed as a
+                        # Marketable Limit Order at entry_premium * 1.05 (see
+                        # mlo_price below) to guarantee execution, but this
+                        # check used to compare against the raw entry_premium
+                        # — the real worst-case notional the broker could fill
+                        # at was up to 5% higher than what this cap validated,
+                        # silently allowing up to 5% over the configured
+                        # max_order_value. Use the same worst-case fill price
+                        # (mlo pad) the actual order will be placed at.
                         max_order_val = settings.get("max_order_value", 500000.0)
-                        if (entry_premium * total_quantity) > max_order_val:
-                            logger.warning(f"SECURITY GUARD: Order value ₹{entry_premium * total_quantity:,.2f} exceeds limit ₹{max_order_val:,.2f}. Capping lots.")
-                            total_quantity = (int(max_order_val // entry_premium) // lot_size) * lot_size
+                        worst_case_fill_price = entry_premium * 1.05 if is_option_trade else entry_premium
+                        if (worst_case_fill_price * total_quantity) > max_order_val:
+                            logger.warning(f"SECURITY GUARD: Order value ₹{worst_case_fill_price * total_quantity:,.2f} (worst-case fill) exceeds limit ₹{max_order_val:,.2f}. Capping lots.")
+                            total_quantity = (int(max_order_val // worst_case_fill_price) // lot_size) * lot_size
                         
                         if cap_protect_multiplier < 1.0:
                             logger.info(f"CAPITAL PROTECTION ACTIVE: Scaling position size to {cap_protect_multiplier*100}% ({total_quantity} shares)")
