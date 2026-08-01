@@ -217,6 +217,22 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
 
     # Optimize by converting to numpy arrays for the tight loop
     closes = df['close'].to_numpy()
+    opens = df['open'].to_numpy() if 'open' in df.columns else closes
+
+    def next_bar_fill_price(i: int, current_price: float) -> float:
+        """Root-cause fix for the audit's lookahead-bias finding: a signal
+        (or a stop-loss/target/pyramid trigger) evaluated using bar i's own
+        close cannot realistically be filled at that same close — by the
+        time bar i's close is known, that instant has already passed. Any
+        order triggered by bar i's data fills at bar i+1's open instead
+        (matching the already-correct convention in this module's
+        `Backtester` class). Only the very last bar, with no i+1 to defer
+        to, falls back to filling at its own close.
+        """
+        if i + 1 < len(closes):
+            return float(opens[i + 1])
+        return current_price
+
     if 'datetime' in df.columns:
         times = df['datetime'].apply(lambda x: str(x)[:16] if isinstance(x, str) else "00:00").to_numpy()
         total_trading_days = len(set([str(x)[:10] for x in df['datetime']]))
@@ -339,11 +355,12 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
                                 scale_qty = 0
                                 
                         if scale_qty > 0:
-                            scale_entry = apply_slippage(current_price, position["type"])
+                            scale_fill = next_bar_fill_price(i, current_price)
+                            scale_entry = apply_slippage(scale_fill, position["type"])
                             position["entries"].append((scale_entry, scale_qty))
                             capital -= commission_per_trade
                             total_brokerage += commission_per_trade
-                            total_slippage += abs(current_price - scale_entry) * scale_qty * options_delta
+                            total_slippage += abs(scale_fill - scale_entry) * scale_qty * options_delta
                             position["scales_done"] = scales_done + 1
                         # Mark this specific scale as done to prevent re-triggering every candle
                         position[f"scale_{scales_done}_done"] = True
@@ -434,7 +451,12 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
             should_exit = (is_long and signal == -1) or (not is_long and signal == 1) or (i == len(df) - 1) or stoploss_hit or tsl_hit or target_hit or hard_monetary_hit or time_exit_hit
 
             if should_exit:
-                exit_price = current_price
+                # Default fill for a SIGNAL/TIME_EXIT/end-of-data exit — the
+                # other exit_reason branches below (STOPLOSS/TRAILING_SL/
+                # TARGET/MAX_LOSS_LIMIT) compute their own theoretical price
+                # level and are not affected by this. On the last bar (no
+                # i+1 available) this correctly falls back to current_price.
+                exit_price = next_bar_fill_price(i, current_price)
                 exit_reason = "SIGNAL"
                 if time_exit_hit:
                     exit_reason = "TIME_EXIT"
@@ -534,7 +556,8 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
         # Entry condition — skip if daily loss limit or trade cap reached
         if position is None and not daily_limit_hit and not daily_trades_hit:
             if signal == 1 and (i == 0 or sig_vals[i-1] != 1):
-                entry_price = apply_slippage(current_price, "BUY")
+                entry_fill = next_bar_fill_price(i, current_price)
+                entry_price = apply_slippage(entry_fill, "BUY")
 
                 # Dynamic SL/Target based on ATR (Optional) or Custom SL
                 pos_has_custom_sl = False
@@ -571,9 +594,10 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
                 position = {"type": "BUY", "entries": [(entry_price, actual_mult)], "time": current_time, "sl_pct": current_sl_pct, "target_pct": dynamic_target, "score": score, "has_custom_sl": pos_has_custom_sl, "entry_bar": i}
                 capital -= commission_per_trade
                 total_brokerage += commission_per_trade
-                total_slippage += abs(current_price - entry_price) * actual_mult * options_delta
+                total_slippage += abs(entry_fill - entry_price) * actual_mult * options_delta
             elif signal == -1 and (i == 0 or sig_vals[i-1] != -1):
-                entry_price = apply_slippage(current_price, "SELL")
+                entry_fill = next_bar_fill_price(i, current_price)
+                entry_price = apply_slippage(entry_fill, "SELL")
 
                 # Dynamic SL/Target based on ATR (Optional) or Custom SL
                 pos_has_custom_sl = False
@@ -609,7 +633,7 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
                 position = {"type": "SELL", "entries": [(entry_price, actual_mult)], "time": current_time, "sl_pct": current_sl_pct, "target_pct": dynamic_target, "score": score, "has_custom_sl": pos_has_custom_sl, "entry_bar": i}
                 capital -= commission_per_trade
                 total_brokerage += commission_per_trade
-                total_slippage += abs(current_price - entry_price) * actual_mult * options_delta
+                total_slippage += abs(entry_fill - entry_price) * actual_mult * options_delta
                 
         if i % max(1, len(df) // 20) == 0:
             equity_curve.append({"name": current_time, "value": capital})
