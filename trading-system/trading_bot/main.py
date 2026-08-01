@@ -569,19 +569,19 @@ async def run_live_bot(symbols: List[str]) -> None:
         try:
             async with _iceberg_semaphore:
                 executed_slices = await iceberg_manager.execute_iceberg(
-                    broker, 
+                    broker,
                     scale_req,
                     halt_check=lambda: portfolio_risk.trading_halted
                 )
                 actual_scale_qty = sum(req.quantity for req in executed_slices)
-            
+
             if actual_scale_qty == 0:
                 logger.error("SCALE order completely failed to execute for %s.", pos.symbol)
             else:
                 audit.trade(AuditEvent.TRADE_ENTRY, pos.symbol,
                             scale_req.side.value, actual_scale_qty,
                             ltp, broker=broker.BROKER_ID)
-                
+
                 # Update position
                 if pos.symbol in active_positions:
                     pos.quantity += actual_scale_qty
@@ -590,6 +590,10 @@ async def run_live_bot(symbols: List[str]) -> None:
                     _save_positions(active_positions)
         except Exception as e:
             logger.error("Background Iceberg Scale Failed for %s: %s", pos.symbol, e)
+        finally:
+            # Unlock regardless of outcome so the position is eligible for the
+            # next legitimate scale-in trigger on a later tick.
+            pos.is_scaling = False
     async def on_tick(tick: Dict) -> None:
         nonlocal last_eval_time
         sym = tick["symbol"]
@@ -844,17 +848,25 @@ async def run_live_bot(symbols: List[str]) -> None:
                     pyramid_sizer.max_scales = settings.get("maxScales", settings.get("max_scales", 2))
                     should_scale, scale_reason = pyramid_sizer.evaluate_scale(pos, ltp)
                 
+                # Safety gate: skip if a background scale-in is already in flight for
+                # this position. scales_done only increments once
+                # background_iceberg_scale's broker round-trip completes, so without
+                # this lock a burst of ticks within that window can re-satisfy
+                # evaluate_scale() and spawn multiple concurrent scale-in orders.
+                if should_scale and pos.is_scaling:
+                    should_scale = False
+
                 if should_scale:
                     scale_qty = int(settings.get("quantity", 2)) // 2  # Scale in with half of base qty or 1 lot
                     if scale_qty < 1: scale_qty = 1
-                    
+
                     is_live = not broker.paper_mode
                     side_str = "BUY" if pos.side == 1 else "SELL"
-                    
+
                     if is_live:
-                        logger.info("PYRAMID SCALE %d: %s %d %s @ %.2f (%s) [LIVE]", 
+                        logger.info("PYRAMID SCALE %d: %s %d %s @ %.2f (%s) [LIVE]",
                                     pos.scales_done + 1, side_str, scale_qty, sym, ltp, scale_reason)
-                        
+
                         if not ORDER_LIMITER.allow(broker.BROKER_ID):
                             logger.warning("SCALE order rate-limited for %s — skipping.", sym)
                         else:
@@ -866,6 +878,8 @@ async def run_live_bot(symbols: List[str]) -> None:
                             )
                             try:
                                 scale_req = validator.validator.validate(scale_req)
+                                # Lock the position: prevents duplicate scale-in signals while iceberg executes
+                                pos.is_scaling = True
                                 asyncio.create_task(background_iceberg_scale(
                                     broker, scale_req, pos, side_str, ltp
                                 ))
