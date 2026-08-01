@@ -1,4 +1,8 @@
 # Core dependencies
+#
+# For a fully pinned, reproducible install (exact versions of every
+# transitive dependency), see requirements-lock.txt — generate/refresh
+# it with: pip install pip-tools && pip-compile requirements.txt
 numpy>=1.24.0
 pandas>=2.0.0
 scikit-learn>=1.3.0
