@@ -1748,11 +1748,17 @@ async def get_market_sentiment():
 async def get_trade_journal():
     try:
         import sqlite3
-        import os
-        db_path = os.path.join(os.getcwd(), 'state.db')
+        # Reuse the same anchored path shared/state.py uses (trading-system/
+        # state.db, regardless of the process's working directory) instead
+        # of os.getcwd() — this endpoint silently returned an empty journal
+        # whenever api_bridge.py was launched from anywhere else (a
+        # different systemd WorkingDirectory, a Docker WORKDIR, or simply
+        # `python trading-system/api_bridge.py` from the repo root).
+        from shared.state import _STATE_DB
+        db_path = str(_STATE_DB)
         if not os.path.exists(db_path):
             return {"trades": []}
-            
+
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
