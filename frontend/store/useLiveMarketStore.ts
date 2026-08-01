@@ -122,98 +122,122 @@ export const useLiveMarketStore = create<LiveMarketState>((set, get) => ({
             currentWs.close();
         }
 
-        const host = typeof window !== 'undefined' ? window.location.hostname : '127.0.0.1';
-        const isProd = process.env.NODE_ENV === 'production';
-        const wsUrl = isProd
-            ? `wss://${typeof window !== 'undefined' ? window.location.host : 'localhost'}/ws/live`
-            : `ws://${host}:8000/ws/live`;
-
-        const ws = new WebSocket(wsUrl);
-
-        ws.onopen = () => {
-            if (reconnectAttempts > 0) {
-                toast.success('Live connection restored.');
-            }
-            reconnectAttempts = 0;
-            set({ isWsConnected: true, ws });
-        };
-
-        ws.onmessage = (event) => {
-            if (get().ws !== ws) return;
-
-            try {
-                const data = JSON.parse(event.data);
-
-                get().setLastPingTime(Date.now());
-
-                if (data.NIFTY) {
-                    pendingTickerUpdates.NIFTY = data.NIFTY;
-                    if (data.SENSEX) pendingTickerUpdates.SENSEX = data.SENSEX;
-                    if (data.BANKNIFTY) pendingTickerUpdates.BANKNIFTY = data.BANKNIFTY;
+        // The backend requires a session token on /ws/live (a WebSocket
+        // handshake can't carry our httpOnly cookie — different origin,
+        // and browsers don't attach custom headers to WS connections
+        // anyway), so fetch one from our own server-side route first.
+        fetch('/api/ws-token')
+            .then((res) => (res.ok ? res.json() : Promise.reject(new Error('not authenticated'))))
+            .then(({ token }: { token: string }) => {
+                // Another connectWs() call may have already succeeded while
+                // this fetch was in flight — don't open a duplicate socket.
+                const existing = get().ws;
+                if (existing && (existing.readyState === WebSocket.OPEN || existing.readyState === WebSocket.CONNECTING)) {
+                    return;
                 }
 
-                if (data[urlSymbol]) {
-                    pendingUpdates.currentPrice = data[urlSymbol].lp;
-                    pendingUpdates.changePercent = data[urlSymbol].chp;
+                const host = typeof window !== 'undefined' ? window.location.hostname : '127.0.0.1';
+                const isProd = process.env.NODE_ENV === 'production';
+                const wsUrl = isProd
+                    ? `wss://${typeof window !== 'undefined' ? window.location.host : 'localhost'}/ws/live?token=${encodeURIComponent(token)}`
+                    : `ws://${host}:8000/ws/live?token=${encodeURIComponent(token)}`;
+
+                openSocket(wsUrl);
+            })
+            .catch(() => {
+                // Not logged in (yet) or the token endpoint failed — the
+                // dashboard's own auth gate handles redirecting to login;
+                // there's nothing useful to connect to without a session.
+            });
+
+        function openSocket(wsUrl: string) {
+            const ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                if (reconnectAttempts > 0) {
+                    toast.success('Live connection restored.');
                 }
+                reconnectAttempts = 0;
+                set({ isWsConnected: true, ws });
+            };
 
-                // ── Real-time P&L fields (from backend broadcaster) ──────────
-                if (data.pnl !== undefined)                  pendingUpdates.pnl                = data.pnl;
-                if (data.unrealized_pnl !== undefined)       pendingUpdates.unrealizedPnl      = data.unrealized_pnl;
-                if (data.total_pnl !== undefined)            pendingUpdates.totalPnl           = data.total_pnl;
-                if (data.equity !== undefined)               pendingUpdates.equity             = data.equity;
-                if (data.open_positions_count !== undefined) pendingUpdates.openPositionsCount = data.open_positions_count;
-                if (data.positions_detail)                   pendingUpdates.positionsDetail    = data.positions_detail;
-                if (data.trades)                             pendingUpdates.trades             = data.trades;
+            ws.onmessage = (event) => {
+                if (get().ws !== ws) return;
 
-                if (data.signalsData && data.signalsData.confidence !== undefined) {
-                    pendingUpdates.aiConfidence = data.signalsData.confidence;
-                }
+                try {
+                    const data = JSON.parse(event.data);
 
-                // Throttle React state updates to 1 animation frame (~16ms)
-                if (typeof window !== 'undefined' && !rAF_id) {
-                    rAF_id = window.requestAnimationFrame(() => {
-                        const state = get();
+                    get().setLastPingTime(Date.now());
+
+                    if (data.NIFTY) {
+                        pendingTickerUpdates.NIFTY = data.NIFTY;
+                        if (data.SENSEX) pendingTickerUpdates.SENSEX = data.SENSEX;
+                        if (data.BANKNIFTY) pendingTickerUpdates.BANKNIFTY = data.BANKNIFTY;
+                    }
+
+                    if (data[urlSymbol]) {
+                        pendingUpdates.currentPrice = data[urlSymbol].lp;
+                        pendingUpdates.changePercent = data[urlSymbol].chp;
+                    }
+
+                    // ── Real-time P&L fields (from backend broadcaster) ──────────
+                    if (data.pnl !== undefined)                  pendingUpdates.pnl                = data.pnl;
+                    if (data.unrealized_pnl !== undefined)       pendingUpdates.unrealizedPnl      = data.unrealized_pnl;
+                    if (data.total_pnl !== undefined)            pendingUpdates.totalPnl           = data.total_pnl;
+                    if (data.equity !== undefined)               pendingUpdates.equity             = data.equity;
+                    if (data.open_positions_count !== undefined) pendingUpdates.openPositionsCount = data.open_positions_count;
+                    if (data.positions_detail)                   pendingUpdates.positionsDetail    = data.positions_detail;
+                    if (data.trades)                             pendingUpdates.trades             = data.trades;
+
+                    if (data.signalsData && data.signalsData.confidence !== undefined) {
+                        pendingUpdates.aiConfidence = data.signalsData.confidence;
+                    }
+
+                    // Throttle React state updates to 1 animation frame (~16ms)
+                    if (typeof window !== 'undefined' && !rAF_id) {
+                        rAF_id = window.requestAnimationFrame(() => {
+                            const state = get();
+                            set({
+                                ...pendingUpdates,
+                                tickerData: Object.keys(pendingTickerUpdates).length > 0
+                                    ? { ...state.tickerData, ...pendingTickerUpdates }
+                                    : state.tickerData
+                            });
+                            pendingUpdates = {};
+                            pendingTickerUpdates = {};
+                            rAF_id = null;
+                        });
+                    } else if (typeof window === 'undefined') {
                         set({
                             ...pendingUpdates,
                             tickerData: Object.keys(pendingTickerUpdates).length > 0
-                                ? { ...state.tickerData, ...pendingTickerUpdates }
-                                : state.tickerData
+                                ? { ...get().tickerData, ...pendingTickerUpdates }
+                                : get().tickerData
                         });
                         pendingUpdates = {};
                         pendingTickerUpdates = {};
-                        rAF_id = null;
-                    });
-                } else if (typeof window === 'undefined') {
-                    set({
-                        ...pendingUpdates,
-                        tickerData: Object.keys(pendingTickerUpdates).length > 0
-                            ? { ...get().tickerData, ...pendingTickerUpdates }
-                            : get().tickerData
-                    });
-                    pendingUpdates = {};
-                    pendingTickerUpdates = {};
+                    }
+                } catch {
+                    // Ignore parse errors
                 }
-            } catch {
-                // Ignore parse errors
-            }
-        };
+            };
 
-        ws.onclose = () => {
-            if (get().ws === ws) {
-                set({ isWsConnected: false, ws: null });
-            }
-            reconnectAttempts++;
-            const backoffTime = Math.min(1000 * Math.pow(2, reconnectAttempts - 1), 30000);
-            if (reconnectAttempts === 1) {
-                toast.error('Connection lost. Reconnecting...');
-            }
-            setTimeout(() => {
-                if (!get().isWsConnected) {
-                    get().connectWs(urlSymbol);
+            ws.onclose = () => {
+                if (get().ws === ws) {
+                    set({ isWsConnected: false, ws: null });
                 }
-            }, backoffTime);
-        };
+                reconnectAttempts++;
+                const backoffTime = Math.min(1000 * Math.pow(2, reconnectAttempts - 1), 30000);
+                if (reconnectAttempts === 1) {
+                    toast.error('Connection lost. Reconnecting...');
+                }
+                setTimeout(() => {
+                    if (!get().isWsConnected) {
+                        get().connectWs(urlSymbol);
+                    }
+                }, backoffTime);
+            };
+        }
     },
 
     disconnectWs: () => {

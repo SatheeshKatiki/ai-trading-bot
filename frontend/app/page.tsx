@@ -147,8 +147,15 @@ export default function Dashboard() {
     };
 
     fetchData();
-    const interval = setInterval(fetchData, 1000); // Institutional ultra-fast speed: every 1s
-    
+    // High audit finding: this polled every 1000ms while useLiveMarketStore
+    // simultaneously keeps a WebSocket open for much of this same data
+    // (equity/pnl/positions/trades), tripling backend load per open tab.
+    // This page doesn't yet consume that store directly (a larger refactor,
+    // not done here), but logs/engine-status/chart-curve aren't carried by
+    // the WebSocket at all and still need a poll — 4s keeps this page
+    // reasonably fresh while cutting request volume ~75%.
+    const interval = setInterval(fetchData, 4000);
+
     return () => clearInterval(interval);
   }, []);
 

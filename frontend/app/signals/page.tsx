@@ -54,7 +54,12 @@ export default function Signals() {
     };
 
     fetchSignals();
-    const interval = setInterval(fetchSignals, 1500); // Ultra-fast refresh for institutional feel
+    // High audit finding: polled every 1500ms alongside the always-open
+    // live WebSocket (which already streams aiConfidence in real time),
+    // tripling backend load per open tab. AI signal/bias/trend analysis
+    // doesn't meaningfully change sub-second; 5s keeps this page fresh
+    // while cutting request volume more than 3x.
+    const interval = setInterval(fetchSignals, 5000);
     return () => clearInterval(interval);
   }, []);
 
