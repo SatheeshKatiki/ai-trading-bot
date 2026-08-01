@@ -1,11 +1,9 @@
 import sys
 import os
-import json
 import urllib.parse
 import http.server
 import socketserver
 import webbrowser
-from pathlib import Path
 from fyers_apiv3 import fyersModel
 
 # Add project root to python path
@@ -127,12 +125,11 @@ def main():
         if response and "access_token" in response:
             token = response["access_token"]
             print("\n[Success] Login successful! Token generated.")
-            
-            # Save token
-            token_path = Path(__file__).resolve().parents[2] / ".fyers_tokens.json"
-            with open(token_path, "w") as f:
-                json.dump({"access_token": token}, f)
-            print(f"Token saved to {token_path}")
+
+            # Save token (encrypted — see brokers/token_cache.py)
+            from brokers.token_cache import save_token
+            save_token(token, "fyers")
+            print("Token saved (encrypted).")
             sys.exit(0)
         else:
             print(f"\n[Error] Login failed! Response: {response}")

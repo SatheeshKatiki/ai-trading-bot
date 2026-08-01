@@ -1,9 +1,8 @@
-import json
 from brokers.fyers_broker import FyersBroker
+from brokers.token_cache import load_token
 import pandas as pd
 
-with open(".fyers_tokens.json", "r") as f:
-    token = json.load(f)["access_token"]
+token = load_token("fyers")
 
 broker = FyersBroker({"client_id": "0KHBQ6IQA4-100", "access_token": token})
 broker.authenticate()

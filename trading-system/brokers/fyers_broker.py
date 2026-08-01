@@ -17,7 +17,6 @@ import asyncio
 import json
 import logging
 import time
-from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from .base_broker import BaseBroker, _BROKER_EXECUTOR
@@ -33,9 +32,6 @@ from .models import (
 )
 
 logger = logging.getLogger(__name__)
-
-# Cached token survives process restarts
-_TOKEN_CACHE = Path(__file__).resolve().parents[1] / ".fyers_tokens.json"
 
 
 class FyersBroker(BaseBroker):
@@ -96,7 +92,10 @@ class FyersBroker(BaseBroker):
 
         token = self._load_cached_token() or self.credentials.get("access_token")
         client_id = self.credentials.get("client_id", "")
-        logger.info(f"FYERS INIT: client_id={client_id}, token={token}")
+        logger.info(
+            "FYERS INIT: client_id=%s, token=%s",
+            client_id, "<redacted>" if token else "<missing>",
+        )
         if not token:
             logger.warning(
                 "Fyers: no access_token found — call get_login_url() then complete_login()."
@@ -204,19 +203,12 @@ class FyersBroker(BaseBroker):
             ) from exc
 
     def _load_cached_token(self) -> str:
-        if _TOKEN_CACHE.is_file():
-            try:
-                data = json.loads(_TOKEN_CACHE.read_text(encoding="utf-8"))
-                return data.get("access_token", "")
-            except Exception:
-                pass
-        return ""
+        from .token_cache import load_token
+        return load_token("fyers")
 
     def _save_cached_token(self, token: str) -> None:
-        _TOKEN_CACHE.write_text(
-            json.dumps({"access_token": token}, indent=2), encoding="utf-8"
-        )
-        logger.info("Fyers: access token cached → %s", _TOKEN_CACHE)
+        from .token_cache import save_token
+        save_token(token, "fyers")
 
     # ------------------------------------------------------------------
     # Order management

@@ -3,7 +3,7 @@
 This module wraps the ``fyers-api`` SDK to provide a clean interface used by
 ``trading_bot.main`` and ``trading_bot.login``. It handles:
 
-* OAuth token management (cached in ``.fyers_tokens.json`` in the project root)
+* OAuth token management (cached encrypted via ``brokers.token_cache``)
 * Placing market orders via the Fyers REST API
 * Streaming live quotes over a websocket
 
@@ -26,19 +26,14 @@ without touching the real API.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 from typing import Awaitable, Callable, Dict, List, Optional
 
 from shared.config import CONFIG
 
 logger = logging.getLogger(__name__)
-
-# Location of the cached token file (project root)
-_TOKEN_FILE = Path(__file__).resolve().parents[3] / ".fyers_tokens.json"
 
 # Thread pool for blocking REST calls (size=2: enough for concurrent place/cancel)
 _ORDER_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="FyersOrder")
@@ -66,21 +61,14 @@ class FyersClient:
     # ------------------------------------------------------------------
 
     def _load_cached_token(self) -> Optional[str]:
-        """Load the access token from the local JSON cache if it exists."""
-        if _TOKEN_FILE.is_file():
-            try:
-                data = json.loads(_TOKEN_FILE.read_text(encoding="utf-8"))
-                return data.get("access_token")
-            except (json.JSONDecodeError, OSError) as exc:
-                logger.warning("Could not load cached Fyers token: %s", exc)
-        return None
+        """Load the access token from the shared encrypted cache, if any."""
+        from brokers.token_cache import load_token
+        return load_token("fyers") or None
 
     def _save_token(self, token: str) -> None:
-        """Persist ``token`` to the local JSON cache."""
-        _TOKEN_FILE.write_text(
-            json.dumps({"access_token": token}, indent=2), encoding="utf-8"
-        )
-        logger.info("Access token cached to %s", _TOKEN_FILE)
+        """Persist ``token`` to the shared encrypted token cache."""
+        from brokers.token_cache import save_token
+        save_token(token, "fyers")
 
     def login(self, auth_code: str) -> None:
         """Exchange an OAuth ``auth_code`` for an access token and cache it."""

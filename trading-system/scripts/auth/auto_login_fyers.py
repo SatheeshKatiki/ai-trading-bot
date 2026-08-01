@@ -1,9 +1,7 @@
 import sys
 import os
-import json
 import base64
 import requests
-from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
 # Add project root to python path
@@ -106,12 +104,11 @@ def main():
         if response and "access_token" in response:
             token = response["access_token"]
             print("\nLogin successful! Your access token has been received.")
-            
-            # Cache the token
-            token_cache_path = Path(__file__).resolve().parents[2] / ".fyers_tokens.json"
-            with open(token_cache_path, "w") as f:
-                json.dump({"access_token": token}, f)
-            print(f"Token cached to {token_cache_path}")
+
+            # Cache the token (encrypted — see brokers/token_cache.py)
+            from brokers.token_cache import save_token
+            save_token(token, "fyers")
+            print("Token cached (encrypted).")
         else:
             print(f"\nLogin failed. Response: {response}")
             

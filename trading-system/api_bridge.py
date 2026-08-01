@@ -256,8 +256,9 @@ def _get_fyers_client_id() -> str:
 
 def start_fyers_socket():
     try:
-        token_path = ".fyers_tokens.json"
-        if not os.path.exists(token_path):
+        from brokers.token_cache import load_token
+        token = load_token("fyers")
+        if not token:
             logger.warning("Token not found for WebSocket. Falling back to yfinance polling for Paper Mode.")
             import yfinance as yf
             import time
@@ -279,11 +280,7 @@ def start_fyers_socket():
                     logger.error(f"YFinance fallback error: {e}")
                     time.sleep(10)
             return
-            
-        with open(token_path, "r") as f:
-            token_data = json.load(f)
-            token = token_data["access_token"]
-            
+
         client_id = _get_fyers_client_id()
         
         def on_message(message):
@@ -723,14 +720,11 @@ async def toggle_engine(request: Request):
 async def get_funds():
     """Fetches real funds from Fyers using the cached token."""
     try:
-        token_path = ".fyers_tokens.json"
-        if not os.path.exists(token_path):
+        from brokers.token_cache import load_token
+        token = load_token("fyers")
+        if not token:
             return {"s": "error", "message": "Token not found"}
-            
-        with open(token_path, "r") as f:
-            token_data = json.load(f)
-            token = token_data["access_token"]
-            
+
         from fyers_apiv3 import fyersModel
         client_id = _get_fyers_client_id()
         
@@ -746,14 +740,11 @@ async def get_quote(
 ):
     """Fetches real-time quote (LTP) from Fyers."""
     try:
-        token_path = ".fyers_tokens.json"
-        if not os.path.exists(token_path):
+        from brokers.token_cache import load_token
+        token = load_token("fyers")
+        if not token:
             return {"s": "error", "message": "Token not found"}
-            
-        with open(token_path, "r") as f:
-            token_data = json.load(f)
-            token = token_data["access_token"]
-            
+
         from fyers_apiv3 import fyersModel
         client_id = _get_fyers_client_id()
         
@@ -829,10 +820,12 @@ async def get_history(
 @app.get("/api/inspect")
 def inspect_broker():
     broker = BrokerFactory.get_active_broker()
+    cached_token = broker._load_cached_token()
+    creds_token = broker.credentials.get("access_token")
     return {
         "client_id": broker.credentials.get("client_id"),
-        "cached_token_head": broker._load_cached_token()[:20] if broker._load_cached_token() else None,
-        "token_in_credentials": broker.credentials.get("access_token"),
+        "cached_token_present": bool(cached_token),
+        "token_in_credentials_present": bool(creds_token),
         "live_trading_mode": broker.paper_mode
     }
 
@@ -1773,25 +1766,22 @@ async def get_option_chain(symbol: str = "NSE:NIFTY50-INDEX"):
         # 1. Fetch Real Live Spot Price
         base_price = 24000.0
         try:
-            token_path = ".fyers_tokens.json"
-            if os.path.exists(token_path):
-                with open(token_path, "r") as f:
-                    token_data = json.load(f)
-                    token = token_data.get("access_token")
-                if token:
-                    from fyers_apiv3 import fyersModel
-                    client_id = _get_fyers_client_id()
-                    fyers = fyersModel.FyersModel(client_id=client_id, is_async=False, token=token, log_path="")
-                    
-                    query_symbol = "NSE:NIFTY50-INDEX"
-                    if "BANKNIFTY" in symbol:
-                        query_symbol = "NSE:NIFTYBANK-INDEX"
-                    elif "FINNIFTY" in symbol:
-                        query_symbol = "NSE:FINNIFTY-INDEX"
-                        
-                    quotes = fyers.quotes(data={"symbols": query_symbol})
-                    if quotes and "d" in quotes and len(quotes["d"]) > 0:
-                        base_price = float(quotes["d"][0]["v"]["lp"])
+            from brokers.token_cache import load_token
+            token = load_token("fyers")
+            if token:
+                from fyers_apiv3 import fyersModel
+                client_id = _get_fyers_client_id()
+                fyers = fyersModel.FyersModel(client_id=client_id, is_async=False, token=token, log_path="")
+
+                query_symbol = "NSE:NIFTY50-INDEX"
+                if "BANKNIFTY" in symbol:
+                    query_symbol = "NSE:NIFTYBANK-INDEX"
+                elif "FINNIFTY" in symbol:
+                    query_symbol = "NSE:FINNIFTY-INDEX"
+
+                quotes = fyers.quotes(data={"symbols": query_symbol})
+                if quotes and "d" in quotes and len(quotes["d"]) > 0:
+                    base_price = float(quotes["d"][0]["v"]["lp"])
         except Exception as e:
             logger.warning(f"Could not fetch real base price for options desk, falling back to defaults: {e}")
             if "BANKNIFTY" in symbol:

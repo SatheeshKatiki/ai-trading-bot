@@ -125,6 +125,19 @@ def _decrypt(ciphertext: str) -> str:
     return ciphertext
 
 
+# Public wrappers so other modules (e.g. per-broker token caches) can reuse the
+# same Fernet key / encryption scheme as broker_credentials.json without
+# reaching into this module's private helpers.
+def encrypt_secret(plaintext: str) -> str:
+    """Encrypt an arbitrary secret string using the shared broker encryption key."""
+    return _encrypt(plaintext)
+
+
+def decrypt_secret(ciphertext: str) -> str:
+    """Decrypt a string previously produced by :func:`encrypt_secret`."""
+    return _decrypt(ciphertext)
+
+
 # ------------------------------------------------------------------
 # File-level CRUD  (with integrity MAC)
 # ------------------------------------------------------------------

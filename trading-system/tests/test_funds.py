@@ -1,16 +1,18 @@
+import sys
 import json
 import os
 from fyers_apiv3 import fyersModel
 
-# Load token
-token_path = ".fyers_tokens.json"
-if not os.path.exists(token_path):
-    print(f"Error: {token_path} not found!")
-    exit(1)
+# Add project root to python path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-with open(token_path, "r") as f:
-    token_data = json.load(f)
-    token = token_data["access_token"]
+from brokers.token_cache import load_token
+
+# Load token
+token = load_token("fyers")
+if not token:
+    print("Error: no cached Fyers token found!")
+    exit(1)
 
 # App ID
 client_id = "0KHBQ6IQA4-100"
