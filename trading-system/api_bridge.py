@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from fastapi import FastAPI, Query, HTTPException, BackgroundTasks, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,6 +11,7 @@ import numpy as np
 import json
 import os
 import time
+from typing import Optional, List, Dict, Any
 
 # Module-level logger — NEVER use print() in async FastAPI code
 logger = logging.getLogger("api_bridge")
@@ -80,6 +83,8 @@ from trading_bot.strategies.ema_crossover_pro_strategy import generate_signals a
 from trading_bot.strategies.meta_agent_strategy import generate_signals as meta_agent_signals
 from trading_bot.strategies.buy_the_dip_strategy import generate_signals as buy_dip_signals
 
+from trading_bot.strategies.marl_strategy import generate_signals as marl_signals
+
 # Register strategies for the API
 registry.register("ema_rsi",      ema_rsi_signals)
 registry.register("enhanced_ai",  enhanced_signals)
@@ -89,6 +94,7 @@ registry.register("institutional_momentum", momentum_signals)
 registry.register("ema_crossover", ema_crossover_signals)
 registry.register("meta_agent_swarm", meta_agent_signals)
 registry.register("buy_the_dip", buy_dip_signals)
+registry.register("MARL_Ultra", marl_signals)
 
 app = FastAPI(title="Broker Terminal Data Bridge & Backtester")
 
@@ -294,10 +300,18 @@ def start_fyers_socket():
                     
         def on_error(message):
             logger.error("Fyers WS Error: %s", message)
-            
+            msg_str = str(message).lower()
+            if "auth" in msg_str or "token" in msg_str or "expire" in msg_str:
+                logger.error("Emergency: Fyers WS Token failed. Triggering auto-login...")
+                import subprocess
+                import sys
+                try:
+                    subprocess.run([sys.executable, "scripts/auth/auto_login_fyers.py"], check=False)
+                except Exception as e:
+                    logger.error("Emergency auto-login failed: %s", e)
         def on_open():
             global _subscribed_symbols
-            _subscribed_symbols = {"NSE:NIFTY50-INDEX", "BSE:SENSEX-INDEX", "NSE:NIFTYBANK-INDEX", "NSE:RELIANCE-EQ", "NSE:TCS-EQ"}
+            _subscribed_symbols.update({"NSE:NIFTY50-INDEX", "BSE:SENSEX-INDEX", "NSE:NIFTYBANK-INDEX", "NSE:RELIANCE-EQ", "NSE:TCS-EQ"})
             logger.info("Fyers WS Connected!")
             if fyers_socket_instance:
                 fyers_socket_instance.subscribe(symbols=list(_subscribed_symbols), data_type="symbolData")
@@ -369,10 +383,11 @@ _WS_TRADE_CACHE_TTL: float = 0.05  # Refresh trades from DB at 20 FPS for ultra-
 
 signals_cache = {"data": None, "last_updated": 0}
 active_connections: set[WebSocket] = set()
+_subscribed_symbols: set = set()
 
 async def websocket_broadcaster():
     """Single global background task that computes the market snapshot and broadcasts to all connected clients."""
-    global _ws_trade_cache, _ws_trade_last_read
+    global _ws_trade_cache, _ws_trade_last_read, _subscribed_symbols
     while True:
         try:
             if not active_connections:
@@ -456,13 +471,74 @@ async def websocket_broadcaster():
                 _ws_trade_last_read = _now_t
             
             websocket_data["trades"] = _ws_trade_cache.get("trades", [])
-            websocket_data["pnl"] = _ws_trade_cache.get("pnl", 0.0)
+            realized_pnl = _ws_trade_cache.get("pnl", 0.0)
             websocket_data["equity"] = _ws_trade_cache.get("equity", 100000.0)
             websocket_data["raw_ticks"] = snapshot
             websocket_data["signalsData"] = signals_cache["data"]
 
+            # ── Real-time Unrealized P&L from Active Positions ──────────────────
+            # Read active positions and compute mark-to-market P&L using live prices
+            unrealized_pnl = 0.0
+            open_positions_count = 0
+            positions_detail: list = []
+            try:
+                positions_path = Path(__file__).resolve().parent / "config" / "active_positions.json"
+                if positions_path.exists():
+                    with open(positions_path, "r") as _pf:
+                        active_pos_dict = json.load(_pf)
+                    open_positions_count = len(active_pos_dict)
+
+                    for base_sym, pos in active_pos_dict.items():
+                        entry_price = float(pos.get("entry_price", 0))
+                        qty         = int(pos.get("quantity", 0))
+                        side        = int(pos.get("side", 1))   # 1=long, -1=short
+                        opt_sym     = pos.get("symbol", base_sym)
+
+                        # Find the live price for this position's underlying symbol
+                        ltp = 0.0
+                        # Try exact option symbol first (from dynamic subscription)
+                        if opt_sym in snapshot:
+                            ltp = snapshot[opt_sym].get("lp", 0.0)
+                        # Fallback: try base symbol (index)
+                        if ltp == 0.0:
+                            for key in [f"NSE:{base_sym}-INDEX", f"BSE:{base_sym}-INDEX", base_sym]:
+                                if key in snapshot:
+                                    ltp = snapshot[key].get("lp", 0.0)
+                                    break
+                        # Fallback: look in websocket_data short keys
+                        if ltp == 0.0:
+                            short = base_sym.replace("NSE:", "").replace("BSE:", "").split("-")[0]
+                            ltp_data = websocket_data.get(short)
+                            if isinstance(ltp_data, dict):
+                                ltp = ltp_data.get("lp", 0.0)
+
+                        if entry_price > 0 and qty > 0 and ltp > 0:
+                            pos_unrealized = (ltp - entry_price) * qty * side
+                        else:
+                            pos_unrealized = 0.0
+
+                        unrealized_pnl += pos_unrealized
+                        positions_detail.append({
+                            "symbol": opt_sym,
+                            "entry_price": entry_price,
+                            "ltp": ltp,
+                            "qty": qty,
+                            "side": side,
+                            "unrealized_pnl": round(pos_unrealized, 2),
+                            "sl": pos.get("stop_loss", 0),
+                            "target": pos.get("target", 0),
+                        })
+            except Exception as _pnl_err:
+                logger.debug("[WS] Unrealized P&L calc error: %s", _pnl_err)
+
+            total_pnl = realized_pnl + unrealized_pnl
+            websocket_data["pnl"]                  = round(realized_pnl, 2)
+            websocket_data["unrealized_pnl"]       = round(unrealized_pnl, 2)
+            websocket_data["total_pnl"]            = round(total_pnl, 2)
+            websocket_data["open_positions_count"] = open_positions_count
+            websocket_data["positions_detail"]     = positions_detail
+
             # --- Dynamic Subscription Sync ---
-            global _subscribed_symbols
             try:
                 positions_path = Path(__file__).resolve().parent / "config" / "active_positions.json"
                 if positions_path.exists():
@@ -591,13 +667,16 @@ async def panic_exit(request: Request):
                 # Opposite side market order
                 side = "SELL" if pos.quantity > 0 else "BUY"
                 qty = abs(pos.quantity)
-                broker.place_order(OrderRequest(
-                    symbol=pos.symbol,
-                    side=OrderSide.SELL if side == "SELL" else OrderSide.BUY,
-                    quantity=qty,
-                    order_type=OrderType.MARKET,
-                ))
-                closed_count += 1
+                try:
+                    broker.place_order(OrderRequest(
+                        symbol=pos.symbol,
+                        side=OrderSide.SELL if side == "SELL" else OrderSide.BUY,
+                        quantity=qty,
+                        order_type=OrderType.MARKET,
+                    ))
+                    closed_count += 1
+                except Exception as ex:
+                    logger.error("Panic exit failed for position %s: %s", pos.symbol, ex)
         
         # 3. Log the nuclear event
         log_file = "fyersApi.log"
@@ -785,7 +864,8 @@ async def get_backtest(
     scale_pct: float = Query(0.2, description="Percentage of profit to scale in"),
     max_scales: int = Query(2, description="Maximum number of times to scale in"),
     max_daily_loss_pct: float = Query(3.0, description="Stop trading if daily loss exceeds this % of capital"),
-    max_daily_trades: int = Query(6, description="Maximum number of trades allowed per day")
+    max_daily_trades: int = Query(6, description="Maximum number of trades allowed per day"),
+    enable_compounding: bool = Query(True, description="Enable dynamic equity compounding position sizing")
 ):
     """Triggers a true Python backtest using the actual strategy files and broker data."""
     try:
@@ -882,6 +962,7 @@ async def get_backtest(
         backtest_settings["max_scales"] = max_scales
         backtest_settings["max_daily_loss_pct"] = max_daily_loss_pct
         backtest_settings["max_daily_trades"] = max_daily_trades
+        backtest_settings["enable_compounding"] = enable_compounding if isinstance(enable_compounding, bool) else str(enable_compounding).lower() == 'true'
         
         from fastapi.concurrency import run_in_threadpool
         
@@ -903,6 +984,51 @@ async def get_backtest(
         # Sanitize all results to remove numpy int64/float64 for JSON serialization
         results = convert_numpy_types(results)
 
+        # Construct candlestickData and chart_markers for Lightweight Charts
+        candlestick_data = []
+        try:
+            if 'datetime' in df.columns:
+                for _, row in df.iterrows():
+                    candlestick_data.append({
+                        "time": str(row['datetime']),
+                        "open": float(row['open']),
+                        "high": float(row['high']),
+                        "low": float(row['low']),
+                        "close": float(row['close']),
+                        "volume": float(row.get('volume', 0))
+                    })
+        except Exception as _c_err:
+            logger.warning("[API Backtest] Failed to parse candlestick data: %s", _c_err)
+
+        trades = results["trades"]
+        chart_markers = []
+        for t in trades:
+            e_time = t.get("time")
+            if not e_time:
+                continue
+            is_buy = t.get("type") == "BUY"
+            color = "#00F5A0" if is_buy else "#FF3B69"
+            position = "belowBar" if is_buy else "aboveBar"
+            shape = "arrowUp" if is_buy else "arrowDown"
+            entry_p = t.get('entry', 0)
+            text = f"{'BUY' if is_buy else 'SELL'} @ {entry_p:,.1f}"
+            
+            chart_markers.append({
+                "time": str(e_time)[:16],
+                "position": position,
+                "color": color,
+                "shape": shape,
+                "text": text,
+                "size": 2,
+                "tradeId": t.get("id"),
+                "pnl": t.get("pnl", 0),
+                "exit_reason": t.get("exit_reason")
+            })
+
+        import gc
+        del df
+        gc.collect()
+        
         # Save results for analytics!
         backtest_output = {
             "symbol": symbol,
@@ -910,23 +1036,19 @@ async def get_backtest(
             "strategy": strategy,
             "stats": results["stats"],
             "equityCurve": results["equityCurve"],
-            "trades": results["trades"]
+            "trades": results["trades"],
+            "chart_markers": chart_markers
         }
         with open("backtest_results.json", "w") as f:
             json.dump(backtest_output, f, indent=4)
             
         # Read settings for target and stoploss
-        import gc
-        del df
-        gc.collect()
-        
         settings = {}
         if os.path.exists("config/settings.json"):
             with open("config/settings.json", "r") as f:
                 settings = json.load(f)
                 
         # Calculate extra stats
-        trades = results["trades"]
         call_trades = [t for t in trades if t['type'] == 'BUY']
         put_trades = [t for t in trades if t['type'] == 'SELL']
         
@@ -952,6 +1074,8 @@ async def get_backtest(
             "monte_carlo": monte_carlo_stats,
             "equityCurve": results["equityCurve"],
             "trades": results["trades"],
+            "candlestickData": candlestick_data,
+            "chartMarkers": chart_markers,
             "rejectionLogs": results.get("rejectionLogs", [])
         }
         
@@ -1302,6 +1426,7 @@ async def save_settings(new_settings: dict):
     try:
         import os
         import json
+        import tempfile
         
         # Extract credential fields
         creds = {}
@@ -1358,10 +1483,12 @@ async def save_settings(new_settings: dict):
                 save_credentials("fyers", backup_creds)
                 raise HTTPException(status_code=400, detail="Incorrect credentials or unable to login. Please check your details.")
             
-        # Save remaining settings to config/settings.json
+        # Save remaining settings to config/settings.json using ATOMIC WRITE
+        # (prevents file corruption if process crashes during write)
+        settings_path = "config/settings.json"
         existing = {}
-        if os.path.exists("config/settings.json"):
-            with open("config/settings.json", "r") as f:
+        if os.path.exists(settings_path):
+            with open(settings_path, "r") as f:
                 existing = json.load(f)
                 
         # Remove any existing plain text credentials from settings
@@ -1371,10 +1498,22 @@ async def save_settings(new_settings: dict):
                 
         existing.update(new_settings)
         
-        with open("config/settings.json", "w") as f:
-            json.dump(existing, f, indent=4)
+        # ── ATOMIC WRITE: write to temp file first, then rename ──
+        # This prevents a corrupt settings.json if the server crashes mid-write
+        os.makedirs("config", exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(dir="config", prefix="settings_tmp_", suffix=".json")
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                json.dump(existing, f, indent=4)
+            os.replace(tmp_path, settings_path)  # Atomic rename
+        except Exception:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            raise
             
         return {"status": "success", "message": "Settings saved successfully (Credentials Encrypted)!"}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 def run_login_script():
@@ -1724,26 +1863,51 @@ async def get_option_chain(symbol: str = "NSE:NIFTY50-INDEX"):
         return {"error": str(e)}
 
 # ---------------------------------------------------------------------------
-# Authentication System (Next.js Dashboard)
+# ---------------------------------------------------------------------------
+# Authentication System (Zerodha / Fyers / Upstox Style User ID Auth)
 # ---------------------------------------------------------------------------
 import hashlib
 import secrets
 import time
+import re
+import tempfile
 from pydantic import BaseModel
 from pathlib import Path
 
-_AUTH_FILE = Path("dashboard_auth.json")
+_USERS_FILE = Path(__file__).resolve().parent / "config" / "users.json"
+_AUTH_FILE  = Path(__file__).resolve().parent / "config" / "dashboard_auth.json"
 _MAX_ATTEMPTS = 5
-_LOCKOUT_SECS = 120
-_ITERATIONS = 260_000
+_LOCKOUT_SECS = 300  # 5 minutes
+_ITERATIONS = 100_000
 
 auth_state = {
     "failed_attempts": 0,
     "lockout_until": 0.0
 }
 
-class LoginRequest(BaseModel):
-    password: str
+def _load_users() -> dict:
+    if _USERS_FILE.exists():
+        try:
+            with open(_USERS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error("Failed to load users: %s", e)
+    return {}
+
+def _save_users(users: dict) -> None:
+    try:
+        _USERS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        temp_fd, temp_path = tempfile.mkstemp(dir=_USERS_FILE.parent, prefix="users_tmp_", suffix=".json")
+        try:
+            with os.fdopen(temp_fd, 'w', encoding='utf-8') as f:
+                json.dump(users, f, indent=2)
+            os.replace(temp_path, _USERS_FILE)
+        except Exception as e:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+            raise e
+    except Exception as e:
+        logger.error("Failed to save users: %s", e)
 
 def _hash_password(password: str, salt: str = None) -> str:
     if salt is None:
@@ -1763,92 +1927,295 @@ def _verify_password(stored_password: str, provided_password: str) -> bool:
         return False
     return stored_password == _hash_password(provided_password, salt)
 
-@app.get("/api/auth/status")
-async def auth_status():
-    has_password = _AUTH_FILE.exists()
-    locked_out = time.time() < auth_state["lockout_until"]
-    return {
-        "hasPassword": has_password,
-        "lockedOut": locked_out,
-        "lockoutSeconds": max(0, int(auth_state["lockout_until"] - time.time()))
-    }
+def _generate_unique_user_id(users: dict) -> str:
+    """Generate a unique, collision-free Trading User ID starting with MNA prefix (e.g. MNA100001, MNA845721)."""
+    import random
+    import string
+    existing_ids = set(users.keys())
+    for _ in range(1000):
+        # Generate 6 random digits or uppercase alphanumeric chars
+        suffix = ''.join(random.choices(string.digits + "ABCDEFGHJKLMNPQRSTUVWXYZ", k=6))
+        candidate_id = f"MNA{suffix}"
+        if candidate_id not in existing_ids:
+            return candidate_id
+    # Fallback timestamp-based ID
+    return f"MNA{int(time.time()) % 1000000:06d}"
+
+def _send_welcome_email_async(email: str, name: str, user_id: str):
+    """Sends background welcome email with the generated Trading User ID."""
+    import smtplib
+    from email.mime.text import MIMEText
+    from email.mime.multipart import MIMEMultipart
+    
+    smtp_host = os.getenv("SMTP_HOST", "")
+    smtp_port = int(os.getenv("SMTP_PORT", "587"))
+    smtp_user = os.getenv("SMTP_USER", "")
+    smtp_pass = os.getenv("SMTP_PASS", "")
+
+    if not smtp_host or not smtp_user or not smtp_pass:
+        logger.info("[EMAIL NOTIFICATION] (SMTP not configured) Welcome email logged for %s (%s) -> Trading User ID: %s", name, email, user_id)
+        return
+
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = f"Welcome to MANA AI Trading Terminal — Your User ID: {user_id}"
+        msg["From"] = f"MANA AI Trading <{smtp_user}>"
+        msg["To"] = email
+
+        html_content = f"""
+        <div style="font-family: Arial, sans-serif; background-color: #030303; color: #ffffff; padding: 30px; border-radius: 12px;">
+            <h2 style="color: #10b981; margin-bottom: 20px;">Welcome to MANA AI Trading Terminal</h2>
+            <p>Dear <strong>{name}</strong>,</p>
+            <p>Your institutional trading account has been created successfully.</p>
+            <div style="background-color: #111827; border: 1px solid #374151; padding: 20px; border-radius: 8px; margin: 20px 0;">
+                <p style="font-size: 14px; color: #9ca3af; margin: 0;">YOUR TRADING USER ID:</p>
+                <p style="font-size: 28px; font-weight: bold; color: #38bdf8; letter-spacing: 2px; margin: 5px 0 0 0;">{user_id}</p>
+            </div>
+            <p>You can now sign in to your terminal using your <strong>Trading User ID ({user_id})</strong> or your registered email address (<strong>{email}</strong>).</p>
+            <p style="color: #6b7280; font-size: 12px; margin-top: 30px;">For security reasons, your password is never included in email notifications.</p>
+        </div>
+        """
+        msg.attach(MIMEText(html_content, "html"))
+
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=10) as server:
+            server.starttls()
+            server.login(smtp_user, smtp_pass)
+            server.send_message(msg)
+        logger.info("Welcome email successfully sent to %s (%s)", email, user_id)
+    except Exception as e:
+        logger.error("Failed to send welcome email to %s: %s", email, e)
+
+def _validate_password_complexity(password: str) -> None:
+    """Enforces 8-15 characters with uppercase, lowercase, number, and special character."""
+    if not password or len(password) < 8 or len(password) > 15:
+        raise HTTPException(status_code=400, detail="Password must be between 8 and 15 characters long.")
+    if not re.search(r"[A-Z]", password):
+        raise HTTPException(status_code=400, detail="Password must contain at least one uppercase letter.")
+    if not re.search(r"[a-z]", password):
+        raise HTTPException(status_code=400, detail="Password must contain at least one lowercase letter.")
+    if not re.search(r"[0-9]", password):
+        raise HTTPException(status_code=400, detail="Password must contain at least one number.")
+    if not re.search(r"[^A-Za-z0-9]", password):
+        raise HTTPException(status_code=400, detail="Password must contain at least one special character.")
+
+class RegisterRequest(BaseModel):
+    name: str
+    email: str
+    password: str
+    client_id: str = ""
+
+class LoginRequest(BaseModel):
+    user_id_or_email: str
+    password: str
 
 class ResetRequest(BaseModel):
+    user_id_or_email: str
     client_id: str
     new_password: str
 
-@app.post("/api/auth/reset")
-async def auth_reset(req: ResetRequest):
-    import dotenv
-    dotenv.load_dotenv()
-    valid_client_id = os.getenv("FYERS_CLIENT_ID")
-    
-    if not valid_client_id or req.client_id.strip() != valid_client_id.strip():
-        raise HTTPException(status_code=401, detail="Invalid Recovery Key (Client ID)")
-        
-    if not req.new_password or len(req.new_password) < 4:
-        raise HTTPException(status_code=400, detail="Password must be at least 4 characters")
-        
-    auth_data = {
-        "password_hash": _hash_password(req.new_password),
-        "created_at": time.time()
+@app.get("/api/auth/status")
+async def auth_status():
+    users = _load_users()
+    has_users = len(users) > 0 or _AUTH_FILE.exists()
+    locked_out = time.time() < auth_state["lockout_until"]
+    return {
+        "hasUsers": has_users,
+        "hasPassword": has_users,
+        "lockedOut": locked_out,
+        "lockoutSeconds": max(0, int(auth_state["lockout_until"] - time.time())),
+        "userCount": len(users)
     }
-    with open(_AUTH_FILE, "w", encoding="utf-8") as f:
-        json.dump(auth_data, f, indent=2)
-        
-    # Reset lockouts
-    auth_state["failed_attempts"] = 0
-    auth_state["lockout_until"] = 0
-    
-    return {"status": "success", "message": "Password reset successfully"}
 
-@app.post("/api/auth/setup")
-async def auth_setup(req: LoginRequest):
-    if _AUTH_FILE.exists():
-        raise HTTPException(status_code=400, detail="Password already set")
-    if not req.password or len(req.password) < 4:
-        raise HTTPException(status_code=400, detail="Password must be at least 4 characters")
-    
-    auth_data = {
-        "password_hash": _hash_password(req.password),
+@app.post("/api/auth/register")
+async def auth_register(req: RegisterRequest, background_tasks: BackgroundTasks):
+    name = req.name.strip()
+    email = req.email.strip().lower()
+    password = req.password
+
+    if not name or len(name) < 2:
+        raise HTTPException(status_code=400, detail="Full Name is required (minimum 2 characters)")
+        
+    if not email or "@" not in email or "." not in email:
+        raise HTTPException(status_code=400, detail="Valid Email address is required")
+        
+    _validate_password_complexity(password)
+
+    users = _load_users()
+
+    # Check for existing email registration
+    for udata in users.values():
+        if udata.get("email", "").lower() == email:
+            raise HTTPException(status_code=400, detail="Sorry already used this email address")
+
+    # Auto-generate unique Trading User ID (MNAXXXXXX)
+    user_id = _generate_unique_user_id(users)
+    password_hash = _hash_password(password)
+
+    user_record = {
+        "user_id": user_id,
+        "name": name,
+        "email": email,
+        "password_hash": password_hash,
+        "client_id": req.client_id.strip() if req.client_id else "",
         "created_at": time.time()
     }
-    with open(_AUTH_FILE, "w", encoding="utf-8") as f:
-        json.dump(auth_data, f, indent=2)
-    return {"status": "success", "message": "Password configured successfully"}
+
+    users[user_id] = user_record
+    _save_users(users)
+
+    # Legacy auth file sync
+    try:
+        with open(_AUTH_FILE, "w", encoding="utf-8") as f:
+            json.dump({"password_hash": password_hash, "created_at": time.time()}, f, indent=2)
+    except Exception:
+        pass
+
+    # Send welcome email asynchronously
+    background_tasks.add_task(_send_welcome_email_async, email, name, user_id)
+
+    logger.info("Account created successfully: %s (%s)", user_id, email)
+    return {
+        "status": "success",
+        "message": "Account created successfully.",
+        "user_id": user_id,
+        "user": {
+            "user_id": user_id,
+            "name": name,
+            "email": email
+        },
+        "token": f"mana_ai_auth_{user_id}_valid"
+    }
 
 @app.post("/api/auth/login")
 async def auth_login(req: LoginRequest):
-    if not _AUTH_FILE.exists():
-        raise HTTPException(status_code=400, detail="No password configured yet")
-    
-    # Lock disabled for now per user request
-    # if time.time() < auth_state["lockout_until"]:
-    #     raise HTTPException(status_code=429, detail="Too many attempts. Try again later.")
-        
-    try:
-        with open(_AUTH_FILE, "r", encoding="utf-8") as f:
-            auth_data = json.load(f)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail="Error reading auth file")
-        
-    if _verify_password(auth_data.get("password_hash", ""), req.password):
-        auth_state["failed_attempts"] = 0 # reset
-        auth_data["last_activity_time"] = time.time()
-        try:
-            with open(_AUTH_FILE, "w", encoding="utf-8") as f:
-                json.dump(auth_data, f, indent=2)
-        except:
-            pass
-        return {"status": "success", "token": "mana_ai_auth_v1_valid"}
+    identifier = req.user_id_or_email.strip()
+    password = req.password
+
+    if not identifier:
+        raise HTTPException(status_code=400, detail="Enter Email or User ID")
+    if not password:
+        raise HTTPException(status_code=400, detail="Password is required")
+
+    if time.time() < auth_state["lockout_until"]:
+        remaining = int(auth_state["lockout_until"] - time.time())
+        raise HTTPException(status_code=429, detail=f"Maximum login attempts exceeded. Locked out for {remaining} seconds.")
+
+    users = _load_users()
+
+    target_user = None
+    if "@" in identifier:
+        search_email = identifier.lower()
+        for udata in users.values():
+            if udata.get("email", "").lower() == search_email:
+                target_user = udata
+                break
     else:
-        # Lock disabled for now per user request
-        # auth_state["failed_attempts"] += 1
-        # if auth_state["failed_attempts"] >= _MAX_ATTEMPTS:
-        #     auth_state["lockout_until"] = time.time() + _LOCKOUT_SECS
-        #     auth_state["failed_attempts"] = 0
-        #     raise HTTPException(status_code=429, detail="Too many attempts. Locked out for 2 minutes.")
-        raise HTTPException(status_code=401, detail="Invalid password")
+        search_id = identifier.upper()
+        target_user = users.get(search_id)
+
+    # Fallback to single-admin legacy auth file if users.json is empty
+    if not target_user and _AUTH_FILE.exists():
+        try:
+            with open(_AUTH_FILE, "r", encoding="utf-8") as f:
+                auth_data = json.load(f)
+                if _verify_password(auth_data.get("password_hash", ""), password):
+                    auth_state["failed_attempts"] = 0
+                    return {
+                        "status": "success",
+                        "user": {"user_id": "ADMIN", "name": "Administrator", "email": "admin@mana.ai"},
+                        "token": "mana_ai_auth_v1_valid"
+                    }
+        except Exception:
+            pass
+
+    if not target_user:
+        auth_state["failed_attempts"] += 1
+        if auth_state["failed_attempts"] >= _MAX_ATTEMPTS:
+            auth_state["lockout_until"] = time.time() + _LOCKOUT_SECS
+            auth_state["failed_attempts"] = 0
+            raise HTTPException(status_code=429, detail="Maximum attempts reached. Locked out for 5 minutes.")
+        raise HTTPException(status_code=401, detail="Invalid Email/User ID or Password.")
+
+    if _verify_password(target_user.get("password_hash", ""), password):
+        auth_state["failed_attempts"] = 0
+        user_id = target_user.get("user_id", "USER")
+        return {
+            "status": "success",
+            "user": {
+                "user_id": user_id,
+                "name": target_user.get("name", "Trader"),
+                "email": target_user.get("email", "")
+            },
+            "token": f"mana_ai_auth_{user_id}_valid"
+        }
+    else:
+        auth_state["failed_attempts"] += 1
+        if auth_state["failed_attempts"] >= _MAX_ATTEMPTS:
+            auth_state["lockout_until"] = time.time() + _LOCKOUT_SECS
+            auth_state["failed_attempts"] = 0
+            raise HTTPException(status_code=429, detail="Maximum attempts reached. Locked out for 5 minutes.")
+        raise HTTPException(status_code=401, detail="Invalid Email/User ID or Password.")
+
+@app.post("/api/auth/reset")
+async def auth_reset(req: ResetRequest):
+    identifier = req.user_id_or_email.strip()
+    client_id = req.client_id.strip()
+    new_password = req.new_password
+
+    if not identifier:
+        raise HTTPException(status_code=400, detail="Enter Email or User ID")
+    if not client_id:
+        raise HTTPException(status_code=400, detail="Broker Client ID is required for verification")
+        
+    _validate_password_complexity(new_password)
+
+    import dotenv
+    dotenv.load_dotenv()
+    fyers_client_id = os.getenv("FYERS_CLIENT_ID", "").strip()
+
+    users = _load_users()
+    target_user_id = None
+    target_user = None
+
+    if "@" in identifier:
+        search_email = identifier.lower()
+        for uid, udata in users.items():
+            if udata.get("email", "").lower() == search_email:
+                target_user_id = uid
+                target_user = udata
+                break
+    else:
+        search_id = identifier.upper()
+        if search_id in users:
+            target_user_id = search_id
+            target_user = users[search_id]
+
+    if target_user:
+        user_linked_client = target_user.get("client_id", "").strip()
+        if (user_linked_client and user_linked_client != client_id) and (fyers_client_id and fyers_client_id != client_id):
+            raise HTTPException(status_code=401, detail="Invalid Broker Client ID verification")
+        
+        target_user["password_hash"] = _hash_password(new_password)
+        users[target_user_id] = target_user
+        _save_users(users)
+    elif fyers_client_id and client_id == fyers_client_id:
+        password_hash = _hash_password(new_password)
+        users["MNA100001"] = {
+            "user_id": "MNA100001",
+            "name": "Administrator",
+            "email": "admin@mana.ai",
+            "password_hash": password_hash,
+            "client_id": client_id,
+            "created_at": time.time()
+        }
+        _save_users(users)
+    else:
+        raise HTTPException(status_code=401, detail="User not found or Invalid Broker Client ID")
+
+    auth_state["failed_attempts"] = 0
+    auth_state["lockout_until"] = 0.0
+
+    return {"status": "success", "message": "Password reset successfully. You can now Login."}
         
 @app.get("/api/btst")
 async def get_btst_prediction(symbol: str = "NIFTY"):

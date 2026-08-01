@@ -54,7 +54,7 @@ _DEFAULT_STATE: Dict[str, Any] = {
 
 def _init_db() -> None:
     """Initialize the SQLite database with tables if they don't exist."""
-    with contextlib.closing(sqlite3.connect(_STATE_DB, timeout=15.0)) as conn:
+    with contextlib.closing(sqlite3.connect(_STATE_DB, timeout=30.0, check_same_thread=False)) as conn:
         cursor = conn.cursor()
         cursor.execute("PRAGMA journal_mode=WAL;")
         cursor.execute("""
@@ -96,7 +96,7 @@ def _ensure_loaded() -> None:
     _init_db()
     
     try:
-        with contextlib.closing(sqlite3.connect(_STATE_DB, timeout=15.0)) as conn:
+        with contextlib.closing(sqlite3.connect(_STATE_DB, timeout=30.0, check_same_thread=False)) as conn:
             cursor = conn.cursor()
             
             # Load state
@@ -124,7 +124,7 @@ def _flush_to_disk() -> None:
     """Write the current cache to database (caller must hold _LOCK)."""
     global _dirty, _last_flush
     try:
-        with contextlib.closing(sqlite3.connect(_STATE_DB, timeout=15.0)) as conn:
+        with contextlib.closing(sqlite3.connect(_STATE_DB, timeout=30.0, check_same_thread=False)) as conn:
             cursor = conn.cursor()
             
             # Update state
@@ -150,7 +150,7 @@ def _background_flusher() -> None:
             trade = _db_queue.get(timeout=_FLUSH_INTERVAL_S)
             if trade:
                 try:
-                    with contextlib.closing(sqlite3.connect(_STATE_DB, timeout=15.0)) as conn:
+                    with contextlib.closing(sqlite3.connect(_STATE_DB, timeout=30.0, check_same_thread=False)) as conn:
                         cursor = conn.cursor()
                         cursor.execute(
                             "INSERT INTO trades (symbol, side, price, time, qty) VALUES (?, ?, ?, ?, ?)",
@@ -191,7 +191,7 @@ def load_state(reload_trades: bool = False, reload_state: bool = False) -> Dict[
         if reload_state or reload_trades:
             try:
                 import sqlite3
-                with contextlib.closing(sqlite3.connect(_STATE_DB, timeout=15.0)) as conn:
+                with contextlib.closing(sqlite3.connect(_STATE_DB, timeout=30.0, check_same_thread=False)) as conn:
                     cursor = conn.cursor()
                     if reload_state:
                         cursor.execute("SELECT equity, pnl, last_update FROM state WHERE id = 1")

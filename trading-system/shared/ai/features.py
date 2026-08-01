@@ -112,8 +112,8 @@ def _adx(high: pd.Series, low: pd.Series, close: pd.Series, window: int = 14) ->
 
     atr = _atr(high, low, close, window)
 
-    plus_di = pd.Series(plus_dm, index=high.index).rolling(window, min_periods=1).mean() / atr * 100
-    minus_di = pd.Series(minus_dm, index=high.index).rolling(window, min_periods=1).mean() / atr * 100
+    plus_di = pd.Series(plus_dm, index=high.index).rolling(window, min_periods=1).mean() / (atr + 1e-9) * 100
+    minus_di = pd.Series(minus_dm, index=high.index).rolling(window, min_periods=1).mean() / (atr + 1e-9) * 100
 
     dx = (plus_di - minus_di).abs() / (plus_di + minus_di + 1e-10) * 100
     adx = dx.rolling(window, min_periods=1).mean()

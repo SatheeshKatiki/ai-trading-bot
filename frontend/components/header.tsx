@@ -1,11 +1,12 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Bell, Search, User, BookOpen, LogOut, Settings, CreditCard, Command, Activity, ShieldAlert, XCircle, Lock } from "lucide-react";
+import { Bell, Search, User, BookOpen, LogOut, Settings, CreditCard, Command, Activity, ShieldAlert, XCircle, Lock, TrendingUp, TrendingDown, Wallet } from "lucide-react";
 import { useRouter, usePathname } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import Link from "next/link";
 import { toast } from "sonner";
+import { useLiveMarketStore } from "@/store/useLiveMarketStore";
 
 // Institutional Level Asset Database for Autocomplete
 const INDIAN_MARKET_ASSETS = [
@@ -219,6 +220,18 @@ export default function Header() {
   const [isKillSwitchModalOpen, setIsKillSwitchModalOpen] = useState(false);
   const [isSystemHalted, setIsSystemHalted] = useState(false);
 
+  // Real-time P&L from WebSocket store (isolated selector — no full re-render)
+  const totalPnl           = useLiveMarketStore(state => state.totalPnl);
+  const unrealizedPnl      = useLiveMarketStore(state => state.unrealizedPnl);
+  const openPositionsCount = useLiveMarketStore(state => state.openPositionsCount);
+  const isWsConnected      = useLiveMarketStore(state => state.isWsConnected);
+  const connectWs          = useLiveMarketStore(state => state.connectWs);
+
+  // Auto-connect WebSocket on any page that includes Header (Dashboard, Live, etc.)
+  useEffect(() => {
+    connectWs("NIFTY");
+  }, [connectWs]);
+
   const handleKillSwitch = () => {
     setIsSystemHalted(true);
     setIsKillSwitchModalOpen(false);
@@ -347,6 +360,48 @@ export default function Header() {
               {isMarketOpen ? 'Market Open' : 'Market Closed'}
             </span>
           </div>
+
+          {/* ── Real-time P&L Pill (displays live P&L whenever connected or active trades exist) ── */}
+          <AnimatePresence>
+            {(openPositionsCount > 0 || totalPnl !== 0 || isWsConnected) && (
+              <motion.div
+                initial={{ opacity: 0, scale: 0.85, x: -10 }}
+                animate={{ opacity: 1, scale: 1, x: 0 }}
+                exit={{ opacity: 0, scale: 0.85, x: -10 }}
+                transition={{ duration: 0.25, ease: 'easeOut' }}
+                className={`hidden md:flex items-center gap-2.5 px-3.5 py-1.5 rounded-full border font-mono text-sm font-bold transition-colors ${
+                  totalPnl >= 0
+                    ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-500'
+                    : 'bg-red-500/10 border-red-500/30 text-red-500'
+                }`}
+                title={`Realized: ₹${(totalPnl - unrealizedPnl).toFixed(2)} | Unrealized: ₹${unrealizedPnl.toFixed(2)}`}
+              >
+                {/* Live pulse dot — only when WS connected and position is open */}
+                {openPositionsCount > 0 && isWsConnected && (
+                  <span className="relative flex h-2 w-2 shrink-0">
+                    <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-60 ${
+                      totalPnl >= 0 ? 'bg-emerald-500' : 'bg-red-500'
+                    }`} />
+                    <span className={`relative inline-flex h-2 w-2 rounded-full ${
+                      totalPnl >= 0 ? 'bg-emerald-500' : 'bg-red-500'
+                    }`} />
+                  </span>
+                )}
+                {totalPnl >= 0
+                  ? <TrendingUp className="w-3.5 h-3.5 shrink-0" />
+                  : <TrendingDown className="w-3.5 h-3.5 shrink-0" />
+                }
+                <span>
+                  {totalPnl >= 0 ? '+' : ''}₹{totalPnl.toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                </span>
+                {openPositionsCount > 0 && (
+                  <span className="text-[10px] opacity-70 font-semibold border-l border-current/30 pl-2 ml-0.5">
+                    {openPositionsCount} pos
+                  </span>
+                )}
+              </motion.div>
+            )}
+          </AnimatePresence>
 
           {/* Institutional Level Search Box in Header */}
           {pathname !== "/strategy" && (

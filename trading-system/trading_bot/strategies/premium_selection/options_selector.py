@@ -15,6 +15,7 @@ import math
 import logging
 import os
 import json
+from functools import lru_cache
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,7 @@ def calculate_greeks(spot: float, strike: float, days_to_expiry: float, vol: flo
     return {"delta": delta, "theta": theta}
 
 
+@lru_cache(maxsize=128)
 def _get_dynamic_lot_size(instrument: str, default_lot_size: int) -> int:
     """Reads lot size dynamically from the active broker."""
     try:
@@ -132,15 +134,31 @@ class OptionContract:
         return self.option_type == "PE"
 
 
-def _next_expiry(instrument: str, from_date: date | None = None) -> date:
-    """Find the next weekly expiry date for the given instrument."""
+def _next_expiry(instrument: str, from_date: date | None = None, broker: Any = None) -> date:
+    """
+    Find the next weekly expiry date dynamically from Broker API if connected,
+    or fallback to current exchange specifications.
+    """
+    today = from_date or date.today()
+    
+    # 1. Dynamic Broker Lookup
+    if broker and hasattr(broker, 'get_expiry_dates'):
+        try:
+            expiries = broker.get_expiry_dates(instrument)
+            if expiries:
+                for exp in expiries:
+                    exp_date = datetime.strptime(exp, "%Y-%m-%d").date() if isinstance(exp, str) else exp
+                    if exp_date >= today:
+                        return exp_date
+        except Exception:
+            pass
+
+    # 2. Fallback to Exchange Specifications
     cfg = INSTRUMENT_CONFIG.get(instrument.upper(), INSTRUMENT_CONFIG["NIFTY"])
     expiry_weekday = cfg["expiry_day"]
-    today = from_date or date.today()
 
-    # Find next occurrence of expiry_weekday
     days_ahead = expiry_weekday - today.weekday()
-    if days_ahead < 0:     # Target day already passed this week (if 0, today is expiry!)
+    if days_ahead < 0:
         days_ahead += 7
     return today + timedelta(days=days_ahead)
 

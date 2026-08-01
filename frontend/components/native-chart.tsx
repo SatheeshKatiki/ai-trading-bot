@@ -149,6 +149,7 @@ interface NativeChartProps {
   disableFetch?: boolean;
   showDynamicTrend?: boolean;
   lastTick?: number;
+  markers?: any[];
 }
 
 const Toggle = ({ checked, onChange, label }: { checked: boolean, onChange: (c: boolean) => void, label: string }) => (
@@ -172,7 +173,7 @@ const ColorSwatch = ({ color, onChange, label }: { color: string, onChange: (c: 
 // Global cache outside component to persist across unmounts
 const chartDataCache: Record<string, any> = {};
 
-export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", initialData, disableFetch, lastTick = 0 }: NativeChartProps) {
+export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", initialData, disableFetch, lastTick = 0, markers }: NativeChartProps) {
   const { theme } = useTheme();
   
   const {
@@ -282,7 +283,27 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
     const chart = createChart(chartContainerRef.current, {
       layout: { background: { type: ColorType.Solid, color: "transparent" }, textColor: isDark ? "#9CA3AF" : "#6B7280" },
       grid: { vertLines: { color: isDark ? "rgba(255, 255, 255, 0.03)" : "rgba(0, 0, 0, 0.05)" }, horzLines: { color: isDark ? "rgba(255, 255, 255, 0.03)" : "rgba(0, 0, 0, 0.05)" } },
-      timeScale: { timeVisible: true, secondsVisible: false, borderColor: isDark ? "rgba(255, 255, 255, 0.1)" : "rgba(0, 0, 0, 0.1)" },
+      timeScale: {
+        timeVisible: true,
+        secondsVisible: false,
+        borderColor: isDark ? "rgba(255, 255, 255, 0.1)" : "rgba(0, 0, 0, 0.1)",
+        rightOffset: 15,
+        barSpacing: 8,
+        minBarSpacing: 0.2,
+        fixLeftEdge: false,
+        fixRightEdge: false
+      },
+      handleScroll: {
+        mouseWheel: true,
+        pressedMouseMove: true,
+        horzTouchDrag: true,
+        vertTouchDrag: true
+      },
+      handleScale: {
+        axisPressedMouseMove: { time: true, price: true },
+        mouseWheel: true,
+        pinch: true
+      },
       rightPriceScale: { borderColor: isDark ? "rgba(255, 255, 255, 0.1)" : "rgba(0, 0, 0, 0.1)", autoScale: true },
       crosshair: {
         mode: CrosshairMode.Normal,
@@ -740,6 +761,39 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
       seriesMarkersPluginRef.current.setMarkers(showMarkers ? markersRef.current : []);
     }
   }, [showMarkers]);
+
+  // 2d. Render External Strategy Markers (BUY / SELL arrows)
+  useEffect(() => {
+    if (seriesRef.current && markers && Array.isArray(markers)) {
+      try {
+        const formatted = markers.map((m: any) => {
+          let timeVal = m.time;
+          if (typeof timeVal === 'string') {
+            const safeStr = timeVal.includes(' ') ? timeVal.replace(' ', 'T') : timeVal;
+            const dt = new Date(safeStr);
+            if (!isNaN(dt.getTime())) {
+              const offset = dt.getTimezoneOffset() * 60;
+              timeVal = (Math.floor(dt.getTime() / 1000) - offset) as Time;
+            }
+          }
+          return {
+            time: timeVal,
+            position: m.position || (m.type === 'BUY' ? 'belowBar' : 'aboveBar'),
+            color: m.color || (m.type === 'BUY' ? '#00F5A0' : '#FF3B69'),
+            shape: m.shape || (m.type === 'BUY' ? 'arrowUp' : 'arrowDown'),
+            text: m.text || (m.type === 'BUY' ? `BUY @ ${m.entry}` : `SELL @ ${m.entry}`),
+            size: m.size || 2
+          };
+        }).sort((a: any, b: any) => (a.time as number) - (b.time as number));
+
+        if (typeof (seriesRef.current as any).setMarkers === 'function') {
+          (seriesRef.current as any).setMarkers(formatted);
+        }
+      } catch (err) {
+        console.warn("Failed to set markers on candle series:", err);
+      }
+    }
+  }, [markers]);
 
   // 3. Handle live price updates and auto-generate new candles
   useEffect(() => {

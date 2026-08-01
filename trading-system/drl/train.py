@@ -1,8 +1,8 @@
 import os
 import pandas as pd
 import numpy as np
-from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
+from sb3_contrib import RecurrentPPO
 
 from trading_env import QuantAITradingEnv
 
@@ -43,10 +43,11 @@ def train_agent():
     # Wrap in DummyVecEnv as required by Stable Baselines
     env = DummyVecEnv([lambda: QuantAITradingEnv(df=df, mode="options")])
     
-    print("Creating PPO Agent...")
-    model = PPO("MlpPolicy", env, verbose=1, tensorboard_log="./ppo_trading_tensorboard/")
+    print("Creating Recurrent PPO (LSTM) Agent...")
+    # RecurrentPPO automatically builds an LSTM memory layer
+    model = RecurrentPPO("MlpLstmPolicy", env, verbose=1, tensorboard_log="./ppo_trading_tensorboard/", learning_rate=0.0002)
     
-    print("Training started...")
+    print("Training started (LSTM Model)...")
     # Train for 200,000 steps since the dataset is much larger (20 years)
     model.learn(total_timesteps=200000)
     

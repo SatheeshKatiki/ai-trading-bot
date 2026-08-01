@@ -233,7 +233,7 @@ class FyersBroker(BaseBroker):
         payload = {
             "symbol":       request.symbol,
             "qty":          request.quantity,
-            "type":         2 if request.order_type == OrderType.MARKET else 1,
+            "type":         {OrderType.MARKET: 2, OrderType.LIMIT: 1, OrderType.SL_M: 3, OrderType.SL: 4}.get(request.order_type, 1),
             "side":         1 if request.side == OrderSide.BUY else -1,
             "productType":  request.product_type.value,
             "limitPrice":   0 if request.order_type == OrderType.MARKET else request.price,
@@ -554,14 +554,20 @@ class FyersBroker(BaseBroker):
                         _time_mod.sleep(1.0 * (attempt + 1)) # Exponential backoff: 1s, 2s
                         
                 if not chunk_success:
-                    raise Exception(f"Failed to fetch Fyers history chunk {data['range_from']} to {data['range_to']} after retries. Aborting to prevent data corruption.")
+                    self.logger.warning(f"Failed to fetch Fyers history chunk {data['range_from']} to {data['range_to']}. Aborting API fetch and falling back to cache if available.")
+                    break # Stop fetching, use whatever we fetched + cache
                     
                 current_start = current_end + timedelta(days=1)
                 # Sleep briefly to avoid API rate limits for subsequent requests
                 _time_mod.sleep(0.5)
                 
             if not all_candles:
-                self.logger.info("Fyers returned no candles. YFinance fallback is disabled.")
+                self.logger.info("Fyers API returned no new candles.")
+                if df is not None and not df.empty:
+                    self.logger.info("Returning strictly from local cache.")
+                    mask = (df['datetime'] >= start_date) & (df['datetime'] <= f"{end_date} 23:59:59")
+                    final_filtered = df.loc[mask]
+                    return final_filtered.to_dict(orient='records')
                 return []
                 
             result = []

@@ -4,6 +4,7 @@ import Sidebar from "@/components/sidebar";
 import Header from "@/components/header";
 import CustomDatePicker from "@/components/custom-date-picker";
 import { NumberInput } from "@/components/number-input";
+import NativeChart from "@/components/native-chart";
 import { useState, useRef, useEffect } from "react";
 import { 
   TrendingUp, 
@@ -191,8 +192,8 @@ export default function Backtest() {
   const [maxDailyLossPct, setMaxDailyLossPct] = useState<number | string>(3);
   const [maxDailyTrades, setMaxDailyTrades] = useState<number | string>(0);
   const [inputMode, setInputMode] = useState<'lots' | 'qty'>('lots');
-  const [trailTrigger, setTrailTrigger] = useState<number | string>(0.8);
-  const [trailOffset, setTrailOffset] = useState<number | string>(0.2);
+  const [trailTrigger, setTrailTrigger] = useState<number | string>(0.5);
+  const [trailOffset, setTrailOffset] = useState<number | string>(0.35);
   const [isLoading, setIsLoading] = useState(false);
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState("");
@@ -319,7 +320,7 @@ export default function Backtest() {
       setEndDate(savedParams.endDate);
       setInitialCapital(savedParams.initialCapital);
       setQuantity(savedParams.quantity || 65);
-      setStoplossPct(savedParams.stoploss_pct || 0.6);
+      setStoplossPct(savedParams.stoploss_pct || 1.2);
       setTargetPct(savedParams.target_pct || 2.5);
       setDonchianPeriod(savedParams.donchian_period || 10);
       setTrailingSl(savedParams.trailing_sl !== undefined ? savedParams.trailing_sl : true);
@@ -328,8 +329,8 @@ export default function Backtest() {
       setMaxScales(savedParams.max_scales || 2);
       setMaxDailyLossPct(savedParams.max_daily_loss_pct ?? 3);
       setMaxDailyTrades(savedParams.max_daily_trades !== undefined ? savedParams.max_daily_trades : 0);
-      setTrailTrigger(savedParams.trail_trigger || 0.8);
-      setTrailOffset(savedParams.trail_offset || 0.2);
+      setTrailTrigger(savedParams.trail_trigger || 0.5);
+      setTrailOffset(savedParams.trail_offset || 0.35);
       setSearchQuery(savedParams.symbol);
       setEnableSqueezeFilter(savedParams.enable_squeeze_filter !== undefined ? savedParams.enable_squeeze_filter : false);
       setEnableExtensionFilter(savedParams.enable_extension_filter !== undefined ? savedParams.enable_extension_filter : false);
@@ -357,7 +358,7 @@ export default function Backtest() {
     const params = { 
       symbol, timeframe, strategy, startDate, endDate, initialCapital, 
       quantity: quantity || 65,
-      stoploss_pct: stoplossPct || 0.6, target_pct: targetPct || 2.5,
+      stoploss_pct: stoplossPct || 1.2, target_pct: targetPct || 2.5,
       enableEmaFilter, enableVolumeFilter, enableAdxFilter, enableVwapFilter, enableRsiFilter,
       enableSqueezeFilter, enableExtensionFilter, enableCprFilter, enableAggressionFilter,
       donchian_period: donchianPeriod || 10,
@@ -367,8 +368,8 @@ export default function Backtest() {
       max_scales: maxScales || 2,
       max_daily_loss_pct: maxDailyLossPct || 3,
       max_daily_trades: maxDailyTrades !== undefined ? maxDailyTrades : 0,
-      trail_trigger: trailTrigger || 0.8,
-      trail_offset: trailOffset || 0.2
+      trail_trigger: trailTrigger || 0.5,
+      trail_offset: trailOffset || 0.35
     };
     localStorage.setItem("backtest_running", "true");
     localStorage.setItem("backtest_params", JSON.stringify(params));
@@ -598,6 +599,7 @@ export default function Backtest() {
                     <option value="meta_agent_swarm">Meta-Agent AI Swarm (5 Brains)</option>
                     <option value="ultra_meta_dip_swarm">Ultra Meta-Dip Swarm (6 Brains)</option>
                     <option value="buy_the_dip">Buy the Dip (Mean Reversion)</option>
+                    <option value="MARL_Ultra">MARL Ultra (Reinforcement Learning)</option>
                   </select>
                 </div>
               </div>
@@ -974,6 +976,37 @@ export default function Backtest() {
                   </div>
                 </div>
               )}
+
+              {/* Interactive Signal Overlay Candlestick Chart */}
+              <div className="glass-card rounded-xl p-6 border border-border/20 shadow-lg">
+                <div className="flex justify-between items-center mb-4">
+                  <div>
+                    <h3 className="font-display font-bold text-lg text-foreground flex items-center gap-2">
+                      <BarChart2 className="w-5 h-5 text-primary" />
+                      Interactive Signal Overlay Chart ({symbol})
+                    </h3>
+                    <p className="text-xs text-muted-foreground">BUY (▲) / SELL (▼) Signals & Executed Trades Overlay</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-medium">
+                      🟢 BUY Signal (▲)
+                    </span>
+                    <span className="text-xs px-2.5 py-1 rounded-full bg-rose-500/10 text-rose-400 border border-rose-500/20 font-medium">
+                      🔴 SELL Signal (▼)
+                    </span>
+                  </div>
+                </div>
+
+                <div className="w-full h-[460px] relative rounded-lg overflow-hidden border border-border/30">
+                  <NativeChart
+                    symbol={symbol}
+                    timeframe={timeframe}
+                    initialData={result.candlestickData}
+                    markers={result.chartMarkers || result.chart_markers}
+                    disableFetch={Boolean(result.candlestickData && result.candlestickData.length > 0)}
+                  />
+                </div>
+              </div>
 
               {/* Chart */}
               <div className="glass-card rounded-xl p-6 border border-border/20">

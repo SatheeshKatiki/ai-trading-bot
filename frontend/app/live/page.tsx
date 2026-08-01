@@ -452,6 +452,13 @@ function AiCommentaryPanel({ urlSymbol, timeframe }: { urlSymbol: string, timefr
     );
 }
 
+function getAtmOptionSymbol(baseSymbol: string, price: number): string {
+    const rawPrice = price > 0 ? price : (baseSymbol.includes('BANK') ? 52000 : baseSymbol.includes('SENSEX') ? 80000 : 24350);
+    const step = baseSymbol.includes('BANK') ? 100 : baseSymbol.includes('SENSEX') ? 100 : 50;
+    const strike = Math.round(rawPrice / step) * step;
+    return `${baseSymbol} ${strike} CE`;
+}
+
 function LiveTradingContent() {
     const searchParams = useSearchParams();
     const urlSymbol = searchParams.get('symbol') || 'NIFTY';
@@ -475,6 +482,11 @@ function LiveTradingContent() {
     const [chartMode, setChartMode] = useState<"native" | "ultra">("native");
     const [notifications, setNotifications] = useState<Notification[]>([]);
     const [showLiveGuard, setShowLiveGuard] = useState(false);
+
+    // Dual Chart & Auto-Sync / Manual Lock states
+    const [isDualChart, setIsDualChart] = useState<boolean>(true);
+    const [dualSyncMode, setDualSyncMode] = useState<boolean>(true); // true = Auto AI Sync, false = Manual Pin
+    const [manualOptionSymbol, setManualOptionSymbol] = useState<string>("NIFTY 24350 CE");
 
     // Live Settings from Zustand
     const {
@@ -830,9 +842,9 @@ function LiveTradingContent() {
                         {/* AI Live Analyst Panel isolated */}
                         <AiCommentaryPanel urlSymbol={urlSymbol} timeframe={timeframe} />
 
-                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                            {/* Native Custom Chart built with Lightweight-Charts */}
-                            <div className={`transition-all duration-300 flex flex-col ${isChartFullScreen ? 'fixed inset-4 z-[100] glass-card rounded-2xl p-6 border border-border/20 shadow-2xl flex flex-col' : 'lg:col-span-2 glass-card rounded-xl p-6 border border-border/20 h-[600px]'}`}>
+                        {/* 100% Full Widescreen Dual Chart Desk */}
+                        <div className="w-full">
+                            <div className={`transition-all duration-300 flex flex-col ${isChartFullScreen ? 'fixed inset-0 z-[200] bg-background p-6 flex flex-col overflow-hidden shadow-2xl' : 'w-full glass-card rounded-xl p-6 border border-border/20 h-[620px]'}`}>
                                 <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-2">
                                     <div>
                                         <h3 className="font-display font-bold text-lg text-foreground flex items-center gap-2">
@@ -934,6 +946,14 @@ function LiveTradingContent() {
                                                         <Activity className="w-4 h-4" />
                                                     </button>
                                                 )}
+                                                {/* Dual Chart Layout Toggle */}
+                                                <button
+                                                    onClick={() => setIsDualChart(!isDualChart)}
+                                                    className={`cursor-pointer px-2.5 py-1 text-xs font-bold rounded-md transition-all whitespace-nowrap ${isDualChart ? 'bg-primary/20 text-primary border border-primary/30' : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'}`}
+                                                    title="Toggle Dual Chart View"
+                                                >
+                                                    {isDualChart ? "Dual Chart (50|50)" : "Single Chart"}
+                                                </button>
 
                                                 {/* Full Screen Toggle */}
                                                 <button
@@ -948,10 +968,45 @@ function LiveTradingContent() {
                                     </div>
                                 </div>
 
-                                {/* Container for Native Chart */}
+                                {/* Dual Sync Bar Controls */}
+                                {isDualChart && (
+                                    <div className="flex items-center justify-between bg-muted/20 px-3 py-1.5 rounded-lg border border-border/30 mb-2">
+                                        <div className="flex items-center gap-3">
+                                            <button
+                                                onClick={() => {
+                                                    const newSync = !dualSyncMode;
+                                                    setDualSyncMode(newSync);
+                                                    toast.info(newSync ? "🤖 Auto AI Sync Mode Activated" : "🔒 Manual Pin Mode Activated");
+                                                }}
+                                                className={`cursor-pointer px-3 py-1 rounded-md text-xs font-bold transition-all flex items-center gap-1.5 ${
+                                                    dualSyncMode
+                                                        ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
+                                                        : "bg-amber-500/20 text-amber-400 border border-amber-500/30"
+                                                }`}
+                                            >
+                                                {dualSyncMode ? "🤖 Auto AI Sync Mode" : "🔒 Manual Pin Mode"}
+                                            </button>
+
+                                            {!dualSyncMode && (
+                                                <input
+                                                    type="text"
+                                                    value={manualOptionSymbol}
+                                                    onChange={(e) => setManualOptionSymbol(e.target.value)}
+                                                    placeholder="Option Strike (e.g. NIFTY 24150 CE)"
+                                                    className="bg-background border border-border/50 rounded px-2.5 py-1 text-xs text-foreground focus:outline-none focus:border-primary w-52 font-mono"
+                                                />
+                                            )}
+                                        </div>
+                                        <span className="text-[11px] font-mono text-muted-foreground">
+                                            Right Window: <strong className="text-primary">{dualSyncMode ? `${urlSymbol} Active Premium` : manualOptionSymbol}</strong>
+                                        </span>
+                                    </div>
+                                )}
+
+                                {/* Container for Native / Dual Chart */}
                                 <div
-                                    key={`${urlSymbol}-${timeframe}-${chartMode}`}
-                                    className={`w-full flex-1 min-h-0 rounded-lg overflow-hidden flex flex-col`}
+                                    key={`${urlSymbol}-${timeframe}-${chartMode}-${isDualChart}-${dualSyncMode}-${manualOptionSymbol}`}
+                                    className={`w-full flex-1 min-h-0 rounded-lg overflow-hidden ${isDualChart ? 'grid grid-cols-1 md:grid-cols-2 gap-3' : 'flex flex-col'}`}
                                 >
                                     <ErrorBoundary title="Chart Module Error">
                                         {chartMode === 'native' ? (
@@ -960,14 +1015,19 @@ function LiveTradingContent() {
                                             <AdvancedChart symbol={urlSymbol} livePrice={0} timeframe={timeframe} />
                                         )}
                                     </ErrorBoundary>
-                                </div>
-                            </div>
 
-                            {/* Right Column: Execution Feed */}
-                            <div className="h-[600px] overflow-hidden flex flex-col relative z-[90]">
-                                <ErrorBoundary title="Execution Feed Error">
-                                    <ExecutionFeed />
-                                </ErrorBoundary>
+                                    {isDualChart && (
+                                        <ErrorBoundary title="Option Chart Module Error">
+                                            <NativeChart
+                                                symbol={dualSyncMode ? getAtmOptionSymbol(urlSymbol, useLiveMarketStore.getState().currentPrice) : manualOptionSymbol}
+                                                livePrice={0}
+                                                timeframe={timeframe}
+                                                showDynamicTrend={showDynamicTrend}
+                                                lastTick={Date.now()}
+                                            />
+                                        </ErrorBoundary>
+                                    )}
+                                </div>
                             </div>
                         </div>
 

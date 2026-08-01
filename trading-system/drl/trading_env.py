@@ -95,24 +95,30 @@ class QuantAITradingEnv(gym.Env):
             profit_value = self.balance * profit_pct
             self.balance += profit_value
             
-            # Reward is heavily based on closed profit
-            reward = profit_pct * 100.0
+            # Scalping Reward: heavily reward quick small profits (0.5% to 1%), penalize losses
+            if profit_pct > 0:
+                reward = profit_pct * 500.0 # High reward for any profit
+            else:
+                reward = profit_pct * 1000.0 # Heavy penalty for losses
             
+            # SORTINO SHAPING: Penalize losses much harder than we reward gains 
+            # to force the AI to find high-probability setups and avoid drawdown
+            if profit_pct < 0:
+                reward *= 2.5  # 2.5x penalty on losses
+                
             self.position = 0
             self.entry_price = 0.0
             
         else:
             # Hold (Action 0) or Invalid Action (Action 1/2 when already in position)
-            # Give a small step penalty to discourage doing nothing forever, 
-            # OR a small reward if currently holding a profitable position.
             if self.position == 1:
                 profit_pct = (current_price - self.entry_price) / self.entry_price
-                reward = profit_pct * 10.0 # Small unrealized reward
+                reward = profit_pct * 5.0 # Small unrealized reward
             elif self.position == 2:
                 profit_pct = (self.entry_price - current_price) / self.entry_price
-                reward = profit_pct * 10.0
+                reward = profit_pct * 5.0
             else:
-                reward = -0.01 # Small penalty for staying flat too long
+                reward = -0.05 # Slightly higher penalty for staying flat too long to encourage finding trades
         
         # Check termination
         self.current_step += 1

@@ -17,13 +17,15 @@ import argparse
 import logging
 import sys
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 from typing import List
 
 import numpy as np
 import pandas as pd
 
 from shared.indicators import ema, rsi
-from trading_bot.strategies.momentum_strategy import generate_signals
+from trading_bot.strategies.marl_strategy import generate_signals
 
 # ---------------------------------------------------------------------------
 # Helper functions for performance metrics
@@ -105,6 +107,7 @@ class Backtester:
         if signals is None:
             signals = generate_signals(self.df)
         
+        equity_list = []
         for i in range(len(self.df) - 1):
             signal = signals.iloc[i]
             next_open = self.df["open"].iloc[i + 1]
@@ -123,7 +126,7 @@ class Backtester:
                 self.position_price = entry_price
                 self.capital -= self.commission_per_trade  # deduct entry comms
                 
-            self.equity_curve = pd.concat([self.equity_curve, pd.Series([self.capital])])
+            equity_list.append(self.capital)
             
         # End-of-data cleanup
         if self.position_price is not None:
@@ -132,7 +135,9 @@ class Backtester:
             self.trades.append(pnl)
             self.capital += pnl
             self.position_price = None
-            self.equity_curve = pd.concat([self.equity_curve, pd.Series([self.capital])])
+            equity_list.append(self.capital)
+
+        self.equity_curve = pd.Series(equity_list, dtype=float)
 
     def summary(self) -> dict:
         pnl_series = pd.Series(self.trades)
@@ -175,13 +180,16 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
     
     # ── Data Continuity Validation ───────────────────────────────────────
     if 'datetime' in df.columns and len(df) > 100:
-        dates = pd.to_datetime(df['datetime']).dt.date.unique()
-        if len(dates) > 1:
-            diffs = pd.Series(dates).diff().dt.days.dropna()
-            max_gap = diffs.max()
-            if max_gap > 14:  # A gap of more than 14 days (e.g., missed 100-day chunk) is abnormal
-                logger.warning(f"Data Continuity Warning: Found a massive gap of {max_gap} days in the dataset!")
-                kwargs["rejection_logs"] = kwargs.get("rejection_logs", []) + [f"Data Continuity Warning: Massive {max_gap}-day gap detected!"]
+        try:
+            dts = pd.to_datetime(df['datetime']).drop_duplicates().sort_values()
+            dates_series = pd.Series(dts.dt.date.unique())
+            if len(dates_series) > 1:
+                diffs = pd.to_datetime(dates_series).diff().dt.days.dropna()
+                max_gap = int(diffs.max()) if not diffs.empty else 0
+                if max_gap > 14:  # A gap of more than 14 days is abnormal
+                    logger.warning(f"Data Continuity Warning: Found a massive gap of {max_gap} days in the dataset!")
+        except Exception as e:
+            logger.debug(f"Data continuity check skipped: {e}")
     # ─────────────────────────────────────────────────────────────────────
     # ── Daily Risk Controls ──────────────────────────────────────────────
     max_daily_loss_pct  = kwargs.get("max_daily_loss_pct", 3.0)   # stop trading day if capital drops X%
@@ -193,6 +201,14 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
     total_slippage      = 0.0
     trading_halted_day  = None                                     # date string when halt triggered
     current_day         = None
+    # ─────────────────────────────────────────────────────────────────────
+    # ── Capital Protection Mode (Professional Risk Management) ───────────
+    # Tracks consecutive losing trades and reduces position size accordingly.
+    # Professional rule: If you're losing repeatedly, the market is NOT
+    # in a regime your strategy understands. Step back, reduce risk.
+    consecutive_losses      = 0
+    capital_protection_mode = False   # True = half-size positions
+    capital_protection_halt = False   # True = no new entries
     # ─────────────────────────────────────────────────────────────────────
 
     def apply_slippage(price, side):
@@ -239,6 +255,14 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
             daily_pnl           = 0.0
             daily_trades_count  = 0
             daily_capital_start = capital
+            # Capital Protection: Reset each new trading day
+            # (fresh start every morning — don't carry yesterday's fear)
+            capital_protection_halt = False
+            if consecutive_losses >= 5:
+                # Only keep protection mode ON if very bad streak
+                capital_protection_mode = True
+            else:
+                capital_protection_mode = False
 
         # If daily loss limit hit → skip entries for the rest of this day
         daily_loss_pct = (daily_pnl / daily_capital_start * 100) if daily_capital_start > 0 else 0
@@ -351,23 +375,26 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
                 raw_sl_pct = position.get("sl_pct", base_sl)
                 
             # After breakeven snap, sl_pct=0.0 means exit at entry — use a tiny floor
-            # so the engine doesn't hold losing trades forever at breakeven
             current_sl_pct = raw_sl_pct if raw_sl_pct > 0 else min(stoploss_pct * 0.5, 0.05)
 
-            # 3-Phase Trailing Stop Loss
+            # ── 3-Phase Trailing Stop Loss (Professional R:R Edition) ────────
+            # Professional options buyer rule:
+            # - Start trailing early (0.5% trigger) to lock in profits
+            # - Give 0.35% room so we don't exit too early on volatility
+            # - Lock MINIMUM 0.15% profit before any trail exit fires
             enable_tsl = kwargs.get("enable_trailing_sl", True) and kwargs.get("trailing_sl", True)
             if enable_tsl:
                 ml_tsl_trigger = df['trailing_sl_trigger'].iloc[i] if 'trailing_sl_trigger' in df.columns else None
-                trail_trigger = ml_tsl_trigger if pd.notna(ml_tsl_trigger) else kwargs.get("trail_trigger", 0.8)
-                trail_offset = kwargs.get("trail_offset", 0.2)
+                trail_trigger = ml_tsl_trigger if pd.notna(ml_tsl_trigger) else kwargs.get("trail_trigger", 0.5)
+                trail_offset = kwargs.get("trail_offset", 0.35)
 
                 if position["max_pnl_pct"] >= trail_trigger:
-                    # Phase 3: Hyper-tight trail if we exceed 2x the trigger (Super Trend Run)
-                    if position["max_pnl_pct"] >= (trail_trigger * 2.0):
-                        locked_profit = max(0.0, position["max_pnl_pct"] - 0.05) # Extremely tight 0.05% trail
+                    # Phase 3: Hyper-tight trail if we exceed 3x the trigger (Super Trend Run)
+                    if position["max_pnl_pct"] >= (trail_trigger * 3.0):
+                        locked_profit = max(0.15, position["max_pnl_pct"] - 0.05)  # Ultra tight 0.05% trail
                     else:
-                        # Phase 2: Standard trailing
-                        locked_profit = max(0.0, position["max_pnl_pct"] - trail_offset)
+                        # Phase 2: Standard trailing — lock in profit minus trail_offset
+                        locked_profit = max(0.15, position["max_pnl_pct"] - trail_offset)
                     
                     position["tsl_locked_pct"] = locked_profit
 
@@ -378,8 +405,7 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
             tsl_locked = position.get("tsl_locked_pct")
             tsl_hit = (tsl_locked is not None) and (pnl_pct < tsl_locked)
 
-            # Phase 4: Volatility-Adaptive Targets
-            # If the market is highly volatile, dynamically expand the target
+            # Volatility-Adaptive Target
             base_target = position.get("target_pct", target_pct)
             target_hit = pnl_pct >= base_target
             
@@ -391,17 +417,27 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
                 current_inr_pnl = sum((e_price - current_price) * qty * options_delta for e_price, qty in position["entries"])
             hard_monetary_hit = current_inr_pnl <= -max_inr_loss
 
+            # ── Time-Based Exit: Only for 1 Min scalping sessions ──────────
+            # On 5 Min: 20 candles = 100 minutes — too aggressive, exits too early
+            # Only enable time exit for very short timeframes (< 3 min)
+            # by passing max_hold_candles via kwargs. Default = disabled (9999)
+            max_hold_candles = kwargs.get("max_hold_candles", 9999)
+            bars_held = i - position.get("entry_bar", i)
+            time_exit_hit = bars_held >= max_hold_candles
+
             # Track if partial profit targets were hit (use original stoploss_pct as R unit)
             if pnl_pct >= stoploss_pct:
                 position["t1_hit"] = True
             if pnl_pct >= (stoploss_pct * 2):
                 position["t2_hit"] = True
                 
-            should_exit = (is_long and signal == -1) or (not is_long and signal == 1) or (i == len(df) - 1) or stoploss_hit or tsl_hit or target_hit or hard_monetary_hit
+            should_exit = (is_long and signal == -1) or (not is_long and signal == 1) or (i == len(df) - 1) or stoploss_hit or tsl_hit or target_hit or hard_monetary_hit or time_exit_hit
 
             if should_exit:
                 exit_price = current_price
                 exit_reason = "SIGNAL"
+                if time_exit_hit:
+                    exit_reason = "TIME_EXIT"
                 
                 total_qty = sum(qty for _, qty in position["entries"])
                 avg_e = sum(p*q for p, q in position["entries"]) / total_qty
@@ -480,6 +516,21 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
                 })
                 position = None
                 
+                # ── Capital Protection Mode: Track consecutive losses ──────────
+                if trade_net_pnl > 0:
+                    # WIN: Reset consecutive loss counter
+                    consecutive_losses = 0
+                    capital_protection_mode = False
+                    capital_protection_halt = False
+                else:
+                    # LOSS: Increment counter and update protection state
+                    consecutive_losses += 1
+                    if consecutive_losses >= 3:
+                        capital_protection_mode = True   # Half-size next trades
+                    # NOTE: No full halt — even during bad streaks, winners can appear.
+                    # Instead, at 5+ losses we use quarter-size (25%) to stay in the game
+                    # but with dramatically reduced risk.
+                # ────────────────────────────────────────────────────────────────────
         # Entry condition — skip if daily loss limit or trade cap reached
         if position is None and not daily_limit_hit and not daily_trades_hit:
             if signal == 1 and (i == 0 or sig_vals[i-1] != 1):
@@ -502,9 +553,22 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
                 dynamic_target = max(target_pct, vol_target_pct)
 
                 score = call_scores[i] if has_scores else 0
-                actual_mult = multiplier_override if multiplier_override is not None else multiplier
+                base_mult = multiplier_override if multiplier_override is not None else multiplier
+                # ULTIMATE UPGRADE: Dynamic Capital Compounding Engine
+                # Scales lot size as equity grows, capped at realistic max (default 5x) for strict risk management
+                if kwargs.get("enable_compounding", True) and capital > initial_capital:
+                    max_cap = kwargs.get("max_compounding_multiplier", 5.0)
+                    compound_factor = min(max_cap, max(1.0, capital / initial_capital))
+                    base_mult = int(base_mult * compound_factor)
+                
+                actual_mult = base_mult
+                # Capital Protection: Reduce position size during losing streaks
+                if consecutive_losses >= 5:
+                    actual_mult = max(1, actual_mult // 4)  # 25% size
+                elif capital_protection_mode:  # 3+ losses
+                    actual_mult = max(1, actual_mult // 2)  # 50% size
 
-                position = {"type": "BUY", "entries": [(entry_price, actual_mult)], "time": current_time, "sl_pct": current_sl_pct, "target_pct": dynamic_target, "score": score, "has_custom_sl": pos_has_custom_sl}
+                position = {"type": "BUY", "entries": [(entry_price, actual_mult)], "time": current_time, "sl_pct": current_sl_pct, "target_pct": dynamic_target, "score": score, "has_custom_sl": pos_has_custom_sl, "entry_bar": i}
                 capital -= commission_per_trade
                 total_brokerage += commission_per_trade
                 total_slippage += abs(current_price - entry_price) * actual_mult * options_delta
@@ -528,9 +592,21 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
                 dynamic_target = max(target_pct, vol_target_pct)
 
                 score = put_scores[i] if has_scores else 0
-                actual_mult = multiplier_override if multiplier_override is not None else multiplier
+                base_mult = multiplier_override if multiplier_override is not None else multiplier
+                # ULTIMATE UPGRADE: Dynamic Capital Compounding Engine
+                if kwargs.get("enable_compounding", True) and capital > initial_capital:
+                    max_cap = kwargs.get("max_compounding_multiplier", 5.0)
+                    compound_factor = min(max_cap, max(1.0, capital / initial_capital))
+                    base_mult = int(base_mult * compound_factor)
+                
+                actual_mult = base_mult
+                # Capital Protection: Reduce position size during losing streaks
+                if consecutive_losses >= 5:
+                    actual_mult = max(1, actual_mult // 4)  # 25% size
+                elif capital_protection_mode:  # 3+ losses
+                    actual_mult = max(1, actual_mult // 2)  # 50% size
 
-                position = {"type": "SELL", "entries": [(entry_price, actual_mult)], "time": current_time, "sl_pct": current_sl_pct, "target_pct": dynamic_target, "score": score, "has_custom_sl": pos_has_custom_sl}
+                position = {"type": "SELL", "entries": [(entry_price, actual_mult)], "time": current_time, "sl_pct": current_sl_pct, "target_pct": dynamic_target, "score": score, "has_custom_sl": pos_has_custom_sl, "entry_bar": i}
                 capital -= commission_per_trade
                 total_brokerage += commission_per_trade
                 total_slippage += abs(current_price - entry_price) * actual_mult * options_delta

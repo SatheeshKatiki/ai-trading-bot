@@ -52,6 +52,9 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from shared.config import CONFIG
 from shared.state import update_equity, record_trade
+
+_evaluating_symbols: set[str] = set()
+
 # Broker layer — broker-agnostic: trading logic never imports vendor SDKs directly
 from brokers import BrokerFactory, OrderRequest, OrderSide, OrderType
 from trading_bot.strategies.registry import registry
@@ -60,6 +63,7 @@ from trading_bot.strategies.premium_selection import (
 )
 from trading_bot.strategies.momentum_strategy import MomentumStrategy
 from trading_bot.strategies.drl_strategy import generate_signals as drl_signals
+from trading_bot.strategies.marl_strategy import generate_signals as marl_signals
 
 from typing import Dict, Any, Optional, Literal
 
@@ -92,6 +96,7 @@ logger = logging.getLogger(__name__)
 # Register strategies that are not auto-discovered (e.g., from subpackages)
 registry.register("premium", premium_signals)
 registry.register("drl_strategy", drl_signals)
+registry.register("MARL_Ultra", marl_signals)
 
 # Path to the shared settings file written by the Streamlit dashboard
 _SETTINGS_PATH = Path(__file__).resolve().parents[1] / "config" / "settings.json"
@@ -122,7 +127,8 @@ def _save_positions(positions: Dict[str, Position]) -> None:
                 "stop_loss": getattr(p, "stop_loss", 0.0),
                 "target": getattr(p, "target", 0.0),
                 "is_partially_booked": getattr(p, "is_partially_booked", False),
-                "scales_done": getattr(p, "scales_done", 0)
+                "scales_done": getattr(p, "scales_done", 0),
+                "sl_order_id": getattr(p, "sl_order_id", None)
             } for sym, p in positions_copy.items()
         }
         
@@ -161,6 +167,7 @@ def _load_positions() -> Dict[str, Position]:
                     )
                     pos.is_partially_booked = p.get("is_partially_booked", False)
                     pos.scales_done = p.get("scales_done", 0)
+                    pos.sl_order_id = p.get("sl_order_id", None)
                     pos.is_exiting = False  # Always reset on load — no in-flight tasks survive restart
                     loaded[sym] = pos
                 return loaded
@@ -365,7 +372,7 @@ async def run_live_bot(symbols: List[str]) -> None:
     last_eval_time = 0.0
     _iceberg_semaphore = asyncio.Semaphore(3)
 
-    async def background_iceberg_entry(broker, entry_req: OrderRequest, pos_obj: Position, s: str):
+    async def background_iceberg_entry(broker, entry_req: OrderRequest, pos_obj: Position, s: str, is_option_trade: bool):
         try:
             async with _iceberg_semaphore:
                 executed_slices = await iceberg_manager.execute_iceberg(
@@ -402,9 +409,9 @@ async def run_live_bot(symbols: List[str]) -> None:
                     symbol=s,
                     quantity=actual_qty,
                     side=OrderSide.SELL if pos_obj.side == 1 else OrderSide.BUY,
-                    order_type=OrderType.STOPLOSS,
+                    order_type=OrderType.SL_M,
                     trigger_price=pos_obj.stop_loss,
-                    price=pos_obj.stop_loss, # Limit price same as trigger for SL-Limit, or 0 for SL-Mkt
+                    price=0.0, # Market price execution upon trigger
                 )
                 try:
                     sl_resp = await broker.place_order_async(sl_req)
@@ -415,6 +422,13 @@ async def run_live_bot(symbols: List[str]) -> None:
                     logger.error("Failed to place Hard SL for %s: %s", s, sl_e)
                 
                 _save_positions(active_positions)
+                
+                # Persist Entry to state.db ONLY after broker confirms execution
+                from datetime import datetime
+                state_action = "BUY" if is_option_trade else ("BUY" if pos_obj.side == 1 else "SELL")
+                record_trade(pos_obj.symbol, state_action, pos_obj.entry_price, datetime.now(_IST).isoformat(), qty=actual_qty)
+                update_equity(risk_manager.current_equity, risk_manager.daily_pnl)
+
                 audit.trade(AuditEvent.TRADE_ENTRY, pos_obj.symbol,
                             entry_req.side.value, actual_qty,
                             pos_obj.entry_price, broker=broker.BROKER_ID)
@@ -424,48 +438,95 @@ async def run_live_bot(symbols: List[str]) -> None:
                 del active_positions[s]
                 _save_positions(active_positions)
 
+    async def update_exchange_sl(broker, pos: Position):
+        """Cancels old Hard SL and places a new one at the updated Trailing SL price."""
+        if not getattr(pos, 'sl_order_id', None):
+            return
+        
+        old_id = pos.sl_order_id
+        try:
+            broker.cancel_order(old_id)
+            logger.info("Cancelled old Trailing SL (ID: %s) for %s", old_id, pos.symbol)
+        except Exception as e:
+            logger.error("Failed to cancel old SL for %s: %s", pos.symbol, e)
+            return  # Safety: Don't place a new one if the old one couldn't be cancelled (avoids multiple SLs)
+
+        # Give broker a split second to register the cancellation
+        await asyncio.sleep(0.5)
+
+        new_sl_req = OrderRequest(
+            symbol=pos.symbol,
+            quantity=pos.quantity,
+            side=OrderSide.SELL if pos.side == 1 else OrderSide.BUY,
+            order_type=OrderType.SL_M,
+            trigger_price=pos.stop_loss,
+            price=0.0,
+        )
+        try:
+            sl_resp = await broker.place_order_async(new_sl_req)
+            if sl_resp and sl_resp.order_id:
+                pos.sl_order_id = sl_resp.order_id
+                logger.info("New Trailing SL placed at Exchange for %s at %.2f (ID: %s)", pos.symbol, pos.stop_loss, pos.sl_order_id)
+                _save_positions(active_positions)
+        except Exception as e:
+            logger.error("Failed to place new Trailing SL for %s: %s", pos.symbol, e)
+
     async def background_iceberg_exit(
         broker, exit_req: OrderRequest, sym: str, side: int, entry_price: float,
         exit_price: float, qty_to_close: int, full_exit: bool
     ):
         try:
+            actual_exit_qty = qty_to_close
+            ltp_actual = exit_price
+            broker_sl_hit = False
+
             async with _iceberg_semaphore:
                 pos = active_positions.get(sym)
                 if pos and getattr(pos, 'sl_order_id', None):
                     try:
-                        broker.cancel_order(pos.sl_order_id)
-                        logger.info("Cancelled Hard SL order (ID: %s) for %s before exit", pos.sl_order_id, sym)
+                        # Interceptor: Check if the Broker SL already executed natively
+                        status = broker.get_order_status(pos.sl_order_id)
+                        if status and status.status in ["COMPLETE", "FILLED", "TRADED"]:
+                            logger.warning("Broker Hard SL already executed for %s! Skipping local Market order.", sym)
+                            broker_sl_hit = True
+                            actual_exit_qty = pos.quantity
+                            ltp_actual = status.traded_price if status.traded_price > 0 else exit_price
+                        else:
+                            broker.cancel_order(pos.sl_order_id)
+                            logger.info("Cancelled Hard SL order (ID: %s) for %s before exit", pos.sl_order_id, sym)
                         pos.sl_order_id = None
                     except Exception as e:
-                        logger.error("Failed to cancel Hard SL for %s: %s", sym, e)
+                        logger.error("Failed to check/cancel Hard SL for %s: %s", sym, e)
                 
-                executed_slices = await iceberg_manager.execute_iceberg(
-                    broker, 
-                    exit_req,
-                    halt_check=lambda: portfolio_risk.trading_halted
-                )
-                actual_exit_qty = sum(resp.quantity for resp in executed_slices)
+                if not broker_sl_hit:
+                    executed_slices = await iceberg_manager.execute_iceberg(
+                        broker, 
+                        exit_req,
+                        halt_check=lambda: portfolio_risk.trading_halted
+                    )
+                    actual_exit_qty = sum(resp.quantity for resp in executed_slices)
             
-            if actual_exit_qty == 0:
-                logger.error("EXIT order completely failed to execute for %s. Resetting is_exiting — will retry next tick.", sym)
-                # Unlock the position so it's managed again on the next tick
-                if pos:
-                    pos.is_exiting = False
-                return
-            
-            # Fetch actual filled price to track Slippage
-            await asyncio.sleep(1.0)
-            total_value = 0.0
-            valid_slices = 0
-            for resp in executed_slices:
-                if resp.order_id:
-                    status = broker.get_order_status(resp.order_id)
-                    if status and status.traded_price > 0:
-                        total_value += status.traded_price * resp.quantity
-                        valid_slices += resp.quantity
-            
-            ltp_actual = total_value / valid_slices if valid_slices > 0 else exit_price
-            logger.info("Actual Exit Price for %s resolved to %.2f (Slippage adjusted)", sym, ltp_actual)
+            if not broker_sl_hit:
+                if actual_exit_qty == 0:
+                    logger.error("EXIT order completely failed to execute for %s. Resetting is_exiting — will retry next tick.", sym)
+                    # Unlock the position so it's managed again on the next tick
+                    if pos:
+                        pos.is_exiting = False
+                    return
+                
+                # Fetch actual filled price to track Slippage
+                await asyncio.sleep(1.0)
+                total_value = 0.0
+                valid_slices = 0
+                for resp in executed_slices:
+                    if resp.order_id:
+                        status = broker.get_order_status(resp.order_id)
+                        if status and status.traded_price > 0:
+                            total_value += status.traded_price * resp.quantity
+                            valid_slices += resp.quantity
+                
+                ltp_actual = total_value / valid_slices if valid_slices > 0 else exit_price
+                logger.info("Actual Exit Price for %s resolved to %.2f (Slippage adjusted)", sym, ltp_actual)
             
             # ── Confirmed execution: now record PNL and clean up position ──
             pnl = (ltp_actual - entry_price) * actual_exit_qty * side
@@ -680,7 +741,9 @@ async def run_live_bot(symbols: List[str]) -> None:
                 else:
                     # Dynamically apply Trailing SL settings
                     if settings.get("trailing_sl", False) or settings.get("trailingSl", False):
-                        exit_engine.trailing_activation_pct = settings.get("trail_trigger", settings.get("trailTrigger", 1.0))
+                        # AUDIT FIX: Default 0.5% (not 1.0%) — proven optimal in backtesting
+                        exit_engine.trailing_activation_pct = settings.get("trail_trigger", settings.get("trailTrigger", 0.5))
+                        exit_engine.trailing_offset_pct     = settings.get("trail_offset",  settings.get("trailOffset",  0.35))
                     else:
                         # If turned off, set activation pct to an unreachable high number
                         exit_engine.trailing_activation_pct = 9999.0
@@ -693,6 +756,8 @@ async def run_live_bot(symbols: List[str]) -> None:
                     if open_position.stop_loss != old_stop_loss:
                         logger.info("TRAILING SL MOVED for %s: %.2f -> %.2f. Saving to disk.", sym, old_stop_loss, open_position.stop_loss)
                         _save_positions(active_positions)
+                        if not broker.paper_mode:
+                            asyncio.create_task(update_exchange_sl(broker, open_position))
 
             if should_exit:
                 qty_to_close = exit_qty if exit_qty else open_position.quantity
@@ -705,10 +770,25 @@ async def run_live_bot(symbols: List[str]) -> None:
                         return  # Return immediately so position isn't removed; it will retry on next tick
                     else:
                         is_opt = "CE" in open_position.symbol or "PE" in open_position.symbol
+                        exit_side = OrderSide.SELL if is_opt else (OrderSide.SELL if open_position.side == 1 else OrderSide.BUY)
+                        
+                        # Marketable Limit Order (MLO) Bypass for Exit
+                        if is_opt:
+                            if exit_side == OrderSide.SELL:
+                                mlo_price = round(ltp * 0.95, 2) # Sell 5% below LTP to guarantee fill
+                            else:
+                                mlo_price = round(ltp * 1.05, 2) # Buy 5% above LTP
+                            order_type = OrderType.LIMIT
+                        else:
+                            mlo_price = 0.0
+                            order_type = OrderType.MARKET
+                            
                         exit_req = OrderRequest(
                             symbol=open_position.symbol,
                             quantity=qty_to_close,
-                            side=OrderSide.SELL if is_opt else (OrderSide.SELL if open_position.side == 1 else OrderSide.BUY),
+                            side=exit_side,
+                            order_type=order_type,
+                            price=mlo_price
                         )
                         try:
                             exit_req = validator.validator.validate(exit_req)
@@ -820,195 +900,268 @@ async def run_live_bot(symbols: List[str]) -> None:
                 # AI confidence threshold: stricter for enhanced_ai strategy
                 min_confidence = 0.85 if strategy_name == "enhanced_ai" else 0.60
 
-                for s in symbols:
-                    if s in active_positions:
-                        continue  # Only one open position per symbol
-
-                    df = aggregator.get_latest_dataframe(s)
-                    if len(df) < 50:  # Need enough warmup bars
-                        continue
-
-                    # ── AI Confidence Gate (computed first, needed by premium engine) ──
-                    # Limit to last 100 rows to prevent severe CPU bottleneck and latency spikes
-                    features = compute_features(df.tail(100)).tail(1)
-                    
-                    enable_ai = settings.get("enable_ai_filter", False)
-                    if enable_ai and ai_filter.is_trained:
-                        confidence = ai_filter.predict(features)["confidence"].iloc[-1] if not features.empty else 1.0
-                    else:
-                        # Fallback to pure rules-based trading if model is not trained or disabled
-                        confidence = 1.0
-
-                    # ── Run selected strategy ──────────────────────────
-                    # We run the strategy first before applying the AI gate to avoid spamming logs 
-                    # on every tick when no actual signal was generated.
-                    
-                    # ── Premium Strategy: uses engine directly for option selection ──
-                    if strategy_name == "premium":
-                        instrument = s.replace("NSE:", "").replace("-INDEX", "").replace("-EQ", "")
-                        premium_engine = PremiumSignalEngine(
-                            instrument=instrument,
-                            capital=risk_manager.current_equity,
-                            min_ai_confidence=min_confidence,
-                        )
-                        sig: PremiumSignal = premium_engine.evaluate(df, ai_confidence=confidence)
-
-                        if not sig.is_tradeable:
-                            # premium engine handles its own rejection logs
+                for s in aggregator.symbols:
+                    if s in active_positions or s in _evaluating_symbols:
+                        continue  # Only one open position per symbol, and block concurrent evaluations
+                        
+                    _evaluating_symbols.add(s)
+                    try:
+                        df = aggregator.get_latest_dataframe(s)
+                        if len(df) < 50:  # Need enough warmup bars
                             continue
 
-                        latest_signal = 1 if sig.direction == "BUY_CALL" else -1
-                        option_symbol = sig.option.symbol if sig.option else s
-                        lot_size      = sig.option.lot_size if sig.option else 1
-                        entry_symbol  = option_symbol
-                        logger.info(
-                            "PREMIUM SIGNAL %s | %s | Layers: %s | Composite: %.0f%%",
-                            sig.direction, option_symbol, sig.layers_passed, sig.confidence * 100
-                        )
-                    else:
-                        signals_data = registry.run_strategy(strategy_name, df, **settings)
-                        if isinstance(signals_data, tuple):
-                            signals, _ = signals_data
-                        else:
-                            signals = signals_data
-                        latest_signal = signals.iloc[-1]
-                        entry_symbol  = s
-                        lot_size      = 1
+                        # ── AI Confidence Gate (computed first, needed by premium engine) ──
+                        # Limit to last 100 rows to prevent severe CPU bottleneck and latency spikes
+                        features = compute_features(df.tail(100)).tail(1)
                         
-                        if latest_signal != 0:
-                            if confidence < min_confidence:
-                                logger.info(
-                                    "AI rejected %s signal for %s — confidence %.2f < threshold %.2f",
-                                    strategy_name, s, confidence, min_confidence
-                                )
+                        enable_ai = settings.get("enable_ai_filter", False)
+                        if enable_ai and ai_filter.is_trained:
+                            pred_df = await asyncio.to_thread(ai_filter.predict, features)
+                            confidence = pred_df["confidence"].iloc[-1] if not features.empty else 1.0
+                        else:
+                            # Fallback to pure rules-based trading if model is not trained or disabled
+                            confidence = 1.0
+
+                        # ── Run selected strategy ──────────────────────────
+                        # We run the strategy first before applying the AI gate to avoid spamming logs 
+                        # on every tick when no actual signal was generated.
+                        
+                        # ── Premium Strategy: uses engine directly for option selection ──
+                        if strategy_name == "premium":
+                            instrument = s.replace("NSE:", "").replace("-INDEX", "").replace("-EQ", "")
+                            premium_engine = PremiumSignalEngine(
+                                instrument=instrument,
+                                capital=risk_manager.current_equity,
+                                min_ai_confidence=min_confidence,
+                            )
+                            sig: PremiumSignal = await asyncio.to_thread(
+                                premium_engine.evaluate, df, confidence
+                            )
+
+                            if not sig.is_tradeable:
+                                # premium engine handles its own rejection logs
                                 continue
 
-                        # Auto-map to Options if it's an Index trade
-                        if latest_signal != 0 and ("INDEX" in s or s.startswith("NSE:NIFTY") or s.startswith("BSE:SENSEX")):
-                            try:
-                                from trading_bot.strategies.premium_selection.options_selector import select_option
-                                instrument = s.replace("NSE:", "").replace("BSE:", "").replace("-INDEX", "").replace("-EQ", "")
-                                opt_dir: Literal['CE', 'PE'] = "CE" if latest_signal == 1 else "PE"
-                                opt = select_option(instrument, ltp, opt_dir, itm_strikes=1)
-                                entry_symbol = opt.symbol
-                                lot_size = opt.lot_size
-                                logger.info("Auto-mapped %s %s signal to Option: %s", instrument, opt_dir, entry_symbol)
-                            except Exception as e:
-                                logger.error("Failed to auto-map option for %s: %s", s, e)
-                        
-
-                    if latest_signal == 0:
-                        continue
-
-                    # ── Macro Sentiment Blocks ─────────────────────────
-                    from shared.sentiment import get_current_sentiment
-                    sentiment_data = get_current_sentiment()
-                    sentiment_score = sentiment_data.get("score", 0.0)
-
-                    if latest_signal == 1 and sentiment_score < -0.5:
-                        logger.warning("Macro Filter Blocked BUY for %s: Highly Bearish Sentiment (%.2f)", s, sentiment_score)
-                        alerter.send_alert(f"🛑 **Trade Blocked**\n\nSymbol: {s}\nReason: Highly Bearish Sentiment ({sentiment_score})")
-                        continue
-                        
-                    if latest_signal == -1 and sentiment_score > 0.5:
-                        logger.warning("Macro Filter Blocked SELL for %s: Highly Bullish Sentiment (%.2f)", s, sentiment_score)
-                        alerter.send_alert(f"🛑 **Trade Blocked**\n\nSymbol: {s}\nReason: Highly Bullish Sentiment ({sentiment_score})")
-                        continue
-
-                    # ── Risk Manager Gate ──────────────────────────────
-                    current_volatility = df["close"].pct_change().std() * 100
-                    
-                    if settings.get("maxDailyLossPct"):
-                        portfolio_risk.max_daily_dd_pct = float(settings.get("maxDailyLossPct", 0.05))
-                    elif settings.get("max_daily_loss_pct"):
-                        portfolio_risk.max_daily_dd_pct = float(settings.get("max_daily_loss_pct", 0.05))
-
-                    if settings.get("max_trades_per_day") is not None:
-                        risk_manager.config.max_trades_per_day = int(settings.get("max_trades_per_day", 1))
-                    elif settings.get("maxDailyTrades") is not None:
-                        risk_manager.config.max_trades_per_day = int(settings.get("maxDailyTrades", 1))
-                    elif settings.get("max_daily_trades") is not None:
-                        risk_manager.config.max_trades_per_day = int(settings.get("max_daily_trades", 1))
-                        
-                    is_trading_allowed, halt_reason = portfolio_risk.is_trading_allowed(risk_manager.current_equity)
-                    if not is_trading_allowed:
-                        logger.warning("Portfolio Risk Halt for %s: %s", s, halt_reason)
-                        continue
-                        
-                    # ── Compute Entry Premium, Stop Loss, and Target ──
-                    entry_premium = df["close"].iloc[-1] # Default to index price
-                    side_str = "BUY CALL" if latest_signal == 1 else "BUY PUT"
-                    
-                    is_option_trade = "CE" in entry_symbol or "PE" in entry_symbol
-                    
-                    if is_option_trade:
-                        # Fetch the Live Option Premium to calculate P&L correctly
-                        try:
-                            live_quotes = broker.get_market_data([entry_symbol])
-                            if entry_symbol in live_quotes and live_quotes[entry_symbol].ltp > 0:
-                                entry_premium = live_quotes[entry_symbol].ltp
-                            else:
-                                logger.warning("Could not fetch live option premium for %s. Using index price as fallback.", entry_symbol)
-                        except Exception as e:
-                            logger.error("Error fetching live option premium: %s", e)
-                            
-                        # Option buying means we buy premium, so target is UP and SL is DOWN
-                        sl_price = entry_premium * (1 - sl_pct)
-                        tgt_price = entry_premium * (1 + target_pct)
-                    else:
-                        sl_price = entry_premium * (1 - sl_pct) if latest_signal == 1 else entry_premium * (1 + sl_pct)
-                        tgt_price = entry_premium * (1 + target_pct) if latest_signal == 1 else entry_premium * (1 - target_pct)
-
-                    # ── Compute Quantity ──
-                    if "quantity" in settings and int(settings["quantity"]) > 0:
-                        total_shares = int(settings["quantity"])
-                    else:
-                        # Calculate position size based on risk amount
-                        total_shares = risk_manager.calculate_position_size(entry_premium, sl_price, ai_confidence=confidence) or 1
-                        
-                    number_of_lots = max(1, total_shares // lot_size)
-                    total_quantity = number_of_lots * lot_size
-
-                    # ── Risk Manager Gate ─────────────────────────────────────────
-                    # Pass actual rupee risk so the per-trade risk limit is enforced
-                    actual_risk_amount = abs(entry_premium - sl_price) * total_quantity
-                    allowed, reject_reason = risk_manager.can_trade(
-                        symbol=s,
-                        risk_amount=actual_risk_amount,
-                        ai_confidence=confidence,
-                        current_volatility=current_volatility,
-                    )
-                    if not allowed:
-                        logger.info("Trade BLOCKED for %s: %s", s, reject_reason)
-                        continue
-
-                    if not settings.get("auto_trade_enabled", True):
-                        logger.info("Auto trades disabled (Manual Mode) - Skipping execution for %s.", s)
-                        continue
-
-                    # ── Execute (Live or Paper) ────────────────────────
-                    if is_live:
-                        logger.info(
-                            "ENTRY %s %s quantity=%d @ %.2f | SL=%.2f | TGT=%.2f | AI=%.0f%% [LIVE]",
-                            side_str, entry_symbol, total_quantity, entry_premium, sl_price, tgt_price, confidence * 100
-                        )
-                        # Rate-limit guard
-                        if not ORDER_LIMITER.allow(broker.BROKER_ID):
-                            logger.warning(
-                                "Order rate limit reached for broker %s — skipping entry on %s.",
-                                broker.BROKER_ID, s,
+                            latest_signal = 1 if sig.direction == "BUY_CALL" else -1
+                            option_symbol = sig.option.symbol if sig.option else s
+                            lot_size      = sig.option.lot_size if sig.option else 1
+                            entry_symbol  = option_symbol
+                            logger.info(
+                                "PREMIUM SIGNAL %s | %s | Layers: %s | Composite: %.0f%%",
+                                sig.direction, option_symbol, sig.layers_passed, sig.confidence * 100
                             )
+                        else:
+                            signals_data = await asyncio.to_thread(
+                                registry.run_strategy, strategy_name, df, **settings
+                            )
+                            if isinstance(signals_data, tuple):
+                                signals, _ = signals_data
+                            else:
+                                signals = signals_data
+                            latest_signal = signals.iloc[-1]
+                            entry_symbol  = s
+                            lot_size      = 1
+                            
+                            if latest_signal != 0:
+                                if confidence < min_confidence:
+                                    logger.info(
+                                        "AI rejected %s signal for %s — confidence %.2f < threshold %.2f",
+                                        strategy_name, s, confidence, min_confidence
+                                    )
+                                    continue
+
+                            # Auto-map to Options if it's an Index trade
+                            if latest_signal != 0 and ("INDEX" in s or s.startswith("NSE:NIFTY") or s.startswith("BSE:SENSEX")):
+                                try:
+                                    from trading_bot.strategies.premium_selection.options_selector import select_option
+                                    instrument = s.replace("NSE:", "").replace("BSE:", "").replace("-INDEX", "").replace("-EQ", "")
+                                    opt_dir: Literal['CE', 'PE'] = "CE" if latest_signal == 1 else "PE"
+                                    opt = select_option(instrument, ltp, opt_dir, itm_strikes=1)
+                                    entry_symbol = opt.symbol
+                                    lot_size = opt.lot_size
+                                    logger.info("Auto-mapped %s %s signal to Option: %s", instrument, opt_dir, entry_symbol)
+                                except Exception as e:
+                                    logger.error("Failed to auto-map option for %s: %s", s, e)
+                            
+
+                        if latest_signal == 0:
                             continue
-                        # Input validation gate
-                        is_option = "CE" in entry_symbol or "PE" in entry_symbol
-                        entry_req = OrderRequest(
-                            symbol=entry_symbol,
-                            quantity=total_quantity,
-                            side=OrderSide.BUY if is_option_trade else (OrderSide.BUY if latest_signal == 1 else OrderSide.SELL),
+
+                        # ── Macro Sentiment Blocks ─────────────────────────
+                        from shared.sentiment import get_current_sentiment
+                        sentiment_data = get_current_sentiment()
+                        sentiment_score = sentiment_data.get("score", 0.0)
+
+                        if latest_signal == 1 and sentiment_score < -0.5:
+                            logger.warning("Macro Filter Blocked BUY for %s: Highly Bearish Sentiment (%.2f)", s, sentiment_score)
+                            alerter.send_alert(f"🛑 **Trade Blocked**\n\nSymbol: {s}\nReason: Highly Bearish Sentiment ({sentiment_score})")
+                            continue
+                            
+                        if latest_signal == -1 and sentiment_score > 0.5:
+                            logger.warning("Macro Filter Blocked SELL for %s: Highly Bullish Sentiment (%.2f)", s, sentiment_score)
+                            alerter.send_alert(f"🛑 **Trade Blocked**\n\nSymbol: {s}\nReason: Highly Bullish Sentiment ({sentiment_score})")
+                            continue
+
+                        # ── Risk Manager Gate ──────────────────────────────
+                        current_volatility = df["close"].pct_change().std() * 100
+                        
+                        if settings.get("maxDailyLossPct"):
+                            portfolio_risk.max_daily_dd_pct = float(settings.get("maxDailyLossPct", 0.05))
+                        elif settings.get("max_daily_loss_pct"):
+                            portfolio_risk.max_daily_dd_pct = float(settings.get("max_daily_loss_pct", 0.05))
+
+                        if settings.get("max_trades_per_day") is not None:
+                            risk_manager.config.max_trades_per_day = int(settings.get("max_trades_per_day", 1))
+                        elif settings.get("maxDailyTrades") is not None:
+                            risk_manager.config.max_trades_per_day = int(settings.get("maxDailyTrades", 1))
+                        elif settings.get("max_daily_trades") is not None:
+                            risk_manager.config.max_trades_per_day = int(settings.get("max_daily_trades", 1))
+                            
+                        is_trading_allowed, halt_reason = portfolio_risk.is_trading_allowed(risk_manager.current_equity)
+                        if not is_trading_allowed:
+                            logger.warning("Portfolio Risk Halt for %s: %s", s, halt_reason)
+                            continue
+                            
+                        # ── Compute Entry Premium, Stop Loss, and Target ──
+                        entry_premium = df["close"].iloc[-1] # Default to index price
+                        side_str = "BUY CALL" if latest_signal == 1 else "BUY PUT"
+                        
+                        is_option_trade = "CE" in entry_symbol or "PE" in entry_symbol
+                        
+                        if is_option_trade:
+                            # Fetch the Live Option Premium to calculate P&L correctly
+                            try:
+                                live_quotes = broker.get_market_data([entry_symbol])
+                                if entry_symbol in live_quotes and live_quotes[entry_symbol].ltp > 0:
+                                    entry_premium = live_quotes[entry_symbol].ltp
+                                else:
+                                    logger.warning("Could not fetch live option premium for %s. Using index price as fallback.", entry_symbol)
+                            except Exception as e:
+                                logger.error("Error fetching live option premium: %s", e)
+                                
+                            # Option buying means we buy premium, so target is UP and SL is DOWN
+                            sl_price = entry_premium * (1 - sl_pct)
+                            tgt_price = entry_premium * (1 + target_pct)
+                        else:
+                            sl_price = entry_premium * (1 - sl_pct) if latest_signal == 1 else entry_premium * (1 + sl_pct)
+                            tgt_price = entry_premium * (1 + target_pct) if latest_signal == 1 else entry_premium * (1 - target_pct)
+
+                        # ── Compute Quantity ──
+                        if "quantity" in settings and int(settings["quantity"]) > 0:
+                            total_shares = int(settings["quantity"])
+                        else:
+                            # Calculate position size based on risk amount
+                            total_shares = risk_manager.calculate_position_size(entry_premium, sl_price, ai_confidence=confidence) or 1
+                            
+                        # AUDIT FIX: Apply Capital Protection Position Sizing Multiplier
+                        # Automatically reduces size (50% or 25%) during losing streaks
+                        cap_protect_multiplier = portfolio_risk.get_position_multiplier()
+                        total_shares = int(total_shares * cap_protect_multiplier)
+                        
+                        # ULTIMATE UPGRADE: Dynamic Capital Compounding Engine
+                        # Scales lot size as equity grows — capped at realistic 5x max
+                        current_equity = risk_manager.current_equity
+                        init_cap = risk_manager.initial_capital
+                        if settings.get("enable_compounding", True) and current_equity > init_cap:
+                            max_compound_cap = float(settings.get("max_compounding_multiplier", 5.0))
+                            compound_factor = min(max_compound_cap, max(1.0, current_equity / init_cap))
+                            total_shares = int(total_shares * compound_factor)
+                            
+                        number_of_lots = max(1, total_shares // lot_size)
+                        total_quantity = number_of_lots * lot_size
+                        
+                        # SECURITY SANITY GUARD: Max order value limit protection
+                        max_order_val = settings.get("max_order_value", 500000.0)
+                        if (entry_premium * total_quantity) > max_order_val:
+                            logger.warning(f"SECURITY GUARD: Order value ₹{entry_premium * total_quantity:,.2f} exceeds limit ₹{max_order_val:,.2f}. Capping lots.")
+                            total_quantity = (int(max_order_val // entry_premium) // lot_size) * lot_size
+                        
+                        if cap_protect_multiplier < 1.0:
+                            logger.info(f"CAPITAL PROTECTION ACTIVE: Scaling position size to {cap_protect_multiplier*100}% ({total_quantity} shares)")
+
+                        # ── Risk Manager Gate ─────────────────────────────────────────
+                        # Pass actual rupee risk so the per-trade risk limit is enforced
+                        actual_risk_amount = abs(entry_premium - sl_price) * total_quantity
+                        allowed, reject_reason = risk_manager.can_trade(
+                            symbol=s,
+                            risk_amount=actual_risk_amount,
+                            ai_confidence=confidence,
+                            current_volatility=current_volatility,
                         )
-                        try:
-                            entry_req = validator.validator.validate(entry_req)
-                            # Create position object for tracking
+                        if not allowed:
+                            logger.info("Trade BLOCKED for %s: %s", s, reject_reason)
+                            continue
+
+                        if not settings.get("auto_trade_enabled", True):
+                            logger.info("Auto trades disabled (Manual Mode) - Skipping execution for %s.", s)
+                            continue
+
+                        # ── Execute (Live or Paper) ────────────────────────
+                        if is_live:
+                            logger.info(
+                                "ENTRY %s %s quantity=%d @ %.2f | SL=%.2f | TGT=%.2f | AI=%.0f%% [LIVE]",
+                                side_str, entry_symbol, total_quantity, entry_premium, sl_price, tgt_price, confidence * 100
+                            )
+                            # Rate-limit guard
+                            if not ORDER_LIMITER.allow(broker.BROKER_ID):
+                                logger.warning(
+                                    "Order rate limit reached for broker %s — skipping entry on %s.",
+                                    broker.BROKER_ID, s,
+                                )
+                                continue
+                            # Input validation gate
+                            is_option = "CE" in entry_symbol or "PE" in entry_symbol
+                            
+                            # Marketable Limit Order (MLO) Bypass for Options
+                            # We send a Limit order 5% worse than LTP to guarantee execution while bypassing Broker Market Blocks
+                            mlo_price = round(entry_premium * 1.05, 2) if is_option else 0.0
+                            order_type = OrderType.LIMIT if is_option else OrderType.MARKET
+                            
+                            entry_req = OrderRequest(
+                                symbol=entry_symbol,
+                                quantity=total_quantity,
+                                side=OrderSide.BUY if is_option_trade else (OrderSide.BUY if latest_signal == 1 else OrderSide.SELL),
+                                order_type=order_type,
+                                price=mlo_price
+                            )
+                            try:
+                                entry_req = validator.validator.validate(entry_req)
+                                # Create position object for tracking
+                                pos_obj = Position(
+                                    symbol=entry_symbol,
+                                    side=latest_signal,
+                                    entry_price=entry_premium,
+                                    quantity=total_quantity,
+                                    entry_time=current_time,
+                                    highest_price=entry_premium,
+                                    lowest_price=entry_premium,
+                                    stop_loss=sl_price,
+                                    target=tgt_price,
+                                    lot_size=lot_size,
+                                )
+                                active_positions[s] = pos_obj
+                                _save_positions(active_positions)
+                                
+                                asyncio.create_task(background_iceberg_entry(
+                                    broker, entry_req, pos_obj, s, is_option_trade
+                                ))
+                            except ValidationError as ve:
+                                logger.error("Entry order validation failed for %s: %s", s, ve)
+                                audit.log(AuditEvent.VALIDATION_ERROR,
+                                          {"symbol": s, "reason": str(ve)}, severity="WARNING")
+                                continue
+                        else:
+                            logger.info(
+                                "ENTRY %s %s qty=%d @ %.2f | SL=%.2f | TGT=%.2f | AI=%.0f%% [PAPER]",
+                                side_str, entry_symbol, total_quantity, entry_premium, sl_price, tgt_price, confidence * 100
+                            )
+
+                        # ── Send Telegram Alert ────────────────────────────
+                        alerter.send_trade_alert(entry_symbol, side_str, total_quantity // lot_size, entry_premium, confidence)
+
+                        # ── Track position ─────────────────────────────────
+                        if not is_live:
+                            # Paper trades add position synchronously here
                             pos_obj = Position(
                                 symbol=entry_symbol,
                                 side=latest_signal,
@@ -1021,58 +1174,25 @@ async def run_live_bot(symbols: List[str]) -> None:
                                 target=tgt_price,
                                 lot_size=lot_size,
                             )
+                            # We MUST key active_positions by the base symbol (INDEX) so that on_tick hits!
                             active_positions[s] = pos_obj
                             _save_positions(active_positions)
                             
-                            asyncio.create_task(background_iceberg_entry(
-                                broker, entry_req, pos_obj, s
-                            ))
-                        except ValidationError as ve:
-                            logger.error("Entry order validation failed for %s: %s", s, ve)
-                            audit.log(AuditEvent.VALIDATION_ERROR,
-                                      {"symbol": s, "reason": str(ve)}, severity="WARNING")
-                            continue
-                    else:
-                        logger.info(
-                            "ENTRY %s %s qty=%d @ %.2f | SL=%.2f | TGT=%.2f | AI=%.0f%% [PAPER]",
-                            side_str, entry_symbol, total_quantity, entry_premium, sl_price, tgt_price, confidence * 100
-                        )
+                            # Persist Paper Entry to state.db
+                            from datetime import datetime
+                            state_action = "BUY" if is_option_trade else ("BUY" if latest_signal == 1 else "SELL")
+                            record_trade(entry_symbol, state_action, entry_premium, datetime.now(_IST).isoformat(), qty=total_quantity)
+                            update_equity(risk_manager.current_equity, risk_manager.daily_pnl)
 
-                    # ── Send Telegram Alert ────────────────────────────
-                    alerter.send_trade_alert(entry_symbol, side_str, total_quantity // lot_size, entry_premium, confidence)
-
-                    # ── Track position ─────────────────────────────────
-                    if not is_live:
-                        # Paper trades add position synchronously here
-                        pos_obj = Position(
-                            symbol=entry_symbol,
-                            side=latest_signal,
-                            entry_price=entry_premium,
-                            quantity=total_quantity,
-                            entry_time=current_time,
-                            highest_price=entry_premium,
-                            lowest_price=entry_premium,
-                            stop_loss=sl_price,
-                            target=tgt_price,
-                            lot_size=lot_size,
-                        )
-                        # We MUST key active_positions by the base symbol (INDEX) so that on_tick hits!
-                        active_positions[s] = pos_obj
-                        _save_positions(active_positions)
-                    
-                    # Persist Entry to state.db so Dashboard Live Feed picks it up
-                    state_action = "BUY" if is_option_trade else ("BUY" if latest_signal == 1 else "SELL")
-                    record_trade(entry_symbol, state_action, entry_premium, datetime.now(_IST).isoformat(), qty=total_quantity)
-                    
-                    if strategy_name == "institutional_momentum" and s in momentum_strategies:
-                        momentum_strategies[s].open_trade(
-                            entry_price=entry_premium, 
-                            stop_loss=sl_price, 
-                            total_lots=total_quantity, 
-                            direction=latest_signal
-                        )
-                        
-                    update_equity(risk_manager.current_equity, risk_manager.daily_pnl)
+                        if strategy_name == "institutional_momentum" and s in momentum_strategies:
+                            momentum_strategies[s].open_trade(
+                                entry_price=entry_premium, 
+                                stop_loss=sl_price, 
+                                total_lots=total_quantity, 
+                                direction=latest_signal
+                            )
+                    finally:
+                        _evaluating_symbols.discard(s)
 
         except Exception as exc:
             logger.exception("Error processing tick: %s", exc)

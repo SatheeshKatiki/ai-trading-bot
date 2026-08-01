@@ -1,8 +1,9 @@
 "use client";
 import { useState } from "react";
 import { useLiveMarketStore } from "@/store/useLiveMarketStore";
-import { XCircle, Clock, CheckCircle2, AlertTriangle, X } from "lucide-react";
+import { XCircle, Clock, CheckCircle2, AlertTriangle, X, Zap } from "lucide-react";
 import { toast } from "sonner";
+import { ExecutionFeed } from "./execution-feed";
 
 // IST-aware today date string
 function getTodayIST(): string {
@@ -60,7 +61,7 @@ function ConfirmModal({
 }
 
 export function LivePositions({ urlSymbol }: { urlSymbol: string }) {
-    const [tab, setTab] = useState<"positions" | "orders">("positions");
+    const [tab, setTab] = useState<"positions" | "orders" | "execution">("positions");
     const [isExecuting, setIsExecuting] = useState(false);
     const [showTodayOnly, setShowTodayOnly] = useState(true);
     const [squareOffConfirm, setSquareOffConfirm] = useState(false);
@@ -186,6 +187,13 @@ export function LivePositions({ urlSymbol }: { urlSymbol: string }) {
                         >
                             Order History ({orderHistory.length})
                         </button>
+                        <button
+                            onClick={() => setTab("execution")}
+                            className={`py-3 text-sm font-bold border-b-2 transition-all flex items-center gap-1.5 ${tab === "execution" ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}
+                        >
+                            <Zap className="w-4 h-4 text-warning" />
+                            Live Execution Feed ({trades.length})
+                        </button>
                     </div>
 
                     <div className="flex items-center gap-3">
@@ -212,7 +220,11 @@ export function LivePositions({ urlSymbol }: { urlSymbol: string }) {
 
                 {/* Content area */}
                 <div className="flex-1 overflow-y-auto max-h-[350px] bg-background/30">
-                    {tab === "positions" ? (
+                    {tab === "execution" ? (
+                        <div className="p-4 h-[320px]">
+                            <ExecutionFeed />
+                        </div>
+                    ) : tab === "positions" ? (
                         <table className="w-full text-left text-sm whitespace-nowrap">
                             <thead className="bg-muted/50 text-xs font-semibold uppercase tracking-wider text-muted-foreground sticky top-0 z-10 shadow-sm border-b border-border/40">
                                 <tr>
