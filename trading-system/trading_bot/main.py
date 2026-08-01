@@ -475,12 +475,21 @@ async def run_live_bot(symbols: List[str]) -> None:
         broker, exit_req: OrderRequest, sym: str, side: int, entry_price: float,
         exit_price: float, qty_to_close: int, full_exit: bool
     ):
+        # Assigned before the try block so the except handler's `if pos:`
+        # check below can never raise UnboundLocalError if an exception
+        # fires before `pos = active_positions.get(sym)` executes (e.g. the
+        # semaphore acquisition itself failing) — previously that would mask
+        # the real error and leave is_exiting stuck True on this position
+        # forever, since the intended unlock-on-failure code never ran.
+        pos = active_positions.get(sym)
         try:
             actual_exit_qty = qty_to_close
             ltp_actual = exit_price
             broker_sl_hit = False
 
             async with _iceberg_semaphore:
+                # Re-fetch: active_positions may have changed while this
+                # coroutine was waiting on the semaphore above.
                 pos = active_positions.get(sym)
                 if pos and getattr(pos, 'sl_order_id', None):
                     try:
