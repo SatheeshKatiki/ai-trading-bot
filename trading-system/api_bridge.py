@@ -126,6 +126,8 @@ app.add_middleware(
 # pre-login flow itself. FastAPI docs/schema endpoints are left open for
 # local developer convenience.
 from shared.security.sessions import validate_session
+from shared.security import audit
+from shared.security.audit_log import AuditEvent
 
 _PUBLIC_PATHS = {
     "/health",
@@ -729,15 +731,26 @@ async def panic_exit(request: Request):
                         order_type=OrderType.MARKET,
                     ))
                     closed_count += 1
+                    audit.log(AuditEvent.ORDER_PLACED,
+                              {"reason": "panic_exit", "symbol": pos.symbol, "side": side, "qty": qty})
                 except Exception as ex:
                     logger.error("Panic exit failed for position %s: %s", pos.symbol, ex)
+                    audit.log(AuditEvent.ORDER_REJECTED,
+                              {"reason": "panic_exit", "symbol": pos.symbol, "side": side, "qty": qty, "error": str(ex)},
+                              severity="WARNING")
         
         # 3. Log the nuclear event
         log_file = "fyersApi.log"
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with open(log_file, "a") as f:
             f.write(f"\n[{timestamp}] !!! PANIC EXIT EXECUTED !!! Cancelled: {cancelled_count}, Closed: {closed_count}\n")
-            
+
+        # Also record to the tamper-evident audit trail (the plaintext log
+        # above is not append-only/HMAC-chained and can't detect tampering)
+        audit.log(AuditEvent.ORDER_CANCELLED,
+                  {"reason": "panic_exit", "cancelled": cancelled_count, "closed": closed_count},
+                  severity="WARNING")
+
         return {
             "status": "success",
             "message": "Panic Exit Executed Successfully",
@@ -1627,11 +1640,13 @@ async def test_login():
         )
         
         if process.returncode == 0:
+            audit.auth(AuditEvent.AUTH_SUCCESS, "fyers", success=True)
             return {
                 "status": "success",
                 "message": "Login successful! Credentials are correct."
             }
         else:
+            audit.auth(AuditEvent.AUTH_FAILURE, "fyers", success=False, reason="invalid_credentials")
             return {
                 "status": "error",
                 "message": "Incorrect credentials or unable to login. Please check your details."
@@ -2192,6 +2207,7 @@ async def auth_login(req: LoginRequest):
                     auth_state["failed_attempts"] = 0
                     from shared.security.sessions import create_session
                     session_token = create_session("ADMIN", name="Administrator", email="admin@mana.ai")
+                    audit.log(AuditEvent.DASHBOARD_LOGIN, {"user_id": "ADMIN", "identifier": identifier})
                     return {
                         "status": "success",
                         "user": {"user_id": "ADMIN", "name": "Administrator", "email": "admin@mana.ai"},
@@ -2202,6 +2218,7 @@ async def auth_login(req: LoginRequest):
 
     if not target_user:
         auth_state["failed_attempts"] += 1
+        audit.log(AuditEvent.DASHBOARD_FAIL, {"identifier": identifier, "reason": "unknown_user"}, severity="WARNING")
         if auth_state["failed_attempts"] >= _MAX_ATTEMPTS:
             auth_state["lockout_until"] = time.time() + _LOCKOUT_SECS
             auth_state["failed_attempts"] = 0
@@ -2215,6 +2232,7 @@ async def auth_login(req: LoginRequest):
         email = target_user.get("email", "")
         from shared.security.sessions import create_session
         session_token = create_session(user_id, name=name, email=email)
+        audit.log(AuditEvent.DASHBOARD_LOGIN, {"user_id": user_id, "identifier": identifier})
         return {
             "status": "success",
             "user": {
@@ -2226,6 +2244,7 @@ async def auth_login(req: LoginRequest):
         }
     else:
         auth_state["failed_attempts"] += 1
+        audit.log(AuditEvent.DASHBOARD_FAIL, {"identifier": identifier, "reason": "wrong_password"}, severity="WARNING")
         if auth_state["failed_attempts"] >= _MAX_ATTEMPTS:
             auth_state["lockout_until"] = time.time() + _LOCKOUT_SECS
             auth_state["failed_attempts"] = 0
@@ -2320,6 +2339,8 @@ async def auth_logout(request: Request, req: LogoutRequest = None):
     """Revoke the caller's session token (or the one in the request body)."""
     from shared.security.sessions import revoke_session
     token = _extract_bearer_token(request) or (req.token if req else "")
+    session = getattr(request.state, "user", None)
+    audit.log(AuditEvent.DASHBOARD_LOGOUT, {"user_id": session.get("user_id") if session else "unknown"})
     revoke_session(token)
     return {"status": "success", "message": "Logged out."}
 

@@ -1365,6 +1365,7 @@ if __name__ == "__main__":
             asyncio.run(run_live_bot(SYMBOLS))
         except KeyboardInterrupt:
             logger.info("Live bot terminated by user")
+            audit.log(AuditEvent.BOT_STOP, {"reason": "user_interrupt"})
             break
         except Exception as e:
             logger.error("FATAL CRASH in Live Bot: %s. Auto-restarting in 10 seconds...", e)

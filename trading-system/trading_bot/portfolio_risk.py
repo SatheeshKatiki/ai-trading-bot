@@ -3,9 +3,20 @@ from datetime import datetime
 
 import pytz
 
+from shared.security import audit
+from shared.security.audit_log import AuditEvent
+
 _IST = pytz.timezone("Asia/Kolkata")
 
 logger = logging.getLogger(__name__)
+
+
+def _audit_circuit_breaker(event_type: str, reason: str, metric_value: float) -> None:
+    """Record a portfolio circuit-breaker halt to the tamper-evident audit
+    trail. Previously these halts only went to the plain application
+    logger — no compliance/forensic record of WHEN and WHY trading was
+    automatically halted."""
+    audit.log(event_type, {"reason": reason, "metric_value": round(float(metric_value), 4)}, severity="WARNING")
 
 class PortfolioRiskEngine:
     """
@@ -125,8 +136,9 @@ class PortfolioRiskEngine:
                 self.trading_halted = True
                 self.halt_reason = f"Max Daily Drawdown Reached ({daily_dd_pct:.2f}%)"
                 logger.warning(f"CIRCUIT BREAKER: {self.halt_reason}")
+                _audit_circuit_breaker(AuditEvent.DAILY_LOSS_HIT, self.halt_reason, daily_dd_pct)
                 return
-                
+
         # Weekly Drawdown Circuit Breaker
         if self.peak_capital_weekly > 0:
             weekly_dd_pct = ((self.peak_capital_weekly - capital) / self.peak_capital_weekly) * 100
@@ -134,13 +146,15 @@ class PortfolioRiskEngine:
                 self.trading_halted = True
                 self.halt_reason = f"Max Weekly Drawdown Reached ({weekly_dd_pct:.2f}%)"
                 logger.warning(f"CIRCUIT BREAKER: {self.halt_reason}")
+                _audit_circuit_breaker(AuditEvent.RISK_BREACH, self.halt_reason, weekly_dd_pct)
                 return
-                
+
         # Consecutive Losses Circuit Breaker (raised threshold — size scaling kicks in first)
         if self.consecutive_losses >= self.max_consecutive_losses:
             self.trading_halted = True
             self.halt_reason = f"Max Consecutive Losses Reached ({self.consecutive_losses})"
             logger.warning(f"CIRCUIT BREAKER: {self.halt_reason}")
+            _audit_circuit_breaker(AuditEvent.RISK_BREACH, self.halt_reason, self.consecutive_losses)
             return
             
     def is_trading_allowed(self, capital: float) -> tuple[bool, str]:

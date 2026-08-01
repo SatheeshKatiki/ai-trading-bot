@@ -113,6 +113,8 @@ class BrokerFactory:
                 broker_id=broker_id,
             )
 
+        previous_broker_id = cls._active.BROKER_ID if cls._active is not None else None
+
         # Tear down old broker
         if cls._active is not None:
             try:
@@ -126,6 +128,11 @@ class BrokerFactory:
 
         # Instantiate and authenticate
         cls._active = cls._create(broker_id)
+
+        from shared.security import audit
+        from shared.security.audit_log import AuditEvent
+        audit.log(AuditEvent.BROKER_SWITCH, {"from": previous_broker_id, "to": broker_id})
+
         return cls._active
 
     @classmethod
