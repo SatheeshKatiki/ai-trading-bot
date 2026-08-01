@@ -38,6 +38,20 @@ _CACHE: Dict[str, Any] = {}
 _dirty = False           # True when cache differs from what's on disk
 _last_flush: float = 0.0 # monotonic timestamp of last disk write
 
+# This module runs independently in every process that imports it (the live
+# trading engine and the API bridge are separate OS processes, each with its
+# own private _CACHE — there is no real IPC here despite the shared name).
+# Only the writer process (trading_bot/main.py, via update_equity()/
+# record_trade()/save_state()) keeps _CACHE genuinely fresh. A read-only
+# process (api_bridge.py) that never writes would otherwise serve equity/pnl
+# frozen at whatever the DB held the moment it first loaded, potentially
+# indefinitely. _state_loaded_at tracks how fresh THIS process's view of
+# equity/pnl actually is; load_state() auto-refreshes from disk once it's
+# older than _STATE_TTL_S, so a reader-only process can never silently serve
+# arbitrarily stale numbers even if a caller forgets reload_state=True.
+_state_loaded_at: float = 0.0
+_STATE_TTL_S: float = 1.0
+
 _db_queue = queue.Queue() # Thread-safe queue for DB operations
 
 _DEFAULT_STATE: Dict[str, Any] = {
@@ -89,35 +103,37 @@ def _init_db() -> None:
 
 def _ensure_loaded() -> None:
     """Load state from database into the cache if not yet loaded."""
-    global _CACHE
+    global _CACHE, _state_loaded_at
     if _CACHE:
         return
-        
+
     _init_db()
-    
+
     try:
         with contextlib.closing(sqlite3.connect(_STATE_DB, timeout=30.0, check_same_thread=False)) as conn:
             cursor = conn.cursor()
-            
+
             # Load state
             cursor.execute("SELECT equity, pnl, last_update FROM state WHERE id = 1")
             row = cursor.fetchone()
-            
+
             # Load trades
             cursor.execute("SELECT symbol, side, price, time, qty FROM trades ORDER BY id DESC LIMIT 100")
             trades = [{"symbol": r[0], "side": r[1], "price": r[2], "time": r[3], "qty": r[4] if len(r)>4 else 1} for r in cursor.fetchall()]
             trades.reverse() # Restore chronological order
-            
+
             _CACHE = {
                 "equity": row[0],
                 "pnl": row[1],
                 "trades": trades,
                 "last_update": row[2]
             }
+            _state_loaded_at = time.monotonic()
     except Exception as exc:
         import logging
         logging.getLogger(__name__).error("Failed to load state from DB: %s", exc)
         _CACHE = dict(_DEFAULT_STATE)
+        _state_loaded_at = time.monotonic()
 
 
 def _flush_to_disk() -> None:
@@ -185,41 +201,55 @@ _flusher_thread.start()
 # ------------------------------------------------------------------
 
 def load_state(reload_trades: bool = False, reload_state: bool = False) -> Dict[str, Any]:
-    """Return a copy of the current state.  Reads from in-memory cache."""
+    """Return a copy of the current state.  Reads from in-memory cache.
+
+    Equity/pnl are auto-refreshed from disk whenever this process's cache is
+    older than ``_STATE_TTL_S`` — regardless of ``reload_state`` — so a
+    reader-only process (e.g. api_bridge.py, which never calls
+    update_equity()) can't silently serve equity/pnl frozen at whatever the
+    DB held the moment it first started. ``reload_state``/``reload_trades``
+    force an immediate refresh instead of waiting out the TTL.
+    """
+    global _state_loaded_at
     with _LOCK:
         _ensure_loaded()
-        if reload_state or reload_trades:
+
+        state_stale = (time.monotonic() - _state_loaded_at) >= _STATE_TTL_S
+        do_reload_state = reload_state or state_stale
+
+        if do_reload_state or reload_trades:
             try:
-                import sqlite3
                 with contextlib.closing(sqlite3.connect(_STATE_DB, timeout=30.0, check_same_thread=False)) as conn:
                     cursor = conn.cursor()
-                    if reload_state:
+                    if do_reload_state:
                         cursor.execute("SELECT equity, pnl, last_update FROM state WHERE id = 1")
                         row = cursor.fetchone()
                         if row:
                             _CACHE["equity"] = row[0]
                             _CACHE["pnl"] = row[1]
                             _CACHE["last_update"] = row[2]
-                    
+                        _state_loaded_at = time.monotonic()
+
                     if reload_trades:
                         cursor.execute("SELECT symbol, side, price, time, qty FROM trades ORDER BY id DESC LIMIT 100")
-                        rows = cursor.fetchall()
-                    trades = []
-                    for r in rows:
-                        trades.append({"symbol": r[0], "side": r[1], "price": r[2], "time": r[3], "qty": r[4] if len(r)>4 else 1})
-                    _CACHE["trades"] = trades
-            except Exception as e:
+                        trades = [
+                            {"symbol": r[0], "side": r[1], "price": r[2], "time": r[3], "qty": r[4] if len(r) > 4 else 1}
+                            for r in cursor.fetchall()
+                        ]
+                        _CACHE["trades"] = trades
+            except Exception:
                 pass
-                
+
         return dict(_CACHE)
 
 
 def save_state(state: Dict[str, Any]) -> None:
     """Replace the cache with ``state`` and flush to disk immediately."""
-    global _CACHE, _dirty
+    global _CACHE, _dirty, _state_loaded_at
     with _LOCK:
         _CACHE = state
         _dirty = True
+        _state_loaded_at = time.monotonic()  # this process's cache is now authoritative
         _flush_to_disk()
 
 
@@ -230,13 +260,14 @@ def update_equity(equity: float, pnl: float) -> None:
     ``_FLUSH_INTERVAL_S`` seconds.  This is safe for dashboard display
     which already auto-refreshes every 5 s.
     """
-    global _dirty
+    global _dirty, _state_loaded_at
     with _LOCK:
         _ensure_loaded()
         _CACHE["equity"] = equity
         _CACHE["pnl"]    = pnl
         _CACHE["last_update"] = datetime.now(timezone.utc).isoformat()
         _dirty = True
+        _state_loaded_at = time.monotonic()  # this process's cache is now authoritative — no DB re-read needed
         # Relies entirely on the background _flusher_thread to flush to disk safely.
         # This prevents disk I/O from blocking the async trading bot event loop.
 
