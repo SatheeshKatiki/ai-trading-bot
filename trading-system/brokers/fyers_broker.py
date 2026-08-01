@@ -237,7 +237,17 @@ class FyersBroker(BaseBroker):
             "takeProfit":   0,
         }
         
-        # Retry loop for transient broker API errors
+        # Retry loop for transient broker API errors.
+        #
+        # A network failure can happen AFTER Fyers has already received and
+        # accepted the order but BEFORE the success response reaches us
+        # (dropped response, timeout waiting on the socket, etc). Blindly
+        # resubmitting the same payload in that case places a second,
+        # duplicate real-money order. Fyers' order-placement API has no
+        # client-supplied idempotency key, so before each retry we check the
+        # live order book for an order that already matches this request —
+        # if the broker actually received the previous attempt, it'll be
+        # sitting there and we reuse it instead of submitting again.
         max_retries = 3
         for attempt in range(max_retries):
             try:
@@ -260,6 +270,16 @@ class FyersBroker(BaseBroker):
             except OrderRejectedError:
                 raise
             except Exception as exc:
+                existing = self._find_matching_pending_order(request)
+                if existing is not None:
+                    logger.warning(
+                        "Fyers place_order raised %s but a matching order %s "
+                        "already exists in the order book — the broker "
+                        "likely received the previous attempt. Returning it "
+                        "instead of resubmitting to avoid a duplicate order.",
+                        exc, existing.order_id,
+                    )
+                    return existing
                 if attempt < max_retries - 1:
                     logger.warning(f"Fyers place_order failed, retrying ({attempt+1}/{max_retries})... Error: {exc}")
                     time.sleep(0.5)
@@ -267,6 +287,30 @@ class FyersBroker(BaseBroker):
                     raise BrokerConnectionError(
                         f"Fyers place_order failed after {max_retries} attempts: {exc}", broker_id=self.BROKER_ID
                     ) from exc
+
+    def _find_matching_pending_order(self, request: OrderRequest) -> Optional[OrderResponse]:
+        """Best-effort check for an order matching ``request`` already sitting
+        in the broker's order book, used to avoid duplicate submissions when a
+        previous ``place_order`` attempt failed client-side but may have
+        actually reached the broker. Matches on symbol/side/quantity only
+        (Fyers doesn't return a client-correlatable timestamp we can trust),
+        so it's not perfectly precise if an identical order was legitimately
+        placed moments earlier by something else — but under-counting here is
+        far safer than the duplicate-order risk this replaces.
+        """
+        try:
+            order_book = self.get_order_book()
+        except Exception:
+            return None
+        non_terminal = (OrderStatus.OPEN, OrderStatus.PENDING, OrderStatus.PARTIAL, OrderStatus.COMPLETE)
+        for o in order_book:
+            if (o.symbol == request.symbol and o.side == request.side
+                    and o.quantity == request.quantity and o.status in non_terminal):
+                return OrderResponse(
+                    order_id=o.order_id, status=o.status, symbol=o.symbol,
+                    quantity=o.quantity, side=o.side, raw=o.raw,
+                )
+        return None
 
     def cancel_order(self, order_id: str) -> Dict[str, Any]:
         if self.paper_mode:
