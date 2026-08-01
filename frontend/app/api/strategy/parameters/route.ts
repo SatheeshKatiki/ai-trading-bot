@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { getAuthHeaders } from '@/lib/backend';
 
 export const dynamic = 'force-dynamic';
 
@@ -9,7 +10,7 @@ export async function GET(request: Request) {
     if (!name) {
       return NextResponse.json({ error: "Missing strategy name parameter" }, { status: 400 });
     }
-    const res = await fetch(`http://127.0.0.1:8000/api/strategy/parameters?name=${name}`);
+    const res = await fetch(`http://127.0.0.1:8000/api/strategy/parameters?name=${name}`, { headers: await getAuthHeaders() });
     if (!res.ok) {
       const text = await res.text();
       return NextResponse.json({ error: `Server error: ${text}` }, { status: res.status });

@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { getAuthHeaders } from '@/lib/backend';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,7 +21,7 @@ export async function GET(request: Request) {
     
     console.log(`Forwarding backtest request to Python bridge: ${pythonApiUrl}`);
     
-    const response = await fetch(pythonApiUrl, { cache: 'no-store' });
+    const response = await fetch(pythonApiUrl, { cache: 'no-store', headers: await getAuthHeaders() });
     
     if (!response.ok) {
       const errorData = await response.json();

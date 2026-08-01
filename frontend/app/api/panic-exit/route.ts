@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { getAuthHeaders } from '@/lib/backend';
 
 export const dynamic = 'force-dynamic';
 
@@ -8,13 +9,13 @@ export async function POST(request: Request) {
     try {
         body = await request.json();
     } catch (e) {}
-    
+
     const fetchOptions: RequestInit = {
         method: 'POST',
-        headers: body ? { 'Content-Type': 'application/json' } : undefined,
+        headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...(await getAuthHeaders()) },
         body: body ? JSON.stringify(body) : undefined
     };
-    
+
     const res = await fetch(`http://127.0.0.1:8000/api/panic-exit`, fetchOptions);
     
     if (!res.ok) {

@@ -1,13 +1,15 @@
 import { NextResponse } from 'next/server';
+import { getAuthHeaders } from '@/lib/backend';
 
 export async function POST(request: Request) {
     try {
         const body = await request.json();
-        
+
         const res = await fetch('http://127.0.0.1:8000/api/order/execute', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
+                ...(await getAuthHeaders()),
             },
             body: JSON.stringify(body),
         });

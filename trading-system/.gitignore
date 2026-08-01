@@ -9,6 +9,8 @@
 .broker.key                   # Fernet encryption key (auto-generated)
 broker_credentials.json       # Encrypted broker API keys
 dashboard_auth.json           # Hashed dashboard password
+users.json                    # User accounts (password hashes)
+sessions.json                 # Active login session tokens
 .fyers_tokens.json            # Cached Fyers access token
 .kite_tokens.json             # Cached Kite access token
 *.token

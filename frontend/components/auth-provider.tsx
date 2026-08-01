@@ -75,17 +75,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const checkAuth = async () => {
-      const token = localStorage.getItem("mana_ai_auth_token");
-      const savedUser = localStorage.getItem("mana_ai_user_profile");
-      if (token) {
-        setIsAuthenticated(true);
-        if (savedUser) {
+      // Source of truth is the backend: /api/auth/me only returns 200 if the
+      // httpOnly session cookie is present AND still valid server-side.
+      // (Previously this just checked whether *any* value existed in
+      // localStorage, which anyone could set from devtools to bypass login
+      // entirely — see the audit finding this fixes.)
+      try {
+        const meRes = await fetch(`/api/auth/me`);
+        if (meRes.ok) {
+          const meData = await meRes.json();
+          setIsAuthenticated(true);
+          setUserProfile(meData.user);
           try {
-            setUserProfile(JSON.parse(savedUser));
+            localStorage.setItem("mana_ai_user_profile", JSON.stringify(meData.user));
           } catch {}
+        } else {
+          setIsAuthenticated(false);
         }
+      } catch (e) {
+        console.error("Auth check error", e);
+        setIsAuthenticated(false);
       }
-      
+
       try {
         const res = await fetch(`/api/auth/status`);
         if (res.ok) {
@@ -98,9 +109,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setLoading(false);
       }
     };
-    
+
     checkAuth();
-  }, [isAuthenticated]);
+  }, []);
 
   // Password Complexity Validation Rules
   const passwordLengthValid = password.length >= 8 && password.length <= 15;
@@ -210,9 +221,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       if (res.ok) {
         toast.success(`Welcome back, ${data.user?.name || 'Trader'}!`);
-        localStorage.setItem("mana_ai_auth_token", data.token || "mana_ai_auth_v1_valid");
+        // The real session lives in an httpOnly cookie set by the
+        // /api/auth/login route handler itself — nothing to store here.
         if (data.user) {
-          localStorage.setItem("mana_ai_user_profile", JSON.stringify(data.user));
+          try {
+            localStorage.setItem("mana_ai_user_profile", JSON.stringify(data.user));
+          } catch {}
           setUserProfile(data.user);
         }
         setIsAuthenticated(true);

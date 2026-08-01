@@ -863,17 +863,17 @@ NativeChart component (live candle update)`}
       <Section title="Auth Flow">
         <CodeBlock language="text">{`
 On App Load:
-  AuthProvider → checks localStorage for "mana_ai_auth_token"
-  → If found: renders children (authenticated)
-  → If not: calls GET /api/auth/status
-      ├─ hasPassword=false → Show "Set Password" screen
-      └─ hasPassword=true  → Show "Login" screen
+  AuthProvider → calls GET /api/auth/me (server-verified session check)
+  → If 200: renders children (authenticated)
+  → If 401: calls GET /api/auth/status
+      ├─ hasUsers=false → Show "Sign Up" screen
+      └─ hasUsers=true  → Show "Login" screen
 
 Login:
-  POST /api/auth/login {password}
-  → Backend: bcrypt.checkpw(password, stored_hash)
-  → On success: returns {token: "uuid-token"}
-  → Frontend: stores token in localStorage
+  POST /api/auth/login {user_id_or_email, password}
+  → Backend: PBKDF2-HMAC-SHA256 password verification + creates a signed session
+  → On success: session token set as an httpOnly cookie (never exposed to page JS)
+  → Every subsequent API call forwards that cookie's token as a Bearer header
 
 Password Reset (if locked out or forgotten):
   POST /api/auth/reset {client_id, new_password}
@@ -883,7 +883,7 @@ Password Reset (if locked out or forgotten):
       <Section title="Security Controls">
         <Table headers={["Control", "Implementation", "Status"]}>
           <TR cells={["Password hashing", "bcrypt (hashpw / checkpw)", "Active"]} />
-          <TR cells={["Auth token storage", "localStorage (UUID token)", "Active"]} />
+          <TR cells={["Auth token storage", "httpOnly session cookie, verified server-side per request", "Active"]} />
           <TR cells={["Failed login lockout", "5 attempts → lockout (disabled for local dev)", "Implemented"]} />
           <TR cells={["Auto session lock", "30 min inactivity (commented out for local dev)", "Implemented"]} />
           <TR cells={["CORS restriction", "FastAPI CORSMiddleware — configurable origins", "Active"]} />

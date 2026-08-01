@@ -580,8 +580,13 @@ export default function Header() {
                   </div>
                   <div className="border-t border-border/50 py-2">
                     <button
-                      onClick={() => {
-                        localStorage.removeItem("mana_ai_auth_token");
+                      onClick={async () => {
+                        try {
+                          await fetch("/api/auth/logout", { method: "POST" });
+                        } catch (e) {
+                          console.error("Logout request failed:", e);
+                        }
+                        localStorage.removeItem("mana_ai_user_profile");
                         window.location.reload();
                       }}
                       className="w-full text-left px-4 py-2 text-sm text-amber-500 hover:bg-amber-500/10 transition-colors flex items-center gap-3 font-medium"

@@ -1,5 +1,6 @@
 // Force Next.js recompile after syntax fix
 import { NextResponse } from 'next/server';
+import { getAuthHeaders } from '@/lib/backend';
 
 export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
@@ -7,7 +8,8 @@ export async function GET(request: Request) {
 
     try {
         const response = await fetch(`http://127.0.0.1:8000/api/option-chain?symbol=${symbol}`, {
-            cache: 'no-store'
+            cache: 'no-store',
+            headers: await getAuthHeaders(),
         });
         
         if (!response.ok) {

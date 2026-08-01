@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { getAuthHeaders } from '@/lib/backend';
 
 export const dynamic = "force-dynamic";
 export const fetchCache = "force-no-store";
@@ -7,7 +8,7 @@ export async function GET(request: Request) {
   try {
     const { search } = new URL(request.url);
     const url = `http://127.0.0.1:8000/api/history${search}`;
-    const res = await fetch(url, { cache: "no-store", next: { revalidate: 0 } });
+    const res = await fetch(url, { cache: "no-store", next: { revalidate: 0 }, headers: await getAuthHeaders() });
     
     if (!res.ok) {
       return NextResponse.json({ error: "Backend error" }, { status: res.status });

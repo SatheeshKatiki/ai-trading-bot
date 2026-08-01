@@ -115,6 +115,53 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ---------------------------------------------------------------------------
+# Authentication gate
+# ---------------------------------------------------------------------------
+# Root-cause fix for the audit finding "api_bridge.py has no authentication
+# on ~30 routes": previously only 3 routes checked anything, and that check
+# was an unauthenticated request.client.host comparison. Every route now
+# requires a valid, server-issued session token (see
+# shared.security.sessions) except the small allowlist below, which is the
+# pre-login flow itself. FastAPI docs/schema endpoints are left open for
+# local developer convenience.
+from shared.security.sessions import validate_session
+
+_PUBLIC_PATHS = {
+    "/health",
+    "/api/auth/status",
+    "/api/auth/register",
+    "/api/auth/login",
+    "/api/auth/reset",
+    "/docs",
+    "/redoc",
+    "/openapi.json",
+}
+
+
+def _extract_bearer_token(request: Request) -> str:
+    header = request.headers.get("authorization", "")
+    if header.lower().startswith("bearer "):
+        return header[7:].strip()
+    return ""
+
+
+@app.middleware("http")
+async def require_session_auth(request: Request, call_next):
+    path = request.url.path
+    if request.method == "OPTIONS" or path in _PUBLIC_PATHS:
+        return await call_next(request)
+
+    token = _extract_bearer_token(request)
+    session = validate_session(token)
+    if not session:
+        return JSONResponse(
+            status_code=401,
+            content={"status": "error", "message": "Authentication required."},
+        )
+    request.state.user = session
+    return await call_next(request)
+
 from fastapi import WebSocket
 from fyers_apiv3.FyersWebsocket import data_ws
 import asyncio
@@ -570,6 +617,15 @@ async def websocket_broadcaster():
 
 @app.websocket("/ws/live")
 async def websocket_endpoint(websocket: WebSocket):
+    # The HTTP auth middleware doesn't cover websocket handshakes, so the
+    # session token is validated here instead, via a query parameter (a
+    # WebSocket handshake can't carry a custom Authorization header from a
+    # browser client).
+    token = websocket.query_params.get("token", "")
+    if not validate_session(token):
+        await websocket.close(code=4401, reason="Authentication required")
+        return
+
     await websocket.accept()
     active_connections.add(websocket)
     try:
@@ -2016,6 +2072,25 @@ async def auth_status():
         "userCount": len(users)
     }
 
+@app.get("/api/auth/me")
+async def auth_me(request: Request):
+    """Returns the caller's identity if their session token is valid.
+
+    This route is intentionally NOT in the public allowlist, so the auth
+    middleware already rejects invalid/missing tokens with 401 before this
+    body ever runs — the frontend uses that fact as its source of truth for
+    "is the user actually logged in", instead of trusting client storage.
+    """
+    user = getattr(request.state, "user", None) or {}
+    return {
+        "status": "success",
+        "user": {
+            "user_id": user.get("user_id", ""),
+            "name": user.get("name", ""),
+            "email": user.get("email", ""),
+        },
+    }
+
 @app.post("/api/auth/register")
 async def auth_register(req: RegisterRequest, background_tasks: BackgroundTasks):
     name = req.name.strip()
@@ -2064,6 +2139,8 @@ async def auth_register(req: RegisterRequest, background_tasks: BackgroundTasks)
     background_tasks.add_task(_send_welcome_email_async, email, name, user_id)
 
     logger.info("Account created successfully: %s (%s)", user_id, email)
+    from shared.security.sessions import create_session
+    session_token = create_session(user_id, name=name, email=email)
     return {
         "status": "success",
         "message": "Account created successfully.",
@@ -2073,7 +2150,7 @@ async def auth_register(req: RegisterRequest, background_tasks: BackgroundTasks)
             "name": name,
             "email": email
         },
-        "token": f"mana_ai_auth_{user_id}_valid"
+        "token": session_token
     }
 
 @app.post("/api/auth/login")
@@ -2110,10 +2187,12 @@ async def auth_login(req: LoginRequest):
                 auth_data = json.load(f)
                 if _verify_password(auth_data.get("password_hash", ""), password):
                     auth_state["failed_attempts"] = 0
+                    from shared.security.sessions import create_session
+                    session_token = create_session("ADMIN", name="Administrator", email="admin@mana.ai")
                     return {
                         "status": "success",
                         "user": {"user_id": "ADMIN", "name": "Administrator", "email": "admin@mana.ai"},
-                        "token": "mana_ai_auth_v1_valid"
+                        "token": session_token
                     }
         except Exception:
             pass
@@ -2129,14 +2208,18 @@ async def auth_login(req: LoginRequest):
     if _verify_password(target_user.get("password_hash", ""), password):
         auth_state["failed_attempts"] = 0
         user_id = target_user.get("user_id", "USER")
+        name = target_user.get("name", "Trader")
+        email = target_user.get("email", "")
+        from shared.security.sessions import create_session
+        session_token = create_session(user_id, name=name, email=email)
         return {
             "status": "success",
             "user": {
                 "user_id": user_id,
-                "name": target_user.get("name", "Trader"),
-                "email": target_user.get("email", "")
+                "name": name,
+                "email": email
             },
-            "token": f"mana_ai_auth_{user_id}_valid"
+            "token": session_token
         }
     else:
         auth_state["failed_attempts"] += 1
@@ -2205,8 +2288,27 @@ async def auth_reset(req: ResetRequest):
     auth_state["failed_attempts"] = 0
     auth_state["lockout_until"] = 0.0
 
+    # A password reset should invalidate any existing sessions for this
+    # account so a previously-issued token can't keep working past it.
+    from shared.security.sessions import revoke_all_sessions_for_user
+    revoke_all_sessions_for_user(target_user_id or "MNA100001")
+
     return {"status": "success", "message": "Password reset successfully. You can now Login."}
-        
+
+
+class LogoutRequest(BaseModel):
+    token: str = ""
+
+
+@app.post("/api/auth/logout")
+async def auth_logout(request: Request, req: LogoutRequest = None):
+    """Revoke the caller's session token (or the one in the request body)."""
+    from shared.security.sessions import revoke_session
+    token = _extract_bearer_token(request) or (req.token if req else "")
+    revoke_session(token)
+    return {"status": "success", "message": "Logged out."}
+
+
 @app.get("/api/btst")
 async def get_btst_prediction(symbol: str = "NIFTY"):
     try:

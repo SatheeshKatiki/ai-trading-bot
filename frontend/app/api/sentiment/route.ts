@@ -1,11 +1,13 @@
 import { NextResponse } from 'next/server';
+import { getAuthHeaders } from '@/lib/backend';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
   try {
     const res = await fetch('http://127.0.0.1:8000/api/sentiment', {
-      cache: 'no-store'
+      cache: 'no-store',
+      headers: await getAuthHeaders(),
     });
     
     if (!res.ok) {

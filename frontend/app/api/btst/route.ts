@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { getAuthHeaders } from '@/lib/backend';
 
 export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
@@ -10,7 +11,8 @@ export async function GET(request: Request) {
 
     try {
         const response = await fetch(`http://127.0.0.1:8000/api/btst?symbol=${symbol}`, {
-            next: { revalidate: 30 } // Cache for 30s
+            next: { revalidate: 30 }, // Cache for 30s
+            headers: await getAuthHeaders(),
         });
         
         if (!response.ok) {
