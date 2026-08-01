@@ -23,6 +23,18 @@ class SignalAgent(BaseAgent):
     It takes technical state as input and predicts the next market direction.
     """
     
+    # compute_features() in trading_bot/strategies/marl_strategy.py always
+    # returns a 6-element vector (return, rsi, macd_hist, atr, vol_change,
+    # close_chg) — the observation this agent's model must accept.
+    EXPECTED_OBS_SHAPE = (6,)
+
+    # Minimum action-probability the model must assign to its top action
+    # before analyze() will act on it, rather than falling back to HOLD.
+    # Same rationale/value as trading_bot/strategies/drl_strategy.py's
+    # DRLStrategy.CONFIDENCE_THRESHOLD (4-action space, uniform baseline
+    # 0.25).
+    CONFIDENCE_THRESHOLD = 0.4
+
     def __init__(self, model_path: str):
         super().__init__("SignalAgent_LSTM")
         self.model_path = model_path
@@ -37,8 +49,23 @@ class SignalAgent(BaseAgent):
 
         if HAS_SB3:
             try:
-                self.model = RecurrentPPO.load(self.model_path)
-                logger.info(f"SignalAgent successfully loaded LSTM model from {self.model_path}")
+                loaded_model = RecurrentPPO.load(self.model_path)
+                # Root-cause fix (Medium audit finding): validate the loaded
+                # model's observation space matches what this agent will
+                # actually feed it, rather than only discovering a mismatch
+                # as a runtime shape error deep in live inference.
+                actual_shape = tuple(loaded_model.observation_space.shape)
+                if actual_shape != self.EXPECTED_OBS_SHAPE:
+                    logger.error(
+                        "SignalAgent model at %s has observation shape %s but this "
+                        "agent constructs a %s observation — refusing to load an "
+                        "incompatible model.",
+                        self.model_path, actual_shape, self.EXPECTED_OBS_SHAPE,
+                    )
+                    self.is_active = False
+                else:
+                    self.model = loaded_model
+                    logger.info(f"SignalAgent successfully loaded LSTM model from {self.model_path}")
             except Exception as e:
                 logger.error(f"SignalAgent failed to load LSTM model: {e}")
                 self.is_active = False
@@ -58,28 +85,59 @@ class SignalAgent(BaseAgent):
         """
         if not self.is_active:
             return {"action": 0, "confidence": 0.0, "reason": "Inactive"}
-            
-        action, self.lstm_states = self.model.predict(
-            obs,
-            state=self.lstm_states,
-            episode_start=self.episode_starts,
-            deterministic=True # Revert to deterministic mode (optimal strategy)
+
+        # Root-cause fix (Medium audit finding): model.predict(deterministic=True)
+        # only returns the argmax action with no confidence score, so this
+        # agent always acted on the model's top pick even when it was barely
+        # more likely than any other action. Call the policy's distribution
+        # directly instead — this performs the identical forward pass and
+        # identical argmax-based action selection predict() uses internally
+        # (CategoricalDistribution.mode() == argmax(probs)), but also exposes
+        # the per-action probabilities so a low-conviction NEW entry signal
+        # (Long/Short) can be gated to HOLD. A low-conviction CLOSE is
+        # intentionally NOT gated — exiting an existing position is risk-
+        # reducing, so it shouldn't be blocked by low model conviction the
+        # way opening a new position should.
+        import torch
+        policy = self.model.policy
+        obs_tensor, _ = policy.obs_to_tensor(obs)
+
+        if self.lstm_states is None:
+            zeros = np.zeros(policy.lstm_hidden_state_shape)
+            state = (zeros, zeros)
+        else:
+            state = self.lstm_states
+        states_t = (
+            torch.tensor(state[0], dtype=torch.float32, device=policy.device),
+            torch.tensor(state[1], dtype=torch.float32, device=policy.device),
         )
+        episode_starts_t = torch.tensor(self.episode_starts, dtype=torch.float32, device=policy.device)
+
+        with torch.no_grad():
+            distribution, new_states = policy.get_distribution(obs_tensor, states_t, episode_starts_t)
+            action_t = distribution.get_actions(deterministic=True)
+            probs = distribution.distribution.probs
+
+        self.lstm_states = (new_states[0].cpu().numpy(), new_states[1].cpu().numpy())
         # Only the very first prediction of an episode should carry
         # episode_start=True — every subsequent tick continues it, so the
         # LSTM can actually accumulate memory instead of "resetting" on
         # every single call.
         self.episode_starts = np.array([False])
 
-        if isinstance(action, np.ndarray):
-            action = action.item()
-            
+        action = int(action_t.item())
+        confidence = float(probs[0, action].item())
+
+        if action in (1, 2) and confidence < self.CONFIDENCE_THRESHOLD:
+            action = 0
+
         # Action map: 0: Hold, 1: Long, 2: Short, 3: Close
         action_map = {0: "HOLD", 1: "LONG", 2: "SHORT", 3: "CLOSE"}
-        
+
         return {
             "action": action,
             "action_name": action_map.get(action, "UNKNOWN"),
+            "confidence": confidence,
             "source": self.name
         }
 
