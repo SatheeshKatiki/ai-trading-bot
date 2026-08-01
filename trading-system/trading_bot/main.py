@@ -235,8 +235,21 @@ class CandleAggregator:
             self.interval_mins = 1
 
     def _interval_floor(self, ts: datetime) -> datetime:
-        # Floor to nearest interval_mins
-        return ts.replace(minute=(ts.minute // self.interval_mins) * self.interval_mins, second=0, microsecond=0)
+        # Floor to the nearest interval_mins boundary. Previously computed
+        # (ts.minute // interval_mins) * interval_mins directly on
+        # ts.minute (always 0-59), which is always 0 for any
+        # interval_mins > 60 -- a tick at 11:45 and one at 10:15 would
+        # both floor to "minute=0, hour unchanged", landing in two
+        # different (wrong-sized) 1-hour buckets instead of the same
+        # correct multi-hour bucket. Flooring on total minutes since
+        # midnight instead handles hour-spanning intervals correctly,
+        # while being identical to the old behavior for interval_mins
+        # <= 60 (verified: for interval_mins=60 both formulas floor to
+        # the top of the current hour).
+        total_minutes = ts.hour * 60 + ts.minute
+        floored_total = (total_minutes // self.interval_mins) * self.interval_mins
+        floor_hour, floor_minute = divmod(floored_total, 60)
+        return ts.replace(hour=floor_hour, minute=floor_minute, second=0, microsecond=0)
 
     def add_tick(self, tick: Dict) -> None:
         ts = datetime.fromtimestamp(tick["timestamp"], tz=timezone.utc)
