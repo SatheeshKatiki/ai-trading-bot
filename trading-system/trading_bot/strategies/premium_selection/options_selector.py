@@ -260,6 +260,23 @@ def select_option(
         symbol = _build_symbol(instrument, expiry, strike, direction)
         itm_strikes = 2
         logger.warning("Greeks Guard Triggered: 0DTE after 2 PM. Forced Deep ITM (%s) to avoid Theta decay trap.", symbol)
+
+        # Root-cause fix (Medium audit finding): the shift used to be
+        # applied blindly with no check that it actually achieved its
+        # stated goal (protect delta, reduce theta decay) for the NEW
+        # strike. Recompute Greeks for the shifted strike and warn if
+        # the delta protection this guard exists for didn't actually
+        # materialize (e.g. a very tight strike_step leaving the "deep
+        # ITM" strike still close to the money).
+        greeks = calculate_greeks(spot_price, strike, days_to_expiry, option_type=direction)
+        logger.info("Post-shift Greeks for %s -> Delta: %.2f | Theta: %.2f", symbol, greeks["delta"], greeks["theta"])
+        if abs(greeks["delta"]) < 0.7:
+            logger.warning(
+                "Greeks Guard shift did not achieve the expected deep-ITM delta protection for %s "
+                "(Delta: %.2f, expected >= 0.70 in magnitude) — strike_step for %s may be too small "
+                "relative to spot to reach deep ITM with a 2-strike offset.",
+                symbol, greeks["delta"], instrument,
+            )
     else:
         greeks = calculate_greeks(spot_price, strike, days_to_expiry, option_type=direction)
         logger.info("Computed Greeks for %s -> Delta: %.2f | Theta: %.2f", symbol, greeks["delta"], greeks["theta"])
