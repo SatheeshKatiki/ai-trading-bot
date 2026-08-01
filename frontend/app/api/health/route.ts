@@ -1,11 +1,12 @@
 import { NextResponse } from 'next/server';
+import { BACKEND_URL } from '@/lib/backend';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: Request) {
   try {
     const { search } = new URL(request.url);
-    const url = `http://127.0.0.1:8000/health${search}`;
+    const url = `${BACKEND_URL}/health${search}`;
     const res = await fetch(url);
     
     if (!res.ok) {

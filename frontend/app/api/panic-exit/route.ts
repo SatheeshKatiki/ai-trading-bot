@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getAuthHeaders } from '@/lib/backend';
+import { getAuthHeaders, BACKEND_URL } from '@/lib/backend';
 
 export const dynamic = 'force-dynamic';
 
@@ -16,7 +16,7 @@ export async function POST(request: Request) {
         body: body ? JSON.stringify(body) : undefined
     };
 
-    const res = await fetch(`http://127.0.0.1:8000/api/panic-exit`, fetchOptions);
+    const res = await fetch(`${BACKEND_URL}/api/panic-exit`, fetchOptions);
     
     if (!res.ok) {
       return NextResponse.json({ error: 'Backend error' }, { status: res.status });

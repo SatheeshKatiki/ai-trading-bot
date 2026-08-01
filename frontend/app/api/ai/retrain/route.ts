@@ -1,11 +1,11 @@
 import { NextResponse } from 'next/server';
-import { getAuthHeaders } from '@/lib/backend';
+import { getAuthHeaders, BACKEND_URL } from '@/lib/backend';
 
 export const dynamic = 'force-dynamic';
 
 export async function POST(request: Request) {
   try {
-    const res = await fetch('http://127.0.0.1:8000/api/ai/retrain', {
+    const res = await fetch(`${BACKEND_URL}/api/ai/retrain`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...(await getAuthHeaders()) }
     });

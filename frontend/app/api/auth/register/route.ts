@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
-import { SESSION_COOKIE } from '@/lib/backend';
+import { SESSION_COOKIE, BACKEND_URL } from '@/lib/backend';
 
 export const dynamic = 'force-dynamic';
 
@@ -17,7 +17,7 @@ export async function POST(request: Request) {
       body: body ? JSON.stringify(body) : undefined,
     };
 
-    const res = await fetch(`http://127.0.0.1:8000/api/auth/register`, fetchOptions);
+    const res = await fetch(`${BACKEND_URL}/api/auth/register`, fetchOptions);
 
     const data = await res.json();
     if (!res.ok) {

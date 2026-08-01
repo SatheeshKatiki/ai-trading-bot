@@ -8,7 +8,13 @@ import { cookies } from 'next/headers';
 // forward one. This helper is the single place that does it, instead of
 // each of the ~25 route handlers reimplementing the same header logic.
 
-export const BACKEND_URL = 'http://127.0.0.1:8000';
+// High audit finding: every one of the ~27 proxy routes hardcoded
+// 'http://127.0.0.1:8000' directly, making it impossible to deploy the
+// frontend and backend on separate hosts/containers without editing every
+// file. Reads from BACKEND_URL (falling back to the previous hardcoded
+// value for local dev, so nothing breaks for anyone not setting it) — set
+// this in the environment when the backend isn't reachable at localhost.
+export const BACKEND_URL = process.env.BACKEND_URL || 'http://127.0.0.1:8000';
 export const SESSION_COOKIE = 'session_token';
 
 /** Read the caller's session token straight from the httpOnly cookie. */

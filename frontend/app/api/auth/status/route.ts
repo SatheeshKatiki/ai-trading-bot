@@ -1,10 +1,11 @@
 import { NextResponse } from 'next/server';
+import { BACKEND_URL } from '@/lib/backend';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: Request) {
   try {
-    const res = await fetch(`http://127.0.0.1:8000/api/auth/status`);
+    const res = await fetch(`${BACKEND_URL}/api/auth/status`);
     
     if (!res.ok) {
       return NextResponse.json({ error: 'Backend error' }, { status: res.status });

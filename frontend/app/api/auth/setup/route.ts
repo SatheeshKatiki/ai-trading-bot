@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { BACKEND_URL } from '@/lib/backend';
 
 export const dynamic = 'force-dynamic';
 
@@ -15,7 +16,7 @@ export async function POST(request: Request) {
         body: body ? JSON.stringify(body) : undefined
     };
     
-    const res = await fetch(`http://127.0.0.1:8000/api/auth/setup`, fetchOptions);
+    const res = await fetch(`${BACKEND_URL}/api/auth/setup`, fetchOptions);
     
     const data = await res.json();
     if (!res.ok) {

@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
-import { getAuthHeaders } from '@/lib/backend';
+import { getAuthHeaders, BACKEND_URL } from '@/lib/backend';
 
 export const dynamic = 'force-dynamic';
 
@@ -59,17 +59,17 @@ export async function GET(request: Request) {
       const fetchPromises = [];
       
       // 1. State
-      fetchPromises.push(fetchWithTimeout("http://127.0.0.1:8000/api/state", 2000, authHeaders));
+      fetchPromises.push(fetchWithTimeout("${BACKEND_URL}/api/state", 2000, authHeaders));
       // 2. Funds
       if (isLive) {
-        fetchPromises.push(fetchWithTimeout("http://127.0.0.1:8000/api/funds", 2000, authHeaders));
+        fetchPromises.push(fetchWithTimeout("${BACKEND_URL}/api/funds", 2000, authHeaders));
       } else {
         fetchPromises.push(Promise.resolve(null));
       }
       // 3. Signals
-      fetchPromises.push(fetchWithTimeout(`http://127.0.0.1:8000/api/signals?symbol=${rawSymbol}`, 5000, authHeaders));
+      fetchPromises.push(fetchWithTimeout(`${BACKEND_URL}/api/signals?symbol=${rawSymbol}`, 5000, authHeaders));
       // 4. Quote
-      fetchPromises.push(fetchWithTimeout(`http://127.0.0.1:8000/api/quote?symbol=${symbol}`, 2000, authHeaders));
+      fetchPromises.push(fetchWithTimeout(`${BACKEND_URL}/api/quote?symbol=${symbol}`, 2000, authHeaders));
       
       const [resState, resFunds, resSignals, resQuote] = await Promise.all(fetchPromises);
 
@@ -98,9 +98,9 @@ export async function GET(request: Request) {
 
       // Try to fetch real quotes to override simulation if possible
       try {
-          const resNifty = await fetchWithTimeout(`http://127.0.0.1:8000/api/quote?symbol=NSE:NIFTY50-INDEX`, 1000, authHeaders);
-          const resBankNifty = await fetchWithTimeout(`http://127.0.0.1:8000/api/quote?symbol=NSE:NIFTYBANK-INDEX`, 1000, authHeaders);
-          const resSensex = await fetchWithTimeout(`http://127.0.0.1:8000/api/quote?symbol=BSE:SENSEX-INDEX`, 1000, authHeaders);
+          const resNifty = await fetchWithTimeout(`${BACKEND_URL}/api/quote?symbol=NSE:NIFTY50-INDEX`, 1000, authHeaders);
+          const resBankNifty = await fetchWithTimeout(`${BACKEND_URL}/api/quote?symbol=NSE:NIFTYBANK-INDEX`, 1000, authHeaders);
+          const resSensex = await fetchWithTimeout(`${BACKEND_URL}/api/quote?symbol=BSE:SENSEX-INDEX`, 1000, authHeaders);
           
           const extractLpChp = (data: any) => {
               if (data && data.d && data.d.length > 0 && !data.error && data.s === "ok") {

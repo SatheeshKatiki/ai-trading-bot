@@ -1,11 +1,11 @@
 import { NextResponse } from 'next/server';
-import { getAuthHeaders } from '@/lib/backend';
+import { getAuthHeaders, BACKEND_URL } from '@/lib/backend';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
   try {
-    const res = await fetch('http://127.0.0.1:8000/api/ai/status', {
+    const res = await fetch(`${BACKEND_URL}/api/ai/status`, {
       next: { revalidate: 0 }, // Disable caching
       headers: await getAuthHeaders(),
     });

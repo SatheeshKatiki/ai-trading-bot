@@ -1,12 +1,12 @@
 import { NextResponse } from 'next/server';
-import { getAuthHeaders } from '@/lib/backend';
+import { getAuthHeaders, BACKEND_URL } from '@/lib/backend';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: Request) {
   try {
     const { search } = new URL(request.url);
-    const url = `http://127.0.0.1:8000/api/engine/status${search}`;
+    const url = `${BACKEND_URL}/api/engine/status${search}`;
     const res = await fetch(url, { headers: await getAuthHeaders() });
     
     if (!res.ok) {

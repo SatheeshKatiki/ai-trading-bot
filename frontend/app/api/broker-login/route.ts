@@ -1,11 +1,11 @@
 import { NextResponse } from 'next/server';
-import { getAuthHeaders } from '@/lib/backend';
+import { getAuthHeaders, BACKEND_URL } from '@/lib/backend';
 
 export const dynamic = 'force-dynamic';
 
 export async function POST(request: Request) {
   try {
-    const res = await fetch('http://127.0.0.1:8000/api/broker-login', {
+    const res = await fetch(`${BACKEND_URL}/api/broker-login`, {
       method: 'POST',
       headers: await getAuthHeaders(),
     });
@@ -30,7 +30,7 @@ export async function POST(request: Request) {
 
 export async function GET(request: Request) {
   try {
-    const res = await fetch('http://127.0.0.1:8000/api/broker-auth-url', {
+    const res = await fetch(`${BACKEND_URL}/api/broker-auth-url`, {
       method: 'GET',
       headers: await getAuthHeaders(),
     });

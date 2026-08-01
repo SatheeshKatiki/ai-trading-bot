@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server';
-import { getAuthHeaders } from '@/lib/backend';
+import { getAuthHeaders, BACKEND_URL } from '@/lib/backend';
 
 export async function GET() {
   try {
-    const res = await fetch('http://127.0.0.1:8000/api/journal', {
+    const res = await fetch(`${BACKEND_URL}/api/journal`, {
       headers: {
         'Content-Type': 'application/json',
         ...(await getAuthHeaders()),
