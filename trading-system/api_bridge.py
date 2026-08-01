@@ -705,11 +705,12 @@ async def panic_exit(request: Request):
         logger.warning("!!! PANIC EXIT TRIGGERED !!!")
         
         # 1. Cancel all pending orders
-        pending_orders = broker.get_orders()
+        from brokers import OrderStatus
+        pending_orders = broker.get_order_book()
         cancelled_count = 0
         for order in pending_orders:
-            if order.status in ["OPEN", "PENDING", "PARTIALLY_FILLED"]:
-                broker.cancel_order(order.id)
+            if order.status in (OrderStatus.OPEN, OrderStatus.PENDING, OrderStatus.PARTIAL):
+                broker.cancel_order(order.order_id)
                 cancelled_count += 1
                 
         # 2. Square off all active positions

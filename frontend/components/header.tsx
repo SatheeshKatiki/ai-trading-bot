@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Bell, Search, User, BookOpen, LogOut, Settings, CreditCard, Command, Activity, ShieldAlert, XCircle, Lock, TrendingUp, TrendingDown, Wallet } from "lucide-react";
+import { Bell, Search, User, BookOpen, LogOut, Settings, CreditCard, Command, Activity, ShieldAlert, XCircle, Lock, TrendingUp, TrendingDown, Wallet, Loader2 } from "lucide-react";
 import { useRouter, usePathname } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import Link from "next/link";
@@ -219,6 +219,7 @@ export default function Header() {
   // Kill Switch State
   const [isKillSwitchModalOpen, setIsKillSwitchModalOpen] = useState(false);
   const [isSystemHalted, setIsSystemHalted] = useState(false);
+  const [isKillSwitchExecuting, setIsKillSwitchExecuting] = useState(false);
 
   // Real-time P&L from WebSocket store (isolated selector — no full re-render)
   const totalPnl           = useLiveMarketStore(state => state.totalPnl);
@@ -232,11 +233,33 @@ export default function Header() {
     connectWs("NIFTY");
   }, [connectWs]);
 
-  const handleKillSwitch = () => {
-    setIsSystemHalted(true);
-    setIsKillSwitchModalOpen(false);
-    toast.error("SYSTEM HALTED. All open positions closed.");
-    localStorage.setItem("kill_switch_active", "true");
+  const handleKillSwitch = async () => {
+    if (isKillSwitchExecuting) return;
+    setIsKillSwitchExecuting(true);
+    try {
+      const res = await fetch("/api/panic-exit", { method: "POST" });
+      const data = await res.json();
+
+      if (res.ok && data.status === "success") {
+        setIsSystemHalted(true);
+        localStorage.setItem("kill_switch_active", "true");
+        setIsKillSwitchModalOpen(false);
+        toast.error("SYSTEM HALTED", {
+          description: `Cancelled ${data.cancelled ?? 0} orders, closed ${data.closed ?? 0} positions.`,
+        });
+      } else {
+        // Do NOT claim positions were closed if the backend didn't confirm it.
+        toast.error("KILL SWITCH FAILED", {
+          description: data.message || data.detail || "The backend did not confirm the halt. Positions may still be open — check manually.",
+        });
+      }
+    } catch (e) {
+      toast.error("KILL SWITCH FAILED", {
+        description: "Could not reach the trading engine. Positions may still be open — check manually.",
+      });
+    } finally {
+      setIsKillSwitchExecuting(false);
+    }
   };
 
   useEffect(() => {
@@ -612,7 +635,7 @@ export default function Header() {
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               className="absolute inset-0 bg-black/20"
-              onClick={() => setIsKillSwitchModalOpen(false)}
+              onClick={() => !isKillSwitchExecuting && setIsKillSwitchModalOpen(false)}
             />
             <motion.div
               initial={{ opacity: 0, scale: 0.95, y: -10 }}
@@ -625,20 +648,30 @@ export default function Header() {
               </div>
               <h2 className="text-xl font-black text-destructive uppercase tracking-wider mb-2">Emergency Halt</h2>
               <p className="text-sm text-muted-foreground mb-6">
-                Are you sure you want to trigger the Kill Switch? This will instantly flatten all open positions at market price and halt all algorithmic trading.
+                Are you sure you want to trigger the Kill Switch? This will immediately cancel all pending orders and close all open positions at market price. It does not stop new signals from being generated — use the Engine toggle separately to pause trading.
               </p>
               <div className="flex gap-3 w-full">
                 <button
                   onClick={() => setIsKillSwitchModalOpen(false)}
-                  className="flex-1 py-3 bg-muted hover:bg-muted/80 rounded-xl text-sm font-bold transition-colors"
+                  disabled={isKillSwitchExecuting}
+                  className="flex-1 py-3 bg-muted hover:bg-muted/80 rounded-xl text-sm font-bold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   CANCEL
                 </button>
                 <button
                   onClick={handleKillSwitch}
-                  className="flex-1 py-3 bg-destructive hover:bg-destructive/90 text-white rounded-xl text-sm font-bold transition-colors shadow-lg shadow-destructive/20 flex items-center justify-center gap-2"
+                  disabled={isKillSwitchExecuting}
+                  className="flex-1 py-3 bg-destructive hover:bg-destructive/90 text-white rounded-xl text-sm font-bold transition-colors shadow-lg shadow-destructive/20 flex items-center justify-center gap-2 disabled:opacity-70 disabled:cursor-not-allowed"
                 >
-                  <XCircle className="w-4 h-4" /> EXECUTE HALT
+                  {isKillSwitchExecuting ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" /> HALTING...
+                    </>
+                  ) : (
+                    <>
+                      <XCircle className="w-4 h-4" /> EXECUTE HALT
+                    </>
+                  )}
                 </button>
               </div>
             </motion.div>
