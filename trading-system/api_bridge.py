@@ -2266,9 +2266,21 @@ async def auth_reset(req: ResetRequest):
 
     if target_user:
         user_linked_client = target_user.get("client_id", "").strip()
-        if (user_linked_client and user_linked_client != client_id) and (fyers_client_id and fyers_client_id != client_id):
+        if user_linked_client:
+            # The account has its own linked broker client ID on file — that
+            # is the ONLY value that verifies this specific account. The
+            # operator's global FYERS_CLIENT_ID must never be usable as a
+            # bypass for someone else's account (see the fixed bug note
+            # below for what this replaced).
+            if user_linked_client != client_id:
+                raise HTTPException(status_code=401, detail="Invalid Broker Client ID verification")
+        elif not (fyers_client_id and client_id == fyers_client_id):
+            # No client ID on file for this account at all — fall back to
+            # the single-operator admin ID as the only other recognized
+            # identity (matches the admin-bootstrap branch below).
             raise HTTPException(status_code=401, detail="Invalid Broker Client ID verification")
-        
+
+
         target_user["password_hash"] = _hash_password(new_password)
         users[target_user_id] = target_user
         _save_users(users)
