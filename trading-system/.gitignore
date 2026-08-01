@@ -35,6 +35,8 @@ sessions.json                 # Active login session tokens
 # ---------------------------------------------------------------------------
 state.json
 settings.json
+state.db               # Live equity/PnL/trade history (also covered by root *.db, spelled out for clarity)
+data/state.db           # Orphaned duplicate from an earlier path layout — not read/written anywhere
 
 # ---------------------------------------------------------------------------
 # Audit logs (append-only, may contain order details)
