@@ -13,6 +13,8 @@ users.json                    # User accounts (password hashes)
 sessions.json                 # Active login session tokens
 .fyers_tokens.json            # Cached Fyers access token
 .kite_tokens.json             # Cached Kite access token
+.vault_passphrase             # SecurityVault master passphrase (auto-generated)
+.vault_salt                   # SecurityVault PBKDF2 salt (auto-generated)
 *.token
 *.key
 *.pem
