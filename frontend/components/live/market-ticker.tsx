@@ -42,7 +42,7 @@ function MarketTickerComponent({ isWsConnected, tickerData }: MarketTickerProps)
                     <div className="flex items-center gap-2 flex-shrink-0 group cursor-default">
                         <span className="text-foreground group-hover:text-primary transition-colors">NIFTY</span>
                         <span className={`transition-colors ${(tickerData.NIFTY?.chp ?? 0) >= 0 ? 'text-success ' : 'text-destructive '}`}>
-                            ₹{(tickerData.NIFTY?.lp ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                            ₹{(tickerData.NIFTY?.lp ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </span>
                         <span className={`flex items-center text-[10px] px-1.5 py-0.5 rounded-md ${(tickerData.NIFTY?.chp ?? 0) >= 0 ? 'bg-success/10 text-success' : 'bg-destructive/10 text-destructive'}`}>
                             {(tickerData.NIFTY?.chp ?? 0) >= 0 ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownRight className="w-3 h-3" />}
@@ -54,7 +54,7 @@ function MarketTickerComponent({ isWsConnected, tickerData }: MarketTickerProps)
                     <div className="flex items-center gap-2 flex-shrink-0 group cursor-default">
                         <span className="text-foreground group-hover:text-primary transition-colors">SENSEX</span>
                         <span className={`transition-colors ${(tickerData.SENSEX?.chp ?? 0) >= 0 ? 'text-success ' : 'text-destructive '}`}>
-                            ₹{(tickerData.SENSEX?.lp ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                            ₹{(tickerData.SENSEX?.lp ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </span>
                         <span className={`flex items-center text-[10px] px-1.5 py-0.5 rounded-md ${(tickerData.SENSEX?.chp ?? 0) >= 0 ? 'bg-success/10 text-success' : 'bg-destructive/10 text-destructive'}`}>
                             {(tickerData.SENSEX?.chp ?? 0) >= 0 ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownRight className="w-3 h-3" />}
@@ -66,7 +66,7 @@ function MarketTickerComponent({ isWsConnected, tickerData }: MarketTickerProps)
                     <div className="flex items-center gap-2 flex-shrink-0 group cursor-default">
                         <span className="text-foreground group-hover:text-primary transition-colors">BANKNIFTY</span>
                         <span className={`transition-colors ${(tickerData.BANKNIFTY?.chp ?? 0) >= 0 ? 'text-success ' : 'text-destructive '}`}>
-                            ₹{(tickerData.BANKNIFTY?.lp ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                            ₹{(tickerData.BANKNIFTY?.lp ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </span>
                         <span className={`flex items-center text-[10px] px-1.5 py-0.5 rounded-md ${(tickerData.BANKNIFTY?.chp ?? 0) >= 0 ? 'bg-success/10 text-success' : 'bg-destructive/10 text-destructive'}`}>
                             {(tickerData.BANKNIFTY?.chp ?? 0) >= 0 ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownRight className="w-3 h-3" />}

@@ -142,7 +142,7 @@ export default function OptionsDesk() {
               
               <div className="h-[300px] w-full">
                 <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={payoffData} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
+                  <AreaChart data={payoffData} margin={{ top: 28, right: 30, left: 0, bottom: 0 }}>
                     <defs>
                       <linearGradient id="colorPayoff" x1="0" y1="0" x2="0" y2="1">
                         <stop offset="5%" stopColor="#10b981" stopOpacity={0.3}/>
@@ -209,17 +209,17 @@ export default function OptionsDesk() {
 
                       return (
                         <tr key={i} className="border-b border-border/20 hover:bg-muted/10 transition-colors">
-                          <td className={`py-3 px-2 ${isITMCall ? 'bg-success/5' : ''}`}>{row.ce?.delta || 0}</td>
-                          <td className={`py-3 px-2 ${isITMCall ? 'bg-success/5' : ''}`}>{row.ce?.theta || 0}</td>
-                          <td className={`py-3 px-2 ${isITMCall ? 'bg-success/5' : ''}`}>{row.ce?.oi || 0}</td>
-                          <td className={`py-3 px-2 border-r border-border/50 font-bold text-success ${isITMCall ? 'bg-success/5' : ''}`}>₹{row.ce?.ltp || 0}</td>
+                          <td className={`py-3 px-2 ${isITMCall ? 'bg-success/5' : ''}`}>{(row.ce?.delta ?? 0).toFixed(2)}</td>
+                          <td className={`py-3 px-2 ${isITMCall ? 'bg-success/5' : ''}`}>{(row.ce?.theta ?? 0).toFixed(2)}</td>
+                          <td className={`py-3 px-2 ${isITMCall ? 'bg-success/5' : ''}`}>{(row.ce?.oi ?? 0).toLocaleString('en-IN')}</td>
+                          <td className={`py-3 px-2 border-r border-border/50 font-bold text-success ${isITMCall ? 'bg-success/5' : ''}`}>₹{(row.ce?.ltp ?? 0).toFixed(2)}</td>
 
                           <td className="py-3 px-2 bg-muted/30 font-bold text-foreground">{row.strike}</td>
 
-                          <td className={`py-3 px-2 border-l border-border/50 font-bold text-destructive ${isITMPut ? 'bg-destructive/5' : ''}`}>₹{row.pe?.ltp || 0}</td>
-                          <td className={`py-3 px-2 ${isITMPut ? 'bg-destructive/5' : ''}`}>{row.pe?.oi || 0}</td>
-                          <td className={`py-3 px-2 ${isITMPut ? 'bg-destructive/5' : ''}`}>{row.pe?.theta || 0}</td>
-                          <td className={`py-3 px-2 ${isITMPut ? 'bg-destructive/5' : ''}`}>{row.pe?.delta || 0}</td>
+                          <td className={`py-3 px-2 border-l border-border/50 font-bold text-destructive ${isITMPut ? 'bg-destructive/5' : ''}`}>₹{(row.pe?.ltp ?? 0).toFixed(2)}</td>
+                          <td className={`py-3 px-2 ${isITMPut ? 'bg-destructive/5' : ''}`}>{(row.pe?.oi ?? 0).toLocaleString('en-IN')}</td>
+                          <td className={`py-3 px-2 ${isITMPut ? 'bg-destructive/5' : ''}`}>{(row.pe?.theta ?? 0).toFixed(2)}</td>
+                          <td className={`py-3 px-2 ${isITMPut ? 'bg-destructive/5' : ''}`}>{(row.pe?.delta ?? 0).toFixed(2)}</td>
                         </tr>
                       );
                     })}

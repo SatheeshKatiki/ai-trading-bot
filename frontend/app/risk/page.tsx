@@ -88,6 +88,25 @@ export default function RiskManagement() {
     return () => { cancelled = true; };
   }, []);
 
+  // Root-cause fix: Recharts' ResponsiveContainer (Sector Exposure pie chart
+  // below) measures its container via ResizeObserver at mount time. That
+  // mount happens in the same render as the two-column grid first getting
+  // its real content (the loading-gate above renders a completely different,
+  // grid-less tree), so it can grab a stale/zero size before the grid has
+  // settled its row heights, and then never re-renders until the container
+  // element itself genuinely changes size (confirmed live: dispatching a
+  // fake `window resize` Event does nothing, since ResizeObserver watches
+  // the actual element, not the window event - only physically resizing
+  // the browser window fixed it manually). Mounting the chart one tick
+  // after the surrounding grid paints gives ResizeObserver a real, settled
+  // size to measure the first time it actually runs.
+  const [chartsReady, setChartsReady] = useState(false);
+  useEffect(() => {
+    if (isLoading) return;
+    const id = requestAnimationFrame(() => setChartsReady(true));
+    return () => cancelAnimationFrame(id);
+  }, [isLoading]);
+
   if (isLoading) {
     return (
       <div className="flex h-screen bg-background text-foreground">
@@ -232,27 +251,29 @@ export default function RiskManagement() {
                   <PieChartIcon className="w-4 h-4 text-muted-foreground" />
                 </div>
                 <div className="h-[200px]">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <Pie
-                        data={exposureData}
-                        cx="50%"
-                        cy="50%"
-                        innerRadius={40}
-                        outerRadius={70}
-                        fill="#8884d8"
-                        paddingAngle={5}
-                        dataKey="value"
-                      >
-                        {exposureData.map((entry, index) => (
-                          <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                        ))}
-                      </Pie>
-                      <Tooltip 
-                        contentStyle={{ backgroundColor: "#090a0f", borderColor: "rgba(255,255,255,0.1)", borderRadius: "8px" }}
-                      />
-                    </PieChart>
-                  </ResponsiveContainer>
+                  {chartsReady && (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                        <Pie
+                          data={exposureData}
+                          cx="50%"
+                          cy="50%"
+                          innerRadius={40}
+                          outerRadius={70}
+                          fill="#8884d8"
+                          paddingAngle={5}
+                          dataKey="value"
+                        >
+                          {exposureData.map((entry, index) => (
+                            <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                          ))}
+                        </Pie>
+                        <Tooltip
+                          contentStyle={{ backgroundColor: "#090a0f", borderColor: "rgba(255,255,255,0.1)", borderRadius: "8px" }}
+                        />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  )}
                 </div>
                 <div className="flex justify-center gap-4 mt-2 flex-wrap">
                   {exposureData.map((entry, index) => (

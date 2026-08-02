@@ -108,7 +108,7 @@ export default function LiveTicker() {
               <div key={i} className={`flex items-center gap-3 px-2 py-1 rounded-md transition-all duration-300 ${flashClass}`}>
                 <span className="text-xs font-bold text-foreground/90 tracking-tight">{symbol}</span>
                 <span className="text-xs font-mono font-medium text-foreground">
-                  {data.lp.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                  {data.lp.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </span>
                 <div className={`flex items-center text-[10px] font-bold ${isUp ? "text-success" : "text-destructive"}`}>
                   {isUp ? <ArrowUpRight className="w-2.5 h-2.5 mr-0.5" /> : <ArrowDownRight className="w-2.5 h-2.5 mr-0.5" />}
@@ -126,7 +126,7 @@ export default function LiveTicker() {
               <div key={`dup-${i}`} className="flex items-center gap-3 px-2 py-1">
                 <span className="text-xs font-bold text-foreground/90 tracking-tight">{symbol}</span>
                 <span className="text-xs font-mono font-medium text-foreground">
-                  {data.lp.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                  {data.lp.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </span>
                 <div className={`flex items-center text-[10px] font-bold ${isUp ? "text-success" : "text-destructive"}`}>
                   {isUp ? <ArrowUpRight className="w-2.5 h-2.5 mr-0.5" /> : <ArrowDownRight className="w-2.5 h-2.5 mr-0.5" />}

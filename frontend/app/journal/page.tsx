@@ -103,7 +103,7 @@ export default function JournalPage() {
           <div className="glass-card rounded-2xl p-5 border border-border/50">
             <span className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Net PnL</span>
             <div className={`text-3xl font-bold font-mono mt-2 ${stats.netPnl >= 0 ? 'text-success' : 'text-destructive'}`}>
-              {stats.netPnl >= 0 ? '+' : ''}₹{stats.netPnl.toLocaleString('en-IN')}
+              {stats.netPnl >= 0 ? '+' : ''}₹{stats.netPnl.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </div>
           </div>
           <div className="glass-card rounded-2xl p-5 border border-border/50">
@@ -111,7 +111,7 @@ export default function JournalPage() {
               <TrendingUp className="w-3 h-3 text-success" /> Best Trade
             </span>
             <div className="text-3xl font-bold font-mono mt-2 text-success">
-              +₹{stats.bestTrade.toLocaleString('en-IN')}
+              +₹{stats.bestTrade.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </div>
           </div>
           <div className="glass-card rounded-2xl p-5 border border-border/50">
@@ -119,7 +119,7 @@ export default function JournalPage() {
               <TrendingDown className="w-3 h-3 text-destructive" /> Worst Trade
             </span>
             <div className="text-3xl font-bold font-mono mt-2 text-destructive">
-              ₹{stats.worstTrade.toLocaleString('en-IN')}
+              ₹{stats.worstTrade.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </div>
           </div>
         </div>
@@ -176,11 +176,11 @@ export default function JournalPage() {
                             {trade.qty}
                           </td>
                           <td className="py-3 px-4 text-right font-mono text-[11px] text-muted-foreground">
-                            <span className="text-foreground">₹{trade.entry_price}</span> <span className="text-border mx-1">→</span> <span className="text-foreground">₹{trade.exit_price}</span>
+                            <span className="text-foreground">₹{Number(trade.entry_price).toFixed(2)}</span> <span className="text-border mx-1">→</span> <span className="text-foreground">₹{Number(trade.exit_price).toFixed(2)}</span>
                           </td>
                           <td className="py-3 px-4 text-right">
                             <div className={`font-bold font-mono text-sm ${isProfit ? 'text-success' : 'text-destructive'}`}>
-                              {isProfit ? '+' : ''}₹{trade.pnl.toLocaleString('en-IN')}
+                              {isProfit ? '+' : ''}₹{trade.pnl.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                             </div>
                           </td>
                           <td className="py-3 px-4 min-w-[300px]">
