@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 import logging
 import json
 import os
@@ -10,17 +11,38 @@ logger = logging.getLogger(__name__)
 NSE_MASTER_URL = "https://public.fyers.in/sym_details/NSE_FO.csv"
 BSE_MASTER_URL = "https://public.fyers.in/sym_details/BSE_FO.csv"
 
-# Current active year prefix for options
-import datetime
-CURRENT_YEAR = str(datetime.datetime.now().year)[-2:]
+# Column indices in the Fyers symbol master CSV (public.fyers.in/sym_details/*.csv).
+# Verified against a live sample: col 3 is lot size, col 8 is the contract's
+# expiry as a Unix timestamp (seconds). e.g. for
+# "...,NIFTY 25 Aug 26 FUT,11,65,0.1,,...,2026-07-31,1787652000,NSE:NIFTY26AUGFUT,...":
+# col 3 = 65 (lot size), col 8 = 1787652000 (2026-08-25, the FUT's expiry).
+_COL_LOT_SIZE = 3
+_COL_EXPIRY_TS = 8
 
-TARGET_PREFIXES = {
-    "NSE": [f"NSE:NIFTY{CURRENT_YEAR}", f"NSE:BANKNIFTY{CURRENT_YEAR}", f"NSE:FINNIFTY{CURRENT_YEAR}", f"NSE:MIDCPNIFTY{CURRENT_YEAR}"],
-    "BSE": [f"BSE:SENSEX{CURRENT_YEAR}", f"BSE:BANKEX{CURRENT_YEAR}"]
-}
+
+def _target_prefixes() -> dict[str, list[str]]:
+    """Build the year-prefixed symbol list fresh on every call.
+
+    Root-cause fix: this used to be a module-level constant computed once
+    at import time from CURRENT_YEAR. In a long-running process (e.g.
+    api_bridge.py, which only calls update_lot_sizes_in_settings() once at
+    startup today, but could reasonably be changed to run periodically),
+    a year frozen at import time goes stale the moment the calendar rolls
+    over to a new year — every prefix would then search for a year prefix
+    (e.g. "NIFTY26") that no longer matches any current contract in the
+    symbol master (which would by then use "NIFTY27"), silently returning
+    zero results every single call until the process is restarted.
+    """
+    current_year = str(datetime.datetime.now().year)[-2:]
+    return {
+        "NSE": [f"NSE:NIFTY{current_year}", f"NSE:BANKNIFTY{current_year}", f"NSE:FINNIFTY{current_year}", f"NSE:MIDCPNIFTY{current_year}"],
+        "BSE": [f"BSE:SENSEX{current_year}", f"BSE:BANKEX{current_year}"],
+    }
+
 
 async def fetch_lot_sizes_from_url(session: aiohttp.ClientSession, url: str, prefixes: list[str]) -> dict[str, int]:
-    results = {}
+    results: dict[str, int] = {}
+    best_expiry: dict[str, float] = {}
     try:
         async with session.get(url, timeout=15) as resp:
             if resp.status == 200:
@@ -28,14 +50,31 @@ async def fetch_lot_sizes_from_url(session: aiohttp.ClientSession, url: str, pre
                 for line in content.splitlines():
                     for p in prefixes:
                         # Extract the base index name (e.g. NIFTY, BANKNIFTY) without the prefix year
-                        base_name = p.split(':')[1][:-(len(CURRENT_YEAR))]
-                        if base_name not in results and p in line and "-INDEX" not in line:
+                        base_name = p.split(':')[1][:-2]
+                        if p in line and "-INDEX" not in line:
                             parts = line.split(',')
-                            if len(parts) > 3:
+                            if len(parts) > _COL_EXPIRY_TS:
                                 try:
-                                    results[base_name] = int(parts[3])
+                                    expiry_ts = float(parts[_COL_EXPIRY_TS])
+                                    lot_size = int(parts[_COL_LOT_SIZE])
                                 except ValueError:
-                                    pass
+                                    continue
+                                # Root-cause fix: previously took whichever
+                                # matching line appeared first in the file
+                                # (arbitrary — the file isn't guaranteed
+                                # sorted by expiry) and locked it in via a
+                                # `base_name not in results` guard. Now
+                                # keeps scanning and only replaces the
+                                # result when a line with a NEARER expiry
+                                # is found, so the lot size reflects the
+                                # currently-active/soonest-expiring
+                                # contract rather than an arbitrary one —
+                                # relevant during a lot-size revision
+                                # window where different expiries can
+                                # (briefly) carry different lot sizes.
+                                if base_name not in best_expiry or expiry_ts < best_expiry[base_name]:
+                                    best_expiry[base_name] = expiry_ts
+                                    results[base_name] = lot_size
     except Exception as e:
         logger.error(f"Error fetching lot sizes from {url}: {e}")
     return results
@@ -48,9 +87,10 @@ async def update_lot_sizes_in_settings():
     logger.info("Fetching dynamic lot sizes from Fyers Symbol Master...")
     lot_sizes = {}
     try:
+        target_prefixes = _target_prefixes()
         async with aiohttp.ClientSession() as session:
-            nse_lots = await fetch_lot_sizes_from_url(session, NSE_MASTER_URL, TARGET_PREFIXES["NSE"])
-            bse_lots = await fetch_lot_sizes_from_url(session, BSE_MASTER_URL, TARGET_PREFIXES["BSE"])
+            nse_lots = await fetch_lot_sizes_from_url(session, NSE_MASTER_URL, target_prefixes["NSE"])
+            bse_lots = await fetch_lot_sizes_from_url(session, BSE_MASTER_URL, target_prefixes["BSE"])
             
             lot_sizes.update(nse_lots)
             lot_sizes.update(bse_lots)
