@@ -374,37 +374,65 @@ async def run_live_bot(symbols: List[str]) -> None:
 
     # Preload historical data using the broker directly (eliminating HTTP hop and localhost dependency)
     from datetime import timedelta
+
+    def _format_sym(s: str) -> str:
+        if ":" in s and "-" in s: return s
+        idx = {"NIFTY": "NSE:NIFTY50-INDEX", "BANKNIFTY": "NSE:NIFTYBANK-INDEX", "SENSEX": "BSE:SENSEX-INDEX"}
+        if s in idx: return idx[s]
+        exch, t = s.split(":") if ":" in s else ("NSE", s)
+        return f"{exch}:{t}-EQ"
+
+    _preload_failed_symbols: List[str] = []
     try:
         end_date = datetime.now().strftime("%Y-%m-%d")
         start_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
-        
+
         if not broker.is_authenticated:
             broker.authenticate()
-            
-        def _format_sym(s: str) -> str:
-            if ":" in s and "-" in s: return s
-            idx = {"NIFTY": "NSE:NIFTY50-INDEX", "BANKNIFTY": "NSE:NIFTYBANK-INDEX", "SENSEX": "BSE:SENSEX-INDEX"}
-            if s in idx: return idx[s]
-            exch, t = s.split(":") if ":" in s else ("NSE", s)
-            return f"{exch}:{t}-EQ"
-            
+
+        # Each symbol is preloaded in its own try/except so one bad symbol
+        # (broker error, malformed response) can't silently abort preload
+        # for every symbol still left in the list.
         for sym in symbols:
-            broker_sym = _format_sym(sym)
-            data = broker.get_historical_data(broker_sym, start_date, end_date, _tf_str)
-            if data:
-                df = pd.DataFrame(data)
-                df["timestamp"] = pd.to_datetime(df["datetime"] if "datetime" in df.columns else df.get("Datetime"))
-                df.set_index("timestamp", inplace=True)
-                # Lowercase columns mapping
-                col_map = {c: c.lower() for c in df.columns}
-                df.rename(columns=col_map, inplace=True)
-                for col in ["open", "high", "low", "close", "volume"]:
-                    if col in df.columns:
-                        df[col] = pd.to_numeric(df[col], errors='coerce')
-                aggregator.candles[sym] = df
-                logger.info("Preloaded %d historical candles for %s natively via Broker", len(df), sym)
+            try:
+                broker_sym = _format_sym(sym)
+                data = broker.get_historical_data(broker_sym, start_date, end_date, _tf_str)
+                if data:
+                    df = pd.DataFrame(data)
+                    df["timestamp"] = pd.to_datetime(df["datetime"] if "datetime" in df.columns else df.get("Datetime"))
+                    df.set_index("timestamp", inplace=True)
+                    # Lowercase columns mapping
+                    col_map = {c: c.lower() for c in df.columns}
+                    df.rename(columns=col_map, inplace=True)
+                    for col in ["open", "high", "low", "close", "volume"]:
+                        if col in df.columns:
+                            df[col] = pd.to_numeric(df[col], errors='coerce')
+                    aggregator.candles[sym] = df
+                    logger.info("Preloaded %d historical candles for %s natively via Broker", len(df), sym)
+                else:
+                    _preload_failed_symbols.append(sym)
+                    logger.warning("Historical preload for %s returned no data; starting with an empty candle buffer.", sym)
+            except Exception as sym_e:
+                _preload_failed_symbols.append(sym)
+                logger.warning("Could not preload history for %s: %s", sym, sym_e)
     except Exception as e:
-        logger.warning("Could not preload history natively from broker: %s", e)
+        # Auth (or other setup) failure affects every symbol at once.
+        _preload_failed_symbols = list(symbols)
+        logger.error("Could not preload history natively from broker: %s", e)
+
+    if _preload_failed_symbols:
+        # A silent empty candle buffer means the affected symbol(s) won't
+        # clear strategy warmup checks (e.g. `len(df) < 50`) until enough
+        # live ticks accumulate naturally -- effectively "not trading" for
+        # a while with no visible signal beyond a log line. Surface it the
+        # same way other operator-facing conditions in this file do.
+        try:
+            alerter.send_alert(_build_preload_failure_alert(_preload_failed_symbols))
+        except Exception as alert_e:
+            logger.warning("Failed to send historical-preload alert: %s", alert_e)
+        audit.log(AuditEvent.VALIDATION_ERROR,
+                  {"reason": "historical_preload_incomplete", "symbols": _preload_failed_symbols},
+                  severity="WARNING")
 
     last_eval_time = 0.0
     _iceberg_semaphore = asyncio.Semaphore(3)
@@ -1439,6 +1467,19 @@ def _should_reset_failure_count(run_duration_s: float) -> bool:
     """True if the bot ran long enough before this crash that it should be
     treated as a fresh start rather than another rapid crash-loop cycle."""
     return run_duration_s >= _RETRY_SUSTAINED_UPTIME_RESET_S
+
+
+def _build_preload_failure_alert(failed_symbols: List[str]) -> str:
+    """Operator-facing alert text for symbols that started with an empty
+    candle buffer after historical preload — pulled out of the preload
+    loop in run_live_bot() so it's unit-testable without needing a live
+    broker connection."""
+    return (
+        f"⚠️ **Historical Preload Incomplete**\n\nSymbols starting with an "
+        f"empty candle buffer: {', '.join(failed_symbols)}\n\n"
+        f"These symbols will not generate signals until enough live "
+        f"ticks accumulate to satisfy strategy warmup requirements."
+    )
 
 
 if __name__ == "__main__":
