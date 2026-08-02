@@ -52,10 +52,15 @@ def generate_signals(df: pd.DataFrame, **kwargs) -> pd.Series:
     call_scores = pd.Series(0.0, index=df.index)
     put_scores = pd.Series(0.0, index=df.index)
     
-    # Brain 1: Trend (EMA)
+    # Brain 1: Trend (EMA fast/slow crossover)
+    # Price above/below ema_fast alone only says "we're above a moving average"
+    # in any regime, including a slow chop or a downtrend's dead-cat bounce.
+    # Requiring ema_fast vs ema_slow alignment too means this brain only votes
+    # with the prevailing trend, matching its "Trend" label.
     ema_fast = df['close'].ewm(span=20, adjust=False).mean()
-    call_scores += np.where(df['close'] > ema_fast, 20, 0)
-    put_scores += np.where(df['close'] < ema_fast, 20, 0)
+    ema_slow = df['close'].ewm(span=50, adjust=False).mean()
+    call_scores += np.where((df['close'] > ema_fast) & (ema_fast > ema_slow), 20, 0)
+    put_scores += np.where((df['close'] < ema_fast) & (ema_fast < ema_slow), 20, 0)
     
     # Brain 2: Momentum (RSI)
     if 'rsi' not in df.columns:
