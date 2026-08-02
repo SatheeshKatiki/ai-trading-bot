@@ -12,12 +12,27 @@ import {
 } from "recharts";
 import { motion, AnimatePresence } from "framer-motion";
 
+// Matches api_bridge.py's compute_signals()/GET /api/signals response.
+interface TrendPoint {
+  name: string;
+  value: number;
+}
+interface SignalEntry {
+  symbol: string;
+  type: string;
+  bias: string;
+  strength: string;
+  confidence: number;
+  time: string;
+  reason: string;
+}
+
 export default function Signals() {
   const [confidence, setConfidence] = useState(0);
   const [status, setStatus] = useState("Scanning...");
   const [bias, setBias] = useState("Analyzing market conditions...");
-  const [trendData, setTrendData] = useState<any[]>([]);
-  const [signals, setSignals] = useState<any[]>([]);
+  const [trendData, setTrendData] = useState<TrendPoint[]>([]);
+  const [signals, setSignals] = useState<SignalEntry[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -33,14 +48,30 @@ export default function Signals() {
     const fetchSignals = async () => {
       try {
         const res = await fetch('/api/signals');
-        const data = await res.json();
+        const data: {
+          error?: string;
+          confidence?: number;
+          status?: string;
+          bias?: string;
+          trendData?: TrendPoint[];
+          signals?: SignalEntry[];
+        } = await res.json();
 
         if (data && !data.error) {
-          setConfidence(data.confidence);
-          setStatus(data.status);
-          setBias(data.bias);
-          setTrendData(data.trendData);
-          setSignals(data.signals);
+          // While the backend is (re)computing signals for a symbol,
+          // GET /api/signals returns a placeholder
+          // {symbol, confidence, direction:"CALCULATING"} with no `error`
+          // key but also no status/bias/trendData/signals keys. Only apply
+          // the update once the real fields are actually present; otherwise
+          // keep showing the last good values instead of blanking the page
+          // or crashing the .map()/.length calls downstream.
+          if (data.status !== undefined && data.trendData !== undefined && data.signals !== undefined) {
+            setConfidence(data.confidence ?? 0);
+            setStatus(data.status);
+            setBias(data.bias ?? "Analyzing market conditions...");
+            setTrendData(data.trendData);
+            setSignals(data.signals);
+          }
           setError(null);
         } else if (data && data.error) {
           setError(data.error);

@@ -22,8 +22,39 @@ interface TradeReplayModalProps {
   onClose: () => void;
 }
 
+// Raw /api/history candle: field casing varies by upstream data source
+// (broker feed vs yfinance fallback), hence the dual snake_case/PascalCase
+// lookups below — this type documents that reality rather than hiding it.
+interface RawHistoryCandle {
+  datetime?: string;
+  Datetime?: string;
+  date?: string;
+  time?: string;
+  open?: number | string;
+  Open?: number | string;
+  high?: number | string;
+  High?: number | string;
+  low?: number | string;
+  Low?: number | string;
+  close?: number | string;
+  Close?: number | string;
+  volume?: number | string;
+  Volume?: number | string;
+}
+
+interface ReplayCandle {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+  marker?: 'long_entry' | 'short_entry';
+  markerPrice?: number;
+}
+
 export function TradeReplayModal({ trade, symbol, timeframe, onClose }: TradeReplayModalProps) {
-  const [data, setData] = useState<any[]>([]);
+  const [data, setData] = useState<ReplayCandle[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -38,47 +69,49 @@ export function TradeReplayModal({ trade, symbol, timeframe, onClose }: TradeRep
       try {
         const res = await fetch(`/api/history?symbol=${encodeURIComponent(symbol)}&start_date=${dateStr}&end_date=${dateStr}&timeframe=${encodeURIComponent(timeframe)}`);
         if (!res.ok) throw new Error("Failed to fetch historical data for replay");
-        const json = await res.json();
+        const json: { data?: RawHistoryCandle[] } = await res.json();
         if (json.data && Array.isArray(json.data)) {
-          const annotatedData = json.data.map((candle: any) => {
+          const annotatedData = json.data.map((candle): ReplayCandle | null => {
+            // A candle with none of these four date fields can't be placed
+            // on the timeline — skip it (return null, filtered out below)
+            // rather than crash or plot it at a bogus epoch-0 position.
             const dateStrRaw = candle.datetime || candle.Datetime || candle.date || candle.time;
+            if (!dateStrRaw) return null;
+
+            const safeDateStrRaw = dateStrRaw.includes(' ') ? dateStrRaw.replace(' ', 'T') : dateStrRaw;
+            const d = new Date(safeDateStrRaw);
             let candleTimeStr = "";
-            if (dateStrRaw) {
-               const safeDateStrRaw = dateStrRaw.includes(' ') ? dateStrRaw.replace(' ', 'T') : dateStrRaw;
-               const d = new Date(safeDateStrRaw);
-               if (!isNaN(d.getTime())) {
-                  candleTimeStr = d.toISOString().replace("T", " ").substring(0, 16);
-               }
+            if (!isNaN(d.getTime())) {
+               candleTimeStr = d.toISOString().replace("T", " ").substring(0, 16);
             }
-            
+
             // Format for NativeChart (expects native-chart formatted payload)
-            const safeDateStrRaw2 = dateStrRaw.includes(' ') ? dateStrRaw.replace(' ', 'T') : dateStrRaw;
-            const dateObj = new Date(safeDateStrRaw2);
+            const dateObj = new Date(safeDateStrRaw);
             const time = (Math.floor(dateObj.getTime() / 1000) - (dateObj.getTimezoneOffset() * 60));
-            
+
             const formattedCandle = {
               time: time,
-              open: parseFloat(candle.open || candle.Open),
-              high: parseFloat(candle.high || candle.High),
-              low: parseFloat(candle.low || candle.Low),
-              close: parseFloat(candle.close || candle.Close),
-              volume: parseFloat(candle.volume || candle.Volume || 0)
+              open: parseFloat(String(candle.open || candle.Open)),
+              high: parseFloat(String(candle.high || candle.High)),
+              low: parseFloat(String(candle.low || candle.Low)),
+              close: parseFloat(String(candle.close || candle.Close)),
+              volume: parseFloat(String(candle.volume || candle.Volume || 0))
             };
 
             const isEntry = candleTimeStr === trade.time.substring(0, 16);
             return {
               ...formattedCandle,
-              marker: isEntry ? (trade.type === 'BUY' ? 'long_entry' : 'short_entry') : undefined,
+              marker: isEntry ? (trade.type === 'BUY' ? ('long_entry' as const) : ('short_entry' as const)) : undefined,
               markerPrice: isEntry ? trade.entry : undefined,
             };
-          }).sort((a: any, b: any) => a.time - b.time);
-          
+          }).filter((c): c is ReplayCandle => c !== null).sort((a, b) => a.time - b.time);
+
           setData(annotatedData);
         } else {
           throw new Error("No data returned");
         }
-      } catch (err: any) {
-        setError(err.message);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
       } finally {
         setLoading(false);
       }

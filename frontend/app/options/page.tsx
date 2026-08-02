@@ -6,9 +6,43 @@ import Header from "@/components/header";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, ReferenceLine } from "recharts";
 import { Brain, ShieldAlert, LineChart, TrendingUp, TrendingDown, Info, Zap } from "lucide-react";
 
+// Matches app/api/option-chain/route.ts's proxy response (NOT the raw
+// Python backend, which uses call/put — the Next.js proxy transforms
+// those into ce/pe before this page ever sees the data, and its fallback
+// mock-data path also emits ce/pe directly).
+interface OptionLeg {
+  ltp: number;
+  volume: number;
+  oi: number;
+  oichg: number;
+  delta: number;
+  gamma: number;
+  theta: number;
+  vega: number;
+}
+interface OptionChainRow {
+  strike: number;
+  ce: OptionLeg;
+  pe: OptionLeg;
+}
+interface OptionChainResponse {
+  error?: string;
+  symbol: string;
+  // Optional since the type comes from a third-party-shaped backend
+  // response — always populated in practice (both the proxy's live-data
+  // transform and its error-fallback mock now set it), but callers should
+  // still fall back rather than assume.
+  underlying_price?: number;
+  atm: number;
+  maxPain: number;
+  pcr: number;
+  expiry: string;
+  chain: OptionChainRow[];
+}
+
 export default function OptionsDesk() {
   const [loading, setLoading] = useState(true);
-  const [chainData, setChainData] = useState<any>(null);
+  const [chainData, setChainData] = useState<OptionChainResponse | null>(null);
   const [symbol, setSymbol] = useState("NSE:BANKNIFTY-INDEX");
 
   useEffect(() => {
@@ -19,7 +53,7 @@ export default function OptionsDesk() {
     setLoading(true);
     try {
       const res = await fetch(`/api/option-chain?symbol=${symbol}`);
-      const data = await res.json();
+      const data: OptionChainResponse = await res.json();
       setChainData(data);
     } catch (error) {
       console.error(error);
@@ -30,17 +64,17 @@ export default function OptionsDesk() {
   // Generate Payoff Graph Data (Simulated Straddle Payoff)
   const getPayoffData = () => {
     if (!chainData) return [];
-    const underlying = chainData.underlying_price;
+    const underlying = chainData.underlying_price ?? 0;
     const data = [];
     const range = 1000;
     
     // Simulate Straddle (Buy ATM Call + Buy ATM Put)
-    const atmStrike = chainData.chain.reduce((prev: any, curr: any) => 
+    const atmStrike = chainData.chain.reduce((prev, curr) =>
       Math.abs(curr.strike - underlying) < Math.abs(prev.strike - underlying) ? curr : prev
     );
-    
+
     const premiumPaid = (atmStrike.ce?.ltp || 0) + (atmStrike.pe?.ltp || 0);
-    
+
     for (let price = underlying - range; price <= underlying + range; price += 50) {
       // Call Payoff = Max(0, Price - Strike) - Premium
       const callPayoff = Math.max(0, price - atmStrike.strike) - (atmStrike.ce?.ltp || 0);
@@ -121,10 +155,10 @@ export default function OptionsDesk() {
                     <YAxis stroke="#666" tick={{ fill: '#888' }} />
                     <RechartsTooltip 
                       contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #1e293b', borderRadius: '8px' }}
-                      formatter={(value: any) => [`₹${value}`, 'PnL']}
+                      formatter={(value) => [`₹${value}`, 'PnL']}
                     />
                     <ReferenceLine y={0} stroke="#666" />
-                    <ReferenceLine x={Math.round(chainData?.underlying_price)} stroke="#3b82f6" strokeDasharray="3 3" label={{ position: 'top', value: 'Current Price', fill: '#3b82f6' }} />
+                    <ReferenceLine x={Math.round(chainData?.underlying_price ?? 0)} stroke="#3b82f6" strokeDasharray="3 3" label={{ position: 'top', value: 'Current Price', fill: '#3b82f6' }} />
                     <Area 
                       type="monotone" 
                       dataKey="payoff" 
@@ -169,19 +203,19 @@ export default function OptionsDesk() {
                     </tr>
                   </thead>
                   <tbody>
-                    {chainData?.chain.map((row: any, i: number) => {
-                      const isITMCall = row.strike < chainData.underlying_price;
-                      const isITMPut = row.strike > chainData.underlying_price;
-                      
+                    {chainData?.chain.map((row, i) => {
+                      const isITMCall = row.strike < (chainData.underlying_price ?? 0);
+                      const isITMPut = row.strike > (chainData.underlying_price ?? 0);
+
                       return (
                         <tr key={i} className="border-b border-border/20 hover:bg-muted/10 transition-colors">
                           <td className={`py-3 px-2 ${isITMCall ? 'bg-success/5' : ''}`}>{row.ce?.delta || 0}</td>
                           <td className={`py-3 px-2 ${isITMCall ? 'bg-success/5' : ''}`}>{row.ce?.theta || 0}</td>
                           <td className={`py-3 px-2 ${isITMCall ? 'bg-success/5' : ''}`}>{row.ce?.oi || 0}</td>
                           <td className={`py-3 px-2 border-r border-border/50 font-bold text-success ${isITMCall ? 'bg-success/5' : ''}`}>₹{row.ce?.ltp || 0}</td>
-                          
+
                           <td className="py-3 px-2 bg-muted/30 font-bold text-foreground">{row.strike}</td>
-                          
+
                           <td className={`py-3 px-2 border-l border-border/50 font-bold text-destructive ${isITMPut ? 'bg-destructive/5' : ''}`}>₹{row.pe?.ltp || 0}</td>
                           <td className={`py-3 px-2 ${isITMPut ? 'bg-destructive/5' : ''}`}>{row.pe?.oi || 0}</td>
                           <td className={`py-3 px-2 ${isITMPut ? 'bg-destructive/5' : ''}`}>{row.pe?.theta || 0}</td>

@@ -2,6 +2,34 @@
 import { NextResponse } from 'next/server';
 import { getAuthHeaders, BACKEND_URL } from '@/lib/backend';
 
+interface OptionLeg {
+    ltp: number;
+    volume: number;
+    oi: number;
+    oichg: number;
+    delta: number;
+    gamma: number;
+    theta: number;
+    vega: number;
+}
+
+// Raw shape from api_bridge.py's GET /api/option-chain
+interface RawChainRow {
+    strike: number;
+    call: OptionLeg;
+    put: OptionLeg;
+}
+interface RawOptionChainResponse {
+    error?: string;
+    symbol: string;
+    underlying_price?: number;
+    atm: number;
+    maxPain: number;
+    pcr: number;
+    expiry: string;
+    chain: RawChainRow[];
+}
+
 export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const symbol = searchParams.get('symbol') || 'NIFTY';
@@ -16,8 +44,8 @@ export async function GET(request: Request) {
             throw new Error(`Backend responded with status: ${response.status}`);
         }
         
-        let data = await response.json();
-        
+        let data: RawOptionChainResponse | Record<string, unknown> = await response.json();
+
         // Deterministic pseudo-random based on symbol to freeze values off-market
         const seedStr = symbol;
         const hash = seedStr.split('').reduce((a,b)=>{a=((a<<5)-a)+b.charCodeAt(0);return a&a},0);
@@ -27,23 +55,25 @@ export async function GET(request: Request) {
         };
 
         // If data is from older backend version, transform it to the new format
-        if (data.chain && data.chain.length > 0 && data.chain[0].call) {
-            const transformedChain = data.chain.map((row: any) => ({
+        if ('chain' in data && Array.isArray(data.chain) && data.chain.length > 0 && data.chain[0].call) {
+            const raw = data as RawOptionChainResponse;
+            const transformedChain = raw.chain.map((row) => ({
                 strike: row.strike,
                 ce: { ...row.call, oichg: Math.floor(deterministicRandom(row.strike, 1) * 20000 - 5000) },
                 pe: { ...row.put, oichg: Math.floor(deterministicRandom(row.strike, 2) * 20000 - 5000) }
             }));
-            
+
             data = {
-                symbol: data.symbol,
-                expiry: data.expiry,
-                atm: Math.round((data.underlying_price || 24200) / 50) * 50,
-                maxPain: Math.round((data.underlying_price || 24200) / 50) * 50,
-                pcr: Number((deterministicRandom(data.underlying_price || 24200, 3) * 0.8 + 0.6).toFixed(2)),
+                symbol: raw.symbol,
+                expiry: raw.expiry,
+                underlying_price: raw.underlying_price || 24200,
+                atm: Math.round((raw.underlying_price || 24200) / 50) * 50,
+                maxPain: Math.round((raw.underlying_price || 24200) / 50) * 50,
+                pcr: Number((deterministicRandom(raw.underlying_price || 24200, 3) * 0.8 + 0.6).toFixed(2)),
                 chain: transformedChain
             };
         }
-        
+
         return NextResponse.json(data);
     } catch (error) {
         console.error("Option Chain API Proxy Error:", error);
@@ -92,6 +122,7 @@ export async function GET(request: Request) {
         return NextResponse.json({
             symbol,
             expiry: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).replace(/ /g, '-').toUpperCase(),
+            underlying_price: base_price,
             atm,
             maxPain: atm,
             pcr: Number((deterministicRandom(atm, 3) * 0.8 + 0.6).toFixed(2)),
