@@ -99,6 +99,25 @@ open:**
    a compromised machine/disk, treat the old credentials as potentially
    exposed.
 
+**Rotating the encryption key that protects `broker_credentials.json`**
+(distinct from rotating the broker's own API secret — this is the local
+key that encrypts whatever secret you've stored, not the secret itself):
+
+```bash
+cd trading-system
+python scripts/rotate_credential_key.py
+```
+
+Decrypts every stored credential under the current key, generates a new
+key, re-encrypts everything, and verifies the round-trip before touching
+any file on disk — a failed rotation leaves the existing key and
+credentials file completely untouched (see
+`brokers/credentials.rotate_encryption_key()`). The previous key is kept
+as `.broker.key.bak`. Do this periodically or immediately if `.broker.key`
+itself may have been exposed. If `BROKER_ENCRYPTION_KEY` is set via
+environment variable instead of the file, this script refuses — that key
+has to be rotated externally (see the script's own docstring).
+
 **Full machine loss (disk failure, machine destroyed):**
 1. This system currently runs on a single local machine with backups
    stored on the same disk (`trading-system/backups/`) — a full disk/

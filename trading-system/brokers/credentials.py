@@ -89,9 +89,9 @@ def _get_or_create_fernet_key() -> bytes:
 # Integrity MAC
 # ------------------------------------------------------------------
 
-def _file_mac(content: bytes) -> str:
+def _file_mac(content: bytes, key: bytes | None = None) -> str:
     """Compute HMAC-SHA256 of raw JSON bytes using the Fernet key."""
-    key = _get_or_create_fernet_key()
+    key = key if key is not None else _get_or_create_fernet_key()
     return _hmac.new(key, content, hashlib.sha256).hexdigest()
 
 
@@ -99,25 +99,27 @@ def _file_mac(content: bytes) -> str:
 # Encrypt / Decrypt
 # ------------------------------------------------------------------
 
-def _encrypt(plaintext: str) -> str:
+def _encrypt(plaintext: str, key: bytes | None = None) -> str:
     if not plaintext:
         return ""
+    key = key if key is not None else _get_or_create_fernet_key()
     if _FERNET_AVAILABLE:
         from cryptography.fernet import Fernet as _F
-        f = _F(_get_or_create_fernet_key())
+        f = _F(key)
         return f.encrypt(plaintext.encode()).decode()
     return "b64:" + base64.b64encode(plaintext.encode()).decode()
 
 
-def _decrypt(ciphertext: str) -> str:
+def _decrypt(ciphertext: str, key: bytes | None = None) -> str:
     if not ciphertext:
         return ""
     if ciphertext.startswith("b64:"):
         return base64.b64decode(ciphertext[4:]).decode()
+    key = key if key is not None else _get_or_create_fernet_key()
     if _FERNET_AVAILABLE:
         from cryptography.fernet import Fernet as _F, InvalidToken
         try:
-            f = _F(_get_or_create_fernet_key())
+            f = _F(key)
             return f.decrypt(ciphertext.encode()).decode()
         except InvalidToken:
             logger.error("Failed to decrypt credential — wrong key or corrupted data.")
@@ -236,3 +238,103 @@ def list_saved_brokers() -> list:
     """Return broker IDs that have saved credentials."""
     data = _load_file()
     return [k for k in data if not k.startswith("_")]
+
+
+# ------------------------------------------------------------------
+# Key rotation
+# ------------------------------------------------------------------
+
+def rotate_encryption_key() -> int:
+    """Rotate the Fernet encryption key: decrypt every stored credential
+    under the current key, generate a new key, re-encrypt everything under
+    the new key, and only then replace both the key file and the
+    credentials file on disk.
+
+    Nothing on disk is touched until the new credentials file's content
+    has been fully built AND verified to decrypt back to the original
+    plaintext under the new key — a failure at any point before that
+    raises and leaves the existing key/credentials file exactly as they
+    were, so a rotation can never leave the store in a half-migrated,
+    undecryptable state.
+
+    Returns the number of brokers whose credentials were re-encrypted.
+    Raises RuntimeError if BROKER_ENCRYPTION_KEY is set via environment
+    variable (an externally-managed key can't be safely auto-rotated by
+    this process) or if the existing credentials file fails its integrity
+    check.
+    """
+    if os.getenv(_ENV_KEY_VAR, ""):
+        raise RuntimeError(
+            f"{_ENV_KEY_VAR} is set via environment variable — automatic rotation "
+            f"only applies to the file-based key ({_KEY_FILE.name}). To rotate an "
+            f"environment-managed key: generate a new Fernet key, call "
+            f"save_credentials() for each broker under the new key with "
+            f"{_ENV_KEY_VAR} set to it, then update the environment variable."
+        )
+
+    old_key = _get_or_create_fernet_key()
+    old_data = _load_file()
+    if old_data.get("_integrity_error"):
+        raise RuntimeError(
+            "Refusing to rotate: the existing credentials file failed its integrity "
+            "check. Restore it from a known-good backup first (see "
+            "docs/DISASTER_RECOVERY.md)."
+        )
+
+    decrypted: Dict[str, Dict[str, str]] = {
+        broker_id: {k: _decrypt(v, key=old_key) for k, v in creds.items()}
+        for broker_id, creds in old_data.items()
+        if not broker_id.startswith("_")
+    }
+
+    if _FERNET_AVAILABLE:
+        from cryptography.fernet import Fernet as _F
+        new_key = _F.generate_key()
+    else:
+        import secrets
+        new_key = base64.urlsafe_b64encode(secrets.token_bytes(32))
+
+    new_data: Dict[str, Any] = {"_schema": "1"}
+    for broker_id, creds in decrypted.items():
+        new_data[broker_id] = {k: _encrypt(v, key=new_key) for k, v in creds.items() if v}
+
+    content = json.dumps(new_data, indent=2).encode("utf-8")
+    mac = _file_mac(content, key=new_key)
+    payload = content + b"\n# MAC:" + mac.encode()
+
+    # Verify the re-encrypted content round-trips under the new key BEFORE
+    # writing anything to disk.
+    for broker_id, creds in decrypted.items():
+        for k, v in creds.items():
+            if not v:
+                continue
+            if _decrypt(new_data[broker_id][k], key=new_key) != v:
+                raise RuntimeError(
+                    f"Key rotation verification failed for {broker_id}.{k} — "
+                    f"aborting before touching disk. No files were changed."
+                )
+
+    if _KEY_FILE.is_file():
+        _KEY_FILE.with_suffix(".key.bak").write_bytes(_KEY_FILE.read_bytes())
+    _KEY_FILE.write_bytes(new_key)
+    try:
+        _KEY_FILE.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    except Exception:
+        pass
+
+    tmp = _CREDS_FILE.with_suffix(".tmp")
+    tmp.write_bytes(payload)
+    tmp.replace(_CREDS_FILE)
+    try:
+        _CREDS_FILE.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    except Exception:
+        pass
+
+    logger.info("Broker encryption key rotated for %d broker(s): %s", len(decrypted), list(decrypted.keys()))
+    try:
+        from shared.security.audit_log import audit, AuditEvent
+        audit.log(AuditEvent.CRED_KEY_ROTATED, {"brokers": list(decrypted.keys())})
+    except Exception:
+        pass
+
+    return len(decrypted)
