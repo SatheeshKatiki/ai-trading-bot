@@ -624,6 +624,12 @@ export default function Header() {
                           console.error("Logout request failed:", e);
                         }
                         localStorage.removeItem("mana_ai_user_profile");
+                        // Kill Switch's "halted" banner is per-browser UI
+                        // state (the real cancel/close action already ran
+                        // server-side when it was triggered) -- clear it on
+                        // logout so it doesn't leak into whoever's session
+                        // starts next on this browser.
+                        localStorage.removeItem("kill_switch_active");
                         window.location.reload();
                       }}
                       className="w-full text-left px-4 py-2 text-sm text-amber-500 hover:bg-amber-500/10 transition-colors flex items-center gap-3 font-medium"
