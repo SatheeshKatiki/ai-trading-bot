@@ -139,6 +139,13 @@ _PUBLIC_PATHS = {
     "/redoc",
     "/openapi.json",
 }
+# /api/history, /api/quote, and /api/option-chain were briefly added here by
+# in-progress options-chain work — removed: every frontend call path to all
+# three (app/api/history/route.ts, app/api/state/route.ts's /api/quote
+# calls, app/api/option-chain/route.ts) already attaches real session auth
+# headers server-side via getAuthHeaders(), so there was no legitimate
+# public/pre-login use case, and leaving them public undid the Critical #2
+# auth-gate fix for three real market-data routes.
 
 
 def _extract_bearer_token(request: Request) -> str:
