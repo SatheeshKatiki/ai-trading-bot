@@ -53,6 +53,32 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared.config import CONFIG
 from shared.state import update_equity, record_trade
 
+# ---------------------------------------------------------------------------
+# Module-level mutable state lifecycle note (Low audit finding):
+#
+# The outer `if __name__ == "__main__":` loop below catches any exception
+# from run_live_bot() and retries WITHOUT restarting the Python process
+# (see _compute_retry_delay()/_should_reset_failure_count()) — so every
+# module-level global declared in this file (this one, _m2m_last_update,
+# _settings_cache/_settings_last_mtime, etc.) SURVIVES a crash-retry
+# unchanged, unlike what a real process restart would give you.
+#
+# Each one currently declared here is safe under that model:
+#   - _evaluating_symbols: mutated only inside a try/finally in the tick
+#     loop (the `finally: _evaluating_symbols.discard(s)` a few hundred
+#     lines below) — cleared even if that symbol's evaluation raises, so
+#     nothing can wedge a symbol into "permanently blocked" state.
+#   - _m2m_last_update / the settings cache below: intentionally MEANT to
+#     persist across a crash-retry (they're a rate-limit timestamp and a
+#     file-mtime cache respectively) — resetting them would just force
+#     one extra harmless recompute/read on the next tick, not a
+#     correctness issue either way.
+#
+# If you add new module-level mutable state here, make sure it's either
+# safe to leave stale across a crash-retry (like the two above), or is
+# explicitly guarded with the same try/finally pattern as
+# _evaluating_symbols — don't assume a "restart" clears it.
+# ---------------------------------------------------------------------------
 _evaluating_symbols: set[str] = set()
 
 # Broker layer — broker-agnostic: trading logic never imports vendor SDKs directly
