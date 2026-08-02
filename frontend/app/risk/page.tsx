@@ -42,28 +42,32 @@ export default function RiskManagement() {
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
+    let cancelled = false;
+
     const fetchRiskData = async () => {
       try {
         const res = await fetch('/api/risk');
         const data = await res.json();
-        
+        if (cancelled) return;
+
         if (data && !data.error) {
           setMaxDailyLoss(data.limits.maxDailyLoss.toString());
           setRiskPerTrade(data.limits.riskPerTrade.toString());
           setMaxPositions(data.limits.maxPositions.toString());
           setCircuitBreaker(data.limits.circuitBreaker);
-          
+
           setExposureData(data.exposureData);
           setDrawdownData(data.drawdownData);
           setCorrelationMatrix(data.correlationMatrix);
         }
         setIsLoading(false);
       } catch (error) {
-        console.error("Failed to fetch risk data:", error);
+        if (!cancelled) console.error("Failed to fetch risk data:", error);
       }
     };
 
     fetchRiskData();
+    return () => { cancelled = true; };
   }, []);
 
   if (isLoading) {

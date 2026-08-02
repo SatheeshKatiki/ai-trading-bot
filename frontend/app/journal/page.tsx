@@ -11,36 +11,40 @@ export default function JournalPage() {
   const [stats, setStats] = useState({ total: 0, winRate: 0, netPnl: 0, bestTrade: 0, worstTrade: 0 });
 
   useEffect(() => {
-    fetchJournal();
-  }, []);
+    let cancelled = false;
 
-  const fetchJournal = async () => {
-    setLoading(true);
-    try {
-      const res = await fetch("/api/journal");
-      const data = await res.json();
-      if (data.trades) {
-        setTrades(data.trades);
-        
-        // Calculate basic stats
-        const wins = data.trades.filter((t: any) => t.pnl > 0).length;
-        const net = data.trades.reduce((sum: number, t: any) => sum + t.pnl, 0);
-        const best = Math.max(...data.trades.map((t: any) => t.pnl), 0);
-        const worst = Math.min(...data.trades.map((t: any) => t.pnl), 0);
-        
-        setStats({
-          total: data.trades.length,
-          winRate: data.trades.length > 0 ? Math.round((wins / data.trades.length) * 100) : 0,
-          netPnl: net,
-          bestTrade: best,
-          worstTrade: worst
-        });
+    const fetchJournal = async () => {
+      setLoading(true);
+      try {
+        const res = await fetch("/api/journal");
+        const data = await res.json();
+        if (cancelled) return;
+        if (data.trades) {
+          setTrades(data.trades);
+
+          // Calculate basic stats
+          const wins = data.trades.filter((t: any) => t.pnl > 0).length;
+          const net = data.trades.reduce((sum: number, t: any) => sum + t.pnl, 0);
+          const best = Math.max(...data.trades.map((t: any) => t.pnl), 0);
+          const worst = Math.min(...data.trades.map((t: any) => t.pnl), 0);
+
+          setStats({
+            total: data.trades.length,
+            winRate: data.trades.length > 0 ? Math.round((wins / data.trades.length) * 100) : 0,
+            netPnl: net,
+            bestTrade: best,
+            worstTrade: worst
+          });
+        }
+      } catch (error) {
+        if (!cancelled) console.error("Error fetching journal:", error);
       }
-    } catch (error) {
-      console.error("Error fetching journal:", error);
-    }
-    setLoading(false);
-  };
+      if (!cancelled) setLoading(false);
+    };
+
+    fetchJournal();
+    return () => { cancelled = true; };
+  }, []);
 
   return (
     <div className="flex h-screen bg-background text-foreground">
