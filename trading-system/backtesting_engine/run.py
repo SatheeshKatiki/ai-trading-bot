@@ -1,14 +1,29 @@
-"""Backtesting runner for the EMA+RSI strategy.
+"""Backtesting engine: run_intraday_backtest() and the CLI entrypoint.
 
-Loads historical OHLCV CSV data, runs the EMA + RSI signal generator, simulates
-simple intraday trades (enter at the next candle's open, exit on opposite
-signal), and prints a performance summary.
+Loads historical OHLCV CSV data, generates signals via the MARL strategy
+(trading_bot.strategies.marl_strategy.generate_signals -- the CLI's actual
+default; the docstring previously claimed "EMA+RSI", which was stale),
+runs them through run_intraday_backtest() (the same engine used by
+grid_search.py, WalkForwardValidator, the /api/backtest endpoint, and
+audit_script.py -- see that function's docstring for its full feature
+set: slippage, commission, shorting, ATR-adaptive SL, pyramiding,
+capital protection, compounding), and prints a performance summary.
+
+This module previously also contained a second, much simpler
+`Backtester` class (plus its own compute_returns/sharpe_ratio/
+max_drawdown/win_rate helpers) used only by this CLI entrypoint --
+every other caller in the codebase already used run_intraday_backtest.
+Two independently-maintained engines meant a fix to one (e.g. the
+same-bar lookahead bias fix already applied to run_intraday_backtest)
+did not automatically apply to the other, and the CLI reported
+different, less battle-tested numbers than every other tool in this
+repo. Removed the unused Backtester class and its helpers entirely and
+rewired the CLI onto run_intraday_backtest so there is exactly one
+backtest engine in this codebase, not two that can silently diverge.
 
 Usage example::
 
-    python -m backtesting_engine.run \
-        --data-path data/RELIANCE_1min.csv \
-        --symbol RELIANCE
+    python -m backtesting_engine.run --data-path data/RELIANCE_1min.csv --symbol RELIANCE
 """
 
 from __future__ import annotations
@@ -24,149 +39,7 @@ from typing import List
 import numpy as np
 import pandas as pd
 
-from shared.indicators import ema, rsi
 from trading_bot.strategies.marl_strategy import generate_signals
-
-# ---------------------------------------------------------------------------
-# Helper functions for performance metrics
-# ---------------------------------------------------------------------------
-def compute_returns(pnl_series: pd.Series) -> pd.Series:
-    """Convert a series of trade PnL into cumulative return series.
-
-    The function assumes the PnL series is already expressed in the same unit
-    as the initial capital (e.g., dollars). It returns the cumulative net worth
-    series (starting at 0) so that downstream calculations (Sharpe, drawdown)
-    can operate on a returns‑like array.
-    """
-    return pnl_series.cumsum()
-
-def sharpe_ratio(returns: pd.Series, period: int = 252) -> float:
-    """Annualized Sharpe ratio assuming risk‑free rate = 0.
-
-    Args:
-        returns: Series of periodic (here minute) returns.
-        period: Number of periods per year (default 252 trading days * 390
-                minutes ≈ 98 280; we keep the default simple and let callers set a
-                realistic value).
-    """
-    if returns.empty:
-        return 0.0
-    mean = returns.mean()
-    std = returns.std(ddof=1)
-    if std == 0:
-        return 0.0
-    # Scale to annual using sqrt(periods per year)
-    return np.sqrt(period) * mean / std
-
-def max_drawdown(equity_curve: pd.Series) -> float:
-    """Maximum drawdown expressed as a positive percentage.
-
-    ``equity_curve`` is the cumulative profit curve.
-    """
-    if equity_curve.empty:
-        return 0.0
-    roll_max = equity_curve.cummax()
-    drawdowns = (roll_max - equity_curve) / roll_max.replace(to_replace=0, value=np.nan).ffill()
-    return drawdowns.max() * 100
-
-def win_rate(pnl_series: pd.Series) -> float:
-    """Percentage of winning trades (PnL > 0)."""
-    if pnl_series.empty:
-        return 0.0
-    wins = (pnl_series > 0).sum()
-    return wins / len(pnl_series) * 100
-
-# ---------------------------------------------------------------------------
-# Simple back-test simulator with slippage & commission
-# ---------------------------------------------------------------------------
-class Backtester:
-    """Simulate intraday trades based on raw signals.
-
-    Features:
-    - Slippage simulation (bps)
-    - Commission/brokerage simulation
-    """
-
-    def __init__(self, df: pd.DataFrame, initial_capital: float = 10_000.0,
-                 slippage_bps: float = 2.0, commission_per_trade: float = 20.0):
-        self.df = df.copy()
-        self.capital = initial_capital
-        self.slippage_bps = slippage_bps
-        self.commission_per_trade = commission_per_trade
-        
-        self.position_price: float | None = None
-        self.trades: List[float] = []
-        self.equity_curve = pd.Series([], dtype=float)
-
-    def _apply_slippage(self, price: float, side: str) -> float:
-        """Apply slippage to price (add to BUY, subtract from SELL)."""
-        slip_amt = price * (self.slippage_bps / 10000)
-        return price + slip_amt if side == "BUY" else price - slip_amt
-
-    def run(self, signals: pd.Series | None = None) -> None:
-        if signals is None:
-            signals = generate_signals(self.df)
-        
-        equity_list = []
-        for i in range(len(self.df) - 1):
-            signal = signals.iloc[i]
-            next_open = self.df["open"].iloc[i + 1]
-            
-            # Close existing long
-            if self.position_price is not None and signal == -1:
-                exit_price = self._apply_slippage(next_open, "SELL")
-                pnl = exit_price - self.position_price - self.commission_per_trade
-                self.trades.append(pnl)
-                self.capital += pnl
-                self.position_price = None
-                
-            # Open new long
-            if self.position_price is None and signal == 1:
-                entry_price = self._apply_slippage(next_open, "BUY")
-                self.position_price = entry_price
-                self.capital -= self.commission_per_trade  # deduct entry comms
-                
-            equity_list.append(self.capital)
-            
-        # End-of-data cleanup
-        if self.position_price is not None:
-            final_price = self._apply_slippage(self.df["close"].iloc[-1], "SELL")
-            pnl = final_price - self.position_price - self.commission_per_trade
-            self.trades.append(pnl)
-            self.capital += pnl
-            self.position_price = None
-            equity_list.append(self.capital)
-
-        self.equity_curve = pd.Series(equity_list, dtype=float)
-
-    def summary(self) -> dict:
-        pnl_series = pd.Series(self.trades)
-        equity = pd.Series(self.equity_curve)
-        returns = pnl_series / self.capital
-        
-        # Sortino Ratio (downside risk)
-        downside = returns[returns < 0]
-        sortino = 0.0
-        if not downside.empty and downside.std() > 0:
-            sortino = (returns.mean() / downside.std()) * np.sqrt(252)
-            
-        # Calmar Ratio
-        mdd = max_drawdown(equity) / 100
-        calmar = 0.0
-        if mdd > 0:
-            annual_return = (self.capital / 10_000.0) ** (252 / len(self.df)) - 1 if len(self.df) > 0 else 0
-            calmar = annual_return / mdd
-
-        return {
-            "total_trades": len(self.trades),
-            "final_capital": round(self.capital, 2),
-            "total_pnl": round(pnl_series.sum(), 2),
-            "win_rate_%": round(win_rate(pnl_series), 2),
-            "max_drawdown_%": round(mdd * 100, 2),
-            "sharpe": round(sharpe_ratio(returns), 2),
-            "sortino": round(sortino, 2),
-            "calmar": round(calmar, 2),
-        }
 
 def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital: float = 100000.0,
                            slippage_bps: float = 2.0, commission_per_trade: float = 20.0, multiplier: int = 10,
@@ -256,10 +129,9 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
         (or a stop-loss/target/pyramid trigger) evaluated using bar i's own
         close cannot realistically be filled at that same close — by the
         time bar i's close is known, that instant has already passed. Any
-        order triggered by bar i's data fills at bar i+1's open instead
-        (matching the already-correct convention in this module's
-        `Backtester` class). Only the very last bar, with no i+1 to defer
-        to, falls back to filling at its own close.
+        order triggered by bar i's data fills at bar i+1's open instead.
+        Only the very last bar, with no i+1 to defer to, falls back to
+        filling at its own close.
         """
         if i + 1 < len(closes):
             return float(opens[i + 1])
@@ -805,14 +677,12 @@ def main(argv: List[str] | None = None) -> None:
         logger.error("Data file not found: %s", args.data_path)
         sys.exit(1)
 
-    # Load CSV – assume first column is datetime index or a column named 'datetime'
+    # Load CSV. Keep `datetime` as a plain column (not the index) if
+    # present -- run_intraday_backtest() reads it as a column for its
+    # data-continuity checks and EOD/session-boundary logic.
     df = pd.read_csv(args.data_path)
     if "datetime" in df.columns:
         df["datetime"] = pd.to_datetime(df["datetime"])
-        df.set_index("datetime", inplace=True)
-    else:
-        # If there's no explicit datetime column, try parsing the index
-        df.index = pd.to_datetime(df.index)
 
     required = {"open", "high", "low", "close", "volume"}
     if not required.issubset(df.columns):
@@ -823,11 +693,10 @@ def main(argv: List[str] | None = None) -> None:
         )
         sys.exit(1)
 
-    backtester = Backtester(df, initial_capital=args.initial_capital)
-    backtester.run()
-    summary = backtester.summary()
-    logger.info("Backtest completed – summary:")
-    for k, v in summary.items():
+    signals = generate_signals(df)
+    result = run_intraday_backtest(df, signals, initial_capital=args.initial_capital)
+    logger.info("Backtest completed -- summary:")
+    for k, v in result["stats"].items():
         logger.info("%s: %s", k, v)
 
 
