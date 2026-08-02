@@ -172,7 +172,28 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
                            slippage_bps: float = 2.0, commission_per_trade: float = 20.0, multiplier: int = 10,
                            options_delta: float = 0.5,
                            target_pct: float = 2.0, stoploss_pct: float = 1.0, **kwargs) -> dict:
-    """Run a detailed backtest with shorting, slippage, and commission."""
+    """Run a detailed backtest with shorting, slippage, and commission.
+
+    Known limitation (options_delta): when backtesting an options
+    strategy, `df` carries the underlying's price and every point-move
+    in it is scaled by a single constant `options_delta` (default 0.5)
+    to approximate the option premium's P&L — real option delta varies
+    continuously with strike/moneyness and time-to-expiry (from near 0
+    deep OTM to near 1 deep ITM, and it drifts as expiry approaches),
+    none of which this function receives: `df`/`signals` carry only a
+    price series and directional signals, with no strike, spot-vs-strike
+    distance, or expiry passed in anywhere in the current call chain
+    (confirmed empty grep across this module, grid_search.py, and the
+    /api/backtest path — a fix modeling delta dynamically would mean
+    threading strike/expiry/IV through every caller, a materially
+    larger change than this constant). 0.5 is closest to reality for
+    ATM entries; this codebase's own strike selector
+    (trading_bot/strategies/premium_selection/options_selector.py)
+    defaults to ATM/1-2-strikes-ITM, so backtested P&L for those trades
+    is directionally right but understates real ITM moves and
+    overstates real OTM/far-dated moves — treat backtested rupee P&L
+    magnitudes as approximate, not exact, for any options strategy.
+    """
     trades = []
     position = None
     capital = initial_capital
