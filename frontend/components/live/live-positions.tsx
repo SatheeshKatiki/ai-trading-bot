@@ -90,8 +90,8 @@ export function LivePositions({ urlSymbol }: { urlSymbol: string }) {
             } else {
                 toast.error("Failed to square off positions", { id: "square-off" });
             }
-        } catch (e: any) {
-            toast.error(e.message || "Error", { id: "square-off" });
+        } catch (e) {
+            toast.error(e instanceof Error ? e.message : "Error", { id: "square-off" });
         } finally {
             setIsExecuting(false);
         }
@@ -124,8 +124,8 @@ export function LivePositions({ urlSymbol }: { urlSymbol: string }) {
             } else {
                 toast.error(data.error || "Execution failed", { id: "exit" });
             }
-        } catch (e: any) {
-            toast.error(e.message || "Error", { id: "exit" });
+        } catch (e) {
+            toast.error(e instanceof Error ? e.message : "Error", { id: "exit" });
         } finally {
             setIsExecuting(false);
         }

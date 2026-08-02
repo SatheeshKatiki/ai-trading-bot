@@ -15,6 +15,17 @@ interface BackendState {
   trades: unknown[];
 }
 
+interface QuoteTick {
+  lp: number;
+  chp: number;
+}
+
+interface FyersQuoteResponse {
+  s?: string;
+  error?: unknown;
+  d?: { v: { lp?: number; chp?: number } }[];
+}
+
 async function fetchWithTimeout<T = unknown>(url: string, timeout = 2000, headers?: Record<string, string>): Promise<T | null> {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeout);
@@ -36,13 +47,13 @@ export async function GET(request: Request) {
     const timeframe = searchParams.get('timeframe') || '15 Min';
     const isLive = searchParams.get('live') === 'true';
     
-    let chartData: any[] = [];
+    let chartData: unknown[] = [];
     let currentPrice = 0;
     let changePercent = 0;
-    let fundsData: any = null;
-    let signalsData: any = null;
-    let quoteData: any = null;
-    let newTickerData: any = {};
+    let fundsData: unknown = null;
+    let signalsData: unknown = null;
+    let quoteData: FyersQuoteResponse | null = null;
+    let newTickerData: Record<string, QuoteTick> = {};
     
     // Map short symbols to Fyers specific symbols for data fetching
     let symbol = rawSymbol;
@@ -76,7 +87,7 @@ export async function GET(request: Request) {
           ? fetchWithTimeout(`${BACKEND_URL}/api/funds`, 2000, authHeaders)
           : Promise.resolve(null),
         fetchWithTimeout(`${BACKEND_URL}/api/signals?symbol=${rawSymbol}`, 5000, authHeaders),
-        fetchWithTimeout(`${BACKEND_URL}/api/quote?symbol=${symbol}`, 2000, authHeaders),
+        fetchWithTimeout<FyersQuoteResponse>(`${BACKEND_URL}/api/quote?symbol=${symbol}`, 2000, authHeaders),
       ]);
 
       if (resState) baseState = resState;
@@ -85,7 +96,7 @@ export async function GET(request: Request) {
       quoteData = resQuote;
 
       // 5. Indices Quotes for Ticker (Fallback to Deterministic Simulation if Real API fails/rate-limits)
-      const generateDeterministicQuote = (sym: string, base: number) => {
+      const generateDeterministicQuote = (sym: string, base: number): QuoteTick => {
           // Simple hash based on symbol and current minute
           const now = new Date();
           const seed = sym + now.getHours() + now.getMinutes();
@@ -104,11 +115,11 @@ export async function GET(request: Request) {
 
       // Try to fetch real quotes to override simulation if possible
       try {
-          const resNifty = await fetchWithTimeout(`${BACKEND_URL}/api/quote?symbol=NSE:NIFTY50-INDEX`, 1000, authHeaders);
-          const resBankNifty = await fetchWithTimeout(`${BACKEND_URL}/api/quote?symbol=NSE:NIFTYBANK-INDEX`, 1000, authHeaders);
-          const resSensex = await fetchWithTimeout(`${BACKEND_URL}/api/quote?symbol=BSE:SENSEX-INDEX`, 1000, authHeaders);
-          
-          const extractLpChp = (data: any) => {
+          const resNifty = await fetchWithTimeout<FyersQuoteResponse>(`${BACKEND_URL}/api/quote?symbol=NSE:NIFTY50-INDEX`, 1000, authHeaders);
+          const resBankNifty = await fetchWithTimeout<FyersQuoteResponse>(`${BACKEND_URL}/api/quote?symbol=NSE:NIFTYBANK-INDEX`, 1000, authHeaders);
+          const resSensex = await fetchWithTimeout<FyersQuoteResponse>(`${BACKEND_URL}/api/quote?symbol=BSE:SENSEX-INDEX`, 1000, authHeaders);
+
+          const extractLpChp = (data: FyersQuoteResponse | null): QuoteTick | null => {
               if (data && data.d && data.d.length > 0 && !data.error && data.s === "ok") {
                   const q = data.d[0].v;
                   if (q.lp !== undefined && q.chp !== undefined) return { lp: q.lp, chp: q.chp };

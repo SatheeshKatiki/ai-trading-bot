@@ -30,15 +30,33 @@ import {
 
 const COLORS = ["#3b82f6", "#8b5cf6", "#10b981"];
 
+// Matches app/api/risk/route.ts's response shape
+interface ExposureSlice { name: string; value: number; }
+interface DrawdownPoint { day: string; dd: number; }
+interface CorrelationRow { asset: string; values: number[]; }
+interface RiskLimits {
+  maxDailyLoss: number;
+  riskPerTrade: number;
+  maxPositions: number;
+  circuitBreaker: boolean;
+}
+interface RiskResponse {
+  error?: string;
+  limits: RiskLimits;
+  exposureData: ExposureSlice[];
+  drawdownData: DrawdownPoint[];
+  correlationMatrix: CorrelationRow[];
+}
+
 export default function RiskManagement() {
   const [maxDailyLoss, setMaxDailyLoss] = useState("10000");
   const [riskPerTrade, setRiskPerTrade] = useState("1.5");
   const [maxPositions, setMaxPositions] = useState("5");
   const [circuitBreaker, setCircuitBreaker] = useState(true);
-  
-  const [exposureData, setExposureData] = useState<any[]>([]);
-  const [drawdownData, setDrawdownData] = useState<any[]>([]);
-  const [correlationMatrix, setCorrelationMatrix] = useState<any[]>([]);
+
+  const [exposureData, setExposureData] = useState<ExposureSlice[]>([]);
+  const [drawdownData, setDrawdownData] = useState<DrawdownPoint[]>([]);
+  const [correlationMatrix, setCorrelationMatrix] = useState<CorrelationRow[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
@@ -47,7 +65,7 @@ export default function RiskManagement() {
     const fetchRiskData = async () => {
       try {
         const res = await fetch('/api/risk');
-        const data = await res.json();
+        const data: RiskResponse = await res.json();
         if (cancelled) return;
 
         if (data && !data.error) {

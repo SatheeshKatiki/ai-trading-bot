@@ -39,13 +39,47 @@ import {
   ResponsiveContainer 
 } from "recharts";
 
+// A historical/closed trade record as returned by /api/state's `trades`
+// field (distinct from the live order-book Trade type in useLiveMarketStore).
+interface DashboardTrade {
+  pnl: number;
+  symbol?: string;
+  side?: string;
+  time?: string;
+}
+
+// Matches brokers/models.py's Position dataclass, as returned (via asdict)
+// by GET /api/positions.
+interface DashboardPosition {
+  symbol: string;
+  side: string;
+  quantity: number;
+  average_price: number;
+  ltp: number;
+  unrealized_pnl: number;
+  realized_pnl: number;
+}
+
+interface EquityCurvePoint {
+  name: string;
+  value: number;
+}
+
+interface AiSignalEntry {
+  type: string;
+  bias: string;
+  strength: string;
+  time: string;
+  confidence: number;
+}
+
 export default function Dashboard() {
   const [equity, setEquity] = useState(100000.0);
   const [pnl, setPnl] = useState(0.0);
-  const [trades, setTrades] = useState<any[]>([]);
-  const [positions, setPositions] = useState<any[]>([]);
+  const [trades, setTrades] = useState<DashboardTrade[]>([]);
+  const [positions, setPositions] = useState<DashboardPosition[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
-  const [curve, setCurve] = useState<any[]>([]);
+  const [curve, setCurve] = useState<EquityCurvePoint[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isPanicModalOpen, setIsPanicModalOpen] = useState(false);
   const [isPanicExecuting, setIsPanicExecuting] = useState(false);
@@ -58,7 +92,7 @@ export default function Dashboard() {
     confidence: number;
     status: string;
     bias: string;
-    signals: any[];
+    signals: AiSignalEntry[];
   }>({
     confidence: 0,
     status: "Initializing...",
@@ -109,11 +143,17 @@ export default function Dashboard() {
           fetch(`/api/engine/status`)
         ]);
  
-        const stateData = await stateRes.json();
-        const posData = await posRes.json();
-        const logsData = await logsRes.json();
-        const engineData = await engineRes.json();
-        
+        const stateData: {
+          error?: string;
+          equity?: number;
+          pnl?: number;
+          trades?: DashboardTrade[];
+          chartData?: { time: number; close: number }[];
+        } = await stateRes.json();
+        const posData: { status?: string; positions?: DashboardPosition[] } = await posRes.json();
+        const logsData: { logs?: string[] } = await logsRes.json();
+        const engineData: { is_active: boolean } = await engineRes.json();
+
         if (engineData) {
           setIsEngineLive(engineData.is_active);
         }
@@ -124,7 +164,7 @@ export default function Dashboard() {
           setTrades(stateData.trades || []);
           
           if (stateData.chartData && stateData.chartData.length > 0) {
-            const mappedCurve = stateData.chartData.map((c: any) => ({
+            const mappedCurve = stateData.chartData.map((c: { time: number; close: number }) => ({
               name: new Date(c.time * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
               value: c.close
             }));
@@ -227,7 +267,7 @@ export default function Dashboard() {
 
   // Calculate some derived stats
   const winRate = trades.length > 0 
-    ? (trades.filter((t: any) => t.pnl > 0).length / trades.length * 100)
+    ? (trades.filter((t) => t.pnl > 0).length / trades.length * 100)
     : 0.0;
 
   return (
@@ -372,11 +412,11 @@ export default function Dashboard() {
               <div className="mt-2">
                 <div className="text-2xl font-bold font-mono text-foreground leading-none">{trades.length}</div>
                 <div className="flex items-center gap-2 mt-2">
-                  <span className="text-[9px] text-success font-bold">{trades.filter((t: any) => t.pnl > 0).length}W</span>
+                  <span className="text-[9px] text-success font-bold">{trades.filter((t) => t.pnl > 0).length}W</span>
                   <div className="flex-1 h-1 bg-muted/30 rounded-full overflow-hidden">
                     <div className="h-full bg-success rounded-full" style={{ width: `${winRate}%` }}></div>
                   </div>
-                  <span className="text-[9px] text-destructive font-bold">{trades.filter((t: any) => t.pnl <= 0).length}L</span>
+                  <span className="text-[9px] text-destructive font-bold">{trades.filter((t) => t.pnl <= 0).length}L</span>
                 </div>
               </div>
             </div>
@@ -569,7 +609,7 @@ export default function Dashboard() {
                 {/* Latest signals */}
                 <div className="space-y-1.5">
                   {aiSignal.signals.length > 0 ? (
-                    aiSignal.signals.slice(0, 3).map((sig: any, i: number) => (
+                    aiSignal.signals.slice(0, 3).map((sig, i) => (
                       <div key={i} className="p-2 bg-muted/20 rounded-lg border border-border/40">
                         <div className="flex justify-between items-center">
                           <span className="text-[9px] font-bold text-foreground">{sig.type}</span>

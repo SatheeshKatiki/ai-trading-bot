@@ -6,7 +6,11 @@ interface LiveSettingsState {
     strategy: string;
     inputMode: 'lots' | 'qty';
     quantity: number;
-    stoploss: number;
+    // number | string: NumberInput is a fully-controlled input, so the store
+    // must be able to hold an in-progress typed value like "0." or "" —
+    // rounding those to number on every keystroke would make it impossible
+    // to type a decimal point or clear the field.
+    stoploss: number | string;
     timeframe: string;
     lotSizes: Record<string, number>;
 
@@ -24,15 +28,17 @@ interface LiveSettingsState {
     };
 
     // Engine Settings
+    // number | string on the numeric fields for the same reason as
+    // `stoploss` above — each is bound to a fully-controlled NumberInput.
     enablePyramiding: boolean;
-    scalePct: number;
-    maxScales: number;
+    scalePct: number | string;
+    maxScales: number | string;
     trailingSl: boolean;
-    trailTrigger: number;
-    trailOffset: number;
-    donchianPeriod: number;
-    maxDailyLossPct: number;
-    maxDailyTrades: number;
+    trailTrigger: number | string;
+    trailOffset: number | string;
+    donchianPeriod: number | string;
+    maxDailyLossPct: number | string;
+    maxDailyTrades: number | string;
 
     // Actions
     setTradingMode: (mode: string) => void;
@@ -40,21 +46,21 @@ interface LiveSettingsState {
     setStrategy: (strategy: string) => void;
     setInputMode: (mode: 'lots' | 'qty') => void;
     setQuantity: (qty: number) => void;
-    setStoploss: (sl: number) => void;
+    setStoploss: (sl: number | string) => void;
     setTimeframe: (tf: string) => void;
     setLotSizes: (lotSizes: Record<string, number>) => void;
     setFilters: (filters: Partial<LiveSettingsState['filters']>) => void;
     setFilter: (key: keyof LiveSettingsState['filters'], value: boolean) => void;
 
     setEnablePyramiding: (value: boolean) => void;
-    setScalePct: (value: number) => void;
-    setMaxScales: (value: number) => void;
+    setScalePct: (value: number | string) => void;
+    setMaxScales: (value: number | string) => void;
     setTrailingSl: (value: boolean) => void;
-    setTrailTrigger: (value: number) => void;
-    setTrailOffset: (value: number) => void;
-    setDonchianPeriod: (value: number) => void;
-    setMaxDailyLossPct: (value: number) => void;
-    setMaxDailyTrades: (value: number) => void;
+    setTrailTrigger: (value: number | string) => void;
+    setTrailOffset: (value: number | string) => void;
+    setDonchianPeriod: (value: number | string) => void;
+    setMaxDailyLossPct: (value: number | string) => void;
+    setMaxDailyTrades: (value: number | string) => void;
 }
 
 export const useLiveSettingsStore = create<LiveSettingsState>((set) => ({

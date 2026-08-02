@@ -5,6 +5,20 @@ import { useLiveSettingsStore } from '@/store/useLiveSettingsStore';
 import { useLiveMarketStore } from '@/store/useLiveMarketStore';
 import { toast } from 'sonner';
 
+type FilterKey =
+    | "enable_ema_filter" | "enable_volume_filter" | "enable_adx_filter"
+    | "enable_vwap_filter" | "enable_rsi_filter" | "enable_squeeze_filter"
+    | "enable_extension_filter" | "enable_cpr_filter" | "enable_aggression_filter";
+
+interface StrategyInfo {
+    name: string;
+    description?: string;
+}
+
+interface StrategiesResponse {
+    strategies?: string[] | Record<string, { description?: string }>;
+}
+
 interface TradeActionPanelProps {
     urlSymbol: string;
     defaultBaseQty: number;
@@ -93,7 +107,7 @@ export function TradeActionPanel({ urlSymbol, defaultBaseQty }: TradeActionPanel
         "buy_the_dip": "Buy the Dip (Mean Reversion)",
     };
 
-    const [availableStrategies, setAvailableStrategies] = useState<{ name: string, description?: string }[]>([]);
+    const [availableStrategies, setAvailableStrategies] = useState<StrategyInfo[]>([]);
     const [targetPct, setTargetPctLocal] = useState<number | string>(2.5);
 
     // Order confirmation state
@@ -105,13 +119,13 @@ export function TradeActionPanel({ urlSymbol, defaultBaseQty }: TradeActionPanel
             try {
                 const res = await fetch('/api/strategies');
                 if (res.ok) {
-                    const data = await res.json();
+                    const data: StrategiesResponse = await res.json();
                     if (data.strategies) {
-                        const formatted = Array.isArray(data.strategies)
-                            ? data.strategies.map((s: any) => typeof s === 'string' ? { name: s } : s)
-                            : Object.keys(data.strategies).map(key => ({ name: key, ...data.strategies[key] }));
+                        const formatted: StrategyInfo[] = Array.isArray(data.strategies)
+                            ? data.strategies.map((s) => ({ name: s }))
+                            : Object.entries(data.strategies).map(([key, v]) => ({ name: key, ...v }));
                         setAvailableStrategies(formatted);
-                        if (formatted.length > 0 && !formatted.find((s: any) => s.name === strategy)) {
+                        if (formatted.length > 0 && !formatted.find((s) => s.name === strategy)) {
                             setStrategy(formatted[0].name);
                         }
                     }
@@ -160,8 +174,8 @@ export function TradeActionPanel({ urlSymbol, defaultBaseQty }: TradeActionPanel
 
     // Handle Stoploss Change
     const handleStoplossChange = async (val: string) => {
-        let cleanVal = val.replace(/^0+(?=\d)/, '');
-        setStoploss(cleanVal as any);
+        const cleanVal = val.replace(/^0+(?=\d)/, '');
+        setStoploss(cleanVal);
         const newSl = parseFloat(cleanVal);
         if (!isNaN(newSl)) {
             try {
@@ -177,9 +191,9 @@ export function TradeActionPanel({ urlSymbol, defaultBaseQty }: TradeActionPanel
     };
 
     // Handle Target % Change
-    const handleTargetPctChange = async (val: any) => {
+    const handleTargetPctChange = async (val: number | string) => {
         setTargetPctLocal(val);
-        const num = parseFloat(val);
+        const num = parseFloat(String(val));
         if (!isNaN(num) && num > 0) {
             try {
                 await fetch('/api/settings', {
@@ -236,8 +250,8 @@ export function TradeActionPanel({ urlSymbol, defaultBaseQty }: TradeActionPanel
         }
     };
 
-    const handleFilterChange = async (key: string, value: boolean) => {
-        setFilter(key as any, value);
+    const handleFilterChange = async (key: FilterKey, value: boolean) => {
+        setFilter(key, value);
         try {
             await fetch('/api/settings', {
                 method: 'POST',
@@ -249,9 +263,22 @@ export function TradeActionPanel({ urlSymbol, defaultBaseQty }: TradeActionPanel
         }
     };
 
-    const handleAdvancedSettingChange = async (key: string, value: any, setter: (val: any) => void) => {
+    // `setter` stays loosely typed: call sites pair a specific key (e.g.
+    // "enablePyramiding") with the matching store setter, which is either
+    // boolean-only or number|string — TS's strict function-type variance
+    // rejects assigning a boolean-only setter where a wider (boolean |
+    // number | string) setter is expected, and a discriminated union per
+    // key would be disproportionate for this dispatch helper. `value` and
+    // apiPayload are still real types so a malformed settings payload is
+    // still caught here.
+    const handleAdvancedSettingChange = async (
+        key: string,
+        value: boolean | number | string,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        setter: (val: any) => void
+    ) => {
         setter(value);
-        let apiPayload: any = {};
+        let apiPayload: Record<string, boolean | number | string> = {};
         switch (key) {
             case 'enablePyramiding': apiPayload = { enable_pyramiding: value }; break;
             case 'scalePct': apiPayload = { scale_pct: value }; break;
@@ -300,8 +327,8 @@ export function TradeActionPanel({ urlSymbol, defaultBaseQty }: TradeActionPanel
             } else {
                 toast.error(data.error || data.detail || 'Execution failed', { id: 'manual-exec' });
             }
-        } catch (err: any) {
-            toast.error(err.message || 'Execution failed', { id: 'manual-exec' });
+        } catch (err) {
+            toast.error(err instanceof Error ? err.message : 'Execution failed', { id: 'manual-exec' });
         } finally {
             setIsExecuting(false);
         }
@@ -516,26 +543,28 @@ export function TradeActionPanel({ urlSymbol, defaultBaseQty }: TradeActionPanel
                         <Shield className="w-3.5 h-3.5" /> Filters
                     </div>
 
-                    {[
-                        { id: "enable_ema_filter", label: "EMA Trend" },
-                        { id: "enable_volume_filter", label: "Volume" },
-                        { id: "enable_adx_filter", label: "ADX > 25" },
-                        { id: "enable_vwap_filter", label: "VWAP" },
-                        { id: "enable_rsi_filter", label: "RSI Momentum" },
-                        { id: "enable_squeeze_filter", label: "Squeeze" },
-                        { id: "enable_extension_filter", label: "EMA Ext" },
-                        { id: "enable_cpr_filter", label: "CPR Rejection" },
-                        { id: "enable_aggression_filter", label: "Aggression" },
-                    ].map(filter => (
+                    {(
+                        [
+                            { id: "enable_ema_filter", label: "EMA Trend" },
+                            { id: "enable_volume_filter", label: "Volume" },
+                            { id: "enable_adx_filter", label: "ADX > 25" },
+                            { id: "enable_vwap_filter", label: "VWAP" },
+                            { id: "enable_rsi_filter", label: "RSI Momentum" },
+                            { id: "enable_squeeze_filter", label: "Squeeze" },
+                            { id: "enable_extension_filter", label: "EMA Ext" },
+                            { id: "enable_cpr_filter", label: "CPR Rejection" },
+                            { id: "enable_aggression_filter", label: "Aggression" },
+                        ] as { id: FilterKey; label: string }[]
+                    ).map(filter => (
                         <div key={filter.id} className="flex items-center gap-2" title={FILTER_TOOLTIPS[filter.id]}>
                             <input
                                 type="checkbox"
                                 id={filter.id}
-                                checked={(filters as any)[filter.id]}
+                                checked={filters[filter.id]}
                                 onChange={(e) => handleFilterChange(filter.id, e.target.checked)}
                                 className="w-3 h-3 rounded border-border/50 bg-background/50 focus:ring-primary focus:ring-offset-0 text-primary transition-colors cursor-pointer"
                             />
-                            <label htmlFor={filter.id} className={`text-[11px] font-medium cursor-pointer transition-colors ${(filters as any)[filter.id] ? "text-primary" : "text-muted-foreground hover:text-foreground"}`}>
+                            <label htmlFor={filter.id} className={`text-[11px] font-medium cursor-pointer transition-colors ${filters[filter.id] ? "text-primary" : "text-muted-foreground hover:text-foreground"}`}>
                                 {filter.label}
                             </label>
                         </div>

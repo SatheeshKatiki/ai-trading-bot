@@ -3,16 +3,30 @@
 import { useState, useEffect } from "react";
 import { ArrowUpRight, ArrowDownRight } from "lucide-react";
 
+interface TickerEntry {
+  lp: number;
+  chp: number;
+  up?: boolean;
+}
+
+// The /ws/live message is a loosely-shaped, symbol-keyed object that can
+// also carry non-ticker keys (trades, signalsData, raw_ticks — filtered out
+// at render time below), so `unknown` per-value + a type guard is more
+// honest here than a single fixed interface.
+function isTickerEntry(v: unknown): v is TickerEntry {
+  return !!v && typeof v === 'object' && typeof (v as TickerEntry).lp === 'number';
+}
+
 export default function LiveTicker() {
-  const [tickerData, setTickerData] = useState<any>({
+  const [tickerData, setTickerData] = useState<Record<string, unknown>>({
     "NIFTY": { lp: 23820.35, chp: -1.49, up: false },
     "BANKNIFTY": { lp: 51000.00, chp: 0.08, up: true },
     "SENSEX": { lp: 76015.28, chp: -1.70, up: false },
     "RELIANCE": { lp: 2950.00, chp: 0.12, up: true },
     "TCS": { lp: 3950.00, chp: -0.45, up: false },
   });
-  const [lastPrices, setLastPrices] = useState<any>({});
-  const [flashes, setFlashes] = useState<any>({});
+  const [lastPrices, setLastPrices] = useState<Record<string, number>>({});
+  const [flashes, setFlashes] = useState<Record<string, "up" | "down">>({});
 
   useEffect(() => {
     let ws: WebSocket;
@@ -23,21 +37,22 @@ export default function LiveTicker() {
       ws = new WebSocket(wsUrl);
       
       ws.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        
-        setLastPrices((prev: any) => {
+        const data: Record<string, unknown> = JSON.parse(event.data);
+
+        setLastPrices((prev) => {
           const next = { ...prev };
-          const newFlashes: any = {};
-          
+          const newFlashes: Record<string, "up" | "down"> = {};
+
           Object.keys(data).forEach(key => {
-            if (data[key] !== null && typeof data[key] === 'object' && data[key].lp) {
-              if (prev[key] && data[key].lp !== prev[key]) {
-                newFlashes[key] = data[key].lp > prev[key] ? "up" : "down";
+            const entry = data[key];
+            if (isTickerEntry(entry)) {
+              if (prev[key] && entry.lp !== prev[key]) {
+                newFlashes[key] = entry.lp > prev[key] ? "up" : "down";
               }
-              next[key] = data[key].lp;
+              next[key] = entry.lp;
             }
           });
-          
+
           if (Object.keys(newFlashes).length > 0) {
             setFlashes(newFlashes);
             setTimeout(() => setFlashes({}), 800);
@@ -45,7 +60,7 @@ export default function LiveTicker() {
           return next;
         });
 
-        setTickerData((prev: any) => ({
+        setTickerData((prev) => ({
           ...prev,
           ...Object.fromEntries(
             Object.entries(data).filter(([_, v]) => v !== null)
@@ -85,7 +100,7 @@ export default function LiveTicker() {
         <div className="flex whitespace-nowrap animate-marquee-slower gap-12 items-center px-4 hover:pause">
           {Object.keys(tickerData).filter(k => k !== "trades" && k !== "signalsData" && k !== "raw_ticks").map((symbol, i) => {
             const data = tickerData[symbol];
-            if (!data || typeof data !== 'object' || data.lp === undefined) return null;
+            if (!isTickerEntry(data)) return null;
             const isUp = data.chp >= 0;
             const flashClass = flashes[symbol] === "up" ? "bg-success/20 animate-pulse" : flashes[symbol] === "down" ? "bg-destructive/20 animate-pulse" : "";
             
@@ -105,7 +120,7 @@ export default function LiveTicker() {
           {/* Duplicate for seamless loop */}
           {Object.keys(tickerData).filter(k => k !== "trades" && k !== "signalsData" && k !== "raw_ticks").map((symbol, i) => {
             const data = tickerData[symbol];
-            if (!data || typeof data !== 'object' || data.lp === undefined) return null;
+            if (!isTickerEntry(data)) return null;
             const isUp = data.chp >= 0;
             return (
               <div key={`dup-${i}`} className="flex items-center gap-3 px-2 py-1">

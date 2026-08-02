@@ -4,6 +4,29 @@ import path from 'path';
 
 export const dynamic = 'force-dynamic';
 
+// Matches backtesting_engine/run.py's run_intraday_backtest() trades.append(...) shape
+interface BacktestTrade {
+  id: string;
+  type: string;
+  entry: number;
+  exit: number;
+  qty: number;
+  scales: number;
+  pnl: number;
+  time: string;
+  score: number;
+  exit_reason: string;
+}
+
+interface BacktestResultsFile {
+  trades?: BacktestTrade[];
+  stats?: {
+    profitFactor?: string | number;
+    winRate?: string | number;
+    maxDrawdown?: number;
+  };
+}
+
 export async function GET() {
   const filePath = path.join(process.cwd(), '..', 'trading-system', 'backtest_results.json');
   
@@ -31,13 +54,13 @@ export async function GET() {
     }
     
     const fileContent = fs.readFileSync(filePath, 'utf8');
-    const data = JSON.parse(fileContent);
+    const data: BacktestResultsFile = JSON.parse(fileContent);
     const trades = data.trades || [];
     const stats = data.stats || {};
-    
+
     // Calculate Win/Loss Data
-    const winningTrades = trades.filter((t: any) => t.pnl > 0);
-    const losingTrades = trades.filter((t: any) => t.pnl <= 0);
+    const winningTrades = trades.filter((t) => t.pnl > 0);
+    const losingTrades = trades.filter((t) => t.pnl <= 0);
     
     const winLossData = [
       { name: "Winning Trades", value: trades.length > 0 ? Math.round((winningTrades.length / trades.length) * 100) : 0 },
@@ -46,7 +69,7 @@ export async function GET() {
     
     // Calculate Day of Week Data
     const dayMap: { [key: string]: number } = { "Mon": 0, "Tue": 0, "Wed": 0, "Thu": 0, "Fri": 0 };
-    trades.forEach((t: any) => {
+    trades.forEach((t) => {
       if (t.time) {
         // Try to parse time, handle formats like "14:20" or full datetime
         let day = "Mon";
@@ -75,7 +98,7 @@ export async function GET() {
     
     // Calculate Expectancy Growth
     let cumulativePnl = 0;
-    const expectancyData = trades.map((t: any, index: number) => {
+    const expectancyData = trades.map((t, index: number) => {
       cumulativePnl += t.pnl;
       return {
         trade: index + 1,
@@ -94,7 +117,7 @@ export async function GET() {
     let lossStreakValue = 0;
     let maxLossStreakValue = 0;
     
-    trades.forEach((t: any) => {
+    trades.forEach((t) => {
       if (t.pnl > 0) {
         currentWinStreak++;
         winStreakValue += t.pnl;
@@ -126,7 +149,7 @@ export async function GET() {
       stats: {
         profitFactor: stats.profitFactor || 0,
         expectancy: trades.length > 0 ? Math.round(cumulativePnl / trades.length) : 0,
-        winRate: parseFloat(stats.winRate) || 0,
+        winRate: parseFloat(String(stats.winRate)) || 0,
         maxDrawdown: stats.maxDrawdown || 0,
         totalTrades: trades.length,
         winningTrades: winningTrades.length

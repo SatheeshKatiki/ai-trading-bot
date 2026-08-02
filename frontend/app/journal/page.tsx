@@ -5,9 +5,24 @@ import Sidebar from "@/components/sidebar";
 import Header from "@/components/header";
 import { BookOpen, AlertTriangle, CheckCircle, Brain, TrendingUp, TrendingDown, Target, Clock, Filter } from "lucide-react";
 
+// Mirrors trading-system/scripts/init_journal.py's trade_journal schema
+interface JournalEntry {
+  id: number;
+  trade_date: string;
+  symbol: string;
+  strategy_name: string;
+  direction: string;
+  entry_price: number;
+  exit_price: number;
+  qty: number;
+  pnl: number;
+  ai_feedback: string | null;
+  tags: string | null;
+}
+
 export default function JournalPage() {
   const [loading, setLoading] = useState(true);
-  const [trades, setTrades] = useState<any[]>([]);
+  const [trades, setTrades] = useState<JournalEntry[]>([]);
   const [stats, setStats] = useState({ total: 0, winRate: 0, netPnl: 0, bestTrade: 0, worstTrade: 0 });
 
   useEffect(() => {
@@ -17,16 +32,16 @@ export default function JournalPage() {
       setLoading(true);
       try {
         const res = await fetch("/api/journal");
-        const data = await res.json();
+        const data: { trades?: JournalEntry[]; error?: string } = await res.json();
         if (cancelled) return;
         if (data.trades) {
           setTrades(data.trades);
 
           // Calculate basic stats
-          const wins = data.trades.filter((t: any) => t.pnl > 0).length;
-          const net = data.trades.reduce((sum: number, t: any) => sum + t.pnl, 0);
-          const best = Math.max(...data.trades.map((t: any) => t.pnl), 0);
-          const worst = Math.min(...data.trades.map((t: any) => t.pnl), 0);
+          const wins = data.trades.filter((t: JournalEntry) => t.pnl > 0).length;
+          const net = data.trades.reduce((sum: number, t: JournalEntry) => sum + t.pnl, 0);
+          const best = Math.max(...data.trades.map((t: JournalEntry) => t.pnl), 0);
+          const worst = Math.min(...data.trades.map((t: JournalEntry) => t.pnl), 0);
 
           setStats({
             total: data.trades.length,
@@ -141,7 +156,7 @@ export default function JournalPage() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
-                    {trades.map((trade: any) => {
+                    {trades.map((trade) => {
                       const isProfit = trade.pnl > 0;
                       return (
                         <tr key={trade.id} className="border-b border-border hover:bg-muted/10 transition-colors group">
