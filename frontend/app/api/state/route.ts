@@ -5,7 +5,17 @@ import { getAuthHeaders, BACKEND_URL } from '@/lib/backend';
 
 export const dynamic = 'force-dynamic';
 
-async function fetchWithTimeout(url: string, timeout = 2000, headers?: Record<string, string>) {
+// Shape of the money-relevant fields from the backend's /api/state —
+// narrowed from `any` so an unexpected/missing shape from the backend
+// surfaces as a type error here rather than silently flowing an
+// undefined equity/pnl value into the dashboard.
+interface BackendState {
+  equity: number;
+  pnl: number;
+  trades: unknown[];
+}
+
+async function fetchWithTimeout<T = unknown>(url: string, timeout = 2000, headers?: Record<string, string>): Promise<T | null> {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeout);
   try {
@@ -48,30 +58,26 @@ export async function GET(request: Request) {
     }
     
     // 1. Read state from Python API Bridge
-    let baseState = { 
-      equity: 100000.0, 
-      pnl: 0.0, 
-      trades: [] 
+    let baseState: BackendState = {
+      equity: 100000.0,
+      pnl: 0.0,
+      trades: []
     };
     
     try {
-      // Fetch all data in parallel to reduce loading time
-      const fetchPromises = [];
-      
-      // 1. State
-      fetchPromises.push(fetchWithTimeout(`${BACKEND_URL}/api/state`, 2000, authHeaders));
-      // 2. Funds
-      if (isLive) {
-        fetchPromises.push(fetchWithTimeout(`${BACKEND_URL}/api/funds`, 2000, authHeaders));
-      } else {
-        fetchPromises.push(Promise.resolve(null));
-      }
-      // 3. Signals
-      fetchPromises.push(fetchWithTimeout(`${BACKEND_URL}/api/signals?symbol=${rawSymbol}`, 5000, authHeaders));
-      // 4. Quote
-      fetchPromises.push(fetchWithTimeout(`${BACKEND_URL}/api/quote?symbol=${symbol}`, 2000, authHeaders));
-      
-      const [resState, resFunds, resSignals, resQuote] = await Promise.all(fetchPromises);
+      // Fetch all data in parallel to reduce loading time. Each promise
+      // keeps its own type (rather than being pushed into one untyped
+      // array) so resState is narrowed to BackendState | null instead of
+      // any — an unexpected backend response shape now surfaces as a type
+      // error at the assignment below instead of flowing through silently.
+      const [resState, resFunds, resSignals, resQuote] = await Promise.all([
+        fetchWithTimeout<BackendState>(`${BACKEND_URL}/api/state`, 2000, authHeaders),
+        isLive
+          ? fetchWithTimeout(`${BACKEND_URL}/api/funds`, 2000, authHeaders)
+          : Promise.resolve(null),
+        fetchWithTimeout(`${BACKEND_URL}/api/signals?symbol=${rawSymbol}`, 5000, authHeaders),
+        fetchWithTimeout(`${BACKEND_URL}/api/quote?symbol=${symbol}`, 2000, authHeaders),
+      ]);
 
       if (resState) baseState = resState;
       fundsData = resFunds;

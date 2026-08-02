@@ -1,6 +1,6 @@
 "use client";
 import { useState } from "react";
-import { useLiveMarketStore } from "@/store/useLiveMarketStore";
+import { useLiveMarketStore, type Trade } from "@/store/useLiveMarketStore";
 import { XCircle, Clock, CheckCircle2, AlertTriangle, X, Zap } from "lucide-react";
 import { toast } from "sonner";
 import { ExecutionFeed } from "./execution-feed";
@@ -65,7 +65,7 @@ export function LivePositions({ urlSymbol }: { urlSymbol: string }) {
     const [isExecuting, setIsExecuting] = useState(false);
     const [showTodayOnly, setShowTodayOnly] = useState(true);
     const [squareOffConfirm, setSquareOffConfirm] = useState(false);
-    const [exitConfirm, setExitConfirm] = useState<any>(null);
+    const [exitConfirm, setExitConfirm] = useState<Trade | null>(null);
 
     const trades = useLiveMarketStore(state => state.trades);
     const tickerData = useLiveMarketStore(state => state.tickerData);
@@ -97,7 +97,7 @@ export function LivePositions({ urlSymbol }: { urlSymbol: string }) {
         }
     };
 
-    const doExit = async (trade: any) => {
+    const doExit = async (trade: Trade) => {
         setExitConfirm(null);
         if (isExecuting) return;
         setIsExecuting(true);
@@ -132,7 +132,7 @@ export function LivePositions({ urlSymbol }: { urlSymbol: string }) {
     };
 
     // Compute real MTM for a trade using live ticker data
-    const computeMTM = (trade: any): number | null => {
+    const computeMTM = (trade: Trade): number | null => {
         const sym = trade.symbol;
         // Try exact match first, then partial match
         const ticker = tickerData[sym] || Object.entries(tickerData).find(([k]) => sym.includes(k) || k.includes(sym))?.[1];
