@@ -9,3 +9,9 @@ node_modules/
 !tsconfig.json
 *.log
 data/
+# Exception: small, committed test fixture CSVs (not real cached market
+# data) used by trading-system/tests/test_option_history_derivation.py
+# and test_history_endpoint_options.py — the blanket data/ rule above
+# would otherwise silently exclude them from every commit.
+!trading-system/tests/fixtures/data/
+!trading-system/tests/fixtures/data/*.csv

@@ -21,6 +21,13 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from api_bridge import generate_option_history_from_spot, load_csv_history
 
+# data/*.csv (the real cache) is gitignored and won't exist in a clean CI
+# checkout -- these tests use small, committed fixture CSVs instead,
+# matching the real files' schema quirks (including RELIANCE's
+# capitalized "Datetime" column and different column order) so they
+# still exercise the case-normalization fix.
+_FIXTURE_DATA_DIR = str(Path(__file__).resolve().parent / "fixtures" / "data")
+
 
 def _synthetic_spot(n=10, base=24000.0):
     candles = []
@@ -73,7 +80,7 @@ def test_empty_spot_data_returns_empty():
 
 
 def test_load_csv_history_reliance_returns_reliance_data_not_nifty():
-    result = load_csv_history("RELIANCE", "2026-05-04", "2026-05-05", "5 Min")
+    result = load_csv_history("RELIANCE", "2026-05-04", "2026-05-05", "5 Min", data_dir=_FIXTURE_DATA_DIR)
     assert len(result) > 0
     # RELIANCE trades in the hundreds/low-thousands; NIFTY trades above 20000 -- if
     # this ever silently falls back to NIFTY's cache again, this assertion catches it.
@@ -82,13 +89,13 @@ def test_load_csv_history_reliance_returns_reliance_data_not_nifty():
 
 
 def test_load_csv_history_nifty_returns_nifty_data():
-    result = load_csv_history("NSE:NIFTY50-INDEX", "2026-05-04", "2026-05-05", "5 Min")
+    result = load_csv_history("NSE:NIFTY50-INDEX", "2026-05-04", "2026-05-05", "5 Min", data_dir=_FIXTURE_DATA_DIR)
     assert len(result) > 0
     assert all(c["close"] > 15000 for c in result[:20])
 
 
 def test_load_csv_history_unknown_symbol_returns_empty_not_wrong_data():
-    result = load_csv_history("SOMESTOCKWITHNOCACHE", "2026-05-04", "2026-05-05", "5 Min")
+    result = load_csv_history("SOMESTOCKWITHNOCACHE", "2026-05-04", "2026-05-05", "5 Min", data_dir=_FIXTURE_DATA_DIR)
     assert result == []
 
 
@@ -96,6 +103,6 @@ def test_load_csv_history_bank_nifty_does_not_match_plain_nifty_branch():
     # "NIFTYBANK"/"BANKNIFTY" must be checked before the generic "NIFTY"
     # substring branch, or bank nifty requests would incorrectly fall
     # into the NIFTY50 cache instead of the bank nifty one.
-    result = load_csv_history("NSE:NIFTYBANK-INDEX", "2026-05-04", "2026-05-05", "5 Min")
+    result = load_csv_history("NSE:NIFTYBANK-INDEX", "2026-05-04", "2026-05-05", "5 Min", data_dir=_FIXTURE_DATA_DIR)
     assert len(result) > 0
     assert all(c["close"] > 40000 for c in result[:20])  # bank nifty trades much higher than NIFTY50

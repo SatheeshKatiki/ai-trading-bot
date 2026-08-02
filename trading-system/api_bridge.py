@@ -940,7 +940,7 @@ def generate_option_history_from_spot(spot_data: List[Dict[str, Any]], strike: f
         
     return option_candles
 
-def load_csv_history(symbol: str, start_date: str, end_date: str, timeframe: str) -> List[Dict[str, Any]]:
+def load_csv_history(symbol: str, start_date: str, end_date: str, timeframe: str, data_dir: str | None = None) -> List[Dict[str, Any]]:
     """Loads historical OHLCV candles from local CSV cache as fail-safe fallback.
 
     Root-cause fix: the fallback list used to include the NIFTY/SENSEX/
@@ -948,13 +948,20 @@ def load_csv_history(symbol: str, start_date: str, end_date: str, timeframe: str
     symbol, so a broker failure for e.g. "RELIANCE" would silently return
     NIFTY candles mislabeled as RELIANCE's history. Only ever fall back to
     a cache file that actually corresponds to the requested symbol.
+
+    `data_dir` defaults to this file's own data/ directory (the real,
+    gitignored CSV cache) but can be overridden — used by
+    tests/test_option_history_derivation.py to point at small, committed
+    fixture CSVs instead, since data/*.csv itself is gitignored and isn't
+    present in a clean CI checkout.
     """
     import os
     import pandas as pd
 
     clean_tf = timeframe.replace(' ', '')
     clean_sym = symbol.replace(':', '_').replace(' ', '').upper()
-    data_dir = os.path.join(os.path.dirname(__file__), "data")
+    if data_dir is None:
+        data_dir = os.path.join(os.path.dirname(__file__), "data")
 
     possible_files = [f"{clean_sym}_{clean_tf}.csv"]
     if "NIFTYBANK" in clean_sym or "BANKNIFTY" in clean_sym:
