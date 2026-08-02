@@ -627,8 +627,12 @@ async def run_live_bot(symbols: List[str]) -> None:
         # Use IST time for all intraday comparisons (EOD exit at 15:15 IST)
         current_time = datetime.now(_IST).strftime("%Y-%m-%d %H:%M:%S")
 
-        # Load settings once per tick — the TTL cache (10 s) makes this free
-        # (no disk I/O) on the vast majority of ticks.
+        # Load settings once per tick. _load_settings() caches by file
+        # mtime (not a time-based TTL, despite what this comment used to
+        # claim) — a cheap os.path.getmtime() stat check on every call,
+        # only re-parsing the file when it has actually changed, so this
+        # is free (no meaningful disk I/O) on the vast majority of ticks
+        # regardless of how long it's been since the last real change.
         settings = _load_settings()
         
         # ----------------------------------------------------------------
