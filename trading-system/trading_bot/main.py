@@ -1377,6 +1377,40 @@ async def run_live_bot(symbols: List[str]) -> None:
     await broker.stream_quotes(symbols, on_tick, on_reconnect=sync_broker_state)
 
 
+# Root-cause fix (Medium audit finding): "the container restart policy
+# stacks on top of the engine's own internal auto-restart loop with no
+# shared backoff/cooldown" — this loop used to sleep a flat 10s after
+# every crash regardless of how many times it had just crashed in a
+# row. If something is fundamentally broken (a bad settings.json, a
+# permanently-unreachable broker), a flat delay produces a tight
+# restart-storm hammering logs and the broker's API, uncoordinated with
+# Docker's own outer restart policy if this process ever exits the
+# container entirely. These two small, pure helpers compute an
+# escalating backoff (doubling from a 10s base up to a 5-minute cap on
+# consecutive fast failures) and decide when to reset that escalation
+# back to the base delay (once the bot has run successfully for a
+# sustained period) — pulled out of the loop below so they're
+# unit-testable without needing to actually run the live engine.
+_RETRY_BASE_DELAY_S = 10
+_RETRY_MAX_DELAY_S = 300
+_RETRY_SUSTAINED_UPTIME_RESET_S = 300
+
+
+def _compute_retry_delay(consecutive_fast_failures: int) -> int:
+    """Delay before the next restart attempt, given how many consecutive
+    *fast* failures (crashes before a sustained-uptime reset) have
+    happened so far, including this one."""
+    if consecutive_fast_failures <= 0:
+        return _RETRY_BASE_DELAY_S
+    return min(_RETRY_MAX_DELAY_S, _RETRY_BASE_DELAY_S * (2 ** (consecutive_fast_failures - 1)))
+
+
+def _should_reset_failure_count(run_duration_s: float) -> bool:
+    """True if the bot ran long enough before this crash that it should be
+    treated as a fresh start rather than another rapid crash-loop cycle."""
+    return run_duration_s >= _RETRY_SUSTAINED_UPTIME_RESET_S
+
+
 if __name__ == "__main__":
     # Read symbols from settings — no more hardcoded list
     _boot_settings = {}
@@ -1392,7 +1426,10 @@ if __name__ == "__main__":
         ["NSE:NIFTY50-INDEX"],   # sensible default if not set in settings
     )
     logger.info("Starting live bot with symbols: %s", SYMBOLS)
+    import time
+    _consecutive_fast_failures = 0
     while True:
+        _run_started_at = time.monotonic()
         try:
             asyncio.run(run_live_bot(SYMBOLS))
         except KeyboardInterrupt:
@@ -1400,6 +1437,14 @@ if __name__ == "__main__":
             audit.log(AuditEvent.BOT_STOP, {"reason": "user_interrupt"})
             break
         except Exception as e:
-            logger.error("FATAL CRASH in Live Bot: %s. Auto-restarting in 10 seconds...", e)
-            import time
-            time.sleep(10)
+            _run_duration = time.monotonic() - _run_started_at
+            if _should_reset_failure_count(_run_duration):
+                _consecutive_fast_failures = 0
+            _consecutive_fast_failures += 1
+            _delay = _compute_retry_delay(_consecutive_fast_failures)
+            logger.error(
+                "FATAL CRASH in Live Bot: %s. Ran for %.0fs before crashing "
+                "(%d consecutive fast failures). Auto-restarting in %ds...",
+                e, _run_duration, _consecutive_fast_failures, _delay,
+            )
+            time.sleep(_delay)
