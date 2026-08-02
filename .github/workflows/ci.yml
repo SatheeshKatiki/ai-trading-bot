@@ -154,4 +154,13 @@ jobs:
           path: ./
           base: ${{ github.event.repository.default_branch }}
           head: HEAD
-          extra_args: --only-verified
+          # --only-verified silently drops any match TruffleHog couldn't
+          # actively confirm against the provider's live API -- this is
+          # exactly why the already-committed .fyers_tokens.json leak was
+          # never flagged: TruffleHog has no built-in verifier for Fyers'
+          # token format, so it never gets a "verified" result to report,
+          # regardless of how real the token is. Dropping the flag restores
+          # the default behavior of also reporting unverified-but-pattern-
+          # matched candidates, at the cost of some false positives on
+          # things that merely look like credentials (test fixtures,
+          # sample tokens in docs). No extra_args needed to opt into this.
