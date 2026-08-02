@@ -20,20 +20,41 @@ class MonteCarloSimulator:
         self.trades = trades_pnl
         self.initial_capital = initial_capital
 
-    def simulate(self, num_simulations: int = 1000, num_trades_per_sim: int = 100) -> Dict[str, float]:
-        """Run the Monte Carlo simulation by bootstrapping historical trades.
-        
+    def simulate(self, num_simulations: int = 1000, num_trades_per_sim: int = 100, block_size: int = 5) -> Dict[str, float]:
+        """Run the Monte Carlo simulation by block-bootstrapping historical trades.
+
         Parameters
         ----------
         num_simulations : int
             Number of parallel universes to simulate.
         num_trades_per_sim : int
-            Number of trades to randomly sample (with replacement) per simulation.
-            
+            Number of trades to randomly sample per simulation.
+        block_size : int
+            Length of each contiguous run of trades resampled together.
+
         Returns
         -------
         Dict
             Statistics including median final equity, max drawdown percentiles, and risk of ruin.
+
+        Root-cause fix (Medium audit finding): this previously used
+        random.choices(self.trades, k=...) — an i.i.d. bootstrap that
+        draws each trade independently, completely discarding the
+        original sequence's order. Real trade sequences exhibit
+        autocorrelation/regime clustering (losing streaks tend to cluster
+        during a bad regime, not scatter uniformly at random), and i.i.d.
+        resampling artificially breaks that clustering apart — a real
+        historical 5-loss streak gets diluted across many simulated
+        paths that interleave it with unrelated winning trades from
+        elsewhere in the series, making simulated risk-of-ruin/drawdown
+        look better (less risky) than the strategy's real historical
+        behavior. Switched to a moving block bootstrap (the standard
+        remedy for exactly this critique): each simulated path is
+        assembled from contiguous blocks of `block_size` trades pulled
+        from random starting points in the original sequence (wrapping
+        around), preserving local autocorrelation within each block
+        while still randomizing which historical period contributes and
+        how blocks are stitched together across the simulated path.
         """
         if not self.trades:
             return {"error": 0.0}
@@ -41,10 +62,20 @@ class MonteCarloSimulator:
         final_equities = []
         max_drawdowns = []
         ruin_count = 0  # Number of times capital dropped below 50%
+        n = len(self.trades)
+        effective_block_size = max(1, min(block_size, n))
 
         for _ in range(num_simulations):
-            # Bootstrap trades with replacement
-            sampled_trades = random.choices(self.trades, k=num_trades_per_sim)
+            # Block bootstrap: assemble the path from contiguous runs of
+            # trades (preserving their original order/clustering within
+            # each block) rather than drawing every trade independently.
+            sampled_trades: List[float] = []
+            while len(sampled_trades) < num_trades_per_sim:
+                start = random.randint(0, n - 1)
+                for offset in range(effective_block_size):
+                    sampled_trades.append(self.trades[(start + offset) % n])
+                    if len(sampled_trades) >= num_trades_per_sim:
+                        break
             
             capital = self.initial_capital
             peak_capital = self.initial_capital
