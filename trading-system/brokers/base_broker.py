@@ -171,6 +171,35 @@ class BaseBroker(ABC):
     def get_order_book(self) -> List[OrderBookEntry]:
         """Return today's orders (pending + completed)."""
 
+    def _find_matching_pending_order(self, request: OrderRequest) -> Optional[OrderResponse]:
+        """Best-effort check for an order matching ``request`` already sitting
+        in the broker's order book, used by place_order() retry loops to
+        avoid duplicate submissions when a previous attempt failed
+        client-side (timeout, dropped response) but may have actually
+        reached the broker. Matches on symbol/side/quantity only (most
+        broker APIs don't return a client-correlatable timestamp we can
+        trust), so it's not perfectly precise if an identical order was
+        legitimately placed moments earlier by something else — but
+        under-counting here is far safer than the duplicate-order risk
+        this replaces. Shared across all broker adapters (moved here from
+        FyersBroker, which was previously the only adapter with retry
+        logic at all) so Kite/Angel's retry loops don't duplicate the
+        same matching logic a second and third time.
+        """
+        try:
+            order_book = self.get_order_book()
+        except Exception:
+            return None
+        non_terminal = (OrderStatus.OPEN, OrderStatus.PENDING, OrderStatus.PARTIAL, OrderStatus.COMPLETE)
+        for o in order_book:
+            if (o.symbol == request.symbol and o.side == request.side
+                    and o.quantity == request.quantity and o.status in non_terminal):
+                return OrderResponse(
+                    order_id=o.order_id, status=o.status, symbol=o.symbol,
+                    quantity=o.quantity, side=o.side, raw=o.raw,
+                )
+        return None
+
     # ------------------------------------------------------------------
     # Market data
     # ------------------------------------------------------------------

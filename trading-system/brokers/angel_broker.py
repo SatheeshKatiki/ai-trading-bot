@@ -146,27 +146,52 @@ class AngelBroker(BaseBroker):
             "triggerprice": str(request.trigger_price),
             "quantity":     str(request.quantity),
         }
-        try:
-            resp = self._smart.placeOrder(order_params)
-            if resp.get("status") is False:
-                raise OrderRejectedError(
-                    resp.get("message", "Order rejected"), broker_id=self.BROKER_ID, raw_response=resp
+        # Retry loop for transient broker API errors. Root-cause fix (Medium
+        # audit finding): this previously had zero retry logic at all — any
+        # transient network blip (timeout, dropped connection) permanently
+        # failed the order attempt, unlike Fyers (which retries but needs an
+        # idempotency check to avoid duplicate orders — see
+        # BaseBroker._find_matching_pending_order). A genuine broker-side
+        # rejection (resp["status"] is False) is NOT retried — retrying an
+        # order the broker already looked at and rejected would just fail
+        # again for the same reason.
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                resp = self._smart.placeOrder(order_params)
+                if resp.get("status") is False:
+                    raise OrderRejectedError(
+                        resp.get("message", "Order rejected"), broker_id=self.BROKER_ID, raw_response=resp
+                    )
+                order_id = resp.get("data", {}).get("orderid", "")
+                return OrderResponse(
+                    order_id=order_id,
+                    status=OrderStatus.OPEN,
+                    symbol=request.symbol,
+                    quantity=request.quantity,
+                    side=request.side,
+                    raw=resp,
                 )
-            order_id = resp.get("data", {}).get("orderid", "")
-            return OrderResponse(
-                order_id=order_id,
-                status=OrderStatus.OPEN,
-                symbol=request.symbol,
-                quantity=request.quantity,
-                side=request.side,
-                raw=resp,
-            )
-        except OrderRejectedError:
-            raise
-        except Exception as exc:
-            raise BrokerConnectionError(
-                f"Angel place_order failed: {exc}", broker_id=self.BROKER_ID
-            ) from exc
+            except OrderRejectedError:
+                raise
+            except Exception as exc:
+                existing = self._find_matching_pending_order(request)
+                if existing is not None:
+                    logger.warning(
+                        "Angel place_order raised %s but a matching order %s "
+                        "already exists in the order book — the broker "
+                        "likely received the previous attempt. Returning it "
+                        "instead of resubmitting to avoid a duplicate order.",
+                        exc, existing.order_id,
+                    )
+                    return existing
+                if attempt < max_retries - 1:
+                    logger.warning(f"Angel place_order failed, retrying ({attempt+1}/{max_retries})... Error: {exc}")
+                    time.sleep(0.5)
+                else:
+                    raise BrokerConnectionError(
+                        f"Angel place_order failed after {max_retries} attempts: {exc}", broker_id=self.BROKER_ID
+                    ) from exc
 
     def cancel_order(self, order_id: str) -> Dict[str, Any]:
         if self.paper_mode:
@@ -260,6 +285,28 @@ class AngelBroker(BaseBroker):
             raise MarketDataError(
                 f"Angel get_order_book failed: {exc}", broker_id=self.BROKER_ID
             ) from exc
+
+    def get_order_status(self, order_id: str) -> Optional[OrderBookEntry]:
+        """Fetch the exact status and fill details for a specific order ID.
+
+        Root-cause fix: this abstract method (required by BaseBroker) was
+        never implemented here, which meant AngelBroker could not even be
+        instantiated (Python raises TypeError for an incomplete ABC
+        subclass) — discovered while adding retry logic to place_order(),
+        which itself doesn't need this method, but a broker that can't be
+        constructed at all is a more fundamental problem than missing
+        retries. Implemented as a thin filter over the already-correct
+        get_order_book(), mirroring FyersBroker's identical pattern —
+        reuses proven parsing logic rather than adding new, untestable
+        SDK call surface.
+        """
+        if self.paper_mode:
+            return None
+        orders = self.get_order_book()
+        for order in orders:
+            if order.order_id == order_id:
+                return order
+        return None
 
     # ------------------------------------------------------------------
     # Market data
