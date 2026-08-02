@@ -649,13 +649,34 @@ class FyersBroker(BaseBroker):
         import websockets
         import os
         os.environ["NO_PROXY"] = "localhost,127.0.0.1"
-        
+
+        # Root-cause fix: /ws/live has required a valid session ?token=
+        # ever since the Critical #2 auth-gate fix went in (api_bridge.py's
+        # require_session_auth doesn't cover WebSocket handshakes, so the
+        # route checks a query-param token itself instead). The frontend's
+        # browser client already goes through /api/ws-token for this, but
+        # this internal, same-machine, backend-to-backend connection never
+        # sent any token at all — meaning the live engine has never
+        # actually been able to receive a single real tick since that fix
+        # landed, silently retrying this connection forever. Mint one
+        # internal session token once (reused across reconnects, not
+        # re-created every retry) via the same file-backed session store
+        # api_bridge.py's validate_session() reads.
+        from shared.security.sessions import create_session
+        # Longer TTL than the human-login default (7 days) since this
+        # process is meant to run unattended for extended stretches
+        # (e.g. a multi-week paper-trading validation window) — a token
+        # expiring mid-run would silently drop back into the same
+        # never-receiving-ticks failure mode this fix addresses.
+        internal_token = create_session("trading_engine_internal", ttl_seconds=90 * 24 * 60 * 60)
+        ws_url = f"ws://127.0.0.1:8000/ws/live?token={internal_token}"
+
         while True:
             try:
                 if on_reconnect:
                     await on_reconnect()
                 async with websockets.connect(
-                    "ws://127.0.0.1:8000/ws/live",
+                    ws_url,
                     ping_interval=20,
                     ping_timeout=20
                 ) as ws:
