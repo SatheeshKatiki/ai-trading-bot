@@ -17,8 +17,14 @@ export async function POST(request: Request) {
         if (!res.ok) {
             const err = await res.text();
             console.error("Order Execution failed:", err);
+            let data: unknown;
+            try {
+                data = JSON.parse(err);
+            } catch {
+                data = { error: "Order execution failed", details: err };
+            }
             return NextResponse.json(
-                { error: "Order execution failed" },
+                data,
                 { status: res.status }
             );
         }

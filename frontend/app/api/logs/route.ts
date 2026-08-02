@@ -10,7 +10,8 @@ export async function GET(request: Request) {
     const res = await fetch(url, { headers: await getAuthHeaders() });
     
     if (!res.ok) {
-      return NextResponse.json({ error: 'Backend error' }, { status: res.status });
+      const data = await res.json().catch(() => ({ error: 'Backend error' }));
+      return NextResponse.json(data, { status: res.status });
     }
     const data = await res.json();
     return NextResponse.json(data);

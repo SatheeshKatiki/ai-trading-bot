@@ -11,7 +11,8 @@ export async function GET(request: Request) {
     const res = await fetch(url, { cache: "no-store", next: { revalidate: 0 }, headers: await getAuthHeaders() });
     
     if (!res.ok) {
-      return NextResponse.json({ error: "Backend error" }, { status: res.status });
+      const data = await res.json().catch(() => ({ error: "Backend error" }));
+      return NextResponse.json(data, { status: res.status });
     }
     
     const data = await res.json();

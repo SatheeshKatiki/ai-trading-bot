@@ -19,7 +19,8 @@ export async function POST(request: Request) {
     const res = await fetch(`${BACKEND_URL}/api/panic-exit`, fetchOptions);
     
     if (!res.ok) {
-      return NextResponse.json({ error: 'Backend error' }, { status: res.status });
+      const data = await res.json().catch(() => ({ error: 'Backend error' }));
+      return NextResponse.json(data, { status: res.status });
     }
     const data = await res.json();
     return NextResponse.json(data);
