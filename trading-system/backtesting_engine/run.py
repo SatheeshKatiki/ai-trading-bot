@@ -41,6 +41,20 @@ import pandas as pd
 
 from trading_bot.strategies.marl_strategy import generate_signals
 
+
+def _compute_profit_factor(total_profit: float, total_loss: float) -> str:
+    """stats["profitFactor"] as a string in every case (not just the
+    zero-loss "Infinity" case) so it has one consistent JSON type for
+    every consumer -- a raw float `inf` isn't valid JSON (json.dumps
+    would emit a bare `Infinity` token that JS's JSON.parse can't read,
+    breaking the entire response), and previously mixing str ("Infinity")
+    with float (round(...) or 0.0) across branches meant callers
+    couldn't rely on either type. Pulled out as its own function so it's
+    directly unit-testable without running a full backtest."""
+    if total_loss == 0:
+        return "Infinity" if total_profit > 0 else "0.0"
+    return str(round(total_profit / total_loss, 2))
+
 def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital: float = 100000.0,
                            slippage_bps: float = 2.0, commission_per_trade: float = 20.0, multiplier: int = 10,
                            options_delta: float = 0.5,
@@ -584,11 +598,7 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
         if not downside_pnl.empty and downside_pnl.std() > 0:
             sortino_ratio = (mean_pnl / downside_pnl.std()) * np.sqrt(252)
             
-    # Fix Profit Factor displaying massive integers
-    if total_loss == 0:
-        profit_factor = "Infinity" if total_profit > 0 else 0.0
-    else:
-        profit_factor = round(total_profit / total_loss, 2)
+    profit_factor = _compute_profit_factor(total_profit, total_loss)
         
     # Calculate Max Drawdown
     peak = initial_capital
