@@ -64,8 +64,21 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
     feat["price_vs_ema21"] = (close - ema21) / ema21 * 100
 
     # --- RSI feature ---
-    feat["rsi_14"] = rsi(close, window=14)
-    feat["rsi_7"] = rsi(close, window=7)
+    # rsi()'s ewm(adjust=False)-based smoothing does not produce NaN
+    # during its warm-up period (see shared/indicators/rsi.py's
+    # docstring) — its first `window` values are numerically valid but
+    # come from a still-converging average, which would otherwise reach
+    # this function's ML feature matrix as noise the feat.dropna() call
+    # below is specifically meant to filter out. Mask them explicitly so
+    # dropna() actually removes them, matching this function's own
+    # documented "rows with NaN (warmup period) are dropped" contract.
+    rsi_14 = rsi(close, window=14)
+    rsi_14.iloc[:14] = np.nan
+    feat["rsi_14"] = rsi_14
+
+    rsi_7 = rsi(close, window=7)
+    rsi_7.iloc[:7] = np.nan
+    feat["rsi_7"] = rsi_7
 
     # --- Volatility features ---
     feat["atr_14"] = _atr(high, low, close, window=14)
