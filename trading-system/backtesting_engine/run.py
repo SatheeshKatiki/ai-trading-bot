@@ -231,6 +231,17 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
     capital_protection_mode = False   # True = half-size positions
     capital_protection_halt = False   # True = no new entries
     # ─────────────────────────────────────────────────────────────────────
+    # Root-cause fix (Medium audit finding): "Dynamic Capital Compounding"
+    # (below) scales position size up as running capital grows during the
+    # backtest, which is a legitimate sizing strategy but makes headline
+    # return metrics path-dependent — a lucky early streak compounds into
+    # larger later bets, inflating total P&L beyond what the strategy's
+    # per-trade edge alone would produce, in a way that isn't obvious from
+    # the stats dict alone. Track the peak multiplier actually reached so
+    # it's visible in the returned stats instead of silently baked into
+    # the headline numbers with no way to tell it happened.
+    max_compound_factor_reached = 1.0
+    # ─────────────────────────────────────────────────────────────────────
 
     def apply_slippage(price, side):
         slip_amt = price * (slippage_bps / 10000)
@@ -611,6 +622,7 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
                     max_cap = kwargs.get("max_compounding_multiplier", 5.0)
                     compound_factor = min(max_cap, max(1.0, capital / initial_capital))
                     base_mult = int(base_mult * compound_factor)
+                    max_compound_factor_reached = max(max_compound_factor_reached, compound_factor)
                 
                 actual_mult = base_mult
                 # Capital Protection: Reduce position size during losing streaks
@@ -650,6 +662,7 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
                     max_cap = kwargs.get("max_compounding_multiplier", 5.0)
                     compound_factor = min(max_cap, max(1.0, capital / initial_capital))
                     base_mult = int(base_mult * compound_factor)
+                    max_compound_factor_reached = max(max_compound_factor_reached, compound_factor)
                 
                 actual_mult = base_mult
                 # Capital Protection: Reduce position size during losing streaks
@@ -736,7 +749,17 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
         "stoplossPct": stoploss_pct, # Dynamic Echo
         "donchianPeriod": kwargs.get("donchian_period", 10),
         "totalBrokerage": round(total_brokerage, 2),
-        "totalSlippage": round(total_slippage, 2)
+        "totalSlippage": round(total_slippage, 2),
+        # Root-cause fix (Medium audit finding): Dynamic Capital
+        # Compounding scales position size up as running capital grows,
+        # which makes headline return metrics path-dependent (a lucky
+        # early streak compounds into larger later bets). Surface whether
+        # it was active and how much it actually scaled position size by
+        # peak, so a reader of these stats can tell whether — and how
+        # much — compounding inflated netProfit/final capital beyond what
+        # fixed-size position sizing would have produced.
+        "compoundingEnabled": bool(kwargs.get("enable_compounding", True)),
+        "maxCompoundFactorReached": round(max_compound_factor_reached, 2),
     }
     
     return {
