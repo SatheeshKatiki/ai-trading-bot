@@ -587,7 +587,7 @@ export default function Backtest() {
                   <select 
                     value={strategy}
                     onChange={(e) => setStrategy(e.target.value)}
-                    className="w-full bg-muted/30 border border-border/50 rounded-lg pl-10 pr-3 py-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                    className="w-full bg-muted/30 border border-border/50 rounded-lg pl-10 pr-8 py-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary text-ellipsis"
                     style={{ background: 'var(--card)', color: 'var(--foreground)' }}
                   >
                     <option value="ema_rsi">EMA + RSI (Classic)</option>
@@ -631,7 +631,7 @@ export default function Backtest() {
                   <select 
                     value={datePreset}
                     onChange={(e) => handlePresetChange(e.target.value)}
-                    className="w-full bg-muted/30 border border-border/50 rounded-lg pl-10 pr-3 py-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                    className="w-full bg-muted/30 border border-border/50 rounded-lg pl-10 pr-8 py-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary text-ellipsis"
                     style={{ background: 'var(--card)', color: 'var(--foreground)' }}
                   >
                     <option value="custom">Custom Date Range</option>

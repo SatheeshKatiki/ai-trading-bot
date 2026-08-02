@@ -6,15 +6,24 @@
 # ---------------------------------------------------------------------------
 # SECRETS — encryption keys & credentials  [NEVER COMMIT]
 # ---------------------------------------------------------------------------
-.broker.key                   # Fernet encryption key (auto-generated)
-broker_credentials.json       # Encrypted broker API keys
-dashboard_auth.json           # Hashed dashboard password
-users.json                    # User accounts (password hashes)
-sessions.json                 # Active login session tokens
-.fyers_tokens.json            # Cached Fyers access token
-.kite_tokens.json             # Cached Kite access token
-.vault_passphrase             # SecurityVault master passphrase (auto-generated)
-.vault_salt                   # SecurityVault PBKDF2 salt (auto-generated)
+# Fernet encryption key (auto-generated)
+.broker.key
+# Encrypted broker API keys
+broker_credentials.json
+# Hashed dashboard password
+dashboard_auth.json
+# User accounts (password hashes)
+users.json
+# Active login session tokens
+sessions.json
+# Cached Fyers access token
+.fyers_tokens.json
+# Cached Kite access token
+.kite_tokens.json
+# SecurityVault master passphrase (auto-generated)
+.vault_passphrase
+# SecurityVault PBKDF2 salt (auto-generated)
+.vault_salt
 *.token
 *.key
 *.pem
@@ -35,8 +44,13 @@ sessions.json                 # Active login session tokens
 # ---------------------------------------------------------------------------
 state.json
 settings.json
-state.db               # Live equity/PnL/trade history (also covered by root *.db, spelled out for clarity)
-data/state.db           # Orphaned duplicate from an earlier path layout — not read/written anywhere
+# Live equity/PnL/trade history (also covered by root *.db, spelled out for clarity)
+state.db
+# SQLite WAL sidecars — root *.db doesn't match the "-wal"/"-shm" suffix
+state.db-wal
+state.db-shm
+# Orphaned duplicate from an earlier path layout — not read/written anywhere
+data/state.db
 
 # ---------------------------------------------------------------------------
 # Audit logs (append-only, may contain order details)

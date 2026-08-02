@@ -222,11 +222,6 @@ select option {
   padding: 10px;
 }
 
-input:focus, select:focus {
-  border-color: var(--primary) !important;
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2) !important;
-}
-
 /* Institutional Terminal Animations */
 @keyframes marquee {
   0% { transform: translateX(0); }
@@ -238,6 +233,18 @@ input:focus, select:focus {
 }
 
 .animate-marquee:hover {
+  animation-play-state: paused;
+}
+
+/* Used by LiveTicker (components/live-ticker.tsx) — was previously
+   referenced with no matching definition anywhere, so the ticker never
+   scrolled and permanently clipped whatever symbol landed at the
+   container's right edge. */
+.animate-marquee-slower {
+  animation: marquee 45s linear infinite;
+}
+
+.animate-marquee-slower:hover {
   animation-play-state: paused;
 }
 

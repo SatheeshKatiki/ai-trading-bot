@@ -155,7 +155,7 @@ export default function Analytics() {
                 <Zap className="w-4 h-4 text-warning" />
                 <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Expectancy</span>
               </div>
-              <div className="text-3xl font-bold font-mono tracking-tight text-foreground">₹{stats.expectancy.toLocaleString('en-IN')}</div>
+              <div className="text-3xl font-bold font-mono tracking-tight text-foreground">₹{stats.expectancy.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
               <p className="text-xs font-bold text-muted-foreground mt-2 tracking-wide">PER TRADE AVERAGE</p>
             </motion.div>
 
@@ -244,28 +244,35 @@ export default function Analytics() {
               </div>
               <div className="h-full min-h-[250px]">
                 <ResponsiveContainer width="100%" height="100%">
-                  <RechartsBarChart data={dayOfWeekData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                  <RechartsBarChart data={dayOfWeekData} margin={{ top: 10, right: 10, left: 4, bottom: 0 }}>
                     <defs>
-                      <linearGradient id="barGradient" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor="var(--primary)" stopOpacity={1} />
-                        <stop offset="100%" stopColor="var(--primary)" stopOpacity={0.4} />
+                      <linearGradient id="barGradientWin" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="var(--success)" stopOpacity={1} />
+                        <stop offset="100%" stopColor="var(--success)" stopOpacity={0.4} />
+                      </linearGradient>
+                      <linearGradient id="barGradientLoss" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="var(--destructive)" stopOpacity={0.4} />
+                        <stop offset="100%" stopColor="var(--destructive)" stopOpacity={1} />
                       </linearGradient>
                     </defs>
                     <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" strokeOpacity={0.5} vertical={false} />
                     <XAxis dataKey="day" stroke="var(--muted-foreground)" fontSize={11} tickLine={false} axisLine={false} dy={10} />
-                    <YAxis stroke="var(--muted-foreground)" fontSize={11} tickLine={false} axisLine={false} tickFormatter={(value) => `₹${value}`} />
-                    <Tooltip 
+                    <YAxis stroke="var(--muted-foreground)" fontSize={11} tickLine={false} axisLine={false} tickFormatter={(value) => `₹${value}`} width={64} />
+                    <Tooltip
                       contentStyle={{ backgroundColor: "var(--card)", borderColor: "var(--border)", borderRadius: "12px", boxShadow: "0 8px 32px rgba(0,0,0,0.12)" }}
                       labelStyle={{ color: "var(--muted-foreground)", fontWeight: "bold", marginBottom: "4px" }}
-                      itemStyle={{ color: "var(--primary)", fontWeight: "bold" }}
+                      formatter={(value) => [`₹${value}`, "PnL"]}
                       cursor={{ fill: 'var(--muted)', opacity: 0.2 }}
                     />
-                    <Bar 
-                      dataKey="pnl" 
-                      fill="url(#barGradient)"
+                    <Bar
+                      dataKey="pnl"
                       radius={[6, 6, 0, 0]}
                       maxBarSize={60}
-                    />
+                    >
+                      {dayOfWeekData.map((entry, index) => (
+                        <Cell key={`day-cell-${index}`} fill={entry.pnl >= 0 ? "url(#barGradientWin)" : "url(#barGradientLoss)"} />
+                      ))}
+                    </Bar>
                   </RechartsBarChart>
                 </ResponsiveContainer>
               </div>
@@ -325,7 +332,7 @@ export default function Analytics() {
                       <span className="text-[10px] uppercase tracking-wider text-muted-foreground font-bold mb-1 block">Longest Winning Streak</span>
                       <div className="text-xl font-bold text-success font-mono drop-shadow-[0_0_8px_rgba(16,185,129,0.2)]">{streaks.winning.count} Trades</div>
                     </div>
-                    <div className="text-sm font-bold text-foreground">Generated ₹{streaks.winning.value.toLocaleString('en-IN')}</div>
+                    <div className="text-sm font-bold text-foreground">Generated ₹{streaks.winning.value.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
                   </div>
 
                   <div className="flex justify-between items-center p-4 bg-muted/10 rounded-xl border border-border/30 hover:border-destructive/30 transition-colors">
@@ -333,7 +340,7 @@ export default function Analytics() {
                       <span className="text-[10px] uppercase tracking-wider text-muted-foreground font-bold mb-1 block">Longest Losing Streak</span>
                       <div className="text-xl font-bold text-destructive font-mono drop-shadow-[0_0_8px_rgba(239,68,68,0.2)]">{streaks.losing.count} Trades</div>
                     </div>
-                    <div className="text-sm font-bold text-foreground">Lost ₹{streaks.losing.value.toLocaleString('en-IN')}</div>
+                    <div className="text-sm font-bold text-foreground">Lost ₹{streaks.losing.value.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
                   </div>
 
                   <div className="flex justify-between items-center p-4 bg-muted/10 rounded-xl border border-border/30 hover:border-primary/30 transition-colors">

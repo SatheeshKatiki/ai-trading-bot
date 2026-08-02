@@ -285,7 +285,7 @@ export default function Dashboard() {
           <div className="flex justify-between items-center">
             <div>
               <h1 className="font-display font-extrabold text-2xl text-foreground tracking-tight">Institutional Terminal</h1>
-              <p className="text-xs text-muted-foreground">Portfolio Exposure: <span className="text-primary font-bold">₹{((positions.reduce((acc, p) => acc + (p.quantity * p.ltp), 0)) || (equity * 0.1)).toLocaleString('en-IN')}</span> | Risk Level: <span className="text-success font-bold">OPTIMAL</span></p>
+              <p className="text-xs text-muted-foreground">Portfolio Exposure: <span className="text-primary font-bold">₹{((positions.reduce((acc, p) => acc + (p.quantity * p.ltp), 0)) || (equity * 0.1)).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span> | Risk Level: <span className="text-success font-bold">OPTIMAL</span></p>
             </div>
             
             <div className="flex items-center gap-2">
@@ -351,7 +351,7 @@ export default function Dashboard() {
               </div>
               <div className="mt-2">
                 <div className="text-2xl font-bold font-mono text-foreground leading-none">
-                  ₹{equity.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                  ₹{equity.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </div>
                 <p className="text-[10px] text-muted-foreground mt-1 flex items-center gap-1">
                   <span className="text-success font-bold">+1.2%</span> vs yesterday
@@ -367,7 +367,7 @@ export default function Dashboard() {
               </div>
               <div className="mt-2">
                 <div className={`text-2xl font-bold font-mono leading-none ${pnl >= 0 ? "text-success" : "text-destructive"}`}>
-                  {pnl >= 0 ? "+" : ""}₹{pnl.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                  {pnl >= 0 ? "+" : ""}₹{pnl.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </div>
                 <p className="text-[10px] text-muted-foreground mt-1 flex items-center gap-1">
                   {pnl >= 0 ? <ArrowUpRight className="w-3 h-3 text-success" /> : <ArrowDownRight className="w-3 h-3 text-destructive" />}
@@ -501,7 +501,7 @@ export default function Dashboard() {
                           <td className="px-4 py-3 font-mono text-right text-muted-foreground">₹{pos.average_price.toFixed(2)}</td>
                           <td className="px-4 py-3 font-mono text-right font-bold text-foreground">₹{pos.ltp.toFixed(2)}</td>
                           <td className={`px-4 py-3 font-mono font-bold text-right ${pos.unrealized_pnl >= 0 ? "text-success" : "text-destructive"}`}>
-                            {pos.unrealized_pnl >= 0 ? "+" : ""}₹{pos.unrealized_pnl.toLocaleString('en-IN')}
+                            {pos.unrealized_pnl >= 0 ? "+" : ""}₹{pos.unrealized_pnl.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                           </td>
                         </tr>
                       ))}
