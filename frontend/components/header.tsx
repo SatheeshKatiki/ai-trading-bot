@@ -221,6 +221,20 @@ export default function Header() {
   const [isSystemHalted, setIsSystemHalted] = useState(false);
   const [isKillSwitchExecuting, setIsKillSwitchExecuting] = useState(false);
 
+  // Logged-in user profile — populated from the cache auth-provider.tsx
+  // writes on successful /api/auth/me verification (see its
+  // "mana_ai_user_profile" localStorage write). Previously this dropdown
+  // just showed a hardcoded "Trader X" / placeholder email; that cache
+  // already existed and was even cleared here on logout, but was never
+  // actually read to display the real user.
+  const [userProfile, setUserProfile] = useState<{ name?: string; email?: string } | null>(null);
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("mana_ai_user_profile");
+      if (raw) setUserProfile(JSON.parse(raw));
+    } catch {}
+  }, []);
+
   // Real-time P&L from WebSocket store (isolated selector — no full re-render)
   const totalPnl           = useLiveMarketStore(state => state.totalPnl);
   const unrealizedPnl      = useLiveMarketStore(state => state.unrealizedPnl);
@@ -568,7 +582,7 @@ export default function Header() {
                 <User className="w-5 h-5 text-white" />
               </div>
               <div className="hidden md:block">
-                <p className="text-sm font-bold text-foreground leading-none mb-1">Trader X</p>
+                <p className="text-sm font-bold text-foreground leading-none mb-1">{userProfile?.name || "Trader"}</p>
                 <p className="text-[10px] uppercase tracking-wider text-primary font-bold">Ultra Pro</p>
               </div>
             </motion.div>
@@ -584,8 +598,8 @@ export default function Header() {
                   className="absolute right-0 mt-2 w-56 bg-card border border-border/50 rounded-xl shadow-2xl overflow-hidden z-50 backdrop-blur-2xl"
                 >
                   <div className="px-4 py-4 border-b border-border/50 bg-muted/10">
-                    <p className="text-sm font-bold text-foreground">Trader X</p>
-                    <p className="text-xs text-muted-foreground mt-0.5">quant.trader@ai.bot</p>
+                    <p className="text-sm font-bold text-foreground">{userProfile?.name || "Trader"}</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">{userProfile?.email || "—"}</p>
                   </div>
                   <div className="py-2">
                     <button className="w-full text-left px-4 py-2 text-sm text-foreground hover:bg-muted transition-colors flex items-center gap-3">
