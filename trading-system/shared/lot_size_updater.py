@@ -101,8 +101,20 @@ async def update_lot_sizes_in_settings():
 
             logger.info(f"Successfully fetched lot sizes: {lot_sizes}")
             
-            # Read existing settings
-            settings_path = os.path.join(os.path.dirname(__file__), "..", "settings.json")
+            # Read existing settings.
+            # Root-cause fix (Medium audit finding): three separate
+            # settings.json files exist in this repo with no documented
+            # source of truth. This used to read+write
+            # trading-system/settings.json (a legacy file), while the live
+            # engine, broker_factory, and api_bridge all read
+            # trading-system/config/settings.json — meaning lot sizes
+            # persisted here never reached the dashboard/live engine's view
+            # of settings. Standardized on config/settings.json, the file
+            # every other real consumer already treats as canonical; the
+            # existing read-merge-write logic below already preserves every
+            # other key already in that file (active_strategy,
+            # stoploss_pct, etc.) — only "lot_sizes" is touched.
+            settings_path = os.path.join(os.path.dirname(__file__), "..", "config", "settings.json")
             settings = {}
             if os.path.exists(settings_path):
                 try:

@@ -220,11 +220,21 @@ class BaseBroker(ABC):
         Default implementation attempts to infer from typical equity (1) or uses
         a safe fallback for indices.
         """
-        # Attempt to read from settings.json dynamic fetch
+        # Attempt to read from settings.json dynamic fetch.
+        # Root-cause fix (Medium audit finding): three separate settings.json
+        # files exist in this repo with no documented source of truth. This
+        # used to read trading-system/settings.json (a legacy file), while
+        # the live engine, broker_factory, and api_bridge all read
+        # trading-system/config/settings.json — a real functional bug, not
+        # just a style issue: lot sizes fetched/persisted via
+        # shared/lot_size_updater.py never reached this fallback read (or
+        # vice versa) because they were two different files. Standardized
+        # on trading-system/config/settings.json, the one every other
+        # consumer already treats as canonical.
         try:
             import os
             import json
-            settings_path = os.path.join(os.path.dirname(__file__), "..", "settings.json")
+            settings_path = os.path.join(os.path.dirname(__file__), "..", "config", "settings.json")
             if os.path.exists(settings_path):
                 with open(settings_path, 'r') as f:
                     settings = json.load(f)

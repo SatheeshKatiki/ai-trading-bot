@@ -87,11 +87,16 @@ def _fetch_dynamic_lot_size(instrument: str, default_lot_size: int) -> int:
     except Exception as e:
         logger.warning("Failed to fetch dynamic lot size from broker for %s: %s", instrument, e)
         
-    # Read from settings.json as fallback
+    # Read from settings.json as fallback.
+    # Root-cause fix (Medium audit finding): standardized on
+    # trading-system/config/settings.json (the file every other real
+    # consumer treats as canonical) instead of the legacy
+    # trading-system/settings.json this used to read — see
+    # shared/lot_size_updater.py and brokers/base_broker.py for the same fix.
     try:
         import os
         import json
-        settings_path = os.path.join(os.path.dirname(__file__), "..", "..", "..", "settings.json")
+        settings_path = os.path.join(os.path.dirname(__file__), "..", "..", "..", "config", "settings.json")
         if os.path.exists(settings_path):
             with open(settings_path, 'r') as f:
                 settings = json.load(f)
