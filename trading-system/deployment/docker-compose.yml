@@ -33,6 +33,20 @@ services:
       - ../models:/app/models
       - ../logs:/app/logs
     command: python -m trading_bot.main
+    # Resource caps: previously unbounded, so a runaway memory leak or
+    # OOM in the ML/DRL inference path (loading a PPO/MARL model, pandas
+    # dataframes) had nothing stopping it from consuming all host memory
+    # and taking down other containers/the host itself. `deploy.resources.limits`
+    # is honored outside swarm mode by the modern `docker compose` (v2)
+    # CLI; it's a silent no-op (not an error) under the legacy hyphenated
+    # `docker-compose` (v1) CLI outside swarm, so this is a safe addition
+    # either way. Tune these to actual host capacity/observed usage --
+    # these are conservative starting defaults, not measured limits.
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
 
   # The Streamlit Dashboard
   dashboard:
@@ -58,3 +72,10 @@ services:
       timeout: 5s
       retries: 3
       start_period: 15s
+    # See the trading-bot service's comment above for the
+    # docker-compose-version caveat on deploy.resources.limits.
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
