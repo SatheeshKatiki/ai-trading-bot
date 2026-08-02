@@ -208,7 +208,21 @@ def generate_signals(
     ema_50 = close.ewm(span=50, adjust=False).mean()
     ema_200 = close.ewm(span=200, adjust=False).mean()
     
-    # Export 21 EMA trailing stop for the backtester (matches live TieredExitManager)
+    # Export the runner-phase EMA reversal signal for the backtester
+    # (backtesting_engine/run.py reads this as `smart_stop_loss`). This
+    # approximates ONLY TieredExitManager's Phase 3 trailing-stop rule
+    # (exit when a candle closes on the wrong side of the runner EMA) —
+    # it does NOT model Phase 1's partial profit booking at 1:1 R:R with
+    # SL-to-breakeven, the exhaustion/chandelier-lock exit, or the AI-
+    # confidence early-exit check. A backtest of institutional_momentum
+    # therefore does not fully reproduce live P&L for this strategy; the
+    # generic engine has no notion of TieredExitManager's stateful,
+    # multi-phase partial-exit lifecycle. Root-cause note for the audit
+    # finding that this comment previously overstated as "(matches live
+    # TieredExitManager)" — fixing that mismatch for real would mean
+    # teaching the generic backtest engine to simulate partial-lot exits
+    # with dynamic SL adjustment, a materially larger change than this
+    # comment fix.
     from .config import RUNNER_EMA_PERIOD
     ema_runner = close.ewm(span=RUNNER_EMA_PERIOD, adjust=False).mean()
     df["st_direction"] = np.where(close > ema_runner, 1, -1)

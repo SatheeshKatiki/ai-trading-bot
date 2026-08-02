@@ -241,6 +241,13 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
         total_trading_days = 0
 
     sig_vals = signals.to_numpy()
+    # When present (currently only exported by
+    # trading_bot/strategies/momentum_strategy's generate_signals),
+    # st_direction approximates ONLY the Phase 3 trailing-stop rule of the
+    # live institutional_momentum strategy's TieredExitManager
+    # (exit_manager.py) — it does not model that manager's partial-lot
+    # profit booking, SL-to-breakeven, exhaustion lock, or AI-confidence
+    # early exit. See the comment at st_direction's export site for detail.
     has_st = 'st_direction' in df.columns
     st_dirs = df['st_direction'].to_numpy() if has_st else np.zeros(len(df))
 
