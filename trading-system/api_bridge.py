@@ -128,6 +128,7 @@ app.add_middleware(
 from shared.security.sessions import validate_session
 from shared.security import audit
 from shared.security.audit_log import AuditEvent
+from shared.security.rate_limiter import ORDER_LIMITER
 
 _PUBLIC_PATHS = {
     "/health",
@@ -671,7 +672,18 @@ async def execute_order(req: ExecuteOrderRequest, request: Request):
         # Ensure paper mode is set correctly from settings
         settings = _load_config_settings()
         broker.paper_mode = not settings.get("live_trading_mode", False)
-        
+
+        # Root-cause fix (load-testing finding): ORDER_LIMITER already gates
+        # every order the autonomous engine places on its own (main.py,
+        # iceberg_manager.py), but this manual/dashboard endpoint had no
+        # rate limit at all -- a runaway frontend retry loop or a script
+        # hammering this route could fire unbounded real orders with zero
+        # backend-side throttle once live_trading_mode is on. Same limiter,
+        # same live-only scope (paper orders never reach a real broker API,
+        # so there's nothing to rate-limit there).
+        if not broker.paper_mode and not ORDER_LIMITER.allow(broker.BROKER_ID):
+            raise HTTPException(status_code=429, detail="Order rate limit exceeded — please retry shortly.")
+
         from brokers import OrderRequest, OrderSide, OrderType, ProductType
         order_req = OrderRequest(
             symbol=req.symbol,
@@ -695,6 +707,8 @@ async def execute_order(req: ExecuteOrderRequest, request: Request):
         )
             
         return {"status": "success", "order_id": response.order_id, "message": response.message}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Order Execution Failed: {e}")
         raise HTTPException(status_code=500, detail='Order execution failed.')
