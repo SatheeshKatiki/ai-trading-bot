@@ -44,6 +44,19 @@ data/state.db           # Orphaned duplicate from an earlier path layout — not
 audit/
 
 # ---------------------------------------------------------------------------
+# Disaster-recovery backups — contain state.db, broker_credentials.json,
+# cached broker tokens, and the audit log verbatim  [NEVER COMMIT]
+# ---------------------------------------------------------------------------
+backups/
+
+# ---------------------------------------------------------------------------
+# Live position state — rewritten by the running engine on every
+# open/close; tracking it makes git status permanently dirty while live
+# and (lower severity, but still) can leak real position sizes/entries
+# ---------------------------------------------------------------------------
+config/active_positions.json
+
+# ---------------------------------------------------------------------------
 # Trained ML models (large binary files)
 # ---------------------------------------------------------------------------
 models/*.pkl
