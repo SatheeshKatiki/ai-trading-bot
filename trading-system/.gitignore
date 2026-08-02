@@ -51,6 +51,8 @@ models/*.joblib
 models/*.h5
 models/*.pt
 models/*.onnx
+lstm_memory.npz
+lstm_memory.pkl
 
 # ---------------------------------------------------------------------------
 # Data files (historical OHLCV — can be large)

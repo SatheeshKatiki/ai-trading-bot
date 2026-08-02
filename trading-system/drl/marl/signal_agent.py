@@ -1,6 +1,5 @@
 import logging
 import numpy as np
-import pickle
 import os
 from datetime import datetime, timezone, timedelta
 from drl.marl.base_agent import BaseAgent
@@ -141,23 +140,35 @@ class SignalAgent(BaseAgent):
             "source": self.name
         }
 
-    def save_state(self, filepath: str = "lstm_memory.pkl"):
+    def save_state(self, filepath: str = "lstm_memory.npz"):
         """Saves the LSTM recurrent state to disk, tagged with today's IST
         trading date, so a same-day restart can genuinely continue the
-        episode while a later restart knows to discard it as stale."""
+        episode while a later restart knows to discard it as stale.
+
+        Uses numpy's native .npz format rather than pickle. lstm_states is
+        always the 2-tuple of numpy arrays (hidden state, cell state)
+        RecurrentActorCriticPolicy.predict() returns -- there's no need for
+        pickle's ability to serialize arbitrary Python objects here, and
+        avoiding it closes an insecure-deserialization path (CWE-502): if
+        something with local write access ever substituted a crafted file
+        at this path, np.load(..., allow_pickle=False) can only ever
+        produce plain arrays, never execute arbitrary code, unlike
+        pickle.load on a tampered file.
+        """
         if self.lstm_states is not None:
             try:
-                payload = {
-                    "lstm_states": self.lstm_states,
-                    "saved_date_ist": datetime.now(_IST).strftime("%Y-%m-%d"),
-                }
-                with open(filepath, "wb") as f:
-                    pickle.dump(payload, f)
+                h, c = self.lstm_states
+                np.savez(
+                    filepath,
+                    h=h,
+                    c=c,
+                    saved_date_ist=np.array(datetime.now(_IST).strftime("%Y-%m-%d")),
+                )
                 logger.info(f"SignalAgent saved LSTM state to {filepath}")
             except Exception as e:
                 logger.error(f"SignalAgent failed to save LSTM state: {e}")
 
-    def load_state(self, filepath: str = "lstm_memory.pkl"):
+    def load_state(self, filepath: str = "lstm_memory.npz"):
         """Restores LSTM state saved earlier the SAME trading day only.
 
         A restart on a different day (or a legacy pre-dated state file with
@@ -169,29 +180,27 @@ class SignalAgent(BaseAgent):
         if not os.path.exists(filepath):
             return
         try:
-            with open(filepath, "rb") as f:
-                payload = pickle.load(f)
-
-            if isinstance(payload, dict) and "lstm_states" in payload:
-                saved_date = payload.get("saved_date_ist")
-                today = datetime.now(_IST).strftime("%Y-%m-%d")
-                if saved_date == today:
-                    self.lstm_states = payload["lstm_states"]
-                    self.episode_starts = np.array([False])  # genuine same-day continuation
-                    logger.info(f"SignalAgent restored same-day LSTM state from {filepath}")
+            with np.load(filepath, allow_pickle=False) as payload:
+                if "h" in payload and "c" in payload and "saved_date_ist" in payload:
+                    saved_date = payload["saved_date_ist"].item()
+                    today = datetime.now(_IST).strftime("%Y-%m-%d")
+                    if saved_date == today:
+                        self.lstm_states = (payload["h"], payload["c"])
+                        self.episode_starts = np.array([False])  # genuine same-day continuation
+                        logger.info(f"SignalAgent restored same-day LSTM state from {filepath}")
+                    else:
+                        logger.warning(
+                            "SignalAgent found LSTM state saved on %s (today is %s) — "
+                            "discarding it and starting a fresh episode instead of "
+                            "continuing recurrent state from a different market regime.",
+                            saved_date, today,
+                        )
                 else:
                     logger.warning(
-                        "SignalAgent found LSTM state saved on %s (today is %s) — "
-                        "discarding it and starting a fresh episode instead of "
-                        "continuing recurrent state from a different market regime.",
-                        saved_date, today,
+                        "SignalAgent found a legacy/malformed LSTM state file in %s — "
+                        "treating it as stale and starting a fresh episode.",
+                        filepath,
                     )
-            else:
-                logger.warning(
-                    "SignalAgent found a legacy LSTM state file with no date marker "
-                    "in %s — treating it as stale and starting a fresh episode.",
-                    filepath,
-                )
         except Exception as e:
             logger.error(f"SignalAgent failed to load LSTM state: {e}")
             self.lstm_states = None
