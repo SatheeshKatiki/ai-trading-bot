@@ -140,19 +140,25 @@ def _save_positions(positions: Dict[str, Position]) -> None:
     try:
         # Create a shallow copy to prevent RuntimeError if a background task mutates active_positions
         positions_copy = dict(positions)
+        # Root-cause fix (found running live paper trading): quantity/price
+        # fields can arrive here as numpy int64/float64 (position sizing
+        # runs through pandas/numpy internally) — json.dump only accepts
+        # native Python types and raises on a bare numpy scalar. int()/
+        # float() unwrap both numpy scalars and native types identically,
+        # so this is a no-op for the already-native case.
         data = {
             sym: {
                 "symbol": p.symbol,
-                "side": p.side,
-                "quantity": p.quantity,
-                "entry_price": p.entry_price,
+                "side": int(p.side),
+                "quantity": int(p.quantity),
+                "entry_price": float(p.entry_price),
                 "entry_time": getattr(p, "entry_time", ""),
-                "highest_price": getattr(p, "highest_price", p.entry_price),
-                "lowest_price": getattr(p, "lowest_price", p.entry_price),
-                "stop_loss": getattr(p, "stop_loss", 0.0),
-                "target": getattr(p, "target", 0.0),
-                "is_partially_booked": getattr(p, "is_partially_booked", False),
-                "scales_done": getattr(p, "scales_done", 0),
+                "highest_price": float(getattr(p, "highest_price", p.entry_price)),
+                "lowest_price": float(getattr(p, "lowest_price", p.entry_price)),
+                "stop_loss": float(getattr(p, "stop_loss", 0.0)),
+                "target": float(getattr(p, "target", 0.0)),
+                "is_partially_booked": bool(getattr(p, "is_partially_booked", False)),
+                "scales_done": int(getattr(p, "scales_done", 0)),
                 "sl_order_id": getattr(p, "sl_order_id", None)
             } for sym, p in positions_copy.items()
         }
@@ -1141,20 +1147,41 @@ async def run_live_bot(symbols: List[str]) -> None:
                         # ── Compute Entry Premium, Stop Loss, and Target ──
                         entry_premium = df["close"].iloc[-1] # Default to index price
                         side_str = "BUY CALL" if latest_signal == 1 else "BUY PUT"
-                        
+
                         is_option_trade = "CE" in entry_symbol or "PE" in entry_symbol
-                        
+
                         if is_option_trade:
-                            # Fetch the Live Option Premium to calculate P&L correctly
+                            # Root-cause fix (found running live paper trading):
+                            # entry_premium defaults to the INDEX close price
+                            # (tens of thousands), not an option premium (tens
+                            # to low hundreds). The old fallback silently kept
+                            # that index price as if it were the option's
+                            # premium whenever a live quote wasn't available,
+                            # which fed a ~100x-too-large entry_premium into
+                            # every downstream calculation (SL/target, order
+                            # value, position sizing) — this alone produced a
+                            # nonsensical ₹1.66M order-value that the max-
+                            # order-value guard then capped down to qty=0,
+                            # and the code placed a phantom zero-quantity
+                            # "entry" anyway. Skip the trade entirely instead:
+                            # a real trade needs a real premium, and a wrong
+                            # premium is worse than no trade.
+                            live_premium = None
                             try:
                                 live_quotes = broker.get_market_data([entry_symbol])
                                 if entry_symbol in live_quotes and live_quotes[entry_symbol].ltp > 0:
-                                    entry_premium = live_quotes[entry_symbol].ltp
-                                else:
-                                    logger.warning("Could not fetch live option premium for %s. Using index price as fallback.", entry_symbol)
+                                    live_premium = live_quotes[entry_symbol].ltp
                             except Exception as e:
                                 logger.error("Error fetching live option premium: %s", e)
-                                
+
+                            if live_premium is None:
+                                logger.warning(
+                                    "Could not fetch live option premium for %s — skipping this entry "
+                                    "rather than pricing it off the index level.", entry_symbol,
+                                )
+                                continue
+
+                            entry_premium = live_premium
                             # Option buying means we buy premium, so target is UP and SL is DOWN
                             sl_price = entry_premium * (1 - sl_pct)
                             tgt_price = entry_premium * (1 + target_pct)
@@ -1201,7 +1228,21 @@ async def run_live_bot(symbols: List[str]) -> None:
                         if (worst_case_fill_price * total_quantity) > max_order_val:
                             logger.warning(f"SECURITY GUARD: Order value ₹{worst_case_fill_price * total_quantity:,.2f} (worst-case fill) exceeds limit ₹{max_order_val:,.2f}. Capping lots.")
                             total_quantity = (int(max_order_val // worst_case_fill_price) // lot_size) * lot_size
-                        
+
+                        # Root-cause fix (found running live paper trading):
+                        # capping to less than one lot used to fall through
+                        # and place a phantom qty=0 "entry" instead of
+                        # rejecting the trade — not even one lot fits under
+                        # max_order_value at this price, so there's no valid
+                        # size to trade at all.
+                        if total_quantity <= 0:
+                            logger.warning(
+                                "SECURITY GUARD: not even one lot (%d) fits under max_order_value "
+                                "₹%.2f at worst-case fill ₹%.2f for %s — skipping entry.",
+                                lot_size, max_order_val, worst_case_fill_price, entry_symbol,
+                            )
+                            continue
+
                         if cap_protect_multiplier < 1.0:
                             logger.info(f"CAPITAL PROTECTION ACTIVE: Scaling position size to {cap_protect_multiplier*100}% ({total_quantity} shares)")
 
