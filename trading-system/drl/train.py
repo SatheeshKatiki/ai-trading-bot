@@ -6,34 +6,6 @@ from sb3_contrib import RecurrentPPO
 
 from trading_env import QuantAITradingEnv
 
-def generate_mock_data(rows=10000):
-    """
-    Generates mock trading data with basic indicators for testing the training pipeline.
-    In production, this should be replaced by loading a real CSV of historical data.
-    """
-    dates = pd.date_range(start="2023-01-01", periods=rows, freq="1min")
-    
-    # Simulate a random walk for price
-    returns = np.random.normal(loc=0.0001, scale=0.01, size=rows)
-    price = 100 * np.exp(np.cumsum(returns))
-    
-    df = pd.DataFrame({
-        'timestamp': dates,
-        'close': price,
-        'open': price * (1 + np.random.normal(0, 0.002, rows)),
-        'high': price * (1 + abs(np.random.normal(0, 0.005, rows))),
-        'low': price * (1 - abs(np.random.normal(0, 0.005, rows))),
-        'volume': np.random.randint(100, 10000, rows)
-    })
-    
-    # Mock Indicators (Features)
-    df['rsi'] = np.random.uniform(20, 80, rows)
-    df['macd'] = np.random.normal(0, 1, rows)
-    df['atr'] = np.random.uniform(0.5, 2.5, rows)
-    df['vol_delta'] = np.random.normal(0, 1000, rows)
-    
-    return df
-
 def evaluate_on_holdout(model, val_df: pd.DataFrame) -> dict:
     """Run a deterministic rollout of ``model`` through a fresh environment
     built ONLY from ``val_df`` (data the model never trained on) and report
@@ -73,7 +45,6 @@ def evaluate_on_holdout(model, val_df: pd.DataFrame) -> dict:
 
 def train_agent(val_fraction: float = 0.15):
     print("Loading historical data...")
-    # df = generate_mock_data(rows=20000)
     df = pd.read_csv("nifty_historical_data.csv")
 
     # ── Chronological train/validation split ──────────────────────────────
