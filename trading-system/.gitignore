@@ -60,6 +60,15 @@ lstm_memory.pkl
 data/*.csv
 data/*.parquet
 data/*.feather
+# drl/train.py loads this from the repo root, not data/ -- regenerated/
+# downloaded, shouldn't be committed.
+nifty_historical_data.csv
+
+# ---------------------------------------------------------------------------
+# RL training run artifacts (TensorBoard logs — large, regenerated per run)
+# ---------------------------------------------------------------------------
+ppo_trading_tensorboard/
+*_tensorboard/
 
 # ---------------------------------------------------------------------------
 # Python artefacts
