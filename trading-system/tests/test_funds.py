@@ -8,22 +8,28 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from brokers.token_cache import load_token
 
-# Load token
-token = load_token("fyers")
-if not token:
-    print("Error: no cached Fyers token found!")
-    exit(1)
 
-# App ID
-client_id = "0KHBQ6IQA4-100"
+def main():
+    # Load token
+    token = load_token("fyers")
+    if not token:
+        print("Error: no cached Fyers token found!")
+        exit(1)
 
-print(f"Using App ID: {client_id}")
-print("Fetching funds...")
+    # App ID
+    client_id = "0KHBQ6IQA4-100"
 
-try:
-    fyers = fyersModel.FyersModel(client_id=client_id, is_async=False, token=token, log_path="")
-    funds = fyers.funds() # Updated to funds()
-    print("\n=== Funds Response ===")
-    print(json.dumps(funds, indent=2))
-except Exception as e:
-    print(f"Error: {e}")
+    print(f"Using App ID: {client_id}")
+    print("Fetching funds...")
+
+    try:
+        fyers = fyersModel.FyersModel(client_id=client_id, is_async=False, token=token, log_path="")
+        funds = fyers.funds() # Updated to funds()
+        print("\n=== Funds Response ===")
+        print(json.dumps(funds, indent=2))
+    except Exception as e:
+        print(f"Error: {e}")
+
+
+if __name__ == "__main__":
+    main()
