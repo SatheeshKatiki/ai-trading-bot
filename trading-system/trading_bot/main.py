@@ -83,6 +83,7 @@ _evaluating_symbols: set[str] = set()
 
 # Broker layer — broker-agnostic: trading logic never imports vendor SDKs directly
 from brokers import BrokerFactory, OrderRequest, OrderSide, OrderType, OrderStatus
+from trading_bot.reconciliation import compute_reconciliation
 from trading_bot.strategies.registry import registry
 from trading_bot.strategies.premium_selection import (
     PremiumSignalEngine, PremiumSignal, generate_signals as premium_signals
@@ -1361,7 +1362,6 @@ async def run_live_bot(symbols: List[str]) -> None:
         logger.info("Re-syncing with broker state after WebSocket reconnect...")
         try:
             broker_positions = broker.get_positions()
-            broker_pos_dict = {p.symbol: p for p in broker_positions}
 
             # Fetch the order book once so any position found flat below can be
             # reconciled against what the broker actually filled, instead of
@@ -1376,58 +1376,33 @@ async def run_live_bot(symbols: List[str]) -> None:
                 logger.error("Could not fetch order book during reconciliation: %s", ob_exc)
                 order_book = []
 
-            for sym, local_pos in list(active_positions.items()):
-                # If local says we have a position, but broker says we don't or it's flat
-                if sym not in broker_pos_dict or broker_pos_dict[sym].quantity == 0:
-                    logger.warning("STATE MISMATCH: Local position %s exists but broker is flat. Resolving locally.", sym)
+            # Pure decision logic lives in trading_bot.reconciliation so it's
+            # unit-testable without a live broker or this closure's state —
+            # see tests/test_reconciliation.py.
+            for result in compute_reconciliation(active_positions, broker_positions, order_book):
+                logger.warning("STATE MISMATCH: Local position %s exists but broker is flat. Resolving locally.", result.symbol)
+                if result.is_estimate:
+                    logger.error(
+                        "RECONCILIATION: could not find %s's actual closing fill in the broker "
+                        "order book — falling back to the stop-loss price (%.2f) as an ESTIMATE. "
+                        "Recorded PNL for this trade may be inaccurate; verify manually.",
+                        result.symbol, result.exit_price,
+                    )
+                else:
+                    logger.info(
+                        "RECONCILIATION: resolved actual exit price for %s to %.2f from the broker order book.",
+                        result.symbol, result.exit_price,
+                    )
 
-                    # Match the same exit-side convention the live exit path uses
-                    # (options are always closed with a SELL; index/equity closes
-                    # opposite the position side).
-                    is_opt = "CE" in sym or "PE" in sym
-                    exit_side = OrderSide.SELL if is_opt else (OrderSide.SELL if local_pos.side == 1 else OrderSide.BUY)
+                portfolio_risk.update_pnl(result.pnl, risk_manager.current_equity)
+                risk_manager.record_trade(TradeRecord(
+                    result.symbol, result.trade_side,
+                    result.entry_price, result.exit_price, result.pnl, datetime.now(_IST).isoformat()
+                ))
+                record_trade(result.symbol, result.state_action, result.exit_price, datetime.now(_IST).isoformat(), qty=result.quantity)
 
-                    ltp_actual = None
-                    for entry in order_book:
-                        if (entry.symbol == sym and entry.side == exit_side
-                                and entry.status == OrderStatus.COMPLETE and entry.traded_price > 0):
-                            ltp_actual = entry.traded_price
-                            break
-
-                    if ltp_actual is not None:
-                        logger.info(
-                            "RECONCILIATION: resolved actual exit price for %s to %.2f from the broker order book.",
-                            sym, ltp_actual,
-                        )
-                    else:
-                        # Last-resort estimate only — the broker order book had
-                        # no matching completed fill (e.g. order history already
-                        # rolled off, or the position was closed by something
-                        # outside this order book). Loudly flag this as an
-                        # estimate rather than silently recording it as fact.
-                        ltp_actual = local_pos.stop_loss
-                        logger.error(
-                            "RECONCILIATION: could not find %s's actual closing fill in the broker "
-                            "order book — falling back to the stop-loss price (%.2f) as an ESTIMATE. "
-                            "Recorded PNL for this trade may be inaccurate; verify manually.",
-                            sym, ltp_actual,
-                        )
-
-                    pnl = (ltp_actual - local_pos.entry_price) * local_pos.quantity * local_pos.side
-                    
-                    portfolio_risk.update_pnl(pnl, risk_manager.current_equity)
-                    trade_side = "LONG" if local_pos.side == 1 else "SHORT"
-                    risk_manager.record_trade(TradeRecord(
-                        sym, trade_side,
-                        local_pos.entry_price, ltp_actual, pnl, datetime.now(_IST).isoformat()
-                    ))
-                    
-                    is_opt = "CE" in sym or "PE" in sym
-                    state_action = "SELL" if is_opt else ("SELL" if local_pos.side == 1 else "BUY")
-                    record_trade(sym, state_action, ltp_actual, datetime.now(_IST).isoformat(), qty=local_pos.quantity)
-                    
-                    del active_positions[sym]
-                    _save_positions(active_positions)
+                del active_positions[result.symbol]
+                _save_positions(active_positions)
         except Exception as e:
             logger.error("Failed to sync broker state: %s", e)
 
