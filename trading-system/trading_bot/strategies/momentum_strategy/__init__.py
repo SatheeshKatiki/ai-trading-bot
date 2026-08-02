@@ -208,7 +208,21 @@ def generate_signals(
     ema_50 = close.ewm(span=50, adjust=False).mean()
     ema_200 = close.ewm(span=200, adjust=False).mean()
     
-    # Export 21 EMA trailing stop for the backtester (matches live TieredExitManager)
+    # Export the runner-phase EMA reversal signal for the backtester
+    # (backtesting_engine/run.py reads this as `smart_stop_loss`). This
+    # approximates ONLY TieredExitManager's Phase 3 trailing-stop rule
+    # (exit when a candle closes on the wrong side of the runner EMA) —
+    # it does NOT model Phase 1's partial profit booking at 1:1 R:R with
+    # SL-to-breakeven, the exhaustion/chandelier-lock exit, or the AI-
+    # confidence early-exit check. A backtest of institutional_momentum
+    # therefore does not fully reproduce live P&L for this strategy; the
+    # generic engine has no notion of TieredExitManager's stateful,
+    # multi-phase partial-exit lifecycle. Root-cause note for the audit
+    # finding that this comment previously overstated as "(matches live
+    # TieredExitManager)" — fixing that mismatch for real would mean
+    # teaching the generic backtest engine to simulate partial-lot exits
+    # with dynamic SL adjustment, a materially larger change than this
+    # comment fix.
     from .config import RUNNER_EMA_PERIOD
     ema_runner = close.ewm(span=RUNNER_EMA_PERIOD, adjust=False).mean()
     df["st_direction"] = np.where(close > ema_runner, 1, -1)
@@ -322,15 +336,6 @@ def generate_signals(
     macd_hist_expanding_bull = (macd_hist > 0) & (macd_hist > macd_hist.shift(1))
     macd_hist_expanding_bear = (macd_hist < 0) & (macd_hist < macd_hist.shift(1))
 
-    # ATR-Adaptive Donchian — tighten period when ATR is spiking (volatile burst)
-    atr_ma50 = atr.rolling(50).mean()
-    atr_ratio = atr / atr_ma50.replace(0, atr_ma50.mean())
-    # During ATR spike (>1.3x avg): use tighter period to catch moves early
-    # During ATR quiet (<0.7x avg): use wider period to avoid false breakouts
-    adaptive_period = np.where(atr_ratio > 1.3, max(3, donchian_period - 3),
-                      np.where(atr_ratio < 0.7, min(20, donchian_period + 4), donchian_period))
-    adaptive_period_s = pd.Series(adaptive_period, index=df.index).astype(int)
-
     # Breakout Candle Body Quality — reject Doji/indecision candles
     candle_body = abs(close - df['open'])
     body_quality = candle_body / candle_range.replace(0, 0.00001)  # 0=pure doji, 1=marubozu
@@ -350,12 +355,8 @@ def generate_signals(
     if dt_series is not None:
         hour_min = dt_series.dt.hour * 60 + dt_series.dt.minute
         # Prime: 9:15-11:30 (555-690 min), Mid: 13:30-14:30 (810-870 min), Dead: 11:30-13:30
-        session_prime = (hour_min >= 555) & (hour_min <= 690)
-        session_mid   = (hour_min >= 810) & (hour_min <= 870)
         session_dead  = (hour_min > 690) & (hour_min < 810)
     else:
-        session_prime = pd.Series(True, index=df.index)
-        session_mid   = pd.Series(False, index=df.index)
         session_dead  = pd.Series(False, index=df.index)
 
     # Optional filter toggles for new layers

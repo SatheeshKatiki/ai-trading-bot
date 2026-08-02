@@ -9,8 +9,8 @@ Selects the correct option contract for execution:
 """
 from __future__ import annotations
 from dataclasses import dataclass
-from datetime import date, timedelta
-from typing import Literal
+from datetime import date, datetime, timedelta
+from typing import Literal, Any
 import math
 import logging
 import os
@@ -41,22 +41,71 @@ def calculate_greeks(spot: float, strike: float, days_to_expiry: float, vol: flo
     return {"delta": delta, "theta": theta}
 
 
+_LOT_SIZE_CACHE: dict = {}
+_LOT_SIZE_CACHE_TTL_S = 300.0  # re-check every 5 minutes
+
+
 def _get_dynamic_lot_size(instrument: str, default_lot_size: int) -> int:
-    """Reads lot size dynamically from dashboard settings if available."""
+    """Reads lot size dynamically from the active broker.
+
+    Root-cause fix (Medium audit finding): this used to be wrapped in
+    @lru_cache(maxsize=128), which caches forever for the life of the
+    process — any intraday lot-size revision from the exchange (has
+    happened historically for NIFTY/BANKNIFTY) would be silently
+    ignored until the next restart. Replaced with a time-based cache:
+    still avoids hitting the broker/settings.json on every call (this
+    runs once per option-contract selection, not per tick), but
+    re-checks every _LOT_SIZE_CACHE_TTL_S seconds instead of never.
+    """
+    import time
+    cache_key = (instrument, default_lot_size)
+    cached = _LOT_SIZE_CACHE.get(cache_key)
+    now = time.monotonic()
+    if cached is not None and (now - cached[1]) < _LOT_SIZE_CACHE_TTL_S:
+        return cached[0]
+
+    value = _fetch_dynamic_lot_size(instrument, default_lot_size)
+    _LOT_SIZE_CACHE[cache_key] = (value, now)
+    return value
+
+
+def _fetch_dynamic_lot_size(instrument: str, default_lot_size: int) -> int:
+    """Uncached lookup — always does the real broker/settings.json read."""
     try:
-        # Resolve path to config/settings.json at project root
-        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../"))
-        settings_path = os.path.join(project_root, "config", "settings.json")
-        
-        if os.path.exists(settings_path):
-            with open(settings_path, "r") as f:
-                settings = json.load(f)
-                
-            key = f"{instrument.lower()}_lot_size"
-            if key in settings:
-                return int(settings[key])
+        from brokers.broker_factory import BrokerFactory
+        broker = BrokerFactory.get_active_broker()
+        if broker:
+            # Reconstruct broker symbol format: NSE:NIFTY50-INDEX
+            sym = instrument.upper()
+            if sym == "NIFTY": sym = "NIFTY50"
+            if sym == "BANKNIFTY": sym = "NIFTYBANK"
+            
+            exch = "BSE" if sym == "SENSEX" else "NSE"
+            broker_sym = f"{exch}:{sym}-INDEX"
+            
+            return broker.get_lot_size(broker_sym)
     except Exception as e:
-        logger.warning("Failed to read dynamic lot size for %s: %s", instrument, e)
+        logger.warning("Failed to fetch dynamic lot size from broker for %s: %s", instrument, e)
+        
+    # Read from settings.json as fallback.
+    # Root-cause fix (Medium audit finding): standardized on
+    # trading-system/config/settings.json (the file every other real
+    # consumer treats as canonical) instead of the legacy
+    # trading-system/settings.json this used to read — see
+    # shared/lot_size_updater.py and brokers/base_broker.py for the same fix.
+    try:
+        import os
+        import json
+        settings_path = os.path.join(os.path.dirname(__file__), "..", "..", "..", "config", "settings.json")
+        if os.path.exists(settings_path):
+            with open(settings_path, 'r') as f:
+                settings = json.load(f)
+                lot_sizes = settings.get("lot_sizes", {})
+                for base_name, lot in lot_sizes.items():
+                    if base_name in instrument.upper():
+                        return lot
+    except Exception:
+        pass
         
     return default_lot_size
 
@@ -116,15 +165,31 @@ class OptionContract:
         return self.option_type == "PE"
 
 
-def _next_expiry(instrument: str, from_date: date | None = None) -> date:
-    """Find the next weekly expiry date for the given instrument."""
+def _next_expiry(instrument: str, from_date: date | None = None, broker: Any = None) -> date:
+    """
+    Find the next weekly expiry date dynamically from Broker API if connected,
+    or fallback to current exchange specifications.
+    """
+    today = from_date or date.today()
+    
+    # 1. Dynamic Broker Lookup
+    if broker and hasattr(broker, 'get_expiry_dates'):
+        try:
+            expiries = broker.get_expiry_dates(instrument)
+            if expiries:
+                for exp in expiries:
+                    exp_date = datetime.strptime(exp, "%Y-%m-%d").date() if isinstance(exp, str) else exp
+                    if exp_date >= today:
+                        return exp_date
+        except Exception:
+            pass
+
+    # 2. Fallback to Exchange Specifications
     cfg = INSTRUMENT_CONFIG.get(instrument.upper(), INSTRUMENT_CONFIG["NIFTY"])
     expiry_weekday = cfg["expiry_day"]
-    today = from_date or date.today()
 
-    # Find next occurrence of expiry_weekday
     days_ahead = expiry_weekday - today.weekday()
-    if days_ahead < 0:     # Target day already passed this week (if 0, today is expiry!)
+    if days_ahead < 0:
         days_ahead += 7
     return today + timedelta(days=days_ahead)
 
@@ -200,6 +265,23 @@ def select_option(
         symbol = _build_symbol(instrument, expiry, strike, direction)
         itm_strikes = 2
         logger.warning("Greeks Guard Triggered: 0DTE after 2 PM. Forced Deep ITM (%s) to avoid Theta decay trap.", symbol)
+
+        # Root-cause fix (Medium audit finding): the shift used to be
+        # applied blindly with no check that it actually achieved its
+        # stated goal (protect delta, reduce theta decay) for the NEW
+        # strike. Recompute Greeks for the shifted strike and warn if
+        # the delta protection this guard exists for didn't actually
+        # materialize (e.g. a very tight strike_step leaving the "deep
+        # ITM" strike still close to the money).
+        greeks = calculate_greeks(spot_price, strike, days_to_expiry, option_type=direction)
+        logger.info("Post-shift Greeks for %s -> Delta: %.2f | Theta: %.2f", symbol, greeks["delta"], greeks["theta"])
+        if abs(greeks["delta"]) < 0.7:
+            logger.warning(
+                "Greeks Guard shift did not achieve the expected deep-ITM delta protection for %s "
+                "(Delta: %.2f, expected >= 0.70 in magnitude) — strike_step for %s may be too small "
+                "relative to spot to reach deep ITM with a 2-strike offset.",
+                symbol, greeks["delta"], instrument,
+            )
     else:
         greeks = calculate_greeks(spot_price, strike, days_to_expiry, option_type=direction)
         logger.info("Computed Greeks for %s -> Delta: %.2f | Theta: %.2f", symbol, greeks["delta"], greeks["theta"])

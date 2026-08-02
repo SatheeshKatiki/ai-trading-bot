@@ -35,19 +35,45 @@ import { motion } from "framer-motion";
 
 const COLORS = ["var(--success)", "var(--destructive)"];
 
+// Matches app/api/analytics/route.ts's response shape
+interface AnalyticsStats {
+  profitFactor: number;
+  expectancy: number;
+  winRate: number;
+  maxDrawdown: number;
+  totalTrades: number;
+  winningTrades: number;
+}
+interface WinLossSlice { name: string; value: number; }
+interface DayOfWeekPoint { day: string; pnl: number; }
+interface ExpectancyPoint { trade: number; val: number; }
+interface Streaks {
+  winning: { count: number; value: number };
+  losing: { count: number; value: number };
+  avgRatio: number;
+}
+interface AnalyticsResponse {
+  error?: string;
+  stats: AnalyticsStats;
+  winLossData: WinLossSlice[];
+  dayOfWeekData: DayOfWeekPoint[];
+  expectancyData: ExpectancyPoint[];
+  streaks: Streaks;
+}
+
 export default function Analytics() {
-  const [stats, setStats] = useState<any>(null);
-  const [winLossData, setWinLossData] = useState<any[]>([]);
-  const [dayOfWeekData, setDayOfWeekData] = useState<any[]>([]);
-  const [expectancyData, setExpectancyData] = useState<any[]>([]);
-  const [streaks, setStreaks] = useState<any>(null);
+  const [stats, setStats] = useState<AnalyticsStats | null>(null);
+  const [winLossData, setWinLossData] = useState<WinLossSlice[]>([]);
+  const [dayOfWeekData, setDayOfWeekData] = useState<DayOfWeekPoint[]>([]);
+  const [expectancyData, setExpectancyData] = useState<ExpectancyPoint[]>([]);
+  const [streaks, setStreaks] = useState<Streaks | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     const fetchAnalytics = async () => {
       try {
         const res = await fetch('/api/analytics');
-        const data = await res.json();
+        const data: AnalyticsResponse = await res.json();
         
         if (data && !data.error) {
           setStats(data.stats);
@@ -187,7 +213,7 @@ export default function Analytics() {
                     <Tooltip 
                       contentStyle={{ backgroundColor: "var(--card)", borderColor: "var(--border)", borderRadius: "12px", boxShadow: "0 8px 32px rgba(0,0,0,0.12)" }}
                       itemStyle={{ color: "var(--foreground)", fontWeight: "bold" }}
-                      formatter={(value: any) => [`${value}%`]}
+                      formatter={(value) => [`${value}%`]}
                     />
                   </PieChart>
                 </ResponsiveContainer>

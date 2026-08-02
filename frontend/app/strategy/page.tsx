@@ -69,6 +69,7 @@ export default function StrategySettings() {
     { id: "meta_agent_swarm", name: "Meta-Agent AI Swarm (5 Brains)" },
     { id: "ultra_meta_dip_swarm", name: "Ultra Meta-Dip Swarm (6 Brains)" },
     { id: "buy_the_dip", name: "Buy the Dip (Mean Reversion)" },
+    { id: "MARL_Ultra", name: "MARL Ultra (Reinforcement Learning)" },
   ]);
 
   const defaultSettings: Record<string, any> = {
@@ -99,6 +100,27 @@ export default function StrategySettings() {
       enable_macd_filter: true,
       enable_greeks_filter: false,
     },
+    MARL_Ultra: {
+      enable_volume_filter: false,
+      enable_ema_filter: false,
+      enable_vwap_filter: false,
+      enable_rsi_filter: false,
+      enable_squeeze_filter: true,
+      enable_extension_filter: true,
+      enable_cpr_filter: true,
+      enable_aggression_filter: true,
+      enable_compounding: true,
+      stoploss_pct: 0.45,
+      target_pct: 3.5,
+      trail_trigger: 0.6,
+      trail_offset: 0.35,
+      max_daily_trades: 3,
+      max_daily_loss_pct: 3.0,
+      trailing_sl: true,
+      enable_pyramiding: true,
+      scale_pct: 0.2,
+      max_scales: 2,
+    }
   };
 
   const applyDefaults = (strategyId: string) => {

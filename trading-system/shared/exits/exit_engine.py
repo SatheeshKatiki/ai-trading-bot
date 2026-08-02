@@ -32,6 +32,11 @@ class Position:
     target: float            # Current profit target
     is_partially_booked: bool = False
     scales_done: int = 0     # Number of times this position has been scaled into
+    lot_size: int = 1        # Lot size for quantity rounding
+    is_exiting: bool = False # Lock flag: True while background iceberg exit is in flight
+    is_scaling: bool = False # Lock flag: True while a background pyramid scale-in is in flight
+    sl_order_id: str = None  # Exchange ID for the active Hard SL order
+    max_pnl_pct: float = 0.0 # Peak profit % reached since entry, for the percentage-based trailing stop
 
 
 class SmartExitEngine:
@@ -48,6 +53,7 @@ class SmartExitEngine:
         self,
         atr_multiplier: float = 2.0,
         trailing_activation_pct: float = 1.0,
+        trailing_offset_pct: float = 0.35,
         eod_exit_time: str = "15:15:00",
         partial_booking_pct: float = 50.0,
         partial_target_reward: float = 1.0,
@@ -59,6 +65,16 @@ class SmartExitEngine:
             Multiplier for ATR to set trailing stop distance.
         trailing_activation_pct : float
             Profit percentage required before trailing stop activates.
+        trailing_offset_pct : float
+            Percentage points given back from the peak profit % before the
+            percentage-based trailing stop fires (runs alongside the
+            ATR-based trailing stop below — whichever triggers first wins).
+            Matches the "Trail Offset" dashboard setting and the equivalent
+            trail_offset concept already implemented in the backtest engine
+            (backtesting_engine/run.py) — previously this dashboard control
+            had no effect on live trading at all, since main.py set this
+            same attribute name but SmartExitEngine never defined or read
+            it.
         eod_exit_time : str
             Time (HH:MM:SS) to square off all intraday positions.
         partial_booking_pct : float
@@ -68,6 +84,7 @@ class SmartExitEngine:
         """
         self.atr_multiplier = atr_multiplier
         self.trailing_activation_pct = trailing_activation_pct
+        self.trailing_offset_pct = trailing_offset_pct
         self.eod_exit_time = eod_exit_time
         self.partial_booking_pct = partial_booking_pct
         self.partial_target_reward = partial_target_reward
@@ -105,8 +122,9 @@ class SmartExitEngine:
             position.lowest_price = min(position.lowest_price, current_price)
 
         # 2. Time-based exit (EOD Square-off)
-        # Assuming current_time and eod_exit_time are comparable strings (HH:MM:SS)
-        if current_time >= self.eod_exit_time:
+        # Extract time part if current_time contains date (e.g., "YYYY-MM-DD HH:MM:SS")
+        time_only = current_time.split(" ")[-1] if " " in current_time else current_time
+        if time_only >= self.eod_exit_time:
             logger.info("EOD Exit triggered for %s at %s", position.symbol, current_time)
             return True, "Time-based EOD Exit", None
 
@@ -170,5 +188,14 @@ class SmartExitEngine:
                 return True, "Trailing Stop-Loss Hit", None
             if position.side == -1 and current_price >= position.stop_loss:
                 return True, "Trailing Stop-Loss Hit", None
+
+            # 5b. Percentage-based trailing stop (the "Trail Offset" dashboard
+            # setting) — runs alongside the ATR-based trailing stop above,
+            # whichever fires first wins. Tracks the peak profit % reached
+            # since activation and exits once profit has given back more
+            # than trailing_offset_pct from that peak.
+            position.max_pnl_pct = max(position.max_pnl_pct, profit_pct)
+            if profit_pct <= position.max_pnl_pct - self.trailing_offset_pct:
+                return True, "Trailing Stop-Loss Hit (Offset)", None
 
         return False, "", None

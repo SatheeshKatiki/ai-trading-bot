@@ -48,15 +48,20 @@ def compute_market_structure(
     # --- Pullback detection ---
     # Bullish pullback: there was a recent breakout, price dipped ≥ 1 bar, now recovering
     recent_breakout = df["breakout_bullish"].shift(1).rolling(pullback_bars).max().fillna(False).astype(bool)
-    price_dipped    = df["low"] < df["close"].shift(1)      # price came down at least once
     recovering      = df["close"] > df["open"]              # current bar is bullish (recovery)
-    df["pullback_bullish"] = recent_breakout & recovering
+    # price_dipped: since the breakout, price actually retraced back toward/below
+    # the level it broke out from (a genuine retest), not just any green bar that
+    # happens to follow a breakout within the window.
+    breakout_level  = df["swing_high"].where(df["breakout_bullish"]).ffill()
+    price_dipped    = (df["low"].rolling(pullback_bars).min().shift(1) <= breakout_level).fillna(False)
+    df["pullback_bullish"] = recent_breakout & price_dipped & recovering
 
     # Bearish pullback: there was a recent breakdown, price bounced, now resuming down
     recent_breakdown = df["breakdown_bearish"].shift(1).rolling(pullback_bars).max().fillna(False).astype(bool)
-    price_bounced    = df["high"] > df["close"].shift(1)
     resuming_down    = df["close"] < df["open"]
-    df["pullback_bearish"] = recent_breakdown & resuming_down
+    breakdown_level   = df["swing_low"].where(df["breakdown_bearish"]).ffill()
+    price_bounced     = (df["high"].rolling(pullback_bars).max().shift(1) >= breakdown_level).fillna(False)
+    df["pullback_bearish"] = recent_breakdown & price_bounced & resuming_down
 
     # --- Mid-range rejection ---
     # Avoid entries when price is between 40-60% of the S/R range

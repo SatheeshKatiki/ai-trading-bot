@@ -59,7 +59,7 @@ export default function BrokerSettings() {
     setTestResult(null);
     setRealBalance(null);
     try {
-      const response = await fetch("http://127.0.0.1:8000/api/test_connection");
+      const response = await fetch("/api/test_connection");
       const data = await response.json();
       if (response.ok && data.status === "success") {
         setTestResult("success");

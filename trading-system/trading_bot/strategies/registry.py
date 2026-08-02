@@ -24,13 +24,41 @@ class StrategyRegistry:
         self._strategies[name] = strategy_func
         logger.info("Registered strategy: %s", name)
 
-    def run_strategy(self, name: str, df: pd.DataFrame, **kwargs) -> pd.Series:
-        """Execute a specific registered strategy."""
+    def run_strategy(self, name: str, df: pd.DataFrame, **kwargs):
+        """Execute a specific registered strategy and apply global filters."""
         if name not in self._strategies:
             raise ValueError(f"Strategy {name} not found in registry.")
         
         logger.debug("Running strategy: %s", name)
-        return self._strategies[name](df, **kwargs)
+        result = self._strategies[name](df, **kwargs)
+        
+        if isinstance(result, tuple):
+            signals = result[0]
+            rejections = result[1]
+        else:
+            signals = result
+            rejections = []
+
+        # Apply Global Institutional Filters (Ultra-Professional Level)
+        try:
+            from shared.filters.institutional import apply_institutional_filters
+            bullish = (signals == 1)
+            bearish = (signals == -1)
+            
+            f_bull, f_bear = apply_institutional_filters(df, bullish, bearish, **kwargs)
+            
+            filtered_signals = pd.Series(0, index=df.index, dtype=int)
+            filtered_signals[f_bull] = 1
+            filtered_signals[f_bear] = -1
+            signals = filtered_signals
+        except ImportError:
+            pass  # If module doesn't exist, proceed with raw signals
+        except Exception as e:
+            logger.error(f"Error applying global institutional filters: {e}")
+
+        if isinstance(result, tuple):
+            return signals, rejections
+        return signals
 
     def run_all(self, df: pd.DataFrame, **kwargs) -> Dict[str, pd.Series]:
         """Execute all registered strategies and return their signals."""

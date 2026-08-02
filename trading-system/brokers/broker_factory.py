@@ -88,7 +88,9 @@ class BrokerFactory:
         with cls._lock:
             if cls._active is not None:
                 # If broker_id or live_mode has changed, refresh!
-                if cls._active.BROKER_ID != broker_id or cls._active.paper_mode == live_mode:
+                # paper_mode=True means NOT live. So mismatch = paper_mode XOR (not live_mode)
+                mode_mismatch = cls._active.paper_mode != (not live_mode)
+                if cls._active.BROKER_ID != broker_id or mode_mismatch:
                     logger.info("BrokerFactory: configuration changed, refreshing active broker.")
                     cls._close_active_unsafe()   # already under lock
                 else:
@@ -111,6 +113,8 @@ class BrokerFactory:
                 broker_id=broker_id,
             )
 
+        previous_broker_id = cls._active.BROKER_ID if cls._active is not None else None
+
         # Tear down old broker
         if cls._active is not None:
             try:
@@ -124,6 +128,11 @@ class BrokerFactory:
 
         # Instantiate and authenticate
         cls._active = cls._create(broker_id)
+
+        from shared.security import audit
+        from shared.security.audit_log import AuditEvent
+        audit.log(AuditEvent.BROKER_SWITCH, {"from": previous_broker_id, "to": broker_id})
+
         return cls._active
 
     @classmethod

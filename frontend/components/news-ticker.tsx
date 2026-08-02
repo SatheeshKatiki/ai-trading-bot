@@ -92,13 +92,13 @@ export default function NewsTicker() {
 
   const textStyle = breaking.active
     ? breaking.type === 'positive'
-      ? 'text-success hover:text-emerald-700 dark:hover:text-emerald-400 font-bold tracking-wide'
-      : 'text-destructive hover:text-red-700 dark:hover:text-red-400 font-bold tracking-wide'
+      ? 'text-success font-bold tracking-wide'
+      : 'text-destructive font-bold tracking-wide'
     : 'text-foreground/90 hover:text-foreground';
 
   return (
     <div 
-      className={`w-full flex items-center justify-between bg-gradient-to-r from-muted/10 via-background/40 to-muted/10 p-3 overflow-hidden transition-all duration-500`}
+      className={`w-full flex items-center justify-between bg-gradient-to-r from-muted/10 via-background/40 to-muted/10 px-3 py-1.5 overflow-hidden transition-all duration-500`}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
     >
@@ -121,10 +121,10 @@ export default function NewsTicker() {
               href={currentHeadline?.link}
               target="_blank"
               rel="noopener noreferrer"
-              className={`text-[15px] font-semibold tracking-tight ${textStyle} transition-colors truncate block w-full animate-in slide-in-from-bottom-2 fade-in duration-500`}
+              className={`text-[15px] group font-semibold tracking-tight ${textStyle} hover:!opacity-100 hover:brightness-150 transition-all truncate block w-full animate-in slide-in-from-bottom-2 fade-in duration-500`}
               key={currentIndex}
             >
-              <span className={`mr-2 ${breaking.active ? textColor : 'text-muted-foreground'} font-mono text-[11px] font-bold`}>[{currentHeadline?.published ? currentHeadline.published.substring(0, 16) : "Live"}]</span>
+              <span className={`mr-2 ${breaking.active ? textColor : 'text-muted-foreground'} group-hover:!opacity-100 font-mono text-[11px] font-bold transition-colors`}>[{currentHeadline?.published ? currentHeadline.published.substring(0, 16) : "Live"}]</span>
               {showTelugu && currentHeadline?.title_te ? currentHeadline.title_te : currentHeadline?.title_en}
             </a>
           ) : (

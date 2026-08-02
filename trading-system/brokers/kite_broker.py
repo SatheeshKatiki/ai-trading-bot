@@ -12,6 +12,7 @@ Install the SDK:  pip install kiteconnect
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from .base_broker import BaseBroker
@@ -128,41 +129,68 @@ class KiteBroker(BaseBroker):
         if not self._kite:
             raise AuthenticationError("Not authenticated.", broker_id=self.BROKER_ID)
 
-        try:
-            from kiteconnect import KiteConnect   # type: ignore[import]
-            order_id = self._kite.place_order(
-                variety=KiteConnect.VARIETY_REGULAR,
-                exchange=KiteConnect.EXCHANGE_NSE,
-                tradingsymbol=request.symbol,
-                transaction_type=(
-                    KiteConnect.TRANSACTION_TYPE_BUY
-                    if request.side == OrderSide.BUY
-                    else KiteConnect.TRANSACTION_TYPE_SELL
-                ),
-                quantity=request.quantity,
-                product=(
-                    KiteConnect.PRODUCT_MIS
-                    if request.product_type.value == "INTRADAY"
-                    else KiteConnect.PRODUCT_CNC
-                ),
-                order_type=(
-                    KiteConnect.ORDER_TYPE_MARKET
-                    if request.order_type == OrderType.MARKET
-                    else KiteConnect.ORDER_TYPE_LIMIT
-                ),
-                price=request.price if request.price else None,
-            )
-            return OrderResponse(
-                order_id=str(order_id),
-                status=OrderStatus.OPEN,
-                symbol=request.symbol,
-                quantity=request.quantity,
-                side=request.side,
-            )
-        except Exception as exc:
-            raise OrderRejectedError(
-                f"Kite place_order failed: {exc}", broker_id=self.BROKER_ID
-            ) from exc
+        from kiteconnect import KiteConnect   # type: ignore[import]
+
+        # Retry loop for transient broker API errors. Root-cause fix (Medium
+        # audit finding): this previously had zero retry logic at all — any
+        # transient network blip (timeout, dropped connection) permanently
+        # failed the order attempt, unlike Fyers (which retries but needs an
+        # idempotency check to avoid duplicate orders — see
+        # BaseBroker._find_matching_pending_order). Mirrors that same
+        # retry-with-idempotency-check pattern here: before each retry,
+        # check the live order book for an order that already matches this
+        # request — if Kite actually received the previous attempt despite
+        # the client-side error, reuse it instead of submitting again.
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                order_id = self._kite.place_order(
+                    variety=KiteConnect.VARIETY_REGULAR,
+                    exchange=KiteConnect.EXCHANGE_NSE,
+                    tradingsymbol=request.symbol,
+                    transaction_type=(
+                        KiteConnect.TRANSACTION_TYPE_BUY
+                        if request.side == OrderSide.BUY
+                        else KiteConnect.TRANSACTION_TYPE_SELL
+                    ),
+                    quantity=request.quantity,
+                    product=(
+                        KiteConnect.PRODUCT_MIS
+                        if request.product_type.value == "INTRADAY"
+                        else KiteConnect.PRODUCT_CNC
+                    ),
+                    order_type=(
+                        KiteConnect.ORDER_TYPE_MARKET
+                        if request.order_type == OrderType.MARKET
+                        else KiteConnect.ORDER_TYPE_LIMIT
+                    ),
+                    price=request.price if request.price else None,
+                )
+                return OrderResponse(
+                    order_id=str(order_id),
+                    status=OrderStatus.OPEN,
+                    symbol=request.symbol,
+                    quantity=request.quantity,
+                    side=request.side,
+                )
+            except Exception as exc:
+                existing = self._find_matching_pending_order(request)
+                if existing is not None:
+                    logger.warning(
+                        "Kite place_order raised %s but a matching order %s "
+                        "already exists in the order book — the broker "
+                        "likely received the previous attempt. Returning it "
+                        "instead of resubmitting to avoid a duplicate order.",
+                        exc, existing.order_id,
+                    )
+                    return existing
+                if attempt < max_retries - 1:
+                    logger.warning(f"Kite place_order failed, retrying ({attempt+1}/{max_retries})... Error: {exc}")
+                    time.sleep(0.5)
+                else:
+                    raise OrderRejectedError(
+                        f"Kite place_order failed after {max_retries} attempts: {exc}", broker_id=self.BROKER_ID
+                    ) from exc
 
     def cancel_order(self, order_id: str) -> Dict[str, Any]:
         if self.paper_mode:
@@ -209,6 +237,12 @@ class KiteBroker(BaseBroker):
                 f"Kite get_positions failed: {exc}", broker_id=self.BROKER_ID
             ) from exc
 
+    def get_lot_size(self, symbol: str) -> int:
+        """Fetch lot size from broker dynamically if cached, otherwise fallback."""
+        if hasattr(self, '_lot_size_cache') and self._lot_size_cache:
+            return self._lot_size_cache.get(symbol, super().get_lot_size(symbol))
+        return super().get_lot_size(symbol)
+
     def get_balance(self) -> Balance:
         if self.paper_mode:
             return Balance(available_cash=10_000.0, used_margin=0.0, total_balance=10_000.0)
@@ -247,6 +281,28 @@ class KiteBroker(BaseBroker):
             raise MarketDataError(
                 f"Kite get_order_book failed: {exc}", broker_id=self.BROKER_ID
             ) from exc
+
+    def get_order_status(self, order_id: str) -> Optional[OrderBookEntry]:
+        """Fetch the exact status and fill details for a specific order ID.
+
+        Root-cause fix: this abstract method (required by BaseBroker) was
+        never implemented here, which meant KiteBroker could not even be
+        instantiated (Python raises TypeError for an incomplete ABC
+        subclass) — discovered while adding retry logic to place_order(),
+        which itself doesn't need this method, but a broker that can't be
+        constructed at all is a more fundamental problem than missing
+        retries. Implemented as a thin filter over the already-correct
+        get_order_book(), mirroring FyersBroker's identical pattern —
+        reuses proven parsing logic rather than adding new, untestable
+        SDK call surface.
+        """
+        if self.paper_mode:
+            return None
+        orders = self.get_order_book()
+        for order in orders:
+            if order.order_id == order_id:
+                return order
+        return None
 
     # ------------------------------------------------------------------
     # Market data

@@ -3,6 +3,8 @@
 import Sidebar from "@/components/sidebar";
 import Header from "@/components/header";
 import NewsTicker from "@/components/news-ticker";
+import LiveTicker from "@/components/live-ticker";
+import { BtstPredictor } from "@/components/btst-predictor";
 import { useState, useEffect } from "react";
 import { 
   TrendingUp, 
@@ -37,13 +39,47 @@ import {
   ResponsiveContainer 
 } from "recharts";
 
+// A historical/closed trade record as returned by /api/state's `trades`
+// field (distinct from the live order-book Trade type in useLiveMarketStore).
+interface DashboardTrade {
+  pnl: number;
+  symbol?: string;
+  side?: string;
+  time?: string;
+}
+
+// Matches brokers/models.py's Position dataclass, as returned (via asdict)
+// by GET /api/positions.
+interface DashboardPosition {
+  symbol: string;
+  side: string;
+  quantity: number;
+  average_price: number;
+  ltp: number;
+  unrealized_pnl: number;
+  realized_pnl: number;
+}
+
+interface EquityCurvePoint {
+  name: string;
+  value: number;
+}
+
+interface AiSignalEntry {
+  type: string;
+  bias: string;
+  strength: string;
+  time: string;
+  confidence: number;
+}
+
 export default function Dashboard() {
   const [equity, setEquity] = useState(100000.0);
   const [pnl, setPnl] = useState(0.0);
-  const [trades, setTrades] = useState<any[]>([]);
-  const [positions, setPositions] = useState<any[]>([]);
+  const [trades, setTrades] = useState<DashboardTrade[]>([]);
+  const [positions, setPositions] = useState<DashboardPosition[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
-  const [curve, setCurve] = useState<any[]>([]);
+  const [curve, setCurve] = useState<EquityCurvePoint[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isPanicModalOpen, setIsPanicModalOpen] = useState(false);
   const [isPanicExecuting, setIsPanicExecuting] = useState(false);
@@ -51,21 +87,12 @@ export default function Dashboard() {
   const [isEngineLive, setIsEngineLive] = useState(false);
   const [isEngineLoading, setIsEngineLoading] = useState(false);
   const [aiCommentary, setAiCommentary] = useState("System armed. Analyzing market structure...");
-  const [tickerData, setTickerData] = useState<any>({
-    "NIFTY": { lp: 23820.35, chp: -1.49, up: false },
-    "BANKNIFTY": { lp: 51000.00, chp: 0.08, up: true },
-    "SENSEX": { lp: 76015.28, chp: -1.70, up: false },
-    "RELIANCE": { lp: 2950.00, chp: 0.12, up: true },
-    "TCS": { lp: 3950.00, chp: -0.45, up: false },
-  });
-  const [lastPrices, setLastPrices] = useState<any>({});
-  const [flashes, setFlashes] = useState<any>({});
   // Live AI Signal state — sourced from /api/signals
   const [aiSignal, setAiSignal] = useState<{
     confidence: number;
     status: string;
     bias: string;
-    signals: any[];
+    signals: AiSignalEntry[];
   }>({
     confidence: 0,
     status: "Initializing...",
@@ -105,71 +132,28 @@ export default function Dashboard() {
     return curve.slice(-Math.min(curve.length, limit));
   })();
 
-  // WebSocket for Real-time Institutional Ticker
-  useEffect(() => {
-    const ws = new WebSocket('ws://127.0.0.1:8000/ws/live');
-    
-    ws.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      
-      // Update flashes for price changes
-      const newFlashes: any = {};
-      Object.keys(data).forEach(key => {
-        if (data[key] !== null && typeof data[key] === 'object' && data[key].lp) {
-          if (lastPrices[key] && data[key].lp !== lastPrices[key]) {
-            newFlashes[key] = data[key].lp > lastPrices[key] ? "up" : "down";
-          }
-        }
-      });
-
-      if (Object.keys(newFlashes).length > 0) {
-        setFlashes(newFlashes);
-        setTimeout(() => setFlashes({}), 800);
-      }
-
-      setLastPrices((prev: any) => {
-        const next = { ...prev };
-        Object.keys(data).forEach(key => {
-          if (data[key] !== null && typeof data[key] === 'object' && data[key].lp) next[key] = data[key].lp;
-        });
-        return next;
-      });
-
-      setTickerData((prev: any) => ({
-        ...prev,
-        ...Object.fromEntries(
-          Object.entries(data).filter(([_, v]) => v !== null)
-        ),
-        "NIFTY": data.NIFTY ?? prev.NIFTY,
-        "BANKNIFTY": data.BANKNIFTY ?? prev.BANKNIFTY,
-        "SENSEX": data.SENSEX ?? prev.SENSEX
-      }));
-    };
-
-    ws.onerror = (error) => {
-      console.warn('WebSocket connection attempt failed. Ensure the API bridge is running.', error);
-    };
-
-    return () => ws.close();
-  }, []); // Remove dependency to prevent reconnection loops
-
-  // Fetch live state from the API (Standard Stats)
   useEffect(() => {
     const fetchData = async () => {
       try {
         // Parallel fetching for performance
         const [stateRes, posRes, logsRes, engineRes] = await Promise.all([
-          fetch('http://127.0.0.1:8000/api/state'),
-          fetch('http://127.0.0.1:8000/api/positions'),
-          fetch('http://127.0.0.1:8000/api/logs?lines=10'),
-          fetch('http://127.0.0.1:8000/api/engine/status')
+          fetch(`/api/state`),
+          fetch(`/api/positions`),
+          fetch(`/api/logs?lines=10`),
+          fetch(`/api/engine/status`)
         ]);
  
-        const stateData = await stateRes.json();
-        const posData = await posRes.json();
-        const logsData = await logsRes.json();
-        const engineData = await engineRes.json();
-        
+        const stateData: {
+          error?: string;
+          equity?: number;
+          pnl?: number;
+          trades?: DashboardTrade[];
+          chartData?: { time: number; close: number }[];
+        } = await stateRes.json();
+        const posData: { status?: string; positions?: DashboardPosition[] } = await posRes.json();
+        const logsData: { logs?: string[] } = await logsRes.json();
+        const engineData: { is_active: boolean } = await engineRes.json();
+
         if (engineData) {
           setIsEngineLive(engineData.is_active);
         }
@@ -180,7 +164,7 @@ export default function Dashboard() {
           setTrades(stateData.trades || []);
           
           if (stateData.chartData && stateData.chartData.length > 0) {
-            const mappedCurve = stateData.chartData.map((c: any) => ({
+            const mappedCurve = stateData.chartData.map((c: { time: number; close: number }) => ({
               name: new Date(c.time * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
               value: c.close
             }));
@@ -203,8 +187,15 @@ export default function Dashboard() {
     };
 
     fetchData();
-    const interval = setInterval(fetchData, 3000); // Institutional speed: every 3s
-    
+    // High audit finding: this polled every 1000ms while useLiveMarketStore
+    // simultaneously keeps a WebSocket open for much of this same data
+    // (equity/pnl/positions/trades), tripling backend load per open tab.
+    // This page doesn't yet consume that store directly (a larger refactor,
+    // not done here), but logs/engine-status/chart-curve aren't carried by
+    // the WebSocket at all and still need a poll — 4s keeps this page
+    // reasonably fresh while cutting request volume ~75%.
+    const interval = setInterval(fetchData, 4000);
+
     return () => clearInterval(interval);
   }, []);
 
@@ -213,7 +204,7 @@ export default function Dashboard() {
     setPanicStatus("Liquidating all positions...");
     
     try {
-      const res = await fetch('http://127.0.0.1:8000/api/panic-exit', { method: 'POST' });
+      const res = await fetch(`/api/panic-exit`, { method: 'POST' });
       const data = await res.json();
       
       if (data.status === "success") {
@@ -241,7 +232,7 @@ export default function Dashboard() {
   const toggleEngine = async () => {
     setIsEngineLoading(true);
     try {
-      const res = await fetch('http://127.0.0.1:8000/api/engine/toggle', { method: 'POST' });
+      const res = await fetch(`/api/engine/toggle`, { method: 'POST' });
       const data = await res.json();
       setIsEngineLive(data.is_active);
     } catch (error) {
@@ -255,7 +246,7 @@ export default function Dashboard() {
   useEffect(() => {
     const fetchAiSignal = async () => {
       try {
-        const res = await fetch('http://127.0.0.1:8000/api/signals?symbol=NIFTY');
+        const res = await fetch(`/api/signals?symbol=NIFTY`);
         if (res.ok) {
           const data = await res.json();
           setAiSignal({
@@ -270,13 +261,13 @@ export default function Dashboard() {
       }
     };
     fetchAiSignal();
-    const interval = setInterval(fetchAiSignal, 30_000);
+    const interval = setInterval(fetchAiSignal, 5000);
     return () => clearInterval(interval);
   }, []);
 
   // Calculate some derived stats
   const winRate = trades.length > 0 
-    ? (trades.filter((t: any) => t.pnl > 0).length / trades.length * 100)
+    ? (trades.filter((t) => t.pnl > 0).length / trades.length * 100)
     : 0.0;
 
   return (
@@ -288,55 +279,7 @@ export default function Dashboard() {
         
         <main className="flex-1 overflow-y-auto p-4 space-y-4">
           {/* Global Market Ticker (LIVE STREAMING) */}
-          <div className="bg-card/50 backdrop-blur-md border border-border/50 rounded-xl overflow-hidden h-10 flex items-center shadow-inner group">
-            <div className="bg-primary/20 text-primary px-3 h-full flex items-center text-xs font-extrabold uppercase tracking-tighter border-r border-border/50 z-10">
-              <div className="flex items-center gap-1.5">
-                <div className="w-1.5 h-1.5 bg-primary rounded-full animate-pulse"></div>
-                Live Markets
-              </div>
-            </div>
-            <div className="flex-1 overflow-hidden relative">
-              <div className="flex whitespace-nowrap animate-marquee-slower gap-12 items-center px-4 hover:pause">
-                {Object.keys(tickerData).filter(k => k !== "trades" && k !== "signalsData").map((symbol, i) => {
-                  const data = tickerData[symbol];
-                  if (!data || typeof data !== 'object') return null;
-                  const isUp = data.chp >= 0;
-                  const flashClass = flashes[symbol] === "up" ? "bg-success/20 animate-pulse" : flashes[symbol] === "down" ? "bg-destructive/20 animate-pulse" : "";
-                  
-                  return (
-                    <div key={i} className={`flex items-center gap-3 px-2 py-1 rounded-md transition-all duration-300 ${flashClass}`}>
-                      <span className="text-xs font-bold text-foreground/90 tracking-tight">{symbol}</span>
-                      <span className="text-xs font-mono font-medium text-foreground">
-                        {data.lp.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                      </span>
-                      <div className={`flex items-center text-[10px] font-bold ${isUp ? "text-success" : "text-destructive"}`}>
-                        {isUp ? <ArrowUpRight className="w-2.5 h-2.5 mr-0.5" /> : <ArrowDownRight className="w-2.5 h-2.5 mr-0.5" />}
-                        {Math.abs(data.chp).toFixed(2)}%
-                      </div>
-                    </div>
-                  );
-                })}
-                {/* Duplicate for seamless loop */}
-                {Object.keys(tickerData).filter(k => k !== "trades" && k !== "signalsData").map((symbol, i) => {
-                  const data = tickerData[symbol];
-                  if (!data || typeof data !== 'object') return null;
-                  const isUp = data.chp >= 0;
-                  return (
-                    <div key={`dup-${i}`} className="flex items-center gap-3 px-2 py-1">
-                      <span className="text-xs font-bold text-foreground/90 tracking-tight">{symbol}</span>
-                      <span className="text-xs font-mono font-medium text-foreground">
-                        {data.lp.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                      </span>
-                      <div className={`flex items-center text-[10px] font-bold ${isUp ? "text-success" : "text-destructive"}`}>
-                        {isUp ? <ArrowUpRight className="w-2.5 h-2.5 mr-0.5" /> : <ArrowDownRight className="w-2.5 h-2.5 mr-0.5" />}
-                        {Math.abs(data.chp).toFixed(2)}%
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
+          <LiveTicker />
 
           {/* Header & Quick Actions */}
           <div className="flex justify-between items-center">
@@ -366,8 +309,11 @@ export default function Dashboard() {
               </div>
             </div>
           </div>
-          
           <NewsTicker />
+          
+          <div className="w-full">
+            <BtstPredictor symbol="NIFTY" />
+          </div>
 
           {/* AI Live Analyst Panel */}
           <div
@@ -466,11 +412,11 @@ export default function Dashboard() {
               <div className="mt-2">
                 <div className="text-2xl font-bold font-mono text-foreground leading-none">{trades.length}</div>
                 <div className="flex items-center gap-2 mt-2">
-                  <span className="text-[9px] text-success font-bold">{trades.filter((t: any) => t.pnl > 0).length}W</span>
+                  <span className="text-[9px] text-success font-bold">{trades.filter((t) => t.pnl > 0).length}W</span>
                   <div className="flex-1 h-1 bg-muted/30 rounded-full overflow-hidden">
                     <div className="h-full bg-success rounded-full" style={{ width: `${winRate}%` }}></div>
                   </div>
-                  <span className="text-[9px] text-destructive font-bold">{trades.filter((t: any) => t.pnl <= 0).length}L</span>
+                  <span className="text-[9px] text-destructive font-bold">{trades.filter((t) => t.pnl <= 0).length}L</span>
                 </div>
               </div>
             </div>
@@ -663,7 +609,7 @@ export default function Dashboard() {
                 {/* Latest signals */}
                 <div className="space-y-1.5">
                   {aiSignal.signals.length > 0 ? (
-                    aiSignal.signals.slice(0, 3).map((sig: any, i: number) => (
+                    aiSignal.signals.slice(0, 3).map((sig, i) => (
                       <div key={i} className="p-2 bg-muted/20 rounded-lg border border-border/40">
                         <div className="flex justify-between items-center">
                           <span className="text-[9px] font-bold text-foreground">{sig.type}</span>

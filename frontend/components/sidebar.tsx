@@ -15,7 +15,10 @@ import {
   Settings, 
   ShieldCheck, 
   Plug,
-  Sliders
+  Sliders,
+  LineChart,
+  FileText,
+  Info
 } from "lucide-react";
 import { clsx } from "clsx";
 
@@ -26,10 +29,13 @@ const menuItems = [
   { icon: Brain, label: "AI Signals", href: "/signals" },
   { icon: Sliders, label: "Strategy Settings", href: "/strategy" },
   { icon: BookOpen, label: "Trading Journal", href: "/journal" },
+  { icon: LineChart, label: "Options Desk", href: "/options" },
   { icon: PieChart, label: "Analytics", href: "/analytics" },
   { icon: Plug, label: "Broker Settings", href: "/broker" },
   { icon: ShieldCheck, label: "Risk Management", href: "/risk" },
   { icon: Settings, label: "Settings", href: "/settings" },
+  { icon: FileText, label: "Documentation", href: "/docs" },
+  { icon: Info, label: "About", href: "/about" },
 ];
 
 const containerVariants = {
@@ -54,10 +60,14 @@ export default function Sidebar() {
   useEffect(() => {
     const checkHealth = async () => {
       try {
-        const res = await fetch('http://127.0.0.1:8000/health');
-        const data = await res.json();
-        if (data && data.status === "ok") {
-          setIsConnected(true);
+        const res = await fetch('/api/health');
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.status === "ok") {
+            setIsConnected(true);
+          } else {
+            setIsConnected(false);
+          }
         } else {
           setIsConnected(false);
         }
@@ -98,6 +108,7 @@ export default function Sidebar() {
             <motion.div key={item.href} variants={itemVariants}>
               <Link
                 href={item.href}
+                prefetch={true}
                 className={clsx(
                   "group relative flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-300 outline-none",
                   isActive 

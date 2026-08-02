@@ -33,12 +33,14 @@ def _volume_filter(df: DataFrame, lookback: int = 20) -> pd.Series:
 
     The lookback defaults to 20 periods (minutes for 1-minute candles).
     If volume is constant (e.g. mocked data), the filter is bypassed (all True).
+    For live indices where websocket volume is 0, the filter is also bypassed.
     """
     # If volume has zero variance (constant/mocked), bypass the filter
     if df["volume"].nunique() <= 1:
         return pd.Series(True, index=df.index)
     vol_avg = df["volume"].rolling(window=lookback, min_periods=1).mean()
-    return df["volume"] >= vol_avg
+    # Bypass filter if the live candle volume is exactly 0 (due to index WS missing volume)
+    return (df["volume"] >= vol_avg) | (df["volume"] == 0)
 
 
 def generate_signals(

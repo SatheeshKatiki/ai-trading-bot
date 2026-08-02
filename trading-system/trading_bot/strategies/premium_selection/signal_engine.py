@@ -270,7 +270,6 @@ def generate_signals(
     momentum_bullish = df_indicators["momentum_bullish"].values
     momentum_bearish = df_indicators["momentum_bearish"].values
     
-    volume_confirmed = df_indicators["volume_confirmed"].values
     vol_expanding = df_indicators["vol_expanding"].values
     
     structure_bullish = df_indicators["structure_bullish"].values

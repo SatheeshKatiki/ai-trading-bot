@@ -61,6 +61,8 @@ class TieredExitManager:
         self.direction: int = 0  # 1 = CALL, -1 = PUT
         self.phase: int = 0      # 0 = no position, 1/2/3 = active phase
         self._original_sl: float = 0.0
+        self.highest_price: float = 0.0
+        self.lowest_price: float = float('inf')
 
     # ──────────────────────────────────────────────────────────────────
     # Position Lifecycle
@@ -82,6 +84,8 @@ class TieredExitManager:
         self.remaining_lots = total_lots
         self.direction = direction
         self.phase = 1  # Start in Phase 1
+        self.highest_price = entry_price
+        self.lowest_price = entry_price
 
         logger.info(
             "EXIT MANAGER: New position — %s %d lots @ ₹%.1f | SL=₹%.1f",
@@ -136,11 +140,8 @@ class TieredExitManager:
         if not self.has_position:
             return ExitDecision()
 
-        # Update MFE (Maximum Favorable Excursion)
-        if self.direction == 1:
-            self.highest_price = max(self.highest_price, current_price)
-        else:
-            self.lowest_price = min(self.lowest_price, current_price)
+        # Update MFE (Maximum Favorable Excursion) - Option premium always goes UP when profitable
+        self.highest_price = max(self.highest_price, current_price)
 
         # ── EXHAUSTION EXIT (Chandelier Lock) ──
         exhaustion_decision = self._evaluate_exhaustion(current_price, current_atr)
@@ -186,12 +187,8 @@ class TieredExitManager:
 
     def _evaluate_exhaustion(self, current_price: float, current_atr: float) -> ExitDecision:
         """Lock profits on massive spikes if they reverse heavily."""
-        if self.direction == 1:
-            profit_points = self.highest_price - self.entry_price
-            drop_from_peak = self.highest_price - current_price
-        else:
-            profit_points = self.entry_price - self.lowest_price
-            drop_from_peak = current_price - self.lowest_price
+        profit_points = self.highest_price - self.entry_price
+        drop_from_peak = self.highest_price - current_price
 
         # Check if we had a massive spike (e.g., > 1.5x ATR)
         if profit_points >= (1.5 * current_atr):
@@ -221,11 +218,8 @@ class TieredExitManager:
         if risk <= 0:
             return ExitDecision()
 
-        # Unrealized reward
-        if self.direction == 1:
-            reward = current_price - self.entry_price
-        else:
-            reward = self.entry_price - current_price
+        # Unrealized reward (Option premium ALWAYS goes up when profitable for both CE and PE)
+        reward = current_price - self.entry_price
 
         rr_ratio = reward / risk
 
@@ -319,9 +313,7 @@ class TieredExitManager:
 
     def _check_stop_loss(self, current_price: float) -> bool:
         """Universal SL check across all phases."""
-        if self.direction == 1:
-            return current_price <= self.stop_loss
-        elif self.direction == -1:
-            return current_price >= self.stop_loss
-        return False
+        # For options, we are ALWAYS long the premium, whether it's a CE or PE.
+        # SL is always below entry_price.
+        return current_price <= self.stop_loss
 

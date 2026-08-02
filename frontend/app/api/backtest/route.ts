@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { getAuthHeaders, BACKEND_URL } from '@/lib/backend';
 
 export const dynamic = 'force-dynamic';
 
@@ -16,11 +17,11 @@ export async function GET(request: Request) {
 
   try {
     // Dynamically forward all searchParams to the Python bridge!
-    const pythonApiUrl = `http://127.0.0.1:8000/api/backtest?${searchParams.toString()}`;
+    const pythonApiUrl = `${BACKEND_URL}/api/backtest?${searchParams.toString()}`;
     
     console.log(`Forwarding backtest request to Python bridge: ${pythonApiUrl}`);
     
-    const response = await fetch(pythonApiUrl, { cache: 'no-store' });
+    const response = await fetch(pythonApiUrl, { cache: 'no-store', headers: await getAuthHeaders() });
     
     if (!response.ok) {
       const errorData = await response.json();

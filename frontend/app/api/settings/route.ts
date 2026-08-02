@@ -1,10 +1,11 @@
 import { NextResponse } from 'next/server';
+import { getAuthHeaders, BACKEND_URL } from '@/lib/backend';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
   try {
-    const res = await fetch('http://127.0.0.1:8000/api/settings');
+    const res = await fetch(`${BACKEND_URL}/api/settings`, { headers: await getAuthHeaders() });
     if (!res.ok) {
       const text = await res.text();
       return NextResponse.json({ error: `Server error: ${text}` }, { status: res.status });
@@ -20,9 +21,9 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const res = await fetch('http://127.0.0.1:8000/api/settings', {
+    const res = await fetch(`${BACKEND_URL}/api/settings`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...(await getAuthHeaders()) },
       body: JSON.stringify(body)
     });
     

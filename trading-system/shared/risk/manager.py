@@ -12,11 +12,24 @@ Provides real-time risk controls for the live trading bot:
 from __future__ import annotations
 
 import logging
+import pytz
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import List, Optional
 
 logger = logging.getLogger(__name__)
+
+# The bot trades the Indian market (NSE/BSE) regardless of what timezone
+# the host machine/server is set to -- daily counters must roll over at
+# midnight IST, not at midnight in whatever timezone `date.today()` would
+# use (e.g. a UTC-clocked cloud server rolls over 5.5 hours late relative
+# to IST, matching trading_bot/portfolio_risk.py's existing use of the
+# same _IST pattern).
+_IST = pytz.timezone("Asia/Kolkata")
+
+
+def _today_ist() -> date:
+    return datetime.now(_IST).date()
 
 
 @dataclass
@@ -45,6 +58,9 @@ class RiskConfig:
     min_ai_confidence: float = 0.55
     # High volatility threshold (ATR % of price)
     high_volatility_threshold: float = 3.0
+    # AI Confidence Override (Increase risk if AI is highly confident)
+    high_confidence_threshold: float = 0.85
+    high_confidence_risk_per_trade: float = 0.035
     # Maximum trades allowed per day (0 = unlimited, controlled by loss limits)
     max_trades_per_day: int = 0
 
@@ -66,14 +82,15 @@ class RiskManager:
     """
 
     def __init__(self, initial_capital: float = 100_000.0,
-                 config: Optional[RiskConfig] = None):
+                 config: Optional[RiskConfig] = None,
+                 daily_pnl: float = 0.0):
         self.initial_capital = initial_capital
         self.config = config or RiskConfig()
 
         self.current_equity = initial_capital
         self.peak_equity = initial_capital
-        self.daily_pnl = 0.0
-        self.today: date = date.today()
+        self.daily_pnl = daily_pnl
+        self.today: date = _today_ist()
         self.consecutive_losses = 0
         self.total_trades = 0
         self.trades_today: List[TradeRecord] = []
@@ -136,8 +153,13 @@ class RiskManager:
             if len(self.trades_today) >= self.config.max_trades_per_day:
                 return False, f"Max trades per day reached ({self.config.max_trades_per_day})"
 
-        # Per-trade risk check
-        max_risk = self.current_equity * self.config.risk_per_trade
+        # Per-trade risk check (Dynamic override for high confidence)
+        allowed_risk_pct = self.config.risk_per_trade
+        if ai_confidence >= self.config.high_confidence_threshold:
+            allowed_risk_pct = self.config.high_confidence_risk_per_trade
+            logger.info("AI Confidence Override active (%.0f%%) -> Risk Limit increased to %.1f%%", ai_confidence*100, allowed_risk_pct*100)
+            
+        max_risk = self.current_equity * allowed_risk_pct
         if risk_amount > max_risk:
             return False, f"Risk {risk_amount:.2f} exceeds limit {max_risk:.2f}"
 
@@ -181,6 +203,7 @@ class RiskManager:
         entry_price: float,
         stop_loss_price: float,
         method: str = "fixed_fractional",
+        ai_confidence: float = 1.0,
     ) -> int:
         """Calculate the number of shares/lots to trade.
 
@@ -202,7 +225,11 @@ class RiskManager:
         if risk_per_share <= 0:
             return 0
 
-        max_risk = self.current_equity * self.config.risk_per_trade
+        allowed_risk_pct = self.config.risk_per_trade
+        if ai_confidence >= self.config.high_confidence_threshold:
+            allowed_risk_pct = self.config.high_confidence_risk_per_trade
+            
+        max_risk = self.current_equity * allowed_risk_pct
 
         if method == "fixed_fractional":
             qty = max_risk / risk_per_share
@@ -214,9 +241,15 @@ class RiskManager:
             avg_win = sum(t.pnl for t in self.trades_today if t.pnl > 0) / max(wins, 1)
             avg_loss = abs(sum(t.pnl for t in self.trades_today if t.pnl < 0) / max(total - wins, 1))
             if avg_loss == 0:
-                kelly_pct = self.config.risk_per_trade
+                kelly_pct = allowed_risk_pct
+            elif avg_win == 0:
+                kelly_pct = 0.0
             else:
                 kelly_pct = max(0, win_rate - (1 - win_rate) / (avg_win / avg_loss))
+                
+            # Prevent 100% Kelly from bankrupting the account!
+            kelly_pct = min(kelly_pct, allowed_risk_pct)
+            
             qty = (self.current_equity * kelly_pct) / risk_per_share
         else:
             qty = max_risk / risk_per_share
@@ -253,9 +286,9 @@ class RiskManager:
 
     def _reset_daily_if_needed(self) -> None:
         """Reset daily counters if the date has changed."""
-        if date.today() != self.today:
+        if _today_ist() != self.today:
             logger.info("New trading day - resetting daily counters")
-            self.today = date.today()
+            self.today = _today_ist()
             self.daily_pnl = 0.0
             self.trades_today = []
             self.total_trades = 0

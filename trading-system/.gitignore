@@ -9,8 +9,12 @@
 .broker.key                   # Fernet encryption key (auto-generated)
 broker_credentials.json       # Encrypted broker API keys
 dashboard_auth.json           # Hashed dashboard password
+users.json                    # User accounts (password hashes)
+sessions.json                 # Active login session tokens
 .fyers_tokens.json            # Cached Fyers access token
 .kite_tokens.json             # Cached Kite access token
+.vault_passphrase             # SecurityVault master passphrase (auto-generated)
+.vault_salt                   # SecurityVault PBKDF2 salt (auto-generated)
 *.token
 *.key
 *.pem
@@ -31,11 +35,26 @@ dashboard_auth.json           # Hashed dashboard password
 # ---------------------------------------------------------------------------
 state.json
 settings.json
+state.db               # Live equity/PnL/trade history (also covered by root *.db, spelled out for clarity)
+data/state.db           # Orphaned duplicate from an earlier path layout — not read/written anywhere
 
 # ---------------------------------------------------------------------------
 # Audit logs (append-only, may contain order details)
 # ---------------------------------------------------------------------------
 audit/
+
+# ---------------------------------------------------------------------------
+# Disaster-recovery backups — contain state.db, broker_credentials.json,
+# cached broker tokens, and the audit log verbatim  [NEVER COMMIT]
+# ---------------------------------------------------------------------------
+backups/
+
+# ---------------------------------------------------------------------------
+# Live position state — rewritten by the running engine on every
+# open/close; tracking it makes git status permanently dirty while live
+# and (lower severity, but still) can leak real position sizes/entries
+# ---------------------------------------------------------------------------
+config/active_positions.json
 
 # ---------------------------------------------------------------------------
 # Trained ML models (large binary files)
@@ -45,6 +64,8 @@ models/*.joblib
 models/*.h5
 models/*.pt
 models/*.onnx
+lstm_memory.npz
+lstm_memory.pkl
 
 # ---------------------------------------------------------------------------
 # Data files (historical OHLCV — can be large)
@@ -52,6 +73,15 @@ models/*.onnx
 data/*.csv
 data/*.parquet
 data/*.feather
+# drl/train.py loads this from the repo root, not data/ -- regenerated/
+# downloaded, shouldn't be committed.
+nifty_historical_data.csv
+
+# ---------------------------------------------------------------------------
+# RL training run artifacts (TensorBoard logs — large, regenerated per run)
+# ---------------------------------------------------------------------------
+ppo_trading_tensorboard/
+*_tensorboard/
 
 # ---------------------------------------------------------------------------
 # Python artefacts

@@ -1,27 +1,23 @@
 import sys
 import os
-import json
-from pathlib import Path
 from fyers_apiv3 import fyersModel
 
 # Add project root to python path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from brokers.credentials import load_credentials
+from brokers.token_cache import load_token
 
 def main():
     print("=== Testing Fyers Connection ===")
-    
+
     # Load token
-    token_path = Path(__file__).resolve().parents[1] / ".fyers_tokens.json"
-    if not token_path.exists():
-        print("Error: No token file found! Please run generate_token.py first.")
+    token = load_token("fyers")
+    if not token:
+        print("Error: No cached token found! Please run generate_token.py first.")
         sys.exit(1)
-        
-    with open(token_path, "r") as f:
-        data = json.load(f)
-        token = data.get("access_token")
-        
+
+
     # Load app credentials
     creds = load_credentials("fyers")
     if not creds:

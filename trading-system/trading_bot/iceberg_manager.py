@@ -7,7 +7,7 @@ institutional footprint and minimize slippage.
 import asyncio
 import logging
 import random
-from typing import List
+from typing import List, Callable, Optional
 
 from brokers import OrderRequest, OrderSide, BaseBroker
 from shared.security.rate_limiter import ORDER_LIMITER
@@ -20,17 +20,18 @@ class IcebergManager:
         self.min_delay = min_delay_sec
         self.max_delay = max_delay_sec
 
-    async def execute_iceberg(self, broker: BaseBroker, order: OrderRequest) -> List[OrderRequest]:
+    async def execute_iceberg(self, broker: BaseBroker, order: OrderRequest, halt_check: Optional[Callable[[], bool]] = None) -> List:
         """
         Slices a large order into chunks and executes them sequentially.
+        Respects system halt flags during TWAP sleeps.
         """
         total_qty = order.quantity
         if total_qty <= self.max_slice_qty:
             # Standard execution, no slicing needed
             if ORDER_LIMITER.allow(broker.BROKER_ID):
                 try:
-                    await broker.place_order_async(order)
-                    return [order]
+                    resp = await broker.place_order_async(order)
+                    return [resp]
                 except Exception as e:
                     logger.error("Standard Order failed: %s", e)
                     return []
@@ -63,12 +64,15 @@ class IcebergManager:
             
             if ORDER_LIMITER.allow(broker.BROKER_ID):
                 try:
-                    await broker.place_order_async(slice_order)
-                    executed_orders.append(slice_order)
+                    resp = await broker.place_order_async(slice_order)
+                    executed_orders.append(resp)
                     logger.info("Iceberg Slice %d/%d: Executed %d qty for %s", 
                                 i+1, len(slices), chunk_qty, order.symbol)
                 except Exception as e:
                     logger.error("Iceberg Slice %d failed: %s", i+1, e)
+                    if "InsufficientFunds" in str(type(e).__name__) or "margin" in str(e).lower() or "rejected" in str(e).lower():
+                        logger.warning("Broker rejection/Margin shortfall detected! Halting remaining iceberg slices.")
+                        break
             else:
                 logger.warning("Iceberg Slice %d delayed due to rate limit.", i+1)
             
@@ -77,4 +81,9 @@ class IcebergManager:
                 delay = random.uniform(self.min_delay, self.max_delay)
                 await asyncio.sleep(delay)
                 
+                # Halt Execution if system panic exited or reached max drawdown during the sleep!
+                if halt_check and halt_check():
+                    logger.warning("System HALT detected during Iceberg execution! Stopping remaining slices.")
+                    break
+                    
         return executed_orders

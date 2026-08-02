@@ -1,14 +1,29 @@
-"""Backtesting runner for the EMA+RSI strategy.
+"""Backtesting engine: run_intraday_backtest() and the CLI entrypoint.
 
-Loads historical OHLCV CSV data, runs the EMA + RSI signal generator, simulates
-simple intraday trades (enter at the next candle's open, exit on opposite
-signal), and prints a performance summary.
+Loads historical OHLCV CSV data, generates signals via the MARL strategy
+(trading_bot.strategies.marl_strategy.generate_signals -- the CLI's actual
+default; the docstring previously claimed "EMA+RSI", which was stale),
+runs them through run_intraday_backtest() (the same engine used by
+grid_search.py, WalkForwardValidator, the /api/backtest endpoint, and
+audit_script.py -- see that function's docstring for its full feature
+set: slippage, commission, shorting, ATR-adaptive SL, pyramiding,
+capital protection, compounding), and prints a performance summary.
+
+This module previously also contained a second, much simpler
+`Backtester` class (plus its own compute_returns/sharpe_ratio/
+max_drawdown/win_rate helpers) used only by this CLI entrypoint --
+every other caller in the codebase already used run_intraday_backtest.
+Two independently-maintained engines meant a fix to one (e.g. the
+same-bar lookahead bias fix already applied to run_intraday_backtest)
+did not automatically apply to the other, and the CLI reported
+different, less battle-tested numbers than every other tool in this
+repo. Removed the unused Backtester class and its helpers entirely and
+rewired the CLI onto run_intraday_backtest so there is exactly one
+backtest engine in this codebase, not two that can silently diverge.
 
 Usage example::
 
-    python -m backtesting_engine.run \
-        --data-path data/RELIANCE_1min.csv \
-        --symbol RELIANCE
+    python -m backtesting_engine.run --data-path data/RELIANCE_1min.csv --symbol RELIANCE
 """
 
 from __future__ import annotations
@@ -17,161 +32,73 @@ import argparse
 import logging
 import sys
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 from typing import List
 
 import numpy as np
 import pandas as pd
 
-from shared.indicators import ema, rsi
-from trading_bot.strategies.ema_rsi_strategy import generate_signals
+from trading_bot.strategies.marl_strategy import generate_signals
 
-# ---------------------------------------------------------------------------
-# Helper functions for performance metrics
-# ---------------------------------------------------------------------------
-def compute_returns(pnl_series: pd.Series) -> pd.Series:
-    """Convert a series of trade PnL into cumulative return series.
 
-    The function assumes the PnL series is already expressed in the same unit
-    as the initial capital (e.g., dollars). It returns the cumulative net worth
-    series (starting at 0) so that downstream calculations (Sharpe, drawdown)
-    can operate on a returns‑like array.
-    """
-    return pnl_series.cumsum()
-
-def sharpe_ratio(returns: pd.Series, period: int = 252) -> float:
-    """Annualized Sharpe ratio assuming risk‑free rate = 0.
-
-    Args:
-        returns: Series of periodic (here minute) returns.
-        period: Number of periods per year (default 252 trading days * 390
-                minutes ≈ 98 280; we keep the default simple and let callers set a
-                realistic value).
-    """
-    if returns.empty:
-        return 0.0
-    mean = returns.mean()
-    std = returns.std(ddof=1)
-    if std == 0:
-        return 0.0
-    # Scale to annual using sqrt(periods per year)
-    return np.sqrt(period) * mean / std
-
-def max_drawdown(equity_curve: pd.Series) -> float:
-    """Maximum drawdown expressed as a positive percentage.
-
-    ``equity_curve`` is the cumulative profit curve.
-    """
-    if equity_curve.empty:
-        return 0.0
-    roll_max = equity_curve.cummax()
-    drawdowns = (roll_max - equity_curve) / roll_max.replace(to_replace=0, value=np.nan).ffill()
-    return drawdowns.max() * 100
-
-def win_rate(pnl_series: pd.Series) -> float:
-    """Percentage of winning trades (PnL > 0)."""
-    if pnl_series.empty:
-        return 0.0
-    wins = (pnl_series > 0).sum()
-    return wins / len(pnl_series) * 100
-
-# ---------------------------------------------------------------------------
-# Simple back-test simulator with slippage & commission
-# ---------------------------------------------------------------------------
-class Backtester:
-    """Simulate intraday trades based on raw signals.
-
-    Features:
-    - Slippage simulation (bps)
-    - Commission/brokerage simulation
-    """
-
-    def __init__(self, df: pd.DataFrame, initial_capital: float = 10_000.0,
-                 slippage_bps: float = 2.0, commission_per_trade: float = 20.0):
-        self.df = df.copy()
-        self.capital = initial_capital
-        self.slippage_bps = slippage_bps
-        self.commission_per_trade = commission_per_trade
-        
-        self.position_price: float | None = None
-        self.trades: List[float] = []
-        self.equity_curve = pd.Series([], dtype=float)
-
-    def _apply_slippage(self, price: float, side: str) -> float:
-        """Apply slippage to price (add to BUY, subtract from SELL)."""
-        slip_amt = price * (self.slippage_bps / 10000)
-        return price + slip_amt if side == "BUY" else price - slip_amt
-
-    def run(self, signals: pd.Series | None = None) -> None:
-        if signals is None:
-            signals = generate_signals(self.df)
-        
-        for i in range(len(self.df) - 1):
-            signal = signals.iloc[i]
-            next_open = self.df["open"].iloc[i + 1]
-            
-            # Close existing long
-            if self.position_price is not None and signal == -1:
-                exit_price = self._apply_slippage(next_open, "SELL")
-                pnl = exit_price - self.position_price - self.commission_per_trade
-                self.trades.append(pnl)
-                self.capital += pnl
-                self.position_price = None
-                
-            # Open new long
-            if self.position_price is None and signal == 1:
-                entry_price = self._apply_slippage(next_open, "BUY")
-                self.position_price = entry_price
-                self.capital -= self.commission_per_trade  # deduct entry comms
-                
-            self.equity_curve = pd.concat([self.equity_curve, pd.Series([self.capital])])
-            
-        # End-of-data cleanup
-        if self.position_price is not None:
-            final_price = self._apply_slippage(self.df["close"].iloc[-1], "SELL")
-            pnl = final_price - self.position_price - self.commission_per_trade
-            self.trades.append(pnl)
-            self.capital += pnl
-            self.position_price = None
-            self.equity_curve = pd.concat([self.equity_curve, pd.Series([self.capital])])
-
-    def summary(self) -> dict:
-        pnl_series = pd.Series(self.trades)
-        equity = pd.Series(self.equity_curve)
-        returns = pnl_series / self.capital
-        
-        # Sortino Ratio (downside risk)
-        downside = returns[returns < 0]
-        sortino = 0.0
-        if not downside.empty and downside.std() > 0:
-            sortino = (returns.mean() / downside.std()) * np.sqrt(252)
-            
-        # Calmar Ratio
-        mdd = max_drawdown(equity) / 100
-        calmar = 0.0
-        if mdd > 0:
-            annual_return = (self.capital / 10_000.0) ** (252 / len(self.df)) - 1 if len(self.df) > 0 else 0
-            calmar = annual_return / mdd
-
-        return {
-            "total_trades": len(self.trades),
-            "final_capital": round(self.capital, 2),
-            "total_pnl": round(pnl_series.sum(), 2),
-            "win_rate_%": round(win_rate(pnl_series), 2),
-            "max_drawdown_%": round(mdd * 100, 2),
-            "sharpe": round(sharpe_ratio(returns), 2),
-            "sortino": round(sortino, 2),
-            "calmar": round(calmar, 2),
-        }
+def _compute_profit_factor(total_profit: float, total_loss: float) -> str:
+    """stats["profitFactor"] as a string in every case (not just the
+    zero-loss "Infinity" case) so it has one consistent JSON type for
+    every consumer -- a raw float `inf` isn't valid JSON (json.dumps
+    would emit a bare `Infinity` token that JS's JSON.parse can't read,
+    breaking the entire response), and previously mixing str ("Infinity")
+    with float (round(...) or 0.0) across branches meant callers
+    couldn't rely on either type. Pulled out as its own function so it's
+    directly unit-testable without running a full backtest."""
+    if total_loss == 0:
+        return "Infinity" if total_profit > 0 else "0.0"
+    return str(round(total_profit / total_loss, 2))
 
 def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital: float = 100000.0,
                            slippage_bps: float = 2.0, commission_per_trade: float = 20.0, multiplier: int = 10,
                            options_delta: float = 0.5,
                            target_pct: float = 2.0, stoploss_pct: float = 1.0, **kwargs) -> dict:
-    """Run a detailed backtest with shorting, slippage, and commission."""
+    """Run a detailed backtest with shorting, slippage, and commission.
+
+    Known limitation (options_delta): when backtesting an options
+    strategy, `df` carries the underlying's price and every point-move
+    in it is scaled by a single constant `options_delta` (default 0.5)
+    to approximate the option premium's P&L — real option delta varies
+    continuously with strike/moneyness and time-to-expiry (from near 0
+    deep OTM to near 1 deep ITM, and it drifts as expiry approaches),
+    none of which this function receives: `df`/`signals` carry only a
+    price series and directional signals, with no strike, spot-vs-strike
+    distance, or expiry passed in anywhere in the current call chain
+    (confirmed empty grep across this module, grid_search.py, and the
+    /api/backtest path — a fix modeling delta dynamically would mean
+    threading strike/expiry/IV through every caller, a materially
+    larger change than this constant). 0.5 is closest to reality for
+    ATM entries; this codebase's own strike selector
+    (trading_bot/strategies/premium_selection/options_selector.py)
+    defaults to ATM/1-2-strikes-ITM, so backtested P&L for those trades
+    is directionally right but understates real ITM moves and
+    overstates real OTM/far-dated moves — treat backtested rupee P&L
+    magnitudes as approximate, not exact, for any options strategy.
+    """
     trades = []
     position = None
     capital = initial_capital
     equity_curve = []
+    
+    # ── Data Continuity Validation ───────────────────────────────────────
+    if 'datetime' in df.columns and len(df) > 100:
+        try:
+            dts = pd.to_datetime(df['datetime']).drop_duplicates().sort_values()
+            dates_series = pd.Series(dts.dt.date.unique())
+            if len(dates_series) > 1:
+                diffs = pd.to_datetime(dates_series).diff().dt.days.dropna()
+                max_gap = int(diffs.max()) if not diffs.empty else 0
+                if max_gap > 14:  # A gap of more than 14 days is abnormal
+                    logger.warning(f"Data Continuity Warning: Found a massive gap of {max_gap} days in the dataset!")
+        except Exception as e:
+            logger.debug(f"Data continuity check skipped: {e}")
+    # ─────────────────────────────────────────────────────────────────────
     # ── Daily Risk Controls ──────────────────────────────────────────────
     max_daily_loss_pct  = kwargs.get("max_daily_loss_pct", 3.0)   # stop trading day if capital drops X%
     max_daily_trades    = kwargs.get("max_daily_trades", 6)         # max trades per day
@@ -183,6 +110,25 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
     trading_halted_day  = None                                     # date string when halt triggered
     current_day         = None
     # ─────────────────────────────────────────────────────────────────────
+    # ── Capital Protection Mode (Professional Risk Management) ───────────
+    # Tracks consecutive losing trades and reduces position size accordingly.
+    # Professional rule: If you're losing repeatedly, the market is NOT
+    # in a regime your strategy understands. Step back, reduce risk.
+    consecutive_losses      = 0
+    capital_protection_mode = False   # True = half-size positions
+    capital_protection_halt = False   # True = no new entries
+    # ─────────────────────────────────────────────────────────────────────
+    # Root-cause fix (Medium audit finding): "Dynamic Capital Compounding"
+    # (below) scales position size up as running capital grows during the
+    # backtest, which is a legitimate sizing strategy but makes headline
+    # return metrics path-dependent — a lucky early streak compounds into
+    # larger later bets, inflating total P&L beyond what the strategy's
+    # per-trade edge alone would produce, in a way that isn't obvious from
+    # the stats dict alone. Track the peak multiplier actually reached so
+    # it's visible in the returned stats instead of silently baked into
+    # the headline numbers with no way to tell it happened.
+    max_compound_factor_reached = 1.0
+    # ─────────────────────────────────────────────────────────────────────
 
     def apply_slippage(price, side):
         slip_amt = price * (slippage_bps / 10000)
@@ -190,12 +136,36 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
 
     # Optimize by converting to numpy arrays for the tight loop
     closes = df['close'].to_numpy()
+    opens = df['open'].to_numpy() if 'open' in df.columns else closes
+
+    def next_bar_fill_price(i: int, current_price: float) -> float:
+        """Root-cause fix for the audit's lookahead-bias finding: a signal
+        (or a stop-loss/target/pyramid trigger) evaluated using bar i's own
+        close cannot realistically be filled at that same close — by the
+        time bar i's close is known, that instant has already passed. Any
+        order triggered by bar i's data fills at bar i+1's open instead.
+        Only the very last bar, with no i+1 to defer to, falls back to
+        filling at its own close.
+        """
+        if i + 1 < len(closes):
+            return float(opens[i + 1])
+        return current_price
+
     if 'datetime' in df.columns:
         times = df['datetime'].apply(lambda x: str(x)[:16] if isinstance(x, str) else "00:00").to_numpy()
+        total_trading_days = len(set([str(x)[:10] for x in df['datetime']]))
     else:
         times = ["00:00"] * len(df)
+        total_trading_days = 0
 
     sig_vals = signals.to_numpy()
+    # When present (currently only exported by
+    # trading_bot/strategies/momentum_strategy's generate_signals),
+    # st_direction approximates ONLY the Phase 3 trailing-stop rule of the
+    # live institutional_momentum strategy's TieredExitManager
+    # (exit_manager.py) — it does not model that manager's partial-lot
+    # profit booking, SL-to-breakeven, exhaustion lock, or AI-confidence
+    # early exit. See the comment at st_direction's export site for detail.
     has_st = 'st_direction' in df.columns
     st_dirs = df['st_direction'].to_numpy() if has_st else np.zeros(len(df))
 
@@ -226,6 +196,14 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
             daily_pnl           = 0.0
             daily_trades_count  = 0
             daily_capital_start = capital
+            # Capital Protection: Reset each new trading day
+            # (fresh start every morning — don't carry yesterday's fear)
+            capital_protection_halt = False
+            if consecutive_losses >= 5:
+                # Only keep protection mode ON if very bad streak
+                capital_protection_mode = True
+            else:
+                capital_protection_mode = False
 
         # If daily loss limit hit → skip entries for the rest of this day
         daily_loss_pct = (daily_pnl / daily_capital_start * 100) if daily_capital_start > 0 else 0
@@ -302,11 +280,12 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
                                 scale_qty = 0
                                 
                         if scale_qty > 0:
-                            scale_entry = apply_slippage(current_price, position["type"])
+                            scale_fill = next_bar_fill_price(i, current_price)
+                            scale_entry = apply_slippage(scale_fill, position["type"])
                             position["entries"].append((scale_entry, scale_qty))
                             capital -= commission_per_trade
                             total_brokerage += commission_per_trade
-                            total_slippage += abs(current_price - scale_entry) * scale_qty * options_delta
+                            total_slippage += abs(scale_fill - scale_entry) * scale_qty * options_delta
                             position["scales_done"] = scales_done + 1
                         # Mark this specific scale as done to prevent re-triggering every candle
                         position[f"scale_{scales_done}_done"] = True
@@ -338,23 +317,26 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
                 raw_sl_pct = position.get("sl_pct", base_sl)
                 
             # After breakeven snap, sl_pct=0.0 means exit at entry — use a tiny floor
-            # so the engine doesn't hold losing trades forever at breakeven
             current_sl_pct = raw_sl_pct if raw_sl_pct > 0 else min(stoploss_pct * 0.5, 0.05)
 
-            # 3-Phase Trailing Stop Loss
+            # ── 3-Phase Trailing Stop Loss (Professional R:R Edition) ────────
+            # Professional options buyer rule:
+            # - Start trailing early (0.5% trigger) to lock in profits
+            # - Give 0.35% room so we don't exit too early on volatility
+            # - Lock MINIMUM 0.15% profit before any trail exit fires
             enable_tsl = kwargs.get("enable_trailing_sl", True) and kwargs.get("trailing_sl", True)
             if enable_tsl:
                 ml_tsl_trigger = df['trailing_sl_trigger'].iloc[i] if 'trailing_sl_trigger' in df.columns else None
-                trail_trigger = ml_tsl_trigger if pd.notna(ml_tsl_trigger) else kwargs.get("trail_trigger", 0.8)
-                trail_offset = kwargs.get("trail_offset", 0.2)
+                trail_trigger = ml_tsl_trigger if pd.notna(ml_tsl_trigger) else kwargs.get("trail_trigger", 0.5)
+                trail_offset = kwargs.get("trail_offset", 0.35)
 
                 if position["max_pnl_pct"] >= trail_trigger:
-                    # Phase 3: Hyper-tight trail if we exceed 2x the trigger (Super Trend Run)
-                    if position["max_pnl_pct"] >= (trail_trigger * 2.0):
-                        locked_profit = max(0.0, position["max_pnl_pct"] - 0.05) # Extremely tight 0.05% trail
+                    # Phase 3: Hyper-tight trail if we exceed 3x the trigger (Super Trend Run)
+                    if position["max_pnl_pct"] >= (trail_trigger * 3.0):
+                        locked_profit = max(0.15, position["max_pnl_pct"] - 0.05)  # Ultra tight 0.05% trail
                     else:
-                        # Phase 2: Standard trailing
-                        locked_profit = max(0.0, position["max_pnl_pct"] - trail_offset)
+                        # Phase 2: Standard trailing — lock in profit minus trail_offset
+                        locked_profit = max(0.15, position["max_pnl_pct"] - trail_offset)
                     
                     position["tsl_locked_pct"] = locked_profit
 
@@ -365,8 +347,7 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
             tsl_locked = position.get("tsl_locked_pct")
             tsl_hit = (tsl_locked is not None) and (pnl_pct < tsl_locked)
 
-            # Phase 4: Volatility-Adaptive Targets
-            # If the market is highly volatile, dynamically expand the target
+            # Volatility-Adaptive Target
             base_target = position.get("target_pct", target_pct)
             target_hit = pnl_pct >= base_target
             
@@ -378,17 +359,32 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
                 current_inr_pnl = sum((e_price - current_price) * qty * options_delta for e_price, qty in position["entries"])
             hard_monetary_hit = current_inr_pnl <= -max_inr_loss
 
+            # ── Time-Based Exit: Only for 1 Min scalping sessions ──────────
+            # On 5 Min: 20 candles = 100 minutes — too aggressive, exits too early
+            # Only enable time exit for very short timeframes (< 3 min)
+            # by passing max_hold_candles via kwargs. Default = disabled (9999)
+            max_hold_candles = kwargs.get("max_hold_candles", 9999)
+            bars_held = i - position.get("entry_bar", i)
+            time_exit_hit = bars_held >= max_hold_candles
+
             # Track if partial profit targets were hit (use original stoploss_pct as R unit)
             if pnl_pct >= stoploss_pct:
                 position["t1_hit"] = True
             if pnl_pct >= (stoploss_pct * 2):
                 position["t2_hit"] = True
                 
-            should_exit = (is_long and signal == -1) or (not is_long and signal == 1) or (i == len(df) - 1) or stoploss_hit or tsl_hit or target_hit or hard_monetary_hit
+            should_exit = (is_long and signal == -1) or (not is_long and signal == 1) or (i == len(df) - 1) or stoploss_hit or tsl_hit or target_hit or hard_monetary_hit or time_exit_hit
 
             if should_exit:
-                exit_price = current_price
+                # Default fill for a SIGNAL/TIME_EXIT/end-of-data exit — the
+                # other exit_reason branches below (STOPLOSS/TRAILING_SL/
+                # TARGET/MAX_LOSS_LIMIT) compute their own theoretical price
+                # level and are not affected by this. On the last bar (no
+                # i+1 available) this correctly falls back to current_price.
+                exit_price = next_bar_fill_price(i, current_price)
                 exit_reason = "SIGNAL"
+                if time_exit_hit:
+                    exit_reason = "TIME_EXIT"
                 
                 total_qty = sum(qty for _, qty in position["entries"])
                 avg_e = sum(p*q for p, q in position["entries"]) / total_qty
@@ -440,14 +436,15 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
                     
                 # Calculate PnL (Partial Profits vs Full Run)
                 if kwargs.get("enable_partial_profits", False):
+                    partial_pnl = 0.0
                     rem_weight = 1.0
                     if position.get("t1_hit", False):
-                        trade_net_pnl += (entry_price * (stoploss_pct / 100)) * multiplier * options_delta * 0.3
+                        partial_pnl += (entry_price * (stoploss_pct / 100)) * multiplier * options_delta * 0.3
                         rem_weight -= 0.3
                     if position.get("t2_hit", False):
-                        trade_net_pnl += (entry_price * (stoploss_pct * 2 / 100)) * multiplier * options_delta * 0.3
+                        partial_pnl += (entry_price * (stoploss_pct * 2 / 100)) * multiplier * options_delta * 0.3
                         rem_weight -= 0.3
-                    trade_net_pnl += base_pnl * rem_weight - (commission_per_trade * (len(position["entries"]) + 1))
+                    trade_net_pnl = partial_pnl + (base_pnl * rem_weight) - (commission_per_trade * (len(position["entries"]) + 1))
 
                 capital += base_pnl
                 daily_pnl += trade_net_pnl          # ← track daily P&L
@@ -466,10 +463,26 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
                 })
                 position = None
                 
+                # ── Capital Protection Mode: Track consecutive losses ──────────
+                if trade_net_pnl > 0:
+                    # WIN: Reset consecutive loss counter
+                    consecutive_losses = 0
+                    capital_protection_mode = False
+                    capital_protection_halt = False
+                else:
+                    # LOSS: Increment counter and update protection state
+                    consecutive_losses += 1
+                    if consecutive_losses >= 3:
+                        capital_protection_mode = True   # Half-size next trades
+                    # NOTE: No full halt — even during bad streaks, winners can appear.
+                    # Instead, at 5+ losses we use quarter-size (25%) to stay in the game
+                    # but with dramatically reduced risk.
+                # ────────────────────────────────────────────────────────────────────
         # Entry condition — skip if daily loss limit or trade cap reached
         if position is None and not daily_limit_hit and not daily_trades_hit:
             if signal == 1 and (i == 0 or sig_vals[i-1] != 1):
-                entry_price = apply_slippage(current_price, "BUY")
+                entry_fill = next_bar_fill_price(i, current_price)
+                entry_price = apply_slippage(entry_fill, "BUY")
 
                 # Dynamic SL/Target based on ATR (Optional) or Custom SL
                 pos_has_custom_sl = False
@@ -488,14 +501,29 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
                 dynamic_target = max(target_pct, vol_target_pct)
 
                 score = call_scores[i] if has_scores else 0
-                actual_mult = multiplier_override if multiplier_override is not None else multiplier
+                base_mult = multiplier_override if multiplier_override is not None else multiplier
+                # ULTIMATE UPGRADE: Dynamic Capital Compounding Engine
+                # Scales lot size as equity grows, capped at realistic max (default 5x) for strict risk management
+                if kwargs.get("enable_compounding", True) and capital > initial_capital:
+                    max_cap = kwargs.get("max_compounding_multiplier", 5.0)
+                    compound_factor = min(max_cap, max(1.0, capital / initial_capital))
+                    base_mult = int(base_mult * compound_factor)
+                    max_compound_factor_reached = max(max_compound_factor_reached, compound_factor)
+                
+                actual_mult = base_mult
+                # Capital Protection: Reduce position size during losing streaks
+                if consecutive_losses >= 5:
+                    actual_mult = max(1, actual_mult // 4)  # 25% size
+                elif capital_protection_mode:  # 3+ losses
+                    actual_mult = max(1, actual_mult // 2)  # 50% size
 
-                position = {"type": "BUY", "entries": [(entry_price, actual_mult)], "time": current_time, "sl_pct": current_sl_pct, "target_pct": dynamic_target, "score": score, "has_custom_sl": pos_has_custom_sl}
+                position = {"type": "BUY", "entries": [(entry_price, actual_mult)], "time": current_time, "sl_pct": current_sl_pct, "target_pct": dynamic_target, "score": score, "has_custom_sl": pos_has_custom_sl, "entry_bar": i}
                 capital -= commission_per_trade
                 total_brokerage += commission_per_trade
-                total_slippage += abs(current_price - entry_price) * actual_mult * options_delta
+                total_slippage += abs(entry_fill - entry_price) * actual_mult * options_delta
             elif signal == -1 and (i == 0 or sig_vals[i-1] != -1):
-                entry_price = apply_slippage(current_price, "SELL")
+                entry_fill = next_bar_fill_price(i, current_price)
+                entry_price = apply_slippage(entry_fill, "SELL")
 
                 # Dynamic SL/Target based on ATR (Optional) or Custom SL
                 pos_has_custom_sl = False
@@ -514,12 +542,25 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
                 dynamic_target = max(target_pct, vol_target_pct)
 
                 score = put_scores[i] if has_scores else 0
-                actual_mult = multiplier_override if multiplier_override is not None else multiplier
+                base_mult = multiplier_override if multiplier_override is not None else multiplier
+                # ULTIMATE UPGRADE: Dynamic Capital Compounding Engine
+                if kwargs.get("enable_compounding", True) and capital > initial_capital:
+                    max_cap = kwargs.get("max_compounding_multiplier", 5.0)
+                    compound_factor = min(max_cap, max(1.0, capital / initial_capital))
+                    base_mult = int(base_mult * compound_factor)
+                    max_compound_factor_reached = max(max_compound_factor_reached, compound_factor)
+                
+                actual_mult = base_mult
+                # Capital Protection: Reduce position size during losing streaks
+                if consecutive_losses >= 5:
+                    actual_mult = max(1, actual_mult // 4)  # 25% size
+                elif capital_protection_mode:  # 3+ losses
+                    actual_mult = max(1, actual_mult // 2)  # 50% size
 
-                position = {"type": "SELL", "entries": [(entry_price, actual_mult)], "time": current_time, "sl_pct": current_sl_pct, "target_pct": dynamic_target, "score": score, "has_custom_sl": pos_has_custom_sl}
+                position = {"type": "SELL", "entries": [(entry_price, actual_mult)], "time": current_time, "sl_pct": current_sl_pct, "target_pct": dynamic_target, "score": score, "has_custom_sl": pos_has_custom_sl, "entry_bar": i}
                 capital -= commission_per_trade
                 total_brokerage += commission_per_trade
-                total_slippage += abs(current_price - entry_price) * actual_mult * options_delta
+                total_slippage += abs(entry_fill - entry_price) * actual_mult * options_delta
                 
         if i % max(1, len(df) // 20) == 0:
             equity_curve.append({"name": current_time, "value": capital})
@@ -557,11 +598,7 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
         if not downside_pnl.empty and downside_pnl.std() > 0:
             sortino_ratio = (mean_pnl / downside_pnl.std()) * np.sqrt(252)
             
-    # Fix Profit Factor displaying massive integers
-    if total_loss == 0:
-        profit_factor = "Infinity" if total_profit > 0 else 0.0
-    else:
-        profit_factor = round(total_profit / total_loss, 2)
+    profit_factor = _compute_profit_factor(total_profit, total_loss)
         
     # Calculate Max Drawdown
     peak = initial_capital
@@ -579,6 +616,7 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
         "profitFactor": profit_factor,
         "winRate": f"{(win_rate * 100):.1f}" if trades else "0.0",
         "totalTrades": len(trades),
+        "totalTradingDays": total_trading_days,
         "successTrades": len(winning_trades),
         "failedTrades": len(losing_trades),
         "stoplossTrades": sum(1 for t in trades if t.get("exit_reason") in ("STOPLOSS", "TRAILING_SL")),
@@ -593,7 +631,17 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
         "stoplossPct": stoploss_pct, # Dynamic Echo
         "donchianPeriod": kwargs.get("donchian_period", 10),
         "totalBrokerage": round(total_brokerage, 2),
-        "totalSlippage": round(total_slippage, 2)
+        "totalSlippage": round(total_slippage, 2),
+        # Root-cause fix (Medium audit finding): Dynamic Capital
+        # Compounding scales position size up as running capital grows,
+        # which makes headline return metrics path-dependent (a lucky
+        # early streak compounds into larger later bets). Surface whether
+        # it was active and how much it actually scaled position size by
+        # peak, so a reader of these stats can tell whether — and how
+        # much — compounding inflated netProfit/final capital beyond what
+        # fixed-size position sizing would have produced.
+        "compoundingEnabled": bool(kwargs.get("enable_compounding", True)),
+        "maxCompoundFactorReached": round(max_compound_factor_reached, 2),
     }
     
     return {
@@ -639,14 +687,12 @@ def main(argv: List[str] | None = None) -> None:
         logger.error("Data file not found: %s", args.data_path)
         sys.exit(1)
 
-    # Load CSV – assume first column is datetime index or a column named 'datetime'
+    # Load CSV. Keep `datetime` as a plain column (not the index) if
+    # present -- run_intraday_backtest() reads it as a column for its
+    # data-continuity checks and EOD/session-boundary logic.
     df = pd.read_csv(args.data_path)
     if "datetime" in df.columns:
         df["datetime"] = pd.to_datetime(df["datetime"])
-        df.set_index("datetime", inplace=True)
-    else:
-        # If there's no explicit datetime column, try parsing the index
-        df.index = pd.to_datetime(df.index)
 
     required = {"open", "high", "low", "close", "volume"}
     if not required.issubset(df.columns):
@@ -657,11 +703,10 @@ def main(argv: List[str] | None = None) -> None:
         )
         sys.exit(1)
 
-    backtester = Backtester(df, initial_capital=args.initial_capital)
-    backtester.run()
-    summary = backtester.summary()
-    logger.info("Backtest completed – summary:")
-    for k, v in summary.items():
+    signals = generate_signals(df)
+    result = run_intraday_backtest(df, signals, initial_capital=args.initial_capital)
+    logger.info("Backtest completed -- summary:")
+    for k, v in result["stats"].items():
         logger.info("%s: %s", k, v)
 
 

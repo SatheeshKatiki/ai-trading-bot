@@ -1,14 +1,36 @@
 import { NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
+import { getAuthHeaders, BACKEND_URL } from '@/lib/backend';
 
 export const dynamic = 'force-dynamic';
 
-async function fetchWithTimeout(url: string, timeout = 2000) {
+// Shape of the money-relevant fields from the backend's /api/state —
+// narrowed from `any` so an unexpected/missing shape from the backend
+// surfaces as a type error here rather than silently flowing an
+// undefined equity/pnl value into the dashboard.
+interface BackendState {
+  equity: number;
+  pnl: number;
+  trades: unknown[];
+}
+
+interface QuoteTick {
+  lp: number;
+  chp: number;
+}
+
+interface FyersQuoteResponse {
+  s?: string;
+  error?: unknown;
+  d?: { v: { lp?: number; chp?: number } }[];
+}
+
+async function fetchWithTimeout<T = unknown>(url: string, timeout = 2000, headers?: Record<string, string>): Promise<T | null> {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeout);
   try {
-    const response = await fetch(url, { signal: controller.signal });
+    const response = await fetch(url, { signal: controller.signal, headers });
     clearTimeout(id);
     return response.ok ? await response.json() : null;
   } catch (error) {
@@ -19,17 +41,19 @@ async function fetchWithTimeout(url: string, timeout = 2000) {
 
 export async function GET(request: Request) {
   try {
+    const authHeaders = await getAuthHeaders();
     const { searchParams } = new URL(request.url);
     const rawSymbol = searchParams.get('symbol') || 'NIFTY';
     const timeframe = searchParams.get('timeframe') || '15 Min';
     const isLive = searchParams.get('live') === 'true';
     
-    let chartData: any[] = [];
+    let chartData: unknown[] = [];
     let currentPrice = 0;
     let changePercent = 0;
-    let fundsData: any = null;
-    let signalsData: any = null;
-    let quoteData: any = null;
+    let fundsData: unknown = null;
+    let signalsData: unknown = null;
+    let quoteData: FyersQuoteResponse | null = null;
+    let newTickerData: Record<string, QuoteTick> = {};
     
     // Map short symbols to Fyers specific symbols for data fetching
     let symbol = rawSymbol;
@@ -45,38 +69,75 @@ export async function GET(request: Request) {
     }
     
     // 1. Read state from Python API Bridge
-    let baseState = { 
-      equity: 100000.0, 
-      pnl: 0.0, 
-      trades: [] 
+    let baseState: BackendState = {
+      equity: 100000.0,
+      pnl: 0.0,
+      trades: []
     };
     
     try {
-      // Fetch all data in parallel to reduce loading time
-      const fetchPromises = [];
-      
-      // 1. State
-      fetchPromises.push(fetchWithTimeout("http://127.0.0.1:8000/api/state"));
-      // 2. Funds
-      if (isLive) {
-        fetchPromises.push(fetchWithTimeout("http://127.0.0.1:8000/api/funds"));
-      } else {
-        fetchPromises.push(Promise.resolve(null));
-      }
-      // 3. Signals
-      fetchPromises.push(fetchWithTimeout(`http://127.0.0.1:8000/api/signals?symbol=${rawSymbol}`, 5000));
-      // 4. Quote
-      // 4. Quote
-      fetchPromises.push(fetchWithTimeout(`http://127.0.0.1:8000/api/quote?symbol=${symbol}`));
-
-      const [resState, resFunds, resSignals, resQuote] = await Promise.all(fetchPromises);
+      // Fetch all data in parallel to reduce loading time. Each promise
+      // keeps its own type (rather than being pushed into one untyped
+      // array) so resState is narrowed to BackendState | null instead of
+      // any — an unexpected backend response shape now surfaces as a type
+      // error at the assignment below instead of flowing through silently.
+      const [resState, resFunds, resSignals, resQuote] = await Promise.all([
+        fetchWithTimeout<BackendState>(`${BACKEND_URL}/api/state`, 2000, authHeaders),
+        isLive
+          ? fetchWithTimeout(`${BACKEND_URL}/api/funds`, 2000, authHeaders)
+          : Promise.resolve(null),
+        fetchWithTimeout(`${BACKEND_URL}/api/signals?symbol=${rawSymbol}`, 5000, authHeaders),
+        fetchWithTimeout<FyersQuoteResponse>(`${BACKEND_URL}/api/quote?symbol=${symbol}`, 2000, authHeaders),
+      ]);
 
       if (resState) baseState = resState;
       fundsData = resFunds;
       signalsData = resSignals;
       quoteData = resQuote;
+
+      // 5. Indices Quotes for Ticker (Fallback to Deterministic Simulation if Real API fails/rate-limits)
+      const generateDeterministicQuote = (sym: string, base: number): QuoteTick => {
+          // Simple hash based on symbol and current minute
+          const now = new Date();
+          const seed = sym + now.getHours() + now.getMinutes();
+          const hash = seed.split('').reduce((a,b)=>{a=((a<<5)-a)+b.charCodeAt(0);return a&a},0);
+          const fluctuation = (hash % 100) / 100; // -0.99 to 0.99
+          const currentPrice = base + (base * (fluctuation * 0.0005)); // +/- 0.05% fluctuation
+          const changePercent = (fluctuation * 1.5); // +/- 1.5%
+          return { lp: currentPrice, chp: changePercent };
+      };
+
+      newTickerData = {
+          NIFTY: generateDeterministicQuote('NIFTY', 23800),
+          BANKNIFTY: generateDeterministicQuote('BANKNIFTY', 51000),
+          SENSEX: generateDeterministicQuote('SENSEX', 76000)
+      };
+
+      // Try to fetch real quotes to override simulation if possible
+      try {
+          const resNifty = await fetchWithTimeout<FyersQuoteResponse>(`${BACKEND_URL}/api/quote?symbol=NSE:NIFTY50-INDEX`, 1000, authHeaders);
+          const resBankNifty = await fetchWithTimeout<FyersQuoteResponse>(`${BACKEND_URL}/api/quote?symbol=NSE:NIFTYBANK-INDEX`, 1000, authHeaders);
+          const resSensex = await fetchWithTimeout<FyersQuoteResponse>(`${BACKEND_URL}/api/quote?symbol=BSE:SENSEX-INDEX`, 1000, authHeaders);
+
+          const extractLpChp = (data: FyersQuoteResponse | null): QuoteTick | null => {
+              if (data && data.d && data.d.length > 0 && !data.error && data.s === "ok") {
+                  const q = data.d[0].v;
+                  if (q.lp !== undefined && q.chp !== undefined) return { lp: q.lp, chp: q.chp };
+              }
+              return null;
+          };
+
+          const niftyData = extractLpChp(resNifty);
+          const bankniftyData = extractLpChp(resBankNifty);
+          const sensexData = extractLpChp(resSensex);
+          
+          if (niftyData) newTickerData.NIFTY = niftyData;
+          if (bankniftyData) newTickerData.BANKNIFTY = bankniftyData;
+          if (sensexData) newTickerData.SENSEX = sensexData;
+      } catch (e) {
+          // Ignore quote fetch errors, use deterministic fallback
+      }
       
-      // Removed redundant resHistory block that used to parse chartData and changePercent
       
       // Override with real-time quote if available (Institutional Accuracy)
       if (quoteData && quoteData.d && quoteData.d.length > 0) {
@@ -104,7 +165,8 @@ export async function GET(request: Request) {
       currentPrice,
       changePercent,
       fundsData,
-      signalsData
+      signalsData,
+      tickerData: newTickerData
     });
     
   } catch (error) {

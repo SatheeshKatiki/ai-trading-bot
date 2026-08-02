@@ -29,6 +29,18 @@ logger = logging.getLogger(__name__)
 _MODEL_DIR = Path(__file__).resolve().parents[2] / "models"
 _MODEL_PATH = _MODEL_DIR / "trade_filter_rf.pkl"
 
+# Absolute sanity floor used only when there is no previously-deployed model
+# to compare against (e.g. the very first training run) — this is 3-class
+# classification (long/short/hold), so pure random guessing on balanced
+# classes would score ~33%; this is not meant to certify the model is good,
+# only to catch training that produced something degenerate.
+_MIN_BOOTSTRAP_ACCURACY = 0.30
+
+# For every subsequent retrain, the new model is deployed only if it isn't
+# meaningfully worse than the model it would replace — this is what actually
+# prevents a bad retrain from silently degrading live trading.
+_MIN_RELATIVE_ACCURACY = 0.90
+
 
 class TradeFilterModel:
     """ML-based trade confidence scorer.
@@ -82,14 +94,25 @@ class TradeFilterModel:
 
     def save(self, accuracy: float = 0.0) -> None:
         """Persist the trained model to disk."""
+        import tempfile
+        import os
         _MODEL_DIR.mkdir(parents=True, exist_ok=True)
-        with open(_MODEL_PATH, "wb") as f:
-            pickle.dump({
-                "model": self.model,
-                "feature_names": self.feature_names,
-                "accuracy": accuracy,
-            }, f)
-        logger.info("Model saved to %s", _MODEL_PATH)
+        
+        temp_fd, temp_path = tempfile.mkstemp(dir=_MODEL_DIR, prefix="trade_filter_tmp_", suffix=".pkl")
+        try:
+            with os.fdopen(temp_fd, "wb") as f:
+                pickle.dump({
+                    "model": self.model,
+                    "feature_names": self.feature_names,
+                    "accuracy": accuracy,
+                }, f)
+            os.replace(temp_path, _MODEL_PATH)
+            logger.info("Model saved atomically to %s", _MODEL_PATH)
+        except Exception as e:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+            logger.error("Failed to save model: %s", e)
+            raise e
 
     # ------------------------------------------------------------------
     # Training
@@ -128,6 +151,7 @@ class TradeFilterModel:
         test_size: float = 0.2,
         n_estimators: int = 200,
         use_xgboost: bool = False,
+        force_deploy: bool = False,
     ) -> dict:
         """Train the trade filter model.
 
@@ -146,12 +170,31 @@ class TradeFilterModel:
             Number of trees in the forest.
         use_xgboost : bool
             If True, use XGBClassifier instead of RandomForest.
+        force_deploy : bool
+            Bypass the accuracy gate and deploy regardless of accuracy.
+            Only intended for tests/manual overrides — never set this from
+            an automated retrain job.
 
         Returns
         -------
         dict
-            Training report with accuracy, classification report, etc.
+            Training report with accuracy, classification report, and
+            whether the new model was actually deployed (``deployed``) or
+            rejected in favor of keeping the existing one (``reject_reason``).
+            Callers (e.g. daily_ai_retrain.py) MUST check ``deployed``
+            rather than assuming a successful train() call means the live
+            model changed.
         """
+        # Captured before anything below overwrites self.model/accuracy/
+        # feature_names — these describe whatever is CURRENTLY deployed
+        # (loaded by _load_if_exists() in __init__). The accuracy gate below
+        # compares the new model's accuracy against previous_accuracy, and
+        # restores previous_model/previous_feature_names onto this instance
+        # if the new model ends up rejected.
+        previous_accuracy = self.accuracy
+        previous_model = self.model
+        previous_feature_names = self.feature_names
+
         if labels is None:
             if ohlcv_df is None:
                 raise ValueError("Either labels or ohlcv_df must be provided")
@@ -192,17 +235,69 @@ class TradeFilterModel:
                 n_estimators=n_estimators, max_depth=10, random_state=42, n_jobs=-1
             )
 
-        self.model.fit(X_train, y_train)
+        new_model = self.model  # the freshly-constructed, not-yet-fit estimator
+        new_model.fit(X_train, y_train)
 
-        y_pred = self.model.predict(X_test)
+        y_pred = new_model.predict(X_test)
         acc = accuracy_score(y_test, y_pred)
         report = classification_report(y_test, y_pred, output_dict=True, zero_division=0)
-        
-        self.accuracy = acc
-        self.save(accuracy=acc)
 
-        logger.info("Model trained. Test accuracy: %.2f%%", acc * 100)
-        return {"accuracy": acc, "report": report, "train_size": len(X_train), "test_size": len(X_test)}
+        deployed = False
+        reject_reason = None
+
+        if force_deploy:
+            deployed = True
+        elif previous_accuracy <= 0:
+            # No previously-deployed model to compare against — only an
+            # absolute sanity floor applies.
+            if acc >= _MIN_BOOTSTRAP_ACCURACY:
+                deployed = True
+            else:
+                reject_reason = (
+                    f"No existing deployed model to compare against, and the new "
+                    f"model's accuracy ({acc:.1%}) is below the "
+                    f"{_MIN_BOOTSTRAP_ACCURACY:.0%} sanity floor for 3-class "
+                    f"classification — this looks like a failed training run, "
+                    f"not a usable model."
+                )
+        elif acc >= previous_accuracy * _MIN_RELATIVE_ACCURACY:
+            deployed = True
+        else:
+            reject_reason = (
+                f"New model accuracy ({acc:.1%}) is more than "
+                f"{(1 - _MIN_RELATIVE_ACCURACY):.0%} worse than the currently "
+                f"deployed model's accuracy ({previous_accuracy:.1%}). Keeping "
+                f"the existing model instead of hot-deploying a regression."
+            )
+
+        if deployed:
+            self.model = new_model
+            self.accuracy = acc
+            self.save(accuracy=acc)
+            logger.info("Model trained and DEPLOYED. Test accuracy: %.2f%%", acc * 100)
+        else:
+            # Revert this instance to the still-current deployed model so a
+            # caller that keeps using this object (rather than checking the
+            # return value) doesn't silently start scoring with the
+            # rejected model.
+            self.model = previous_model
+            self.feature_names = previous_feature_names
+            self.accuracy = previous_accuracy
+            logger.warning(
+                "Model retrain REJECTED — new model NOT deployed, existing "
+                "model (accuracy %.2f%%) remains live. Reason: %s",
+                previous_accuracy * 100, reject_reason,
+            )
+
+        return {
+            "accuracy": acc,
+            "report": report,
+            "train_size": len(X_train),
+            "test_size": len(X_test),
+            "deployed": deployed,
+            "reject_reason": reject_reason,
+            "previous_accuracy": previous_accuracy,
+        }
 
     # ------------------------------------------------------------------
     # Prediction

@@ -57,20 +57,18 @@ jobs:
       - name: Lint — check for syntax errors (ruff, fast)
         run: |
           pip install ruff --quiet
-          ruff check . --select E9,F8,F4 --ignore F401 || true
+          ruff check . --select E9,F8,F4 --ignore F401
 
-      - name: Run indicator unit tests
-        run: |
-          python -m pytest tests/test_backtest.py -v --tb=short -x \
-            -k "not test_bt" || true   # skip live-broker test in CI
-
-      - name: Run API bridge tests (offline, using TestClient)
+      - name: Run backend test suite (offline, using TestClient)
         env:
           # Provide dummy env so broker init doesn't fail
           FYERS_CLIENT_ID: CI_TEST_ID
           FYERS_SECRET_KEY: CI_TEST_KEY
         run: |
-          python -m pytest tests/test_api_bridge.py -v --tb=short || true
+          # -k "not test_bt" skips the one test that needs live broker
+          # credentials (tests/test_backtest.py::test_bt); every other
+          # collectible test under tests/ runs and must pass.
+          python -m pytest tests/ -v --tb=short -k "not test_bt"
 
       - name: Run indicator smoke tests
         run: |
@@ -132,7 +130,6 @@ jobs:
 
       - name: TypeScript type-check
         run: npx tsc --noEmit
-        continue-on-error: true   # warn but don't block — tighten once clean
 
       - name: Next.js production build
         run: npm run build
@@ -157,4 +154,13 @@ jobs:
           path: ./
           base: ${{ github.event.repository.default_branch }}
           head: HEAD
-          extra_args: --only-verified
+          # --only-verified silently drops any match TruffleHog couldn't
+          # actively confirm against the provider's live API -- this is
+          # exactly why the already-committed .fyers_tokens.json leak was
+          # never flagged: TruffleHog has no built-in verifier for Fyers'
+          # token format, so it never gets a "verified" result to report,
+          # regardless of how real the token is. Dropping the flag restores
+          # the default behavior of also reporting unverified-but-pattern-
+          # matched candidates, at the cost of some false positives on
+          # things that merely look like credentials (test fixtures,
+          # sample tokens in docs). No extra_args needed to opt into this.

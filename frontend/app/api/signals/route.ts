@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { getAuthHeaders, BACKEND_URL } from '@/lib/backend';
 
 export const dynamic = 'force-dynamic';
 
@@ -6,11 +7,11 @@ export async function GET() {
   try {
     // Forward the request to the new /api/signals endpoint on the Python bridge!
     // Defaulting to NIFTY as the primary scanner symbol
-    const pythonApiUrl = `http://127.0.0.1:8000/api/signals?symbol=NIFTY`;
-    
+    const pythonApiUrl = `${BACKEND_URL}/api/signals?symbol=NIFTY`;
+
     console.log(`Forwarding signals request to Python bridge: ${pythonApiUrl}`);
-    
-    const response = await fetch(pythonApiUrl);
+
+    const response = await fetch(pythonApiUrl, { headers: await getAuthHeaders() });
     
     if (!response.ok) {
       const errorData = await response.json();

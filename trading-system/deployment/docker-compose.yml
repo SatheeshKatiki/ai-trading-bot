@@ -2,8 +2,26 @@ version: '3.8'
 
 services:
   # The Live Trading Bot Process
+  #
+  # Restart/backoff note: `restart: unless-stopped` is Docker's OUTER
+  # restart layer -- it only fires if this container's process exits
+  # entirely (e.g. an unhandled interpreter crash or OOM kill). Under
+  # normal crash conditions, trading_bot/main.py's own `if __name__ ==
+  # "__main__":` loop catches the exception, logs it, and retries WITHOUT
+  # exiting the process -- so this container usually never triggers
+  # Docker's restart at all. That inner loop now uses an escalating
+  # backoff (10s, doubling up to a 5-minute cap on consecutive fast
+  # failures, resetting after a sustained healthy run) instead of a flat
+  # 10s delay, specifically so a persistent failure (bad config,
+  # unreachable broker) can't produce a tight restart-storm hammering
+  # logs and the broker's API -- see trading_bot/main.py's
+  # _compute_retry_delay()/_should_reset_failure_count() and
+  # tests/test_crash_retry_backoff.py. Kept `unless-stopped` (rather than
+  # a bounded `on-failure:N`) deliberately: this is meant to run
+  # unattended, and a bot that gives up permanently after N failures is a
+  # worse outcome than one that keeps retrying with backoff.
   trading-bot:
-    build: 
+    build:
       context: ..
       dockerfile: deployment/Dockerfile
     container_name: ai_trading_bot
@@ -15,6 +33,20 @@ services:
       - ../models:/app/models
       - ../logs:/app/logs
     command: python -m trading_bot.main
+    # Resource caps: previously unbounded, so a runaway memory leak or
+    # OOM in the ML/DRL inference path (loading a PPO/MARL model, pandas
+    # dataframes) had nothing stopping it from consuming all host memory
+    # and taking down other containers/the host itself. `deploy.resources.limits`
+    # is honored outside swarm mode by the modern `docker compose` (v2)
+    # CLI; it's a silent no-op (not an error) under the legacy hyphenated
+    # `docker-compose` (v1) CLI outside swarm, so this is a safe addition
+    # either way. Tune these to actual host capacity/observed usage --
+    # these are conservative starting defaults, not measured limits.
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
 
   # The Streamlit Dashboard
   dashboard:
@@ -31,3 +63,19 @@ services:
       - ../state.json:/app/state.json
       - ../data:/app/data
     command: streamlit run dashboard/app.py --server.port=8501 --server.address=0.0.0.0
+    # Streamlit's own built-in health endpoint -- lets Docker detect a
+    # hung/unresponsive dashboard process (still running, not serving)
+    # rather than only the crash-exit case `restart:` already covers.
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    # See the trading-bot service's comment above for the
+    # docker-compose-version caveat on deploy.resources.limits.
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G

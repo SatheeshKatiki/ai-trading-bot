@@ -17,7 +17,6 @@ import asyncio
 import json
 import logging
 import time
-from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from .base_broker import BaseBroker, _BROKER_EXECUTOR
@@ -33,9 +32,6 @@ from .models import (
 )
 
 logger = logging.getLogger(__name__)
-
-# Cached token survives process restarts
-_TOKEN_CACHE = Path(__file__).resolve().parents[1] / ".fyers_tokens.json"
 
 
 class FyersBroker(BaseBroker):
@@ -54,7 +50,7 @@ class FyersBroker(BaseBroker):
             supports_options=True,
             supports_futures=True,
             supports_streaming=True,
-            credential_fields=[
+            credential_fields=[  # type: ignore
                 {"key": "client_id",    "label": "Client ID",     "secret": False},
                 {"key": "secret_key",   "label": "Secret Key",    "secret": True},
                 {"key": "redirect_uri", "label": "Redirect URI",  "secret": False,
@@ -66,7 +62,7 @@ class FyersBroker(BaseBroker):
 
     def __init__(self, credentials: Dict[str, str], paper_mode: bool = False) -> None:
         super().__init__(credentials, paper_mode)
-        self._fyers_model = None   # Lazy-loaded after authenticate()
+        self._fyers_model: Any = None   # Lazy-loaded after authenticate()
 
     # ------------------------------------------------------------------
     # Authentication
@@ -85,17 +81,21 @@ class FyersBroker(BaseBroker):
                 except ImportError:
                     from fyers_api import fyersModel
                     
-                self._fyers_model = fyersModel.FyersModel(
-                    client_id=self.credentials.get("client_id", ""),
-                    token=token,
-                    log_path="",
-                )
+                kwargs = {
+                    "client_id": self.credentials.get("client_id", ""),
+                    "token": token,
+                    "log_path": "",
+                }
+                self._fyers_model = fyersModel.FyersModel(**kwargs)  # type: ignore
                 logger.info("Fyers: Initialized model in paper mode for data fetching.")
             return True
 
         token = self._load_cached_token() or self.credentials.get("access_token")
         client_id = self.credentials.get("client_id", "")
-        logger.info(f"FYERS INIT: client_id={client_id}, token={token}")
+        logger.info(
+            "FYERS INIT: client_id=%s, token=%s",
+            client_id, "<redacted>" if token else "<missing>",
+        )
         if not token:
             logger.warning(
                 "Fyers: no access_token found — call get_login_url() then complete_login()."
@@ -108,11 +108,12 @@ class FyersBroker(BaseBroker):
             except ImportError:
                 from fyers_api import fyersModel   # type: ignore[import]
                 
-            self._fyers_model = fyersModel.FyersModel(
-                client_id=self.credentials.get("client_id", ""),
-                token=token,
-                log_path="",
-            )
+            kwargs = {
+                "client_id": self.credentials.get("client_id", ""),
+                "token": token,
+                "log_path": "",
+            }
+            self._fyers_model = fyersModel.FyersModel(**kwargs)  # type: ignore
             self._authenticated = True
             logger.info("Fyers: authenticated successfully.")
             return True
@@ -132,23 +133,25 @@ class FyersBroker(BaseBroker):
                 from fyers_api import fyersModel   # type: ignore[import]
                 
             try:
-                session = fyersModel.SessionModel(
-                    client_id=self.credentials.get("client_id", ""),
-                    secret_key=self.credentials.get("secret_key", ""),
-                    redirect_uri=self.credentials.get("redirect_uri", "https://localhost"),
-                    response_type="code",
-                    grant_type="authorization_code",
-                )
+                kwargs = {
+                    "client_id": self.credentials.get("client_id", ""),
+                    "secret_key": self.credentials.get("secret_key", ""),
+                    "redirect_uri": self.credentials.get("redirect_uri", "https://localhost"),
+                    "response_type": "code",
+                    "grant_type": "authorization_code",
+                }
+                session = fyersModel.SessionModel(**kwargs)  # type: ignore
             except AttributeError:
                 # Fallback for versions where SessionModel is in the session module
-                from fyers_api import session as fyers_session
-                session = fyers_session.SessionModel(
-                    client_id=self.credentials.get("client_id", ""),
-                    secret_key=self.credentials.get("secret_key", ""),
-                    redirect_uri=self.credentials.get("redirect_uri", "https://localhost"),
-                    response_type="code",
-                    grant_type="authorization_code",
-                )
+                from fyers_api import session as fyers_session  # type: ignore
+                kwargs = {
+                    "client_id": self.credentials.get("client_id", ""),
+                    "secret_key": self.credentials.get("secret_key", ""),
+                    "redirect_uri": self.credentials.get("redirect_uri", "https://localhost"),
+                    "response_type": "code",
+                    "grant_type": "authorization_code",
+                }
+                session = fyers_session.SessionModel(**kwargs)  # type: ignore
             return session.generate_authcode()
         except Exception as exc:
             logger.error("Could not generate Fyers login URL: %s", exc)
@@ -163,22 +166,24 @@ class FyersBroker(BaseBroker):
                 from fyers_api import fyersModel   # type: ignore[import]
                 
             try:
-                session = fyersModel.SessionModel(
-                    client_id=self.credentials.get("client_id", ""),
-                    secret_key=self.credentials.get("secret_key", ""),
-                    redirect_uri=self.credentials.get("redirect_uri", "https://localhost"),
-                    response_type="code",
-                    grant_type="authorization_code",
-                )
+                kwargs = {
+                    "client_id": self.credentials.get("client_id", ""),
+                    "secret_key": self.credentials.get("secret_key", ""),
+                    "redirect_uri": self.credentials.get("redirect_uri", "https://localhost"),
+                    "response_type": "code",
+                    "grant_type": "authorization_code",
+                }
+                session = fyersModel.SessionModel(**kwargs)  # type: ignore
             except AttributeError:
-                from fyers_api import session as fyers_session
-                session = fyers_session.SessionModel(
-                    client_id=self.credentials.get("client_id", ""),
-                    secret_key=self.credentials.get("secret_key", ""),
-                    redirect_uri=self.credentials.get("redirect_uri", "https://localhost"),
-                    response_type="code",
-                    grant_type="authorization_code",
-                )
+                from fyers_api import session as fyers_session  # type: ignore
+                kwargs = {
+                    "client_id": self.credentials.get("client_id", ""),
+                    "secret_key": self.credentials.get("secret_key", ""),
+                    "redirect_uri": self.credentials.get("redirect_uri", "https://localhost"),
+                    "response_type": "code",
+                    "grant_type": "authorization_code",
+                }
+                session = fyers_session.SessionModel(**kwargs)  # type: ignore
             session.set_token(auth_code)
             resp  = session.generate_token()
             token = resp.get("access_token", "")
@@ -198,19 +203,12 @@ class FyersBroker(BaseBroker):
             ) from exc
 
     def _load_cached_token(self) -> str:
-        if _TOKEN_CACHE.is_file():
-            try:
-                data = json.loads(_TOKEN_CACHE.read_text(encoding="utf-8"))
-                return data.get("access_token", "")
-            except Exception:
-                pass
-        return ""
+        from .token_cache import load_token
+        return load_token("fyers")
 
     def _save_cached_token(self, token: str) -> None:
-        _TOKEN_CACHE.write_text(
-            json.dumps({"access_token": token}, indent=2), encoding="utf-8"
-        )
-        logger.info("Fyers: access token cached → %s", _TOKEN_CACHE)
+        from .token_cache import save_token
+        save_token(token, "fyers")
 
     # ------------------------------------------------------------------
     # Order management
@@ -227,7 +225,7 @@ class FyersBroker(BaseBroker):
         payload = {
             "symbol":       request.symbol,
             "qty":          request.quantity,
-            "type":         2 if request.order_type == OrderType.MARKET else 1,
+            "type":         {OrderType.MARKET: 2, OrderType.LIMIT: 1, OrderType.SL_M: 3, OrderType.SL: 4}.get(request.order_type, 1),
             "side":         1 if request.side == OrderSide.BUY else -1,
             "productType":  request.product_type.value,
             "limitPrice":   0 if request.order_type == OrderType.MARKET else request.price,
@@ -239,7 +237,17 @@ class FyersBroker(BaseBroker):
             "takeProfit":   0,
         }
         
-        # Retry loop for transient broker API errors
+        # Retry loop for transient broker API errors.
+        #
+        # A network failure can happen AFTER Fyers has already received and
+        # accepted the order but BEFORE the success response reaches us
+        # (dropped response, timeout waiting on the socket, etc). Blindly
+        # resubmitting the same payload in that case places a second,
+        # duplicate real-money order. Fyers' order-placement API has no
+        # client-supplied idempotency key, so before each retry we check the
+        # live order book for an order that already matches this request —
+        # if the broker actually received the previous attempt, it'll be
+        # sitting there and we reuse it instead of submitting again.
         max_retries = 3
         for attempt in range(max_retries):
             try:
@@ -262,6 +270,16 @@ class FyersBroker(BaseBroker):
             except OrderRejectedError:
                 raise
             except Exception as exc:
+                existing = self._find_matching_pending_order(request)
+                if existing is not None:
+                    logger.warning(
+                        "Fyers place_order raised %s but a matching order %s "
+                        "already exists in the order book — the broker "
+                        "likely received the previous attempt. Returning it "
+                        "instead of resubmitting to avoid a duplicate order.",
+                        exc, existing.order_id,
+                    )
+                    return existing
                 if attempt < max_retries - 1:
                     logger.warning(f"Fyers place_order failed, retrying ({attempt+1}/{max_retries})... Error: {exc}")
                     time.sleep(0.5)
@@ -287,22 +305,28 @@ class FyersBroker(BaseBroker):
     # ------------------------------------------------------------------
 
     def get_positions(self) -> List[Position]:
-        if self.paper_mode:
+        if self.paper_mode or not self._fyers_model:
             return []
-        if not self._fyers_model:
-            raise AuthenticationError("Not authenticated.", broker_id=self.BROKER_ID)
         try:
             resp = self._fyers_model.positions()
+            if resp.get("code") != 200:
+                raise MarketDataError(
+                    f"Fyers positions error: {resp.get('message')}",
+                    broker_id=self.BROKER_ID
+                )
             positions = []
             for p in resp.get("netPositions", []):
+                qty = int(p.get("netQty", 0))
+                if qty == 0:
+                    continue
                 positions.append(Position(
                     symbol=p.get("symbol", ""),
-                    side=PositionSide.LONG if p.get("side", 1) == 1 else PositionSide.SHORT,
-                    quantity=abs(int(p.get("netQty", 0))),
+                    side=PositionSide.LONG if qty > 0 else PositionSide.SHORT,
+                    quantity=abs(qty),
                     average_price=float(p.get("avgPrice", 0)),
                     ltp=float(p.get("ltp", 0)),
-                    unrealized_pnl=float(p.get("unrealizedProfit", 0)),
-                    realized_pnl=float(p.get("realizedProfit", 0)),
+                    unrealized_pnl=float(p.get("unrealized_profit", 0)),
+                    realized_pnl=float(p.get("realized_profit", 0)),
                     product_type=p.get("productType", "INTRADAY"),
                     raw=p,
                 ))
@@ -311,6 +335,12 @@ class FyersBroker(BaseBroker):
             raise MarketDataError(
                 f"Fyers get_positions failed: {exc}", broker_id=self.BROKER_ID
             ) from exc
+
+    def get_lot_size(self, symbol: str) -> int:
+        """Fetch lot size from broker dynamically if cached, otherwise fallback."""
+        if hasattr(self, '_lot_size_cache') and self._lot_size_cache:
+            return self._lot_size_cache.get(symbol, super().get_lot_size(symbol))
+        return super().get_lot_size(symbol)
 
     def get_balance(self) -> Balance:
         if self.paper_mode:
@@ -342,6 +372,13 @@ class FyersBroker(BaseBroker):
         try:
             resp   = self._fyers_model.orderbook()
             orders = []
+            
+            def _map_status(fyers_status: int) -> OrderStatus:
+                if fyers_status == 2: return OrderStatus.COMPLETE
+                if fyers_status in (1, 6): return OrderStatus.CANCELLED
+                if fyers_status == 4: return OrderStatus.REJECTED
+                return OrderStatus.OPEN
+
             for o in resp.get("orderBook", []):
                 orders.append(OrderBookEntry(
                     order_id=o.get("id", ""),
@@ -349,7 +386,8 @@ class FyersBroker(BaseBroker):
                     side=OrderSide.BUY if o.get("side", 1) == 1 else OrderSide.SELL,
                     quantity=int(o.get("qty", 0)),
                     price=float(o.get("limitPrice", 0)),
-                    status=OrderStatus.OPEN,
+                    traded_price=float(o.get("tradedPrice", 0.0)),
+                    status=_map_status(o.get("status", 5)),
                     order_type=OrderType.MARKET if o.get("type", 2) == 2 else OrderType.LIMIT,
                     raw=o,
                 ))
@@ -359,12 +397,22 @@ class FyersBroker(BaseBroker):
                 f"Fyers get_order_book failed: {exc}", broker_id=self.BROKER_ID
             ) from exc
 
+    def get_order_status(self, order_id: str) -> Optional[OrderBookEntry]:
+        """Fetch the exact status and fill details for a specific order ID."""
+        if self.paper_mode:
+            return None
+        orders = self.get_order_book()
+        for order in orders:
+            if order.order_id == order_id:
+                return order
+        return None
+
     # ------------------------------------------------------------------
     # Market data
     # ------------------------------------------------------------------
 
     def get_market_data(self, symbols: List[str]) -> Dict[str, MarketQuote]:
-        if self.paper_mode or not self._fyers_model:
+        if not self._fyers_model:
             return {}
         try:
             resp   = self._fyers_model.quotes({"symbols": ",".join(symbols)})
@@ -400,8 +448,8 @@ class FyersBroker(BaseBroker):
         from datetime import datetime, timedelta
         
         if not self._fyers_model:
-            self.logger.warning("Fyers: not authenticated — cannot fetch historical data from Fyers. Falling back to base broker...")
-            return super().get_historical_data(symbol, start_date, end_date, timeframe)
+            self.logger.warning("Fyers: not authenticated — cannot fetch historical data from Fyers. YFinance fallback is disabled.")
+            return []
             
         try:
             # Map timeframe string to Fyers resolution
@@ -449,16 +497,38 @@ class FyersBroker(BaseBroker):
                     
                     # Verify if the cache covers the requested start_date
                     cache_min_date = df['datetime'].min()[:10]  # Get YYYY-MM-DD
+                    cache_max_date = df['datetime'].max()[:10]  # Get YYYY-MM-DD
+                    today_str = datetime.now().strftime('%Y-%m-%d')
+                    
                     if cache_min_date <= start_date:
-                        # Cache has the full range!
-                        mask = (df['datetime'] >= start_date) & (df['datetime'] <= f"{end_date} 23:59:59")
-                        df_filtered = df.loc[mask]
-                        if not df_filtered.empty:
-                            return df_filtered.to_dict(orient='records')
+                        # Allow cache fully ONLY if end_date is strictly in the past AND cache covers it
+                        if end_date < today_str and cache_max_date >= end_date:
+                            mask = (df['datetime'] >= start_date) & (df['datetime'] <= f"{end_date} 23:59:59")
+                            df_filtered = df.loc[mask]
+                            if not df_filtered.empty:
+                                self.logger.info("FyersBroker: Cache hit! Range fully covered.")
+                                return df_filtered.to_dict(orient='records')
+                        
+                        # We have partial cache OR end_date is today (ongoing day). We must fetch from API.
+                        self.logger.info(f"Cache max date ({cache_max_date}). Fetching fresh data for remaining/ongoing days.")
+                        
+                        # Adjust start_dt so we don't refetch everything!
+                        if cache_max_date < today_str:
+                            missing_start_dt = datetime.strptime(cache_max_date, '%Y-%m-%d') + timedelta(days=1)
+                        else:
+                            missing_start_dt = datetime.strptime(cache_max_date, '%Y-%m-%d')
+                            
+                        if missing_start_dt <= end_dt:
+                            start_dt = missing_start_dt
+                            self.logger.info(f"Adjusted API fetch start date to {start_dt.strftime('%Y-%m-%d')}")
                     else:
                         self.logger.info(f"Cache min date ({cache_min_date}) is newer than requested start ({start_date}). Fetching fresh.")
+                        df = None # Discard cache, fetch everything
                 except Exception as e:
                     self.logger.error("Failed to read cache %s: %s", csv_path, e)
+                    df = None
+            else:
+                df = None
             
             all_candles = []
             current_start = start_dt
@@ -478,24 +548,39 @@ class FyersBroker(BaseBroker):
                     "cont_flag": "1"
                 }
                 
-                resp = self._fyers_model.history(data)
+                import time as _time_mod
+                chunk_success = False
                 
-                if resp.get("s") != "ok":
-                    if "No data available" in str(resp):
-                        pass # Ignore empty chunks
+                for attempt in range(3):
+                    resp = self._fyers_model.history(data)
+                    if resp.get("s") == "ok":
+                        all_candles.extend(resp.get("candles", []))
+                        chunk_success = True
+                        break
+                    elif "No data available" in str(resp):
+                        chunk_success = True # Ignore empty chunks gracefully
+                        break
                     else:
-                        logger.warning(f"Fyers history API chunk failed: {resp.get('message', 'Unknown error')}")
-                else:
-                    all_candles.extend(resp.get("candles", []))
+                        err_msg = resp.get('message', 'Unknown error')
+                        logger.warning(f"Fyers history API chunk failed (Attempt {attempt+1}): {err_msg}")
+                        _time_mod.sleep(1.0 * (attempt + 1)) # Exponential backoff: 1s, 2s
+                        
+                if not chunk_success:
+                    self.logger.warning(f"Failed to fetch Fyers history chunk {data['range_from']} to {data['range_to']}. Aborting API fetch and falling back to cache if available.")
+                    break # Stop fetching, use whatever we fetched + cache
                     
                 current_start = current_end + timedelta(days=1)
-                # Sleep briefly to avoid API rate limits
-                import time
-                time.sleep(0.1)
+                # Sleep briefly to avoid API rate limits for subsequent requests
+                _time_mod.sleep(0.5)
                 
             if not all_candles:
-                logger.info("Fyers returned no candles. Falling back to base broker (CSV/yfinance)...")
-                return super().get_historical_data(symbol, start_date, end_date, timeframe)
+                self.logger.info("Fyers API returned no new candles.")
+                if df is not None and not df.empty:
+                    self.logger.info("Returning strictly from local cache.")
+                    mask = (df['datetime'] >= start_date) & (df['datetime'] <= f"{end_date} 23:59:59")
+                    final_filtered = df.loc[mask]
+                    return final_filtered.to_dict(orient='records')
+                return []
                 
             result = []
             for c in all_candles:
@@ -509,15 +594,36 @@ class FyersBroker(BaseBroker):
                     "volume": int(c[5])
                 })
                 
-            # Save to cache
+            # Save to cache and combine with existing
             if result:
                 try:
-                    df = pd.DataFrame(result)
+                    new_df = pd.DataFrame(result)
                     os.makedirs(os.path.dirname(csv_path), exist_ok=True)
-                    df.to_csv(csv_path, index=False)
-                    self.logger.info("Saved Fyers historical data to cache: %s", csv_path)
+                    if df is not None and not df.empty:
+                        # Append to existing cache and drop duplicates
+                        combined_df = pd.concat([df, new_df]).drop_duplicates(subset=['datetime']).sort_values('datetime')
+                        combined_df.to_csv(csv_path, index=False)
+                        self.logger.info("Appended missing Fyers historical data to cache: %s", csv_path)
+                        
+                        # Apply start/end filter on the COMBINED dataset
+                        mask = (combined_df['datetime'] >= start_date) & (combined_df['datetime'] <= f"{end_date} 23:59:59")
+                        final_filtered = combined_df.loc[mask]
+                        return final_filtered.to_dict(orient='records')
+                    else:
+                        new_df.to_csv(csv_path, index=False)
+                        self.logger.info("Saved Fyers historical data to fresh cache: %s", csv_path)
+                        
+                        # Apply start/end filter on the fresh dataset
+                        mask = (new_df['datetime'] >= start_date) & (new_df['datetime'] <= f"{end_date} 23:59:59")
+                        final_filtered = new_df.loc[mask]
+                        return final_filtered.to_dict(orient='records')
                 except Exception as e:
                     self.logger.error("Failed to save cache to %s: %s", csv_path, e)
+                    
+            elif df is not None and not df.empty:
+                # If no new candles but cache exists, just return the filtered cache
+                mask = (df['datetime'] >= start_date) & (df['datetime'] <= f"{end_date} 23:59:59")
+                return df.loc[mask].to_dict(orient='records')
                     
             return result
         except Exception as exc:
@@ -537,17 +643,40 @@ class FyersBroker(BaseBroker):
         self,
         symbols: List[str],
         on_tick: Callable[[Dict[str, Any]], Awaitable[None]],
+        on_reconnect: Optional[Callable[[], Awaitable[None]]] = None,
     ) -> None:
         logger.info("Fyers: Connecting to API Bridge WebSocket for real market data...")
         import websockets
-        import json
         import os
         os.environ["NO_PROXY"] = "localhost,127.0.0.1"
-        
+
+        # Root-cause fix: /ws/live has required a valid session ?token=
+        # ever since the Critical #2 auth-gate fix went in (api_bridge.py's
+        # require_session_auth doesn't cover WebSocket handshakes, so the
+        # route checks a query-param token itself instead). The frontend's
+        # browser client already goes through /api/ws-token for this, but
+        # this internal, same-machine, backend-to-backend connection never
+        # sent any token at all — meaning the live engine has never
+        # actually been able to receive a single real tick since that fix
+        # landed, silently retrying this connection forever. Mint one
+        # internal session token once (reused across reconnects, not
+        # re-created every retry) via the same file-backed session store
+        # api_bridge.py's validate_session() reads.
+        from shared.security.sessions import create_session
+        # Longer TTL than the human-login default (7 days) since this
+        # process is meant to run unattended for extended stretches
+        # (e.g. a multi-week paper-trading validation window) — a token
+        # expiring mid-run would silently drop back into the same
+        # never-receiving-ticks failure mode this fix addresses.
+        internal_token = create_session("trading_engine_internal", ttl_seconds=90 * 24 * 60 * 60)
+        ws_url = f"ws://127.0.0.1:8000/ws/live?token={internal_token}"
+
         while True:
             try:
+                if on_reconnect:
+                    await on_reconnect()
                 async with websockets.connect(
-                    "ws://127.0.0.1:8000/ws/live",
+                    ws_url,
                     ping_interval=20,
                     ping_timeout=20
                 ) as ws:
@@ -556,25 +685,14 @@ class FyersBroker(BaseBroker):
                         data = await ws.recv()
                         msg = json.loads(data)
                         
-                        for sym, val in msg.items():
-                            if sym in ["trades", "signalsData"]:
-                                continue
-                            long_sym = sym
-                            if sym == "NIFTY":
-                                long_sym = "NSE:NIFTY50-INDEX"
-                            elif sym == "BANKNIFTY":
-                                long_sym = "NSE:NIFTYBANK-INDEX"
-                            elif sym == "SENSEX":
-                                long_sym = "BSE:SENSEX-INDEX"
-                            elif sym == "RELIANCE":
-                                long_sym = "NSE:RELIANCE-EQ"
-                            elif ":" not in sym:
-                                long_sym = f"NSE:{sym}-EQ"
-                                
-                            if long_sym in symbols:
-                                import time
-                                await on_tick({"symbol": long_sym, "ltp": val["lp"], "timestamp": int(time.time()), "volume": 0})
-                                
+                        raw_ticks = msg.get("raw_ticks", {})
+                        if not raw_ticks:
+                            continue
+                            
+                        for sym, val in raw_ticks.items():
+                            # Emit ALL raw ticks so both base indices and options reach the aggregator!
+                            import time
+                            await on_tick({"symbol": sym, "ltp": val["lp"], "timestamp": int(time.time()), "volume": 0})
             except Exception as e:
                 logger.error("API Bridge WebSocket disconnected or failed: %s. Retrying in 5 seconds...", e)
                 await asyncio.sleep(5)

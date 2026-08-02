@@ -33,9 +33,7 @@ class TradeQualityScorer:
             return {"trade_score": 0, "conviction": "REJECT", "factors": {}}
             
         row = df.iloc[idx]
-        score = 0
-        factors = {}
-        
+
         # ── ML Predictive Probability Filter (Logistic Regression Sim) ──
         # Calculate raw logit score based on weighted features
         logit = -2.5 # Base intercept (markets are statistically mean-reverting/choppy)

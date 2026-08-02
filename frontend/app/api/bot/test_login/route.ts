@@ -1,9 +1,11 @@
 import { NextResponse } from 'next/server';
+import { getAuthHeaders, BACKEND_URL } from '@/lib/backend';
 
 export async function POST() {
   try {
-    const res = await fetch('http://127.0.0.1:8000/api/bot/test_login', {
-      method: 'POST'
+    const res = await fetch(`${BACKEND_URL}/api/bot/test_login`, {
+      method: 'POST',
+      headers: await getAuthHeaders(),
     });
     
     if (!res.ok) {

@@ -2,8 +2,8 @@
 
 The live bot (`trading_bot.main`) requires a cached access token. This script
 accepts the temporary ``code`` that Fyers returns after the user authorises the
-application at the ``FYERS_REDIRECT_URI``. It then stores the refreshed token
-in ``.fyers_tokens.json`` (handled by :class:`FyersClient`).
+application at the ``FYERS_REDIRECT_URI``. It then stores the refreshed token,
+encrypted, via ``brokers.token_cache`` (handled by :class:`FyersClient`).
 
 Usage::
 
@@ -38,7 +38,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     finally:
         client.close()
-    print("Login successful – token cached in .fyers_tokens.json")
+    print("Login successful – token cached (encrypted)")
     return 0
 
 
