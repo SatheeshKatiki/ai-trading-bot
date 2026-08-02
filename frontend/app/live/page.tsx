@@ -11,6 +11,7 @@ import { BtstPredictor } from '@/components/btst-predictor';
 import { MarketTicker } from '@/components/live/market-ticker';
 import { OptionsDesk } from '@/components/options-desk';
 import { LivePositions } from '@/components/live/live-positions';
+import { OptionSymbolSelector } from '@/components/live/option-symbol-selector';
 import { useLiveMarketStore } from '@/store/useLiveMarketStore';
 import { useLiveSettingsStore } from '@/store/useLiveSettingsStore';
 import { NumberInput } from "@/components/number-input";
@@ -968,9 +969,9 @@ function LiveTradingContent() {
                                     </div>
                                 </div>
 
-                                {/* Dual Sync Bar Controls */}
+                                {/* Dual Sync Bar Controls & Searchable Option Selector */}
                                 {isDualChart && (
-                                    <div className="flex items-center justify-between bg-muted/20 px-3 py-1.5 rounded-lg border border-border/30 mb-2">
+                                    <div className="flex items-center justify-between bg-muted/20 px-3 py-1.5 rounded-lg border border-border/30 mb-2 gap-3 flex-wrap">
                                         <div className="flex items-center gap-3">
                                             <button
                                                 onClick={() => {
@@ -987,18 +988,26 @@ function LiveTradingContent() {
                                                 {dualSyncMode ? "🤖 Auto AI Sync Mode" : "🔒 Manual Pin Mode"}
                                             </button>
 
-                                            {!dualSyncMode && (
-                                                <input
-                                                    type="text"
-                                                    value={manualOptionSymbol}
-                                                    onChange={(e) => setManualOptionSymbol(e.target.value)}
-                                                    placeholder="Option Strike (e.g. NIFTY 24150 CE)"
-                                                    className="bg-background border border-border/50 rounded px-2.5 py-1 text-xs text-foreground focus:outline-none focus:border-primary w-52 font-mono"
-                                                />
-                                            )}
+                                            {/* Searchable Option Symbol Dropdown Selector */}
+                                            <OptionSymbolSelector
+                                                baseSymbol={urlSymbol}
+                                                currentSymbol={dualSyncMode ? getAtmOptionSymbol(urlSymbol, useLiveMarketStore.getState().currentPrice) : manualOptionSymbol}
+                                                spotPrice={useLiveMarketStore.getState().currentPrice}
+                                                dualSyncMode={dualSyncMode}
+                                                onSelectSymbol={(newSymbol) => {
+                                                    setManualOptionSymbol(newSymbol);
+                                                    setDualSyncMode(false);
+                                                    toast.success(`Option Contract Selected: ${newSymbol}`);
+                                                }}
+                                                onResetAiSync={() => {
+                                                    setDualSyncMode(true);
+                                                    toast.info("🤖 Auto AI Sync Mode Restored");
+                                                }}
+                                            />
                                         </div>
-                                        <span className="text-[11px] font-mono text-muted-foreground">
-                                            Right Window: <strong className="text-primary">{dualSyncMode ? `${urlSymbol} Active Premium` : manualOptionSymbol}</strong>
+
+                                        <span className="text-[11px] font-mono text-muted-foreground flex items-center gap-1">
+                                            Right Window: <strong className="text-primary font-bold">{dualSyncMode ? `${urlSymbol} Active Premium (AI Auto)` : `${manualOptionSymbol} (Manual)`}</strong>
                                         </span>
                                     </div>
                                 )}
