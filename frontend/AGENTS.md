@@ -1,5 +1,10 @@
 <!-- BEGIN:nextjs-agent-rules -->
-# This is NOT the Next.js you know
+# Next.js version note
 
-This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
+This project runs Next.js 16 / React 19 — newer than many training cutoffs.
+In practice this codebase sticks to conventional App Router patterns
+(`app/**/page.tsx`, `app/**/layout.tsx`, `app/api/**/route.ts` handlers) —
+nothing exotic. If something you're about to write doesn't match what you
+see in the surrounding files, or you hit a deprecation warning, check
+`node_modules/next/dist/docs/` before assuming it's a training-data gap.
 <!-- END:nextjs-agent-rules -->
