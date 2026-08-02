@@ -59,10 +59,10 @@ export async function GET(request: Request) {
       const fetchPromises = [];
       
       // 1. State
-      fetchPromises.push(fetchWithTimeout("${BACKEND_URL}/api/state", 2000, authHeaders));
+      fetchPromises.push(fetchWithTimeout(`${BACKEND_URL}/api/state`, 2000, authHeaders));
       // 2. Funds
       if (isLive) {
-        fetchPromises.push(fetchWithTimeout("${BACKEND_URL}/api/funds", 2000, authHeaders));
+        fetchPromises.push(fetchWithTimeout(`${BACKEND_URL}/api/funds`, 2000, authHeaders));
       } else {
         fetchPromises.push(Promise.resolve(null));
       }
