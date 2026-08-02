@@ -690,7 +690,7 @@ async def execute_order(req: ExecuteOrderRequest, request: Request):
         return {"status": "success", "order_id": response.order_id, "message": response.message}
     except Exception as e:
         logger.error(f"Order Execution Failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail='Order execution failed.')
 
 @app.post("/api/panic-exit")
 async def panic_exit(request: Request):
@@ -759,7 +759,7 @@ async def panic_exit(request: Request):
         }
     except Exception as e:
         logger.error("Panic Exit Failed: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail='Panic exit failed.')
 
 @app.get("/api/engine/status")
 async def get_engine_status():
@@ -884,7 +884,8 @@ async def get_history(
             "data": data
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error('Failed to fetch history: %s', e)
+        raise HTTPException(status_code=500, detail='Failed to fetch historical data.')
 
 @app.get("/api/inspect")
 def inspect_broker():
@@ -1141,7 +1142,8 @@ async def get_backtest(
         }
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error('Backtest failed: %s', e)
+        raise HTTPException(status_code=500, detail='Backtest failed.')
 
 @app.get("/equity-data")
 async def get_equity_data(symbol: str = "NIFTY"):
@@ -1357,7 +1359,8 @@ async def test_connection():
             "balance": avail
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error('Connection test failed: %s', e)
+        raise HTTPException(status_code=500, detail='Connection test failed.')
 
 @app.get("/api/state")
 async def get_state(live: bool = Query(False)):
@@ -1392,7 +1395,8 @@ async def get_state(live: bool = Query(False)):
                 
         return state
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error('Failed to fetch state: %s', e)
+        raise HTTPException(status_code=500, detail='Failed to fetch state.')
 
 @app.get("/api/positions")
 async def get_positions():
@@ -1449,7 +1453,8 @@ async def get_strategies():
         from trading_bot.strategies.registry import registry
         return {"strategies": registry.registered_strategies}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error('Failed to fetch strategies: %s', e)
+        raise HTTPException(status_code=500, detail='Failed to fetch strategies.')
 
 @app.get("/api/strategy/parameters")
 async def get_strategy_parameters(
@@ -1461,7 +1466,8 @@ async def get_strategy_parameters(
         params = registry.get_parameters(name)
         return {"parameters": params}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error('Failed to fetch strategy parameters: %s', e)
+        raise HTTPException(status_code=500, detail='Failed to fetch strategy parameters.')
 
 @app.get("/api/settings")
 async def get_settings():
@@ -1480,7 +1486,8 @@ async def get_settings():
         
         return settings
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error('Failed to fetch settings: %s', e)
+        raise HTTPException(status_code=500, detail='Failed to fetch settings.')
 
 @app.post("/api/settings")
 async def save_settings(new_settings: dict):
@@ -1576,7 +1583,8 @@ async def save_settings(new_settings: dict):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error('Failed to save settings: %s', e)
+        raise HTTPException(status_code=500, detail='Failed to save settings.')
 def run_login_script():
     import subprocess
     import sys
@@ -1614,7 +1622,8 @@ async def get_broker_auth_url():
         auth_url = session.generate_authcode()
         return {"url": auth_url}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error('Failed to generate broker auth URL: %s', e)
+        raise HTTPException(status_code=500, detail='Failed to generate broker auth URL.')
 
 @app.post("/api/broker-login")
 async def broker_login(background_tasks: BackgroundTasks):
@@ -1652,7 +1661,8 @@ async def test_login():
                 "message": "Incorrect credentials or unable to login. Please check your details."
             }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error('Login test failed: %s', e)
+        raise HTTPException(status_code=500, detail='Login test failed.')
 
 @app.post("/api/bot/start")
 async def start_bot():
@@ -1688,7 +1698,8 @@ async def start_bot():
             "pid": process.pid
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error('Failed to start bot: %s', e)
+        raise HTTPException(status_code=500, detail='Failed to start bot.')
 
 @app.get("/api/ai/status")
 async def get_ai_status():
@@ -1724,7 +1735,8 @@ async def get_ai_status():
                 "accuracy": "0.00%"
             }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error('Failed to fetch AI status: %s', e)
+        raise HTTPException(status_code=500, detail='Failed to fetch AI status.')
 
 def _run_retrain_script():
     import subprocess
