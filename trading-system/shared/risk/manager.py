@@ -12,11 +12,24 @@ Provides real-time risk controls for the live trading bot:
 from __future__ import annotations
 
 import logging
+import pytz
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import List, Optional
 
 logger = logging.getLogger(__name__)
+
+# The bot trades the Indian market (NSE/BSE) regardless of what timezone
+# the host machine/server is set to -- daily counters must roll over at
+# midnight IST, not at midnight in whatever timezone `date.today()` would
+# use (e.g. a UTC-clocked cloud server rolls over 5.5 hours late relative
+# to IST, matching trading_bot/portfolio_risk.py's existing use of the
+# same _IST pattern).
+_IST = pytz.timezone("Asia/Kolkata")
+
+
+def _today_ist() -> date:
+    return datetime.now(_IST).date()
 
 
 @dataclass
@@ -77,7 +90,7 @@ class RiskManager:
         self.current_equity = initial_capital
         self.peak_equity = initial_capital
         self.daily_pnl = daily_pnl
-        self.today: date = date.today()
+        self.today: date = _today_ist()
         self.consecutive_losses = 0
         self.total_trades = 0
         self.trades_today: List[TradeRecord] = []
@@ -273,9 +286,9 @@ class RiskManager:
 
     def _reset_daily_if_needed(self) -> None:
         """Reset daily counters if the date has changed."""
-        if date.today() != self.today:
+        if _today_ist() != self.today:
             logger.info("New trading day - resetting daily counters")
-            self.today = date.today()
+            self.today = _today_ist()
             self.daily_pnl = 0.0
             self.trades_today = []
             self.total_trades = 0
