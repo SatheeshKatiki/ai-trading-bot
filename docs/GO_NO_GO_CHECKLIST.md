@@ -5,6 +5,19 @@ infrastructure readiness are done — the paper-trading validation window has
 not started yet (see §0). This document is the authoritative checklist to
 work through before `live_trading_mode` is ever set to `true`.
 
+**2026-08-03 update:** the day's first live paper-trading session (started
+from the §0 reset below) surfaced three separate critical bugs — the system
+could not place a single option trade until ~10:34 IST, and the one trade
+that did execute was never risk-managed at all (its own stop-loss/target
+logic was structurally unreachable). A same-day production-readiness audit
+found and fixed 8 issues total across entry, exit management, P&L
+calculation, and risk-management wiring — full detail in
+`docs/paper_trading_validation/production_audit_2026-08-03.md` and
+`anomaly_log.md`. **The validation clock restarts from the first session
+opened after this audit (i.e. not before 2026-08-04), not from the
+2026-08-03 00:50 reset below** — nothing that happened on 2026-08-03 counts
+toward §2's 10-session/30-trade window.
+
 This is a living document — check items off with a date and evidence
 reference as they're actually completed, don't mark something done because
 it's expected to pass.
@@ -17,20 +30,22 @@ The paper-trading window's "day 1" doesn't start until all of these are true.
 Starting the clock before these are done means the validation period doesn't
 count.
 
-- [ ] **Reset `state.db` / trade journal to a clean baseline.**
-  As of this writing, `trading-system/state.db`'s `trades` table (203 rows)
-  is a mix of real historical entries and test pollution from this
-  remediation effort: rows 112–172 (`NIFTY-LOADTEST`/`MIXEDLOAD`, from load
-  testing), rows 173–203 (`NIFTY-RATELIMIT-TEST`, from rate-limit testing),
-  and rows 195–197 (real signals recorded *before* the option-mispricing bug
-  fix — `qty=0`, index-price-as-premium). Rows 81–111 predate this session
-  entirely (dating to 2026-07-10 through 2026-07-20) and are themselves old
-  dev/test artifacts, not real trading history. **None of this should be
-  presented as paper-trading evidence.** Recommended: `python
-  scripts/backup_state.py` to preserve everything as-is, then start a fresh
-  `state.db` for the actual validation window. This is a real, if low-stakes,
-  data-reset decision — confirm with the user before doing it, don't do it
-  silently.
+- [x] **Reset `state.db` / trade journal to a clean baseline.** Done
+  2026-08-03. Backed up the full pre-reset state (125 `trades` rows, 4
+  `trade_journal` rows, all confirmed non-genuine — old dev/test artifacts
+  from 2026-07-10–20 plus this remediation effort's load/rate-limit test
+  pollution) to `trading-system/backups/backup_20260803_005033/` before
+  touching anything. Stopped both engine processes (`trading_bot/main.py`,
+  `api_bridge.py`), cleared `trades` and `trade_journal` to 0 rows, reset
+  `sqlite_sequence` counters, set `state` to equity=100000.0/pnl=0.0, and
+  restarted both processes clean. Verified post-restart: `trades`=0,
+  `trade_journal`=0, `state`=(100000.0, 0.0), `config/active_positions.json`
+  = `{}`. `trade_journal` also confirmed (via code search) to have zero live
+  write path — only ever populated by `scripts/init_journal.py` (one-time
+  seed) and `scripts/e2e_test.py` — so it won't accumulate fake entries
+  during the validation window, but the old seed data would have misled
+  anyone treating the Journal UI page as evidence. **This reset is Day 1 of
+  the validation window; nothing counted before this timestamp.**
 - [ ] **Rotate the Fyers API secret/client ID** via the Fyers developer
   portal. The `.env` values sat in git history before being untracked
   earlier in this remediation — untracking doesn't invalidate a key that
