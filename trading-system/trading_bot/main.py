@@ -406,7 +406,15 @@ async def run_live_bot(symbols: List[str]) -> None:
     ai_filter = TradeFilterModel()
     exit_engine = SmartExitEngine(atr_multiplier=1.5, partial_booking_pct=50.0)
     pyramid_sizer = PyramidSizer(pct_trigger=0.2, max_scales=2)
-    portfolio_risk = PortfolioRiskEngine(max_daily_dd_pct=5.0, max_weekly_dd_pct=10.0, max_consecutive_losses=3, initial_capital=_initial_capital)
+    # max_consecutive_losses=7 matches PortfolioRiskEngine's own documented
+    # design (get_position_multiplier(): 3-4 losses -> half size, 5-6 ->
+    # quarter size, 7+ -> halt). This call site previously passed 3, the
+    # pre-gradual-scaling halt threshold -- with that, _evaluate_risk()
+    # halted trading completely at exactly the loss count where size
+    # reduction was supposed to begin, so the gradual-scaling behavior the
+    # class was built for could never actually engage. Found during the
+    # 2026-08-03 production-readiness audit.
+    portfolio_risk = PortfolioRiskEngine(max_daily_dd_pct=5.0, max_weekly_dd_pct=10.0, max_consecutive_losses=7, initial_capital=_initial_capital)
     iceberg_manager = IcebergManager(max_slice_qty=500)
 
     active_positions: Dict[str, Position] = _load_positions()
@@ -1225,10 +1233,17 @@ async def run_live_bot(symbols: List[str]) -> None:
                         # ── Risk Manager Gate ──────────────────────────────
                         current_volatility = df["close"].pct_change().std() * 100
                         
+                        # Fallback defaults are on the same 0-100 percentage
+                        # scale _evaluate_risk() compares against (e.g. 5.0 ==
+                        # 5%) -- they were previously 0.05, which would have
+                        # meant an effective 0.05% drawdown halt if this key
+                        # were ever missing from settings.json. Not currently
+                        # reachable (the key is always present), but fixed for
+                        # consistency during the 2026-08-03 audit.
                         if settings.get("maxDailyLossPct"):
-                            portfolio_risk.max_daily_dd_pct = float(settings.get("maxDailyLossPct", 0.05))
+                            portfolio_risk.max_daily_dd_pct = float(settings.get("maxDailyLossPct", 5.0))
                         elif settings.get("max_daily_loss_pct"):
-                            portfolio_risk.max_daily_dd_pct = float(settings.get("max_daily_loss_pct", 0.05))
+                            portfolio_risk.max_daily_dd_pct = float(settings.get("max_daily_loss_pct", 5.0))
 
                         if settings.get("max_trades_per_day") is not None:
                             risk_manager.config.max_trades_per_day = int(settings.get("max_trades_per_day", 1))

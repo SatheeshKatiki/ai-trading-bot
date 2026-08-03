@@ -8,6 +8,35 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ## 2026-08-03
 
+### 21:58 IST — FIX: consecutive-loss circuit breaker halted at 3 losses, not the documented 7
+`PortfolioRiskEngine` (`trading_bot/portfolio_risk.py`) is explicitly
+designed and documented for gradual position-size scaling rather than a
+binary halt: `get_position_multiplier()`'s own docstring says 3-4
+consecutive losses → half size, 5-6 → quarter size, 7+ → halt, and its
+class docstring says "Raised from 3 to 7 — at 3 we now reduce size, at 7
+we halt." But `main.py`'s constructor call (`portfolio_risk =
+PortfolioRiskEngine(..., max_consecutive_losses=3, ...)`) still passed
+the pre-refactor value of 3 — so `_evaluate_risk()` fully halted trading
+at exactly the loss count where size-reduction was supposed to begin.
+The gradual-scaling behavior the class exists for could never actually
+engage. Safe direction of failure (halts too early, doesn't expose more
+risk than intended), but contradicts the system's own documented design
+and would surprise anyone relying on that documentation. Fixed:
+`max_consecutive_losses=7`, matching the class's own default and
+documented intent.
+
+Also fixed in the same pass, lower severity: the `max_daily_dd_pct`
+settings-override fallback default was `0.05` against code that compares
+on a 0-100 percentage scale (constructor default is `5.0` == 5%) — not
+currently reachable since `max_daily_loss_pct` is always present in
+`settings.json`, but would have meant an effective 0.05% daily-drawdown
+halt if that key were ever missing. Fixed the fallback to `5.0` for
+consistency.
+
+Verified: full suite 108/108 passing (existing `test_risk_management.py`
+constructs `PortfolioRiskEngine` with its own explicit params per test,
+unaffected by this call-site fix). Restarted engine, healthy.
+
 ### 21:50 IST — FIX: live occurrence of the §2.2 zero-tolerance "Failed to save active positions" failure
 Not a hypothetical — this happened live tonight during the audit, at
 21:20:04.239 IST: `Failed to save active positions: [WinError 5] Access
