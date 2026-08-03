@@ -623,7 +623,17 @@ async def run_live_bot(symbols: List[str]) -> None:
                 logger.info("Actual Exit Price for %s resolved to %.2f (Slippage adjusted)", sym, ltp_actual)
             
             # ── Confirmed execution: now record PNL and clean up position ──
-            pnl = (ltp_actual - entry_price) * actual_exit_qty * side
+            # `sym` here is the base/underlying key (e.g. "NSE:NIFTY50-INDEX"),
+            # not the traded instrument -- checking it for "CE"/"PE" would
+            # always be False for an option position. Use the actual traded
+            # symbol from the order request instead.
+            is_opt = "CE" in exit_req.symbol or "PE" in exit_req.symbol
+            # `side` encodes the directional bet for options (CE=+1/PE=-1),
+            # not "long vs short the contract" -- this system only ever BUYS
+            # options, so the side-flip below is only correct for a genuine
+            # short position in the underlying (see the matching fix and
+            # comment on the paper-mode exit path above).
+            pnl = (ltp_actual - entry_price) * actual_exit_qty * (1 if is_opt else side)
 
             if _load_settings().get("active_strategy") == "MARL_Ultra":
                 try:
@@ -638,7 +648,6 @@ async def run_live_bot(symbols: List[str]) -> None:
                 sym, trade_side,
                 entry_price, ltp_actual, pnl, datetime.now(_IST).isoformat()
             ))
-            is_opt = "CE" in sym or "PE" in sym
             state_action = "SELL" if is_opt else ("SELL" if side == 1 else "BUY")
             record_trade(sym, state_action, ltp_actual, datetime.now(_IST).isoformat(), qty=actual_exit_qty)
             update_equity(risk_manager.current_equity, risk_manager.daily_pnl)
@@ -699,6 +708,11 @@ async def run_live_bot(symbols: List[str]) -> None:
         nonlocal last_eval_time
         sym = tick["symbol"]
         ltp = tick["ltp"]
+        # Populated by the exit-check block below (section 1) when it fetches
+        # an option's live premium, so section 3's M2M calc can reuse it
+        # instead of hitting the broker API a second time for the same
+        # symbol on the same tick.
+        _tick_option_premiums: Dict[str, float] = {}
         # Use IST time for all intraday comparisons (EOD exit at 15:15 IST)
         current_time = datetime.now(_IST).strftime("%Y-%m-%d %H:%M:%S")
 
@@ -777,6 +791,7 @@ async def run_live_bot(symbols: List[str]) -> None:
                     opt_quote = opt_quotes.get(open_position.symbol)
                     if opt_quote and opt_quote.ltp > 0:
                         exit_check_price = opt_quote.ltp
+                        _tick_option_premiums[open_position.symbol] = exit_check_price
                     else:
                         logger.warning(
                             "Exit check skipped for %s — could not fetch live option premium this tick.",
@@ -958,7 +973,14 @@ async def run_live_bot(symbols: List[str]) -> None:
                     logger.info("EXIT %s %s for %s (%s) [PAPER]", open_position.side, qty_to_close, sym, reason)
 
                     # Record PnL & update dashboard state (paper mode: immediate, no confirmation needed)
-                    pnl = (exit_check_price - open_position.entry_price) * qty_to_close * open_position.side
+                    # `side` encodes the directional bet for options (CE=+1/PE=-1),
+                    # not "long vs short the contract" -- this system only ever BUYS
+                    # options, so a bought PUT's own premium still has to rise for a
+                    # profit, exactly like a bought CALL. Applying `* side` inverted
+                    # every PUT trade's PnL (root-caused 2026-08-03: a stop-loss hit
+                    # was logged as a profit). The side-flip is only correct for a
+                    # genuine short position in the underlying (is_opt_pos is False).
+                    pnl = (exit_check_price - open_position.entry_price) * qty_to_close * (1 if is_opt_pos else open_position.side)
 
                     if settings.get("active_strategy") == "MARL_Ultra":
                         try:
@@ -1429,10 +1451,27 @@ async def run_live_bot(symbols: List[str]) -> None:
             for position in active_positions.values():
                 entry_premium = position.entry_price
                 total_quantity = position.quantity
-                
+                is_option = "CE" in position.symbol or "PE" in position.symbol
+
                 # Get the live premium for this specific position
                 if position.symbol == sym:
                     current_premium = ltp
+                elif position.symbol in _tick_option_premiums:
+                    # Already fetched this tick by the exit-check block above
+                    current_premium = _tick_option_premiums[position.symbol]
+                elif is_option:
+                    # The data aggregator only ever holds candles for
+                    # subscribed symbols (the underlying index) -- an option's
+                    # own symbol is never in it, so this used to silently fall
+                    # through to `entry_premium`, making unrealized P&L for
+                    # every open option position display as flat $0 no matter
+                    # how far the real premium had moved. Fetch it directly.
+                    try:
+                        quotes = broker.get_market_data([position.symbol])
+                        quote = quotes.get(position.symbol)
+                        current_premium = quote.ltp if (quote and quote.ltp > 0) else entry_premium
+                    except Exception:
+                        current_premium = entry_premium
                 else:
                     # Look up the latest premium from our data aggregator
                     option_data = aggregator.get_latest_dataframe(position.symbol)
@@ -1440,11 +1479,15 @@ async def run_live_bot(symbols: List[str]) -> None:
                         current_premium = option_data["close"].iloc[-1]
                     else:
                         current_premium = entry_premium
-                
-                # P&L = (Current Premium - Entry Premium) * Total Quantity
+
+                # P&L = (Current Premium - Entry Premium) * Total Quantity.
+                # `side` only flips the sign for a genuine short position in
+                # the underlying -- this system always BUYS options (CE/PE
+                # already encodes the directional bet), so a bought option's
+                # unrealized P&L must never be sign-flipped by `side`.
                 premium_difference = current_premium - entry_premium
-                position_pnl = premium_difference * total_quantity * position.side
-                
+                position_pnl = premium_difference * total_quantity * (1 if is_option else position.side)
+
                 total_unrealized_pnl += position_pnl
             
             total_portfolio_pnl = risk_manager.daily_pnl + total_unrealized_pnl

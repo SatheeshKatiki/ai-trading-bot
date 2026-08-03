@@ -84,9 +84,14 @@ def compute_reconciliation(
         if is_estimate:
             exit_price = local_pos.stop_loss
 
-        pnl = (exit_price - local_pos.entry_price) * local_pos.quantity * local_pos.side
-        trade_side = "LONG" if local_pos.side == 1 else "SHORT"
         is_option = "CE" in sym or "PE" in sym
+        # `side` only flips the sign for a genuine short position in the
+        # underlying -- this system always BUYS options (CE/PE already
+        # encodes the directional bet), so a bought option's PnL must never
+        # be sign-flipped by `side`. Root-caused 2026-08-03: a stop-loss hit
+        # on a PUT was reconciled as a profit.
+        pnl = (exit_price - local_pos.entry_price) * local_pos.quantity * (1 if is_option else local_pos.side)
+        trade_side = "LONG" if local_pos.side == 1 else "SHORT"
         state_action = "SELL" if is_option else ("SELL" if local_pos.side == 1 else "BUY")
 
         results.append(ReconciliationResult(

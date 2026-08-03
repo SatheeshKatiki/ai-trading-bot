@@ -8,7 +8,76 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ## 2026-08-03
 
-### 21:09 IST — CRITICAL, NOT YET FIXED: option PnL sign is inverted for PUTs
+### 21:40 IST — FIX: dashboard unrealized P&L always showed $0 for open option positions
+Found while fixing the PnL sign bug above (same code region,
+`main.py`'s section "3. Calculate Unrealized M2M PNL and update
+dashboard"). Same root architectural gap as the exit-monitoring bug
+fixed earlier tonight, but in yet another, separate code path I hadn't
+touched: this section looked up an open option position's current price
+via `aggregator.get_latest_dataframe(position.symbol)` — but the
+aggregator only ever holds candles for subscribed symbols (the
+underlying index), never an option's own symbol, so this always fell
+through to `current_premium = entry_premium`, making the *displayed*
+unrealized P&L for any open option position exactly $0 all session,
+regardless of real movement. Fixed by fetching the option's live premium
+on demand (reusing the same value already fetched this tick by the
+exit-check block, via a small per-tick cache, to avoid a duplicate
+broker call) plus the same PnL-sign fix as above.
+
+### 22:00 IST — CRITICAL FIX: SmartExitEngine's hard SL/target/trailing logic used the wrong convention for PUT options
+Found while writing regression tests for `shared/exits/exit_engine.py`
+(zero existing test coverage anywhere) to validate the exit-monitoring
+fix, independent of live market hours (which had ended, and EOD
+square-off correctly preempts everything else right now, hiding this
+bug from live observation).
+
+**Root cause:** `SmartExitEngine.evaluate_exit()` branches on
+`position.side` throughout (extremes tracking, hard SL/target, partial
+booking, trailing stop) using the convention "side=1 → SL below entry
+target above; side=-1 → SL above entry, target below" — correct for a
+genuine short position in the underlying. But `trading_bot/main.py` sets
+SL/target for **options** with SL always below entry and target always
+above, *regardless of CE/PE* (its own comment: "Option buying means we
+buy premium, so target is UP and SL is DOWN") — because this system only
+ever buys options, and a bought PUT profits from a rising premium
+exactly like a bought CALL. For a PUT (`side=-1`), those two conventions
+directly conflict: with SL below/target above (option convention) fed
+into logic expecting SL above/target below (short-underlying
+convention), `current_price >= stop_loss` is true for almost any
+in-band price, so the hard-SL branch fired "Stop-Loss Hit" immediately
+for nearly any price at or above the numeric stop-loss value — which is
+effectively always, except right after a sharp drop.
+
+**Impact:** every section of `evaluate_exit()` was affected for PUT
+positions — wrong extremes tracked (`lowest_price` instead of
+`highest_price`), wrong hard SL/target evaluation, wrong trailing-stop
+direction, wrong partial-booking profit calc. In practice, `main.py`'s
+own separate, correctly `is_opt_pos`-aware hard interceptor (already
+fixed earlier tonight) runs *before* this engine is reached and often
+caught real SL/target crosses first — but any PUT position that stayed
+in-band for a while (not this session's actual trade, whose premium
+swung through both levels within 5 minutes) would have been killed
+almost immediately by this bug, mislabeled as a stop-loss hit.
+
+**Fix:** compute `is_option` once at the top of `evaluate_exit()` and use
+`effective_side = 1 if is_option else position.side` for every
+directional branch in the function. `position.side` itself is untouched
+(other code still needs its original CE/PE meaning) — only this
+function's internal decision logic changed.
+
+**Verified:** new `tests/test_exit_engine.py` (15 tests, previously zero
+coverage) — hard SL/target for both PUT and CALL, EOD cutoff behavior
+and its date-prefix parsing, extremes tracking, ATR trailing-stop
+ratcheting for both position types, partial profit booking. Full suite
+108/108 passing (up from 93), no regressions. Minor, non-functional
+observation from writing these: the distinct "Trailing Stop-Loss Hit"
+label is effectively unreachable in the current code structure (the hard
+SL check in section 3 always catches a retraced price first, since it
+re-reads the same `stop_loss` field the trailing logic already ratcheted
+on an earlier call) — exits still fire at the financially correct price,
+just always logged as "Stop-Loss Hit". Cosmetic only; not fixed.
+
+### 21:09 IST — CRITICAL, FIXED (21:45 IST): option PnL sign is inverted for PUTs
 Found while validating the exit-monitoring fix (restart triggered
 reconciliation on the stale position — see below). The reconciliation
 log showed a **stop-loss hit recorded as a +21.95 profit**, which is
@@ -43,10 +112,21 @@ live exit path and the reconciliation fallback path. This is a
 checklist §2.9 ("P&L math checks out") blocker on its own, independent
 of the exit-monitoring fix.
 
-**Status: NOT FIXED.** Distinct from what was approved this round
-(the exit-monitoring gap) — flagged for explicit sign-off before
-touching PnL-calculation code, given how directly it affects the
-financial record.
+**Status: FIXED (21:45 IST), as part of the production-readiness audit.**
+Fixed at all four call sites found: `main.py`'s paper-mode exit path
+(`on_tick`), `main.py`'s live-mode exit path (`background_iceberg_exit`
+— which had a *second*, related bug: it computed `is_opt` by checking
+`"CE"/"PE" in sym`, but `sym` in that function is the base/underlying
+key, e.g. `"NSE:NIFTY50-INDEX"`, never the option symbol — always False,
+so the live exit path's `state_action` would have used the wrong
+BUY/SELL convention for closing an option too; fixed by checking
+`exit_req.symbol` instead), `main.py`'s unrealized M2M P&L calc for the
+dashboard (§ below — this one had a second bug of its own), and
+`trading_bot/reconciliation.py`. All four now use
+`1 if is_option else side` instead of a bare `side` multiplier. New
+regression tests added to `tests/test_reconciliation.py` covering the
+exact previously-untested PE+option combination. Full suite passing, no
+regressions.
 
 ### 21:05 IST — FIX implemented: option-position exit monitoring was structurally broken
 Implemented the fix proposed below (user sign-off given). In `on_tick()`:

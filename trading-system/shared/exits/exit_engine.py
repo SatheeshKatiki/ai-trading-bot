@@ -115,10 +115,27 @@ class SmartExitEngine:
             (Should Exit, Reason, Quantity to Exit).
             If Should Exit is True and Quantity is None, exit full position.
         """
+        # `position.side` encodes the directional bet for options (CE=+1/
+        # PE=-1), not "long vs short the instrument" -- this system only
+        # ever BUYS options (see main.py's entry sizing: "Option buying
+        # means we buy premium, so target is UP and SL is DOWN" -- true for
+        # both CE and PE). A bought PUT still profits when ITS OWN premium
+        # rises, exactly like a bought CALL, so every directional check
+        # below must treat an option position as side=1 regardless of its
+        # actual side value. `position.side` itself is left untouched --
+        # callers elsewhere still need its original CE/PE meaning. Root-
+        # caused 2026-08-03: with the real side=-1 (short-the-underlying)
+        # convention, this function would fire "Stop-Loss Hit" on almost
+        # any in-band price for a PUT, since its stop_loss sits BELOW entry
+        # (option convention) while this function expected it ABOVE entry
+        # (short-underlying convention).
+        is_option = "CE" in position.symbol or "PE" in position.symbol
+        effective_side = 1 if is_option else position.side
+
         # 1. Update position extremes for trailing stop
-        if position.side == 1:
+        if effective_side == 1:
             position.highest_price = max(position.highest_price, current_price)
-        elif position.side == -1:
+        elif effective_side == -1:
             position.lowest_price = min(position.lowest_price, current_price)
 
         # 2. Time-based exit (EOD Square-off)
@@ -129,12 +146,12 @@ class SmartExitEngine:
             return True, "Time-based EOD Exit", None
 
         # 3. Hard Stop-Loss and Profit Target
-        if position.side == 1:
+        if effective_side == 1:
             if current_price <= position.stop_loss:
                 return True, "Stop-Loss Hit", None
             if current_price >= position.target:
                 return True, "Profit Target Hit", None
-        elif position.side == -1:
+        elif effective_side == -1:
             if current_price >= position.stop_loss:
                 return True, "Stop-Loss Hit", None
             if current_price <= position.target:
@@ -144,7 +161,7 @@ class SmartExitEngine:
         if not position.is_partially_booked:
             risk = abs(position.entry_price - position.stop_loss)
             if risk > 0:
-                if position.side == 1:
+                if effective_side == 1:
                     unrealized_reward = current_price - position.entry_price
                 else:
                     unrealized_reward = position.entry_price - current_price
@@ -164,19 +181,19 @@ class SmartExitEngine:
 
         # 5. ATR Trailing Stop (Activates only after a certain profit percentage)
         profit_pct = 0.0
-        if position.side == 1:
+        if effective_side == 1:
             profit_pct = (current_price - position.entry_price) / position.entry_price * 100
         else:
             profit_pct = (position.entry_price - current_price) / position.entry_price * 100
 
         if profit_pct >= self.trailing_activation_pct:
-            if position.side == 1:
+            if effective_side == 1:
                 # Trailing stop for Long
                 trailing_stop = position.highest_price - (current_atr * self.atr_multiplier)
                 # Only move stop loss UP
                 if trailing_stop > position.stop_loss:
                     position.stop_loss = trailing_stop
-            elif position.side == -1:
+            elif effective_side == -1:
                 # Trailing stop for Short
                 trailing_stop = position.lowest_price + (current_atr * self.atr_multiplier)
                 # Only move stop loss DOWN
@@ -184,9 +201,9 @@ class SmartExitEngine:
                     position.stop_loss = trailing_stop
 
             # Check trailing stop immediately after updating
-            if position.side == 1 and current_price <= position.stop_loss:
+            if effective_side == 1 and current_price <= position.stop_loss:
                 return True, "Trailing Stop-Loss Hit", None
-            if position.side == -1 and current_price >= position.stop_loss:
+            if effective_side == -1 and current_price >= position.stop_loss:
                 return True, "Trailing Stop-Loss Hit", None
 
             # 5b. Percentage-based trailing stop (the "Trail Offset" dashboard

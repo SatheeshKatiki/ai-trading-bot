@@ -78,6 +78,56 @@ def test_closed_option_position_resolves_real_fill_price_from_order_book():
     assert r.trade_side == "LONG"
 
 
+def test_closed_put_option_position_pnl_is_not_sign_flipped():
+    """Regression test for a real bug (root-caused 2026-08-03): a bought PUT
+    uses side=-1 to encode "bearish bet", not "short the contract" -- this
+    system only ever BUYS options, so PnL must never be sign-flipped by
+    `side` for an option position, unlike a genuine short index/equity
+    position. Before the fix, this exact scenario (premium fell, a bought
+    PUT should show a LOSS) computed a positive PnL instead -- a stop-loss
+    hit was once literally recorded as a profit because of this.
+    """
+    local = Position(
+        symbol="NSE:NIFTY26AUG24600PE", side=-1, entry_price=75.05, quantity=65,
+        entry_time="2026-08-03T10:34:10", highest_price=75.05,
+        lowest_price=75.05, stop_loss=74.712275, target=77.67675,
+    )
+    active_positions = {local.symbol: local}
+    # Premium fell (as it did for real that day) -- a bought PUT loses value
+    # right alongside it, exactly like a bought CALL would.
+    order_book = [_order_book_fill(local.symbol, OrderSide.SELL, traded_price=59.60)]
+
+    results = compute_reconciliation(active_positions, broker_positions=[], order_book=order_book)
+
+    assert len(results) == 1
+    r = results[0]
+    assert r.exit_price == 59.60
+    assert r.pnl == (59.60 - 75.05) * 65 * 1  # option: side never flips the sign
+    assert r.pnl < 0  # premium fell -> a bought PUT must show a loss, not a gain
+    assert r.state_action == "SELL"
+    assert r.trade_side == "SHORT"  # trade_side label still reflects the directional bet
+
+
+def test_closed_put_option_position_stop_loss_estimate_is_a_loss():
+    """The exact real-world scenario: no order-book fill found, falls back to
+    the stop_loss estimate. A stop-loss exists to cap a loss -- it must never
+    be able to compute as a profit."""
+    local = Position(
+        symbol="NSE:NIFTY26AUG24600PE", side=-1, entry_price=75.05, quantity=65,
+        entry_time="2026-08-03T10:34:10", highest_price=75.05,
+        lowest_price=75.05, stop_loss=74.712275, target=77.67675,
+    )
+    active_positions = {local.symbol: local}
+
+    results = compute_reconciliation(active_positions, broker_positions=[], order_book=[])
+
+    assert len(results) == 1
+    r = results[0]
+    assert r.is_estimate is True
+    assert r.exit_price == 74.712275
+    assert r.pnl < 0  # a stop-loss hit can never be a profit
+
+
 def test_closed_short_index_position_uses_buy_exit_side():
     """Short equity/index positions close with a BUY, not a SELL — must not be confused with the option convention."""
     local = _local_short(symbol="NSE:NIFTY50-INDEX", entry_price=24000.0, quantity=25, stop_loss=24100.0)
