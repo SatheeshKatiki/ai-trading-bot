@@ -183,12 +183,34 @@ def _save_positions(positions: Dict[str, Position]) -> None:
         try:
             with os.fdopen(temp_fd, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=4)
-            os.replace(temp_path, _POSITIONS_PATH)
+            # Root-cause fix (found running live paper trading, 2026-08-03):
+            # os.replace() can fail with WinError 5 "Access is denied" when
+            # another process (e.g. an api_bridge dashboard request reading
+            # this same file) transiently has it open at the exact moment of
+            # the rename -- a real occurrence, not hypothetical, and exactly
+            # the failure mode docs/GO_NO_GO_CHECKLIST.md's §2.2 has zero
+            # tolerance for. This is a transient OS-level lock contention
+            # issue, not a real error, so a short bounded retry is
+            # appropriate here (unlike most of this codebase's error
+            # handling, which deliberately fails fast rather than masking
+            # real problems).
+            import time as _time_mod
+            last_exc = None
+            for attempt in range(5):
+                try:
+                    os.replace(temp_path, _POSITIONS_PATH)
+                    last_exc = None
+                    break
+                except OSError as replace_exc:
+                    last_exc = replace_exc
+                    _time_mod.sleep(0.05 * (attempt + 1))
+            if last_exc is not None:
+                raise last_exc
         except Exception as e:
             if os.path.exists(temp_path):
                 os.unlink(temp_path)
             raise e
-            
+
     except Exception as e:
         logger.error("Failed to save active positions: %s", e)
 

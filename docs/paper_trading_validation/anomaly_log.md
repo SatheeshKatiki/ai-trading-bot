@@ -8,6 +8,32 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ## 2026-08-03
 
+### 21:50 IST — FIX: live occurrence of the §2.2 zero-tolerance "Failed to save active positions" failure
+Not a hypothetical — this happened live tonight during the audit, at
+21:20:04.239 IST: `Failed to save active positions: [WinError 5] Access
+is denied: '...active_positions_tmp_1tsia7wp.json' ->
+'...active_positions.json'`, right after two back-to-back paper
+entry/EOD-exit cycles. `_save_positions()`'s atomic-write pattern
+(temp file + `os.replace()`) is correct in principle, but `os.replace()`
+can transiently fail on Windows with WinError 5 if another process (most
+likely `api_bridge.py` serving a dashboard request) has the destination
+file open at that exact instant. The in-memory position state stayed
+correct (the exit itself succeeded, PnL recorded correctly), but
+`active_positions.json` on disk was left permanently stale — still
+showing the closed position as open — until manually corrected.
+
+**Fix:** wrapped only the `os.replace()` step in a bounded retry (5
+attempts, 50ms×attempt backoff) — this is a transient OS-level lock
+contention issue, not a real error, so retrying is appropriate here
+(unlike this codebase's general style of failing fast rather than
+masking real problems). Manually corrected the stale on-disk file to
+`{}` (verified correct against `state.db`'s trade record before writing
+it) and restarted — clean reload, no spurious reconciliation this time.
+
+**Verified:** full suite still 108/108 after the fix; live restart
+confirmed the stale-file correction stuck and no bogus "STATE MISMATCH"
+fired since `active_positions.json` now matched reality.
+
 ### 21:40 IST — FIX: dashboard unrealized P&L always showed $0 for open option positions
 Found while fixing the PnL sign bug above (same code region,
 `main.py`'s section "3. Calculate Unrealized M2M PNL and update
