@@ -114,24 +114,30 @@ def _fetch_dynamic_lot_size(instrument: str, default_lot_size: int) -> int:
 # Instrument configuration registry
 # ──────────────────────────────────────────────
 INSTRUMENT_CONFIG = {
+    # expiry_day verified 2026-08-03 against Fyers' live NSE_FO/BSE_FO symbol
+    # master (public.fyers.in/sym_details/) — NSE consolidated weekly index
+    # options expiry to Tuesday (NIFTY/BANKNIFTY/FINNIFTY); BSE's SENSEX
+    # weekly expiry is Thursday. The previous Thu/Wed/Fri values were stale
+    # and caused every computed expiry date (and therefore every option
+    # symbol) to reference a non-existent contract.
     "NIFTY": {
         "lot_size": 65,
         "strike_step": 50,
-        "expiry_day": 3,        # Thursday (0=Mon, 3=Thu)
+        "expiry_day": 1,        # Tuesday (0=Mon, 1=Tue, ...)
         "exchange": "NSE",
         "index": True,
     },
     "BANKNIFTY": {
         "lot_size": 30,
         "strike_step": 100,
-        "expiry_day": 2,        # Wednesday
+        "expiry_day": 1,        # Tuesday
         "exchange": "NSE",
         "index": True,
     },
     "SENSEX": {
         "lot_size": 20,
         "strike_step": 100,
-        "expiry_day": 4,        # Friday
+        "expiry_day": 3,        # Thursday
         "exchange": "BSE",
         "index": True,
     },
@@ -199,21 +205,47 @@ def _round_to_strike(price: float, step: int) -> int:
     return int(round(price / step) * step)
 
 
+# Fyers uses a single-character month code for non-monthly (weekly) option
+# symbols: 1-9 for Jan-Sep, then O/N/D for Oct/Nov/Dec.
+_WEEKLY_MONTH_CODE = {
+    1: "1", 2: "2", 3: "3", 4: "4", 5: "5", 6: "6",
+    7: "7", 8: "8", 9: "9", 10: "O", 11: "N", 12: "D",
+}
+
+
+def _is_last_expiry_weekday_of_month(expiry: date) -> bool:
+    """True if `expiry` is the last occurrence of its weekday in its month
+    (i.e. the monthly contract, not a weekly one)."""
+    return (expiry + timedelta(days=7)).month != expiry.month
+
+
 def _build_symbol(instrument: str, expiry: date, strike: int, option_type: str) -> str:
     """
-    Build Fyers-compatible option symbol.
+    Build a Fyers-compatible option symbol, matching the real NSE_FO/BSE_FO
+    symbol master convention (verified 2026-08-03):
 
-    Format: NSE:NIFTY{YY}{MMM}{DD}{STRIKE}{CE/PE}
-    Example: NSE:NIFTY25MAY2222400CE
+    Monthly contract (last occurrence of the expiry weekday in its month):
+        {EXCH}:{INSTRUMENT}{YY}{MMM}{STRIKE}{CE/PE}   e.g. NSE:NIFTY26AUG17850CE
+
+    Weekly contract (any other occurrence):
+        {EXCH}:{INSTRUMENT}{YY}{M}{DD}{STRIKE}{CE/PE} e.g. NSE:NIFTY2680418500CE
+        where {M} is a single-char month code (1-9, O, N, D).
     """
     cfg = INSTRUMENT_CONFIG.get(instrument.upper(), INSTRUMENT_CONFIG["NIFTY"])
     exchange = cfg["exchange"]
+    # Canonical instrument key (not the caller's raw string) — keeps the
+    # symbol correct even if the caller passed a variant like "NIFTY50".
+    canonical = instrument.upper() if instrument.upper() in INSTRUMENT_CONFIG else "NIFTY"
 
-    yy  = expiry.strftime("%y")          # e.g. "25"
-    mon = expiry.strftime("%b").upper()  # e.g. "MAY"
-    dd  = expiry.strftime("%d")          # e.g. "22"
+    yy = expiry.strftime("%y")
 
-    return f"{exchange}:{instrument.upper()}{yy}{mon}{dd}{strike}{option_type}"
+    if _is_last_expiry_weekday_of_month(expiry):
+        mon = expiry.strftime("%b").upper()
+        return f"{exchange}:{canonical}{yy}{mon}{strike}{option_type}"
+
+    m  = _WEEKLY_MONTH_CODE[expiry.month]
+    dd = expiry.strftime("%d")
+    return f"{exchange}:{canonical}{yy}{m}{dd}{strike}{option_type}"
 
 
 def select_option(

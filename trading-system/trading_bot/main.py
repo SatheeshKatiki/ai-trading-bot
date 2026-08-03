@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import logging.handlers
 import os
 import sys
 import threading
@@ -116,6 +117,19 @@ logging.basicConfig(
     format="[%(asctime)s] %(levelname)s %(name)s: %(message)s",
     stream=sys.stdout,
 )
+
+# Durable file log — main.py otherwise only logs to its console window,
+# which is invisible to anything monitoring the process from outside.
+_LOG_DIR = Path(__file__).resolve().parents[1] / "logs"
+_LOG_DIR.mkdir(exist_ok=True)
+_engine_file_handler = logging.handlers.RotatingFileHandler(
+    _LOG_DIR / "engine.log", maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8"
+)
+_engine_file_handler.setFormatter(logging.Formatter(
+    "[%(asctime)s] %(levelname)s %(name)s: %(message)s"
+))
+logging.getLogger().addHandler(_engine_file_handler)
+
 logger = logging.getLogger(__name__)
 
 # Register strategies that are not auto-discovered (e.g., from subpackages)
@@ -1097,6 +1111,12 @@ async def run_live_bot(symbols: List[str]) -> None:
                                 try:
                                     from trading_bot.strategies.premium_selection.options_selector import select_option
                                     instrument = s.replace("NSE:", "").replace("BSE:", "").replace("-INDEX", "").replace("-EQ", "")
+                                    # Underlying data symbols don't match the options
+                                    # instrument key 1:1 (e.g. "NIFTY50-INDEX" strips
+                                    # down to "NIFTY50", but the tradeable option series
+                                    # is "NIFTY") — this silently built an invalid,
+                                    # non-existent option symbol for every entry.
+                                    instrument = {"NIFTY50": "NIFTY", "NIFTYBANK": "BANKNIFTY"}.get(instrument, instrument)
                                     opt_dir: Literal['CE', 'PE'] = "CE" if latest_signal == 1 else "PE"
                                     opt = select_option(instrument, ltp, opt_dir, itm_strikes=1)
                                     entry_symbol = opt.symbol

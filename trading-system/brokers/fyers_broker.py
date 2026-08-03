@@ -557,7 +557,10 @@ class FyersBroker(BaseBroker):
                         all_candles.extend(resp.get("candles", []))
                         chunk_success = True
                         break
-                    elif "No data available" in str(resp):
+                    elif "No data available" in str(resp) or resp.get("s") == "no_data":
+                        # "no_data" is Fyers' normal response for a range with no
+                        # candles yet (e.g. today's still-forming bars) — not an
+                        # error, so don't burn retries/backoff on it.
                         chunk_success = True # Ignore empty chunks gracefully
                         break
                     else:
