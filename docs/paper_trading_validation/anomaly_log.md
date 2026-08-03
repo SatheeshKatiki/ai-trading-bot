@@ -8,6 +8,115 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ## 2026-08-03
 
+### 21:09 IST — CRITICAL, NOT YET FIXED: option PnL sign is inverted for PUTs
+Found while validating the exit-monitoring fix (restart triggered
+reconciliation on the stale position — see below). The reconciliation
+log showed a **stop-loss hit recorded as a +21.95 profit**, which is
+self-evidently wrong: a stop-loss exists to cap a loss, it cannot
+produce a gain by definition.
+
+**Root cause:** both `trading_bot/main.py`'s live exit path (`pnl =
+(exit_check_price - open_position.entry_price) * qty_to_close *
+open_position.side`) and `trading_bot/reconciliation.py`'s
+`compute_reconciliation()` (`pnl = (exit_price - local_pos.entry_price)
+* local_pos.quantity * local_pos.side`) multiply premium P&L by
+`side`. For options this system only ever BUYS (long) — `side` is
+repurposed at entry to mean "CE (+1) vs PE (-1)" directionally, not
+"long vs short the contract." Since the trader is long the option
+either way, profit should always be `(exit - entry) * qty`, full stop —
+the CE/PE choice already encodes the directional bet by which contract
+was bought. The `* side` multiplier is only correct for a genuine short
+position in the underlying (confirmed intentional there — see
+`test_closed_short_index_position_uses_buy_exit_side` in
+`tests/test_reconciliation.py`, which explicitly asserts "negative side
+flips the sign" for a short index position). Applying the same
+convention to a bought PUT inverts its sign.
+
+**Evidence this was never caught:** `tests/test_reconciliation.py` only
+covers a CE with `side=1` (sign bug invisible, ×1 doesn't change
+anything) and a short INDEX position with `side=-1` (correct use of the
+flip). There is no test for a PE (`side=-1`, `is_option=True`) — exactly
+the combination that's broken, and exactly what happened today.
+
+**Impact:** every PUT trade's recorded PnL sign is inverted, in both the
+live exit path and the reconciliation fallback path. This is a
+checklist §2.9 ("P&L math checks out") blocker on its own, independent
+of the exit-monitoring fix.
+
+**Status: NOT FIXED.** Distinct from what was approved this round
+(the exit-monitoring gap) — flagged for explicit sign-off before
+touching PnL-calculation code, given how directly it affects the
+financial record.
+
+### 21:05 IST — FIX implemented: option-position exit monitoring was structurally broken
+Implemented the fix proposed below (user sign-off given). In `on_tick()`:
+the position-matching fallback now includes option positions (previously
+explicitly excluded); when the matched position is an option, its live
+premium is fetched on demand via `broker.get_market_data()` (same call
+already used at entry) into a new `exit_check_price`, which now feeds
+every exit-side decision that previously used the raw index tick's `ltp`
+— hard TP/SL interceptor, the `institutional_momentum` and default
+(`exit_engine.evaluate_exit`) exit paths, exit order pricing, PnL calc,
+and trade/alert recording. Also fixed the identical bug in the adjacent
+pyramiding (scale-in) block, which had the same "index price fed into
+option-premium comparison" defect — same root cause, same fix pattern,
+found while making this change. If the on-demand premium fetch fails for
+an option position, the exit check is skipped for that tick (logged) and
+retried on the next one, rather than proceeding with a wrong price.
+Left the ATR-from-candles calculation itself untouched (still an
+index-based approximation for options — a real option-specific ATR would
+need a live option candle series, which doesn't exist; flagged as a known
+limitation, not fixed, since building that is new functionality, not a
+plumbing fix).
+
+Verified: `py_compile` clean, full test suite (`pytest tests/ -k "not
+test_bt"`) 95/95 passing, no regressions.
+
+**Incident during verification:** running that test suite wrote 2 fake
+`NIFTY-RATELIMIT-TEST` rows directly into the live `state.db`
+(`tests/test_order_rate_limit.py` hits the real `/api/order/execute`
+endpoint with no DB isolation — the exact same class of test pollution
+the original pre-2026-08-03 audit already flagged once). Caught
+immediately via a routine trade-count check, deleted the 2 polluted rows,
+reset `sqlite_sequence`. **Do not run the full `pytest tests/` suite
+against this live environment without first confirming `state.db`
+isolation** — `test_order_rate_limit.py` at minimum needs to be run
+against an isolated DB path, or this will keep recurring every time the
+suite runs here.
+
+### CRITICAL — Open option positions can never be exited by the system (found ~20:30 IST, end-of-day review)
+**Symptom:** the one trade placed today (10:34:10, `NSE:NIFTY2680424600PE`)
+stayed open, untouched, for the rest of the session — `active_positions.json`
+still shows `highest_price`/`lowest_price` frozen at the entry price.
+
+**Root cause:** `trading_bot/main.py`'s `on_tick()` only evaluates exit
+conditions (SL/target/trailing) when the incoming tick's symbol matches
+`position.symbol` exactly, with a fallback that explicitly excludes
+options. The live stream only subscribes to the underlying index
+(`NSE:NIFTY50-INDEX`), never the option contract, and `get_market_data()`
+is called exactly once in the entire file — at entry. A comment
+referencing an "EOD exit at 15:15 IST" has no corresponding
+implementation anywhere. **Net effect: once an option position opens, the
+system's own stop-loss/target/trailing/EOD rules are structurally
+incapable of ever firing.**
+
+**Quantified impact:** the option's actual premium swung from 74.50 to a
+high of 77.70 and a low of 71.00 within the very first 5-minute candle
+after entry — target and stop-loss were both touched almost immediately.
+Had the exit mechanism run at all, this trade would have closed near
+breakeven. Instead the premium drifted to ~59–60 by end of day (session
+low 52.10), an unrealized mark-to-market loss of roughly -21% to -30% on
+premium that never got the chance to be capped at the configured 0.45%
+stop.
+
+**Status:** NOT YET FIXED — flagged for user sign-off before touching the
+live position-management hot path (see `reports/2026-08-03.md` §7 for the
+proposed fix). This finding supersedes the 10:34 entry below as the day's
+most severe issue.
+
+**Validation clock impact:** resets per checklist rule — today's session
+does not count. See `reports/2026-08-03.md` §7.5.
+
 ### 10:34 IST — Session stabilized, first clean trade recorded
 After the fixes below, engine restarted cleanly with a single `main.py` +
 single `api_bridge.py` instance. First real paper trade of the validation

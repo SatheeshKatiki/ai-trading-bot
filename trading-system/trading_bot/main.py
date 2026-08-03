@@ -734,7 +734,7 @@ async def run_live_bot(symbols: List[str]) -> None:
         # ----------------------------------------------------------------
         open_position = None
         base_symbol_key = None
-        
+
         # We must match the incoming market tick with the correct open position.
         for base_sym, position in active_positions.items():
             if position.symbol == sym:
@@ -742,10 +742,17 @@ async def run_live_bot(symbols: List[str]) -> None:
                 open_position = position
                 base_symbol_key = base_sym
                 break
-            
-            # Fallback for plain index/equity positions
-            is_option = "CE" in position.symbol or "PE" in position.symbol
-            if base_sym == sym and not is_option:
+
+            # Fallback: an index/underlying tick also carries an open option
+            # position keyed by that same base symbol. The live stream only
+            # ever subscribes to the underlying, never to option contracts
+            # directly, so this is the ONLY path by which an option
+            # position's exit conditions get evaluated at all — without it,
+            # a filled option entry can never be exited by SL/target/
+            # trailing/anything else (root-caused 2026-08-03: a position
+            # sat unmanaged for a full session while its premium round-
+            # tripped through both target and stop-loss within 5 minutes).
+            if base_sym == sym:
                 open_position = position
                 base_symbol_key = base_sym
                 break
@@ -755,15 +762,40 @@ async def run_live_bot(symbols: List[str]) -> None:
             if open_position.is_exiting:
                 return
 
+            is_opt_pos = "CE" in open_position.symbol or "PE" in open_position.symbol
+
+            # For an option position, `ltp` here is the underlying index's
+            # price (that's what the tick is), not the option's own price —
+            # comparing an index level against option-premium SL/target
+            # values would be meaningless. Fetch the option's real live
+            # premium on demand (same call already used at entry) and use
+            # THAT for every exit-side decision below.
+            exit_check_price = ltp
+            if is_opt_pos:
+                try:
+                    opt_quotes = broker.get_market_data([open_position.symbol])
+                    opt_quote = opt_quotes.get(open_position.symbol)
+                    if opt_quote and opt_quote.ltp > 0:
+                        exit_check_price = opt_quote.ltp
+                    else:
+                        logger.warning(
+                            "Exit check skipped for %s — could not fetch live option premium this tick.",
+                            open_position.symbol,
+                        )
+                        return
+                except Exception as exc:
+                    logger.warning("Exit check failed to fetch premium for %s: %s", open_position.symbol, exc)
+                    return
+
             df = aggregator.get_latest_dataframe(sym)
             # Proper 14-bar rolling ATR (not single-candle range which is too noisy)
             if not df.empty and len(df) >= 2:
                 tr_series = (df["high"] - df["low"]).abs()
                 current_atr = tr_series.rolling(min(14, len(df))).mean().iloc[-1]
                 if pd.isna(current_atr) or current_atr <= 0:
-                    current_atr = ltp * 0.005
+                    current_atr = exit_check_price * 0.005
             else:
-                current_atr = ltp * 0.005
+                current_atr = exit_check_price * 0.005
 
             from shared.sentiment import get_current_sentiment
             sentiment_data = get_current_sentiment()
@@ -790,37 +822,36 @@ async def run_live_bot(symbols: List[str]) -> None:
             if not should_exit:
                 # --- Hard Target % Interceptor ---
                 if open_position.target and open_position.target > 0:
-                    is_opt_pos = "CE" in open_position.symbol or "PE" in open_position.symbol
                     if is_opt_pos:
-                        if ltp >= open_position.target:
+                        if exit_check_price >= open_position.target:
                             should_exit = True
-                            reason = f"Hard TP Reached (LTP {ltp:.2f} >= TGT {open_position.target:.2f})"
+                            reason = f"Hard TP Reached (LTP {exit_check_price:.2f} >= TGT {open_position.target:.2f})"
                             exit_qty = open_position.quantity
                     else:
-                        if open_position.side == 1 and ltp >= open_position.target:
+                        if open_position.side == 1 and exit_check_price >= open_position.target:
                             should_exit = True
-                            reason = f"Hard TP Reached (LTP {ltp:.2f} >= TGT {open_position.target:.2f})"
+                            reason = f"Hard TP Reached (LTP {exit_check_price:.2f} >= TGT {open_position.target:.2f})"
                             exit_qty = open_position.quantity
-                        elif open_position.side == -1 and ltp <= open_position.target:
+                        elif open_position.side == -1 and exit_check_price <= open_position.target:
                             should_exit = True
-                            reason = f"Hard TP Reached (LTP {ltp:.2f} <= TGT {open_position.target:.2f})"
+                            reason = f"Hard TP Reached (LTP {exit_check_price:.2f} <= TGT {open_position.target:.2f})"
                             exit_qty = open_position.quantity
 
                 # --- Hard Stop Loss Interceptor ---
                 if not should_exit and open_position.stop_loss and open_position.stop_loss > 0:
                     if is_opt_pos:
-                        if ltp <= open_position.stop_loss:
+                        if exit_check_price <= open_position.stop_loss:
                             should_exit = True
-                            reason = f"Hard SL Hit (LTP {ltp:.2f} <= SL {open_position.stop_loss:.2f})"
+                            reason = f"Hard SL Hit (LTP {exit_check_price:.2f} <= SL {open_position.stop_loss:.2f})"
                             exit_qty = open_position.quantity
                     else:
-                        if open_position.side == 1 and ltp <= open_position.stop_loss:
+                        if open_position.side == 1 and exit_check_price <= open_position.stop_loss:
                             should_exit = True
-                            reason = f"Hard SL Hit (LTP {ltp:.2f} <= SL {open_position.stop_loss:.2f})"
+                            reason = f"Hard SL Hit (LTP {exit_check_price:.2f} <= SL {open_position.stop_loss:.2f})"
                             exit_qty = open_position.quantity
-                        elif open_position.side == -1 and ltp >= open_position.stop_loss:
+                        elif open_position.side == -1 and exit_check_price >= open_position.stop_loss:
                             should_exit = True
-                            reason = f"Hard SL Hit (LTP {ltp:.2f} >= SL {open_position.stop_loss:.2f})"
+                            reason = f"Hard SL Hit (LTP {exit_check_price:.2f} >= SL {open_position.stop_loss:.2f})"
                             exit_qty = open_position.quantity
 
             if not should_exit:
@@ -838,8 +869,8 @@ async def run_live_bot(symbols: List[str]) -> None:
                     confidence = ai_filter.predict(features)["confidence"].iloc[-1] if (ai_filter.is_trained and not features.empty) else 1.0
                     
                     decision = m_strategy.manage_active_trades(
-                        ltp, 
-                        df_5min, 
+                        exit_check_price,
+                        df_5min,
                         ai_confidence=confidence * 100,
                         current_atr=current_atr
                     )
@@ -868,7 +899,7 @@ async def run_live_bot(symbols: List[str]) -> None:
 
                     old_stop_loss = open_position.stop_loss
                     should_exit, reason, exit_qty = exit_engine.evaluate_exit(
-                        open_position, ltp, current_time, current_atr
+                        open_position, exit_check_price, current_time, current_atr
                     )
                     # Phase 5: Persist Trailing SL to disk immediately to prevent amnesia on reboot
                     if open_position.stop_loss != old_stop_loss:
@@ -893,9 +924,9 @@ async def run_live_bot(symbols: List[str]) -> None:
                         # Marketable Limit Order (MLO) Bypass for Exit
                         if is_opt:
                             if exit_side == OrderSide.SELL:
-                                mlo_price = round(ltp * 0.95, 2) # Sell 5% below LTP to guarantee fill
+                                mlo_price = round(exit_check_price * 0.95, 2) # Sell 5% below LTP to guarantee fill
                             else:
-                                mlo_price = round(ltp * 1.05, 2) # Buy 5% above LTP
+                                mlo_price = round(exit_check_price * 1.05, 2) # Buy 5% above LTP
                             order_type = OrderType.LIMIT
                         else:
                             mlo_price = 0.0
@@ -915,7 +946,7 @@ async def run_live_bot(symbols: List[str]) -> None:
                             full_exit = (exit_qty is None or exit_qty >= open_position.quantity)
                             asyncio.create_task(background_iceberg_exit(
                                 broker, exit_req, base_symbol_key, open_position.side, open_position.entry_price,
-                                exit_price=ltp, qty_to_close=qty_to_close, full_exit=full_exit
+                                exit_price=exit_check_price, qty_to_close=qty_to_close, full_exit=full_exit
                             ))
                         except ValidationError as ve:
                             logger.error("EXIT order validation failed for %s: %s", base_symbol_key, ve)
@@ -927,7 +958,7 @@ async def run_live_bot(symbols: List[str]) -> None:
                     logger.info("EXIT %s %s for %s (%s) [PAPER]", open_position.side, qty_to_close, sym, reason)
 
                     # Record PnL & update dashboard state (paper mode: immediate, no confirmation needed)
-                    pnl = (ltp - open_position.entry_price) * qty_to_close * open_position.side
+                    pnl = (exit_check_price - open_position.entry_price) * qty_to_close * open_position.side
 
                     if settings.get("active_strategy") == "MARL_Ultra":
                         try:
@@ -940,13 +971,13 @@ async def run_live_bot(symbols: List[str]) -> None:
                     trade_side = "LONG" if open_position.side == 1 else "SHORT"
                     risk_manager.record_trade(TradeRecord(
                         open_position.symbol, trade_side,
-                        open_position.entry_price, ltp, pnl, datetime.now(_IST).isoformat()
+                        open_position.entry_price, exit_check_price, pnl, datetime.now(_IST).isoformat()
                     ))
                     is_opt = "CE" in open_position.symbol or "PE" in open_position.symbol
                     state_action = "SELL" if is_opt else ("SELL" if open_position.side == 1 else "BUY")
-                    record_trade(open_position.symbol, state_action, ltp, datetime.now(_IST).isoformat(), qty=qty_to_close)
+                    record_trade(open_position.symbol, state_action, exit_check_price, datetime.now(_IST).isoformat(), qty=qty_to_close)
                     update_equity(risk_manager.current_equity, risk_manager.daily_pnl)
-                    alerter.send_exit_alert(sym, open_position.side, qty_to_close, ltp, pnl, reason)
+                    alerter.send_exit_alert(sym, open_position.side, qty_to_close, exit_check_price, pnl, reason)
 
                     if exit_qty is None or exit_qty >= open_position.quantity:
                         del active_positions[sym]
@@ -968,7 +999,10 @@ async def run_live_bot(symbols: List[str]) -> None:
                 if settings.get("enablePyramiding", False) or settings.get("enable_pyramiding", False):
                     pyramid_sizer.pct_trigger = settings.get("scalePct", settings.get("scale_pct", 0.2))
                     pyramid_sizer.max_scales = settings.get("maxScales", settings.get("max_scales", 2))
-                    should_scale, scale_reason = pyramid_sizer.evaluate_scale(pos, ltp)
+                    # Same fix as the exit check above: this is an option position,
+                    # so it must be evaluated against its own premium, not the
+                    # underlying index price the tick carries.
+                    should_scale, scale_reason = pyramid_sizer.evaluate_scale(pos, exit_check_price)
                 
                 # Safety gate: skip if a background scale-in is already in flight for
                 # this position. scales_done only increments once
@@ -987,7 +1021,7 @@ async def run_live_bot(symbols: List[str]) -> None:
 
                     if is_live:
                         logger.info("PYRAMID SCALE %d: %s %d %s @ %.2f (%s) [LIVE]",
-                                    pos.scales_done + 1, side_str, scale_qty, sym, ltp, scale_reason)
+                                    pos.scales_done + 1, side_str, scale_qty, sym, exit_check_price, scale_reason)
 
                         if not ORDER_LIMITER.allow(broker.BROKER_ID):
                             logger.warning("SCALE order rate-limited for %s — skipping.", sym)
@@ -1003,13 +1037,13 @@ async def run_live_bot(symbols: List[str]) -> None:
                                 # Lock the position: prevents duplicate scale-in signals while iceberg executes
                                 pos.is_scaling = True
                                 asyncio.create_task(background_iceberg_scale(
-                                    broker, scale_req, pos, side_str, ltp
+                                    broker, scale_req, pos, side_str, exit_check_price
                                 ))
                             except ValidationError as ve:
                                 logger.error("Scale order validation failed for %s: %s", sym, ve)
                     else:
-                        logger.info("PYRAMID SCALE %d: %s %d %s @ %.2f (%s) [PAPER]", 
-                                    pos.scales_done + 1, side_str, scale_qty, sym, ltp, scale_reason)
+                        logger.info("PYRAMID SCALE %d: %s %d %s @ %.2f (%s) [PAPER]",
+                                    pos.scales_done + 1, side_str, scale_qty, sym, exit_check_price, scale_reason)
                         pos.quantity += scale_qty
                         pos.scales_done += 1
                     
