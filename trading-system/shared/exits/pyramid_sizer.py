@@ -56,8 +56,20 @@ class PyramidSizer:
         if position.scales_done >= self.max_scales:
             return False, ""
 
+        # `position.side` encodes the directional bet for options (CE=+1/
+        # PE=-1), not "long vs short the instrument" -- this system only
+        # ever BUYS options, so a bought PUT still profits when ITS OWN
+        # premium rises, exactly like a bought CALL. Same bug class fixed
+        # in shared/exits/exit_engine.py on 2026-08-03 (root cause there:
+        # a stop-loss hit recorded as a profit); found here live on
+        # 2026-08-04 when a PUT position scaled in at a price BELOW entry,
+        # logged as "Profit hit +0.36%" -- i.e. it would have added to a
+        # losing position believing it was compounding a winner.
+        is_option = "CE" in position.symbol or "PE" in position.symbol
+        effective_side = 1 if is_option else position.side
+
         # Calculate profit in points
-        if position.side == 1:
+        if effective_side == 1:
             profit_points = current_price - position.entry_price
         else:
             profit_points = position.entry_price - current_price

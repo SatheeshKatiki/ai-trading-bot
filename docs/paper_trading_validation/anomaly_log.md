@@ -12,6 +12,48 @@ Validation clock restarts today per the 2026-08-03 audit note. Engine has
 been running continuously since 2026-08-03 21:58 IST (no restart needed —
 survived the overnight gap and midnight IST rollover cleanly).
 
+### 12:00 IST — CRITICAL FIX (found ~23:24 IST review): PyramidSizer used the wrong convention for PUTs, same bug class as the exit-engine fix
+Live-reproduced during today's first real trade sequence: a PUT position
+(entry 55.15) triggered a pyramid scale-in at price 54.95 — **below**
+entry — logged as `"Profit hit +0.36%"`. A price drop is a loss for a
+bought PUT, not a profit.
+
+**Root cause:** `shared/exits/pyramid_sizer.py`'s `PyramidSizer.evaluate_scale()`
+had the exact same bug already fixed in `exit_engine.py` on 2026-08-03:
+`if position.side == 1: profit = current - entry else: profit = entry -
+current` — correct for a genuine short-the-underlying position, wrong
+for a bought PUT (`side=-1` there encodes the directional bet, not
+"short the contract" — this system only ever buys options). Net effect:
+**the system would scale up (add more capital to) a losing PUT position
+while believing it was compounding a winner** — the inverse of prudent
+risk management, and one of the more dangerous classes of bug for
+real-money trading. I did not check this class (zero test coverage
+anywhere) during the 2026-08-03 audit — only `exit_engine.py` was
+reviewed.
+
+**Fix:** identical pattern — `effective_side = 1 if is_option else
+position.side`, used for the profit-points calculation. `position.side`
+itself untouched.
+
+**Verified:** new `tests/test_pyramid_sizer.py` (6 tests, 0 prior
+coverage) — PUT/CALL scale-in on rising vs falling premium, max-scales
+respected, second-scale threshold higher than first. Full suite
+114/114, no regressions. Restarted engine clean (no open position at
+restart time).
+
+**Reassuring finding while investigating this:** despite the *decision*
+bug, the *quantity bookkeeping* around today's actual scale-in was fully
+self-consistent — 65 (entry) + 32 (scale) = 97, exited via 48 (partial
+booking) + 49 (final target) = 97, exactly reconciling. The bug affected
+*when* to scale, not the arithmetic once a scale happened.
+
+**Also noted, not fixed (cosmetic only):** the `PYRAMID SCALE` log/alert
+text always shows `"SELL"` for a PUT scale-in (computed via a naive
+`"BUY" if pos.side==1 else "SELL"`, not `is_opt`-aware) — misleading to
+read, but confirmed the *actual* order construction two lines below
+already correctly checks `is_opt` first (`OrderSide.BUY if is_opt else
+...`), so this never affected real order sides or quantities.
+
 ### 10:31 IST — FIX: engine logging went silent while the process kept trading fine
 At the 10:25 check-in, `engine.log` had stopped receiving any new lines
 at 10:08:16 IST, ~20 minutes earlier — but `state.db`'s `last_update`
