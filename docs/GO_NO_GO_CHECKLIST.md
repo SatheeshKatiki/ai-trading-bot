@@ -18,6 +18,24 @@ opened after this audit (i.e. not before 2026-08-04), not from the
 2026-08-03 00:50 reset below** — nothing that happened on 2026-08-03 counts
 toward §2's 10-session/30-trade window.
 
+**2026-08-04 update:** first real trading activity since the audit (12:00
+IST, a compressed PUT entry/scale/exit sequence during a genuine intraday
+downtrend) gave the first **live** validation — not just offline tests —
+of every exit path fixed the night before: hard target hit, hard
+stop-loss hit (correctly recorded as a loss, not a profit), and partial
+profit booking, all with P&L manually reconciled to the cent against raw
+entry/exit prices. It also found and fixed one more real bug outside the
+prior audit's scope: `PyramidSizer` had the identical side-convention bug
+already fixed in `exit_engine.py`, causing the system to scale into a
+losing PUT position believing it was profitable. Full detail in
+`docs/paper_trading_validation/reports/2026-08-04.md` and
+`anomaly_log.md`. **Status remains NO-GO** — §2.6 (reconciliation while
+holding a position during market hours) and §2.8 (kill-switch) are still
+untested, and the pattern of each session finding a new genuine bug in a
+previously-unexercised code path needs to visibly taper off before this
+is close to ready. The clean 10-session/30-trade count has not started
+yet — 2026-08-05 is the earliest possible session 1.
+
 This is a living document — check items off with a date and evidence
 reference as they're actually completed, don't mark something done because
 it's expected to pass.

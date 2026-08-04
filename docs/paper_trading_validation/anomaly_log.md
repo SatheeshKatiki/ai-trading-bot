@@ -6,6 +6,14 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+### 23:24 IST — Session close: full report compiled
+Market closed 15:30 IST; engine ran continuously 10:31–23:35 without
+further restart (13+ hrs, stable). Full day's evidence (first live
+exit-path validation, the PyramidSizer fix, quantity/PnL reconciliation,
+checklist §2 status) written up in
+`docs/paper_trading_validation/reports/2026-08-04.md`. See that report
+for the complete picture — this log has the chronological blow-by-blow.
+
 ## 2026-08-04 — live validation day (post-audit)
 
 Validation clock restarts today per the 2026-08-03 audit note. Engine has
