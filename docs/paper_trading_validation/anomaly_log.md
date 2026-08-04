@@ -12,6 +12,58 @@ Validation clock restarts today per the 2026-08-03 audit note. Engine has
 been running continuously since 2026-08-03 21:58 IST (no restart needed —
 survived the overnight gap and midnight IST rollover cleanly).
 
+### 10:31 IST — FIX: engine logging went silent while the process kept trading fine
+At the 10:25 check-in, `engine.log` had stopped receiving any new lines
+at 10:08:16 IST, ~20 minutes earlier — but `state.db`'s `last_update`
+timestamp was still advancing in lockstep with wall-clock time (the
+per-tick unrealized-P&L block writes it on every tick), proving the live
+engine process was still running and trading normally. This was a
+logging/observability bug, not a trading bug — verified before doing
+anything else, specifically to avoid mis-diagnosing a healthy process as
+broken.
+
+**What actually happened:** right before the log went dark, `engine.log`
+briefly filled with clearly non-live content — a "SECURITY ALERT:
+broker_credentials.json integrity check FAILED", an "Iceberg Slice
+failed: insufficient margin" from the **live-mode** order path (this
+system is in paper mode — that branch is unreachable in real operation),
+five different circuit-breaker trips firing back-to-back, an LSTM state
+load referencing `__no_such_model__.zip.zip`, and a log line stating
+"today is 2099-01-01". All of this is unmistakably a test run (almost
+certainly the test suite, or a script exercising the live-order/LSTM
+code paths with fixtures) — not this session's actual trading.
+
+**Root cause:** `trading_bot/main.py` attached its `RotatingFileHandler`
+for `engine.log` at **module level** (added last night, 2026-08-03,
+alongside the original durable-logging fix) — meaning it ran on *any*
+import of `trading_bot.main`, including by the test suite. When
+something else imported this module around 10:08 IST, it attached a
+*second*, independent handler instance pointed at the exact same file
+path from a separate process. Whatever the precise OS-level interaction
+(Windows file handle semantics around a second writer opening/rotating
+the same path), the net effect was that the live engine's own handler
+stopped successfully writing to the file after that point, silently (no
+exception surfaced anywhere I could find) — while the trading logic
+itself was completely unaffected throughout.
+
+**Fix:** moved the file-handler setup from module level into the
+`if __name__ == "__main__":` block, so only the actual live-engine
+process ever attaches a handler to `engine.log` — importing this module
+(tests, other scripts) no longer touches it at all.
+
+**Verified:** full suite 108/108 (this itself exercises the exact import
+path that caused the bug — confirms it no longer attaches a handler).
+Restarted the engine; logging resumed immediately and normally. State
+was consistent before restart (no open position), so no reconciliation
+fired, correctly.
+
+**Note for interpreting today's evidence:** none of the alarming-looking
+lines described above (security alert, margin rejection, circuit
+breakers, LSTM errors) reflect anything that happened in this session's
+actual paper-trading engine — they're test-run artifacts that leaked
+into the shared log file. Not counted as findings against today's
+session.
+
 ### 10:07 IST — Engine down ~20 min during market hours, restarted
 Check-in at 10:06 found `api_bridge` running under fresh PIDs (no
 redirected log file — bare terminal invocation, same signature as the

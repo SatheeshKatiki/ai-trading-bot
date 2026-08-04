@@ -118,18 +118,6 @@ logging.basicConfig(
     stream=sys.stdout,
 )
 
-# Durable file log — main.py otherwise only logs to its console window,
-# which is invisible to anything monitoring the process from outside.
-_LOG_DIR = Path(__file__).resolve().parents[1] / "logs"
-_LOG_DIR.mkdir(exist_ok=True)
-_engine_file_handler = logging.handlers.RotatingFileHandler(
-    _LOG_DIR / "engine.log", maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8"
-)
-_engine_file_handler.setFormatter(logging.Formatter(
-    "[%(asctime)s] %(levelname)s %(name)s: %(message)s"
-))
-logging.getLogger().addHandler(_engine_file_handler)
-
 logger = logging.getLogger(__name__)
 
 # Register strategies that are not auto-discovered (e.g., from subpackages)
@@ -1633,6 +1621,27 @@ def _build_preload_failure_alert(failed_symbols: List[str]) -> str:
 
 
 if __name__ == "__main__":
+    # Durable file log — main.py otherwise only logs to its console window,
+    # which is invisible to anything monitoring the process from outside.
+    # Deliberately set up here, not at module level: this module is also
+    # imported by the test suite and other scripts, and a module-level
+    # RotatingFileHandler would attach a second, independent handler to
+    # the SAME engine.log path from whatever process does that importing
+    # -- root-caused 2026-08-04 when a test run's own handler collided
+    # with the live engine's, silently breaking the live process's ability
+    # to keep writing to the file (the process itself kept running fine —
+    # confirmed via state.db's last_update still advancing — only the log
+    # went dark). Only the actual live-engine process should own this file.
+    _LOG_DIR = Path(__file__).resolve().parents[1] / "logs"
+    _LOG_DIR.mkdir(exist_ok=True)
+    _engine_file_handler = logging.handlers.RotatingFileHandler(
+        _LOG_DIR / "engine.log", maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8"
+    )
+    _engine_file_handler.setFormatter(logging.Formatter(
+        "[%(asctime)s] %(levelname)s %(name)s: %(message)s"
+    ))
+    logging.getLogger().addHandler(_engine_file_handler)
+
     # Read symbols from settings — no more hardcoded list
     _boot_settings = {}
     _settings_path = Path(__file__).resolve().parents[1] / "config" / "settings.json"
