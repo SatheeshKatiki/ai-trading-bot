@@ -6,6 +6,57 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-08-04 — live validation day (post-audit)
+
+Validation clock restarts today per the 2026-08-03 audit note. Engine has
+been running continuously since 2026-08-03 21:58 IST (no restart needed —
+survived the overnight gap and midnight IST rollover cleanly).
+
+### 10:07 IST — Engine down ~20 min during market hours, restarted
+Check-in at 10:06 found `api_bridge` running under fresh PIDs (no
+redirected log file — bare terminal invocation, same signature as the
+user's manual restarts last night) but **no engine process at all**.
+`engine.log` stopped cleanly at 09:46:48 with no error/traceback — not a
+crash, just stopped. No code files had changed recently (api_bridge.py
+last modified 20:56 IST *yesterday*), so this doesn't look like an
+active edit-and-restart cycle either; most likely a manual restart that
+didn't get followed up with restarting the engine.
+
+**This is a real coverage gap:** the engine was not running for
+~20 minutes of live market hours (09:47–10:07 IST), missing whatever
+price action/signals occurred in that window. No supervisor/watchdog
+exists to auto-restart it (a standing, previously-noted gap). Restarted
+cleanly per the established procedure (state.db/active_positions.json
+were consistent — 0 open positions, no stale data — so no reconciliation
+event fired, correctly). Full suite re-verified (108/108) before
+restart.
+
+### 09:44 IST — Session-start check-in: healthy, quiet
+- Both processes single-instance, `/health` OK.
+- Zero crashes, zero "Failed to save active positions", zero phantom/
+  mispriced trades so far today.
+- One clean WebSocket reconnect during actual market hours (09:21:16 IST)
+  — no position was open at the time, so this doesn't yet fully satisfy
+  checklist §2.6 (which wants one verified *while holding a position*),
+  but it's a real, clean market-hours reconnect/recovery cycle.
+- Overnight (00:32–00:47 IST, pre-market) had a reconnect cluster — ~1
+  per 87s, denser than the checklist's documented idle baseline (~1 per
+  160s). Watching whether this recurs during market hours; not a §2.11
+  violation on its own since it happened outside market hours.
+- No trading signal yet 26 minutes into the session — confirmed this is
+  quiet strategy behavior, not a stall: `state.db`'s `last_update`
+  timestamp is advancing in lockstep with wall-clock time (the M2M
+  unrealized-PnL block runs on every tick), so ticks are being received
+  and processed normally; the `ema_rsi` strategy's own filters (squeeze/
+  extension/CPR/aggression all enabled) simply haven't aligned yet, and
+  the first 15 minutes have their own intentional no-trade window
+  (`no_trade_filter.py`: opening-auction volatility, 9:15–9:30).
+- Minor, low-priority cosmetic finding: `shared/sentiment` logs a
+  "Translation failed" WARNING almost every ~5-minute sentiment fetch
+  cycle (news headlines it can't translate). Harmless log noise, not
+  fixed — flagging in case it's worth quieting for a cleaner audit trail
+  over a multi-day window.
+
 ## 2026-08-03
 
 ### 21:58 IST — FIX: consecutive-loss circuit breaker halted at 3 losses, not the documented 7
