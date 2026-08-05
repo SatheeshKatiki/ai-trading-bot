@@ -146,15 +146,28 @@ class SmartExitEngine:
             return True, "Time-based EOD Exit", None
 
         # 3. Hard Stop-Loss and Profit Target
+        #
+        # `target <= 0` means "no fixed profit target" — the position is left
+        # to the trailing stop and the rest of this engine, with unlimited
+        # upside. Option entries are written that way deliberately (see
+        # main.py's entry path and shared/risk/option_stop_loss.py).
+        #
+        # The guard is load-bearing, not defensive padding: without it, a
+        # target of 0.0 makes `current_price >= position.target` true on the
+        # very first tick of every long position, closing it instantly and
+        # reporting "Profit Target Hit". main.py's own hard-TP interceptor
+        # already guarded on `target > 0`; this engine did not, so the two
+        # exit layers disagreed about what a zero target meant.
+        has_target = position.target is not None and position.target > 0
         if effective_side == 1:
             if current_price <= position.stop_loss:
                 return True, "Stop-Loss Hit", None
-            if current_price >= position.target:
+            if has_target and current_price >= position.target:
                 return True, "Profit Target Hit", None
         elif effective_side == -1:
             if current_price >= position.stop_loss:
                 return True, "Stop-Loss Hit", None
-            if current_price <= position.target:
+            if has_target and current_price <= position.target:
                 return True, "Profit Target Hit", None
 
         # 4. Partial Profit Booking
