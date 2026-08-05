@@ -271,7 +271,7 @@ export default function Dashboard() {
     : 0.0;
 
   return (
-    <div className="flex h-screen bg-background text-foreground">
+    <div data-testid="dashboard-page" className="flex h-screen bg-background text-foreground">
       <Sidebar />
       
       <div className="flex-1 flex flex-col overflow-hidden">
@@ -350,7 +350,7 @@ export default function Dashboard() {
                 <Briefcase className="w-3.5 h-3.5 text-muted-foreground" />
               </div>
               <div className="mt-2">
-                <div className="text-2xl font-bold font-mono text-foreground leading-none">
+                <div data-testid="metric-equity" className="text-2xl font-bold font-mono text-foreground leading-none">
                   ₹{equity.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </div>
                 <p className="text-[10px] text-muted-foreground mt-1 flex items-center gap-1">
@@ -366,7 +366,7 @@ export default function Dashboard() {
                 <TrendingUp className="w-3.5 h-3.5 text-success" />
               </div>
               <div className="mt-2">
-                <div className={`text-2xl font-bold font-mono leading-none ${pnl >= 0 ? "text-success" : "text-destructive"}`}>
+                <div data-testid="metric-daily-pnl" data-pnl-sign={pnl >= 0 ? "positive" : "negative"} className={`text-2xl font-bold font-mono leading-none ${pnl >= 0 ? "text-success" : "text-destructive"}`}>
                   {pnl >= 0 ? "+" : ""}₹{pnl.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </div>
                 <p className="text-[10px] text-muted-foreground mt-1 flex items-center gap-1">
@@ -485,7 +485,7 @@ export default function Dashboard() {
               
               <div className="flex-1 overflow-y-auto custom-scrollbar">
                 {positions.length > 0 ? (
-                  <table className="w-full text-xs text-left">
+                  <table data-testid="positions-table" className="w-full text-xs text-left">
                     <thead className="bg-muted/30 sticky top-0 z-10">
                       <tr className="text-muted-foreground uppercase tracking-widest text-[9px]">
                         <th className="p-3 font-bold">Symbol</th>
@@ -496,11 +496,11 @@ export default function Dashboard() {
                     </thead>
                     <tbody className="divide-y divide-border/20">
                       {positions.map((pos, i) => (
-                        <tr key={i} className="hover:bg-primary/5 transition-colors group">
-                          <td className="px-4 py-3 font-bold text-foreground">{pos.symbol}</td>
-                          <td className="px-4 py-3 font-mono text-right text-muted-foreground">₹{pos.average_price.toFixed(2)}</td>
-                          <td className="px-4 py-3 font-mono text-right font-bold text-foreground">₹{pos.ltp.toFixed(2)}</td>
-                          <td className={`px-4 py-3 font-mono font-bold text-right ${pos.unrealized_pnl >= 0 ? "text-success" : "text-destructive"}`}>
+                        <tr key={i} data-testid="position-row" data-symbol={pos.symbol} className="hover:bg-primary/5 transition-colors group">
+                          <td data-testid="position-symbol" className="px-4 py-3 font-bold text-foreground">{pos.symbol}</td>
+                          <td data-testid="position-avg-price" className="px-4 py-3 font-mono text-right text-muted-foreground">₹{pos.average_price.toFixed(2)}</td>
+                          <td data-testid="position-ltp" className="px-4 py-3 font-mono text-right font-bold text-foreground">₹{pos.ltp.toFixed(2)}</td>
+                          <td data-testid="position-pnl" data-pnl-sign={pos.unrealized_pnl >= 0 ? "positive" : "negative"} className={`px-4 py-3 font-mono font-bold text-right ${pos.unrealized_pnl >= 0 ? "text-success" : "text-destructive"}`}>
                             {pos.unrealized_pnl >= 0 ? "+" : ""}₹{pos.unrealized_pnl.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                           </td>
                         </tr>
@@ -508,7 +508,7 @@ export default function Dashboard() {
                     </tbody>
                   </table>
                 ) : (
-                  <div className="h-full flex flex-col items-center justify-center opacity-30 gap-3 py-10">
+                  <div data-testid="positions-empty" className="h-full flex flex-col items-center justify-center opacity-30 gap-3 py-10">
                     <Inbox className="w-12 h-12" />
                     <p className="text-sm font-bold uppercase tracking-widest">No Active Positions</p>
                   </div>

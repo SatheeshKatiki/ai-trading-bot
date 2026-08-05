@@ -109,7 +109,7 @@ export default function RiskManagement() {
 
   if (isLoading) {
     return (
-      <div className="flex h-screen bg-background text-foreground">
+      <div data-testid="risk-page" className="flex h-screen bg-background text-foreground">
         <Sidebar />
         <div className="flex-1 flex flex-col overflow-hidden">
           <Header />
@@ -122,9 +122,9 @@ export default function RiskManagement() {
   }
 
   return (
-    <div className="flex h-screen bg-background text-foreground">
+    <div data-testid="risk-page" className="flex h-screen bg-background text-foreground">
       <Sidebar />
-      
+
       <div className="flex-1 flex flex-col overflow-hidden">
         <Header />
         

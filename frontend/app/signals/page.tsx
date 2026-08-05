@@ -108,7 +108,7 @@ export default function Signals() {
   const getAlphaScore = (conf: number) => ((conf / 100) * 9.9).toFixed(1);
 
   return (
-    <div className="flex h-screen bg-[#050505] text-foreground selection:bg-primary/30">
+    <div data-testid="signals-page" className="flex h-screen bg-[#050505] text-foreground selection:bg-primary/30">
       <Sidebar />
       <div className="flex-1 flex flex-col overflow-hidden relative">
         {/* Subtle grid background */}

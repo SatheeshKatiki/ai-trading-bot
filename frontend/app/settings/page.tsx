@@ -203,7 +203,7 @@ export default function Settings() {
   });
 
   return (
-    <div className="flex h-screen bg-background text-foreground">
+    <div data-testid="settings-page" className="flex h-screen bg-background text-foreground">
       <Sidebar />
 
       <div className="flex-1 flex flex-col overflow-hidden">

@@ -375,7 +375,7 @@ export default function Header() {
 
   return (
     <>
-      <header className="h-[var(--header-height)] bg-card/60 backdrop-blur-xl border-b border-border/50 flex items-center justify-between px-6 sticky top-0 z-50 shadow-sm transition-colors duration-300">
+      <header data-testid="app-header" data-ws-connected={isWsConnected} className="h-[var(--header-height)] bg-card/60 backdrop-blur-xl border-b border-border/50 flex items-center justify-between px-6 sticky top-0 z-50 shadow-sm transition-colors duration-300">
         <div className="flex items-center gap-6">
           {/* Market Status Indicator */}
           <div className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-full bg-muted/30 border border-border/50">
@@ -385,7 +385,7 @@ export default function Header() {
               )}
               <span className={`relative inline-flex rounded-full h-2 w-2 transition-colors duration-300 ${isMarketOpen ? 'bg-success shadow-[0_0_8px_var(--success)]' : 'bg-muted-foreground'}`}></span>
             </div>
-            <span className="text-[10px] uppercase font-bold tracking-wider text-muted-foreground">
+            <span data-testid="market-status" data-market-open={isMarketOpen} className="text-[10px] uppercase font-bold tracking-wider text-muted-foreground">
               {isMarketOpen ? 'Market Open' : 'Market Closed'}
             </span>
           </div>
@@ -394,6 +394,9 @@ export default function Header() {
           <AnimatePresence>
             {(openPositionsCount > 0 || totalPnl !== 0 || isWsConnected) && (
               <motion.div
+                data-testid="header-live-pnl"
+                data-pnl-sign={totalPnl >= 0 ? 'positive' : 'negative'}
+                data-open-positions={openPositionsCount}
                 initial={{ opacity: 0, scale: 0.85, x: -10 }}
                 animate={{ opacity: 1, scale: 1, x: 0 }}
                 exit={{ opacity: 0, scale: 0.85, x: -10 }}

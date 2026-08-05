@@ -94,7 +94,7 @@ export default function OptionsDesk() {
   const payoffData = getPayoffData();
 
   return (
-    <div className="flex h-screen bg-background text-foreground">
+    <div data-testid="options-page" className="flex h-screen bg-background text-foreground">
       <Sidebar />
       <div className="flex-1 flex flex-col overflow-hidden">
         <Header />

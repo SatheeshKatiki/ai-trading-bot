@@ -189,7 +189,7 @@ export default function BrokerSettings() {
   };
 
   return (
-    <div className="flex h-screen bg-background text-foreground">
+    <div data-testid="broker-page" className="flex h-screen bg-background text-foreground">
       <Sidebar />
       
       <div className="flex-1 flex flex-col overflow-hidden">

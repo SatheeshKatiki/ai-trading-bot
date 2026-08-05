@@ -298,7 +298,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   if (loading) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-[#030303]">
+      <div data-testid="auth-loading" className="flex min-h-screen items-center justify-center bg-[#030303]">
         <div className="flex flex-col items-center gap-4">
           <div className="relative flex h-16 w-16 items-center justify-center rounded-full border border-emerald-500/20 bg-emerald-500/10">
             <Loader2 className="h-8 w-8 animate-spin text-emerald-400" />
@@ -311,7 +311,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   return (
-    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[#030303] text-foreground font-sans py-10 px-4">
+    <div data-testid="auth-gate" className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[#030303] text-foreground font-sans py-10 px-4">
       
       {/* AI TRADING THEMED BACKGROUND */}
       <div className="absolute inset-0 z-0 overflow-hidden pointer-events-none">
@@ -419,6 +419,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 <div className="mb-6 flex rounded-xl border border-white/10 bg-white/5 p-1 backdrop-blur-md">
                   <button
                     type="button"
+                    data-testid="auth-tab-login"
                     onClick={() => setView("login")}
                     className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-xs font-bold transition-all ${
                       view === "login"
@@ -430,6 +431,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                   </button>
                   <button
                     type="button"
+                    data-testid="auth-tab-register"
                     onClick={() => setView("register")}
                     className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-xs font-bold transition-all ${
                       view === "register"
@@ -446,7 +448,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                   VIEW 1: SIGN IN (LOGIN)
                   ========================================= */}
               {view === "login" && (
-                <form onSubmit={handleLoginSubmit} className="space-y-4">
+                <form data-testid="login-form" onSubmit={handleLoginSubmit} className="space-y-4">
                   <div>
                     <label className="mb-1.5 block text-xs font-semibold text-muted-foreground uppercase tracking-wider">
                       User ID or Email
@@ -457,6 +459,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                       </div>
                       <input
                         type="text"
+                        data-testid="login-user-id"
                         value={userIdOrEmail}
                         onChange={(e) => setUserIdOrEmail(e.target.value)}
                         disabled={status?.lockedOut || submitting}
@@ -487,6 +490,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                       </div>
                       <input
                         type={showPassword ? "text" : "password"}
+                        data-testid="login-password"
                         value={loginPassword}
                         onChange={(e) => setLoginPassword(e.target.value)}
                         disabled={status?.lockedOut || submitting}
@@ -506,6 +510,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
                   <button
                     type="submit"
+                    data-testid="login-submit"
                     disabled={status?.lockedOut || submitting || !userIdOrEmail.trim() || !loginPassword}
                     className="group relative flex w-full items-center justify-center gap-2 overflow-hidden rounded-xl bg-white py-3.5 text-sm font-bold text-black transition-all hover:bg-gray-100 hover:shadow-[0_0_20px_rgba(255,255,255,0.3)] active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 mt-2"
                   >

@@ -249,7 +249,7 @@ export default function StrategySettings() {
   const strokeDashoffset = strokeDasharray * (1 - confidence);
 
   return (
-    <div className="flex h-screen bg-background text-foreground font-sans">
+    <div data-testid="strategy-page" className="flex h-screen bg-background text-foreground font-sans">
       <Sidebar />
 
       <div className="flex-1 flex flex-col overflow-hidden bg-background">

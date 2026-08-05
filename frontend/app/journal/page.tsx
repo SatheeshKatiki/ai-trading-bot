@@ -62,7 +62,7 @@ export default function JournalPage() {
   }, []);
 
   return (
-    <div className="flex h-screen bg-background text-foreground">
+    <div data-testid="journal-page" className="flex h-screen bg-background text-foreground">
       <Sidebar />
       <div className="flex-1 flex flex-col overflow-hidden">
         <Header />
@@ -143,7 +143,7 @@ export default function JournalPage() {
           ) : (
             <div className="glass-card rounded-2xl overflow-hidden border border-border/50">
               <div className="overflow-x-auto">
-                <table className="w-full text-sm text-left">
+                <table data-testid="journal-table" className="w-full text-sm text-left">
                   <thead className="bg-muted/30 border-b border-border text-xs uppercase tracking-wider text-muted-foreground">
                     <tr>
                       <th className="py-3 px-4 font-medium">Date & Time</th>
@@ -159,7 +159,7 @@ export default function JournalPage() {
                     {trades.map((trade) => {
                       const isProfit = trade.pnl > 0;
                       return (
-                        <tr key={trade.id} className="border-b border-border hover:bg-muted/10 transition-colors group">
+                        <tr key={trade.id} data-testid="journal-row" data-symbol={trade.symbol} data-pnl-sign={isProfit ? "positive" : "negative"} className="border-b border-border hover:bg-muted/10 transition-colors group">
                           <td className="py-3 px-4 font-mono text-[11px] whitespace-nowrap text-muted-foreground">
                             {trade.trade_date}
                           </td>

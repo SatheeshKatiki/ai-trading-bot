@@ -738,7 +738,7 @@ function LiveTradingContent() {
 
 
     return (
-        <div className="flex h-screen bg-background text-foreground">
+        <div data-testid="live-page" className="flex h-screen bg-background text-foreground">
             <Sidebar />
 
             {/* Live Mode Guard Modal */}

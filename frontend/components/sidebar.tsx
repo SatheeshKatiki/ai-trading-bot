@@ -82,7 +82,7 @@ export default function Sidebar() {
   }, []);
 
   return (
-    <div className="w-64 h-full bg-card/80 backdrop-blur-xl border-r border-border/50 flex flex-col shadow-2xl relative z-20">
+    <div data-testid="sidebar" className="w-64 h-full bg-card/80 backdrop-blur-xl border-r border-border/50 flex flex-col shadow-2xl relative z-20">
       <div className="px-2 py-8 flex items-center justify-center border-b border-border/50">
         <div className="w-full flex items-center justify-center relative z-10">
           <Image 
@@ -109,6 +109,8 @@ export default function Sidebar() {
               <Link
                 href={item.href}
                 prefetch={true}
+                data-testid={`nav-link-${item.href === "/" ? "dashboard" : item.href.slice(1)}`}
+                data-active={isActive}
                 className={clsx(
                   "group relative flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-300 outline-none",
                   isActive 
@@ -159,7 +161,10 @@ export default function Sidebar() {
             </div>
             <span className="text-xs font-bold text-foreground tracking-wide">Broker: Fyers</span>
           </div>
-          <span className={clsx(
+          <span
+            data-testid="broker-connection-status"
+            data-connected={isConnected}
+            className={clsx(
             "text-[10px] uppercase font-bold tracking-wider",
             isConnected ? "text-success" : "text-destructive"
           )}>
