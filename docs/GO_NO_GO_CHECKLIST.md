@@ -56,6 +56,24 @@ resets again — 2026-08-05 (10:46 IST restart) is the new earliest possible
 session 1**, superseding the date above. §2.6 needs a clean pass (reconcile
 correctly, not just "get exercised") before it can be marked done.
 
+**2026-08-05 afternoon update:** monitoring the post-reset session
+surfaced what first looked like a real circuit-breaker trip and MARL model
+failures, but both root-caused to a single infra bug, not live trading
+problems: `api_bridge.py` attached its log-rotation handler to the root
+logger at import time, so every `pytest` run this morning leaked test
+fixture output into the live `fyersApi.log`, indistinguishable from real
+CRITICAL alerts without cross-checking `state.db` (which showed only 5
+real trades, net +179.15 PnL, no halt). Fixed, verified test runs no
+longer touch the file. Also added a singleton-instance guard to
+`main.py`/`api_bridge.py` (defense in depth, unrelated to the false alarm)
+and closed out an inconclusive `broker_credentials.json` integrity-check
+flakiness (doesn't affect paper mode, flagged for the live-mode Go
+decision). Full detail in `anomaly_log.md`. **Status remains NO-GO** — no
+new trading-logic bugs found this pass (a good sign toward the "session
+with zero new findings" bar), but this was infra/logging investigation,
+not a full trading-day validation pass — doesn't count toward tapering the
+pattern on its own.
+
 This is a living document — check items off with a date and evidence
 reference as they're actually completed, don't mark something done because
 it's expected to pass.
