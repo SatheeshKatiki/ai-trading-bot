@@ -1,0 +1,38 @@
+{
+  "name": "testing-automation-ai-trading-bot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Playwright + TypeScript automation suite for the QuantAI trading platform (UI and API), plus the migrated Python backend unit suite.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "playwright test",
+    "test:ui": "playwright test --project=ui-mocked",
+    "test:api": "playwright test --project=api-mocked",
+    "test:smoke": "playwright test --grep @smoke",
+    "test:live": "cross-env TEST_TARGET=live playwright test --project=api-live --project=ui-live",
+    "test:live:api": "cross-env TEST_TARGET=live playwright test --project=api-live",
+    "test:headed": "playwright test --project=ui-mocked --headed",
+    "test:debug": "playwright test --project=ui-mocked --debug",
+    "test:trace": "playwright show-trace",
+    "report": "playwright show-report reports/html",
+    "codegen": "playwright codegen http://localhost:3000",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "install:browsers": "playwright install --with-deps chromium",
+    "py:test": "pytest python-unit",
+    "verify": "npm run typecheck && npm run lint && npm run test"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@playwright/test": "^1.56.1",
+    "@types/node": "^22.10.2",
+    "cross-env": "^7.0.3",
+    "dotenv": "^16.4.7",
+    "eslint": "^9.17.0",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.18.1"
+  }
+}
