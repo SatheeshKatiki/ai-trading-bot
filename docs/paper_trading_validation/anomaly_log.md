@@ -6,6 +6,74 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-08-05 (afternoon session) — false-alarm circuit-breaker trip caused by test-log leakage; process-launch investigation
+
+### 12:00:08 IST (and 11:01:31, 11:42:41, 11:43:59) — NOT REAL: "CIRCUIT BREAKER: Max Consecutive Losses Reached (10)" / "Max Daily Drawdown Reached" in fyersApi.log
+**Symptom:** `fyersApi.log` showed repeated CRITICAL-looking circuit-breaker
+trip warnings (consecutive losses = 10, daily drawdown = 3.00%/3.50%/5.24%,
+weekly drawdown = 9.00%) at four different times today. `state.db`'s
+`trades` table only had 5 rows since the 10:46 reset (net PnL +179.15,
+no halt), and `trade_journal` was empty — the real engine never actually
+breached any circuit breaker.
+
+**Root cause:** `api_bridge.py` called `_setup_log_rotation()`
+unconditionally at *module import time*, attaching a `RotatingFileHandler`
+for `fyersApi.log` onto the **root logger**. Because Python logging
+propagates to the root logger by default, this meant any process that
+merely *imports* `api_bridge` — including 5 test files that use
+`TestClient(app)` — silently redirected every logger call in that same
+pytest process into the live production log for the rest of the run. The
+four timestamps above line up exactly with `tests/test_risk_management.py`'s
+own scenario values (3.5% DD test, 9% weekly DD test, 3-loss and 10-loss
+consecutive-loss tests, three separate 3.0%-threshold tests) — this was
+test output, not live trading activity. This is the same class of bug
+already fixed once before for `trading_bot/main.py`'s `engine.log` handler
+(2026-08-04) but the identical fix was never applied to `api_bridge.py`'s
+own log-rotation setup.
+
+**Fix:** moved `_setup_log_rotation()` out of module level and into
+`api_bridge.py`'s `if __name__ == "__main__":` block (mirrors main.py's
+existing pattern exactly), so only the actual live `python api_bridge.py`
+process ever attaches the handler. Verified: ran the relevant test files
+before and after — `fyersApi.log`'s line count and last line were
+byte-identical across the run (previously they always grew and captured
+new false-alarm content).
+
+**Also added (defense in depth, `shared/singleton_lock.py`):** neither
+`main.py` nor `api_bridge.py` had any guard against being started twice —
+worth closing regardless of what triggered today's investigation. Both
+entrypoints now refuse to start (fatal exit, clear message) if a live
+process matching the same script is already running, verified against a
+real live PID and a stale/reused-PID case. 5 new regression tests in
+`tests/test_singleton_lock.py`.
+
+**Investigated but revised conclusion — process-launch pattern:** initial
+triage saw 2 `main.py` PIDs and 2 `api_bridge.py` PIDs running
+concurrently (e.g. 23212+30404 from the 10:46 reset, 20288+30020 from a
+12:09 restart) and suspected a genuine accidental double-launch /
+competing-engine risk. Deeper check (parent PID + real CPU-time
+accounting via `wmic`, cross-checked against `ps aux` from bash's own
+process view) showed this is consistently one thin, 0%-CPU "stub" process
+(the one bash's own `ps` considers its child) plus one real worker child
+doing all the actual work — an artifact of how this venv's `python.exe`
+gets launched through git-bash's pty layer on Windows, not two competing
+trading engines. No evidence of duplicate trades or corrupted state from
+either incident today supports the "real double-engine" reading. Confirmed
+this pattern still occurs (harmlessly) after today's restart deploying the
+above fixes. The singleton-lock guard is being kept anyway as legitimate
+defense against a genuinely different failure mode (a human/script
+actually invoking the start command twice from separate terminals), and
+correctly does *not* reject the benign stub/child pattern (verified live).
+
+**Deployed:** killed all 4 pre-fix processes at 13:05 IST (verified
+`active_positions.json` was `{}` first — no open positions, zero-risk
+restart window), restarted both with the fixes above. Confirmed clean
+startup, single logical instance each, live WebSocket reconnected,
+`engine.log`/`fyersApi.log` writing normally, session PnL resumed
+correctly from persisted equity (179.15).
+
+---
+
 ## 2026-08-05 — three real positions force-closed by a reconciliation bug; full state.db reset
 
 Session picked up mid-flight: `shared/risk/manager.py`/`portfolio_risk.py`

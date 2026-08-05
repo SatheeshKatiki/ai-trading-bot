@@ -51,7 +51,20 @@ def _setup_log_rotation() -> None:
         if not root_logger.level:
             root_logger.setLevel(logging.INFO)
 
-_setup_log_rotation()
+# Root-cause fix (found live, 2026-08-05): this used to run unconditionally
+# at import time, attaching a RotatingFileHandler for fyersApi.log onto the
+# ROOT logger for ANY process that imports this module -- including the
+# test suite (several tests import `app`/helpers from here via TestClient).
+# Since logging propagates to the root logger by default, every subsequent
+# log call in that same pytest process -- from completely unrelated modules
+# like trading_bot.portfolio_risk -- was landing in the LIVE fyersApi.log
+# file. Result: running the test suite during market hours wrote what look
+# exactly like real circuit-breaker trips (matching values from
+# tests/test_risk_management.py's own scenarios) into the production log,
+# a false alarm indistinguishable from a real one without cross-checking
+# state.db. Only the actual live server process (`python api_bridge.py`)
+# should own this file -- mirrors the identical fix already applied to
+# trading_bot/main.py's engine.log handler for the same reason.
 
 # Disable any local system proxy to prevent connection failures to Fyers
 os.environ["HTTP_PROXY"] = ""
@@ -2726,5 +2739,9 @@ async def get_btst_prediction(symbol: str = "NIFTY"):
         return {"status": "error", "action": "AVOID", "gapUpProb": 50, "gapDownProb": 50, "reason": str(e)}
 
 if __name__ == "__main__":
+    from shared.singleton_lock import acquire_singleton_lock
+    acquire_singleton_lock("api_bridge", script_hint="api_bridge.py")
+
+    _setup_log_rotation()
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

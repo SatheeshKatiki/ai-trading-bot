@@ -1684,6 +1684,9 @@ def _build_preload_failure_alert(failed_symbols: List[str]) -> str:
 
 
 if __name__ == "__main__":
+    from shared.singleton_lock import acquire_singleton_lock
+    acquire_singleton_lock("main", script_hint="main.py")
+
     # Durable file log — main.py otherwise only logs to its console window,
     # which is invisible to anything monitoring the process from outside.
     # Deliberately set up here, not at module level: this module is also

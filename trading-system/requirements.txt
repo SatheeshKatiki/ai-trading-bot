@@ -42,3 +42,6 @@ pytz>=2024.1
 
 # Logging
 loguru>=0.7.0
+
+# Process management — singleton-instance guard for main.py/api_bridge.py
+psutil>=5.9.0
