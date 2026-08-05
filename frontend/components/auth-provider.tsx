@@ -177,7 +177,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         })
       });
 
-      const data = await res.json();
+      const data = await res.json().catch(() => ({ error: `Server error (HTTP ${res.status})` }));
 
       if (res.ok) {
         const generatedId = data.user_id || data.user?.user_id || "MNA100001";
@@ -222,7 +222,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         })
       });
 
-      const data = await res.json();
+      const data = await res.json().catch(() => ({ error: `Server error (HTTP ${res.status})` }));
 
       if (res.ok) {
         toast.success(`Welcome back, ${data.user?.name || 'Trader'}!`);
@@ -265,7 +265,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         })
       });
 
-      const data = await res.json();
+      const data = await res.json().catch(() => ({ error: `Server error (HTTP ${res.status})` }));
 
       if (res.ok) {
         toast.success("Password reset successfully. You can now Login.");
