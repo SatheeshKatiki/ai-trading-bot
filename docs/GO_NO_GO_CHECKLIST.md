@@ -74,6 +74,27 @@ with zero new findings" bar), but this was infra/logging investigation,
 not a full trading-day validation pass — doesn't count toward tapering the
 pattern on its own.
 
+**2026-08-05 end-of-day update:** continuous monitoring through market
+close found two more real bugs, both fixed and live-verified same day —
+full detail in `anomaly_log.md`. (1) The entry-side option-premium fetch
+had no rate-limit throttle (the exit-side path was already fixed for this
+on 2026-08-04) — caused a ~250-error burst right at close; fixed by
+reusing the exit path's throttle plus a new failure-cache. (2) More
+significant: `RiskManager.trades_today` never survived a restart (same
+class of gap as the equity/peak-equity fix from earlier today, just missed
+for this field) — **every one of today's 3 monitoring-driven restarts
+reset the daily 3-trade cap to zero**, letting the strategy execute 12
+real trades today instead of 3 (4x over cap). Financial impact was zero
+(all 9 extra trades closed at exactly breakeven — quiet market, not a
+guarantee that holds generally), but this is a genuine risk-control gap:
+a restart during a moving market could have let real losses through beyond
+the intended daily limit. Fixed by reconstructing today's real trade count
+from `state.db` on startup. **Status remains NO-GO.** Today's session
+found 4 new bugs total (log leakage, entry-side rate limiting, and this
+trade-cap gap being the 3rd/4th) — the "session with zero new findings"
+bar has not been met yet. No open positions at market close; equity
+99,925.65 (pnl -74.35 today).
+
 This is a living document — check items off with a date and evidence
 reference as they're actually completed, don't mark something done because
 it's expected to pass.

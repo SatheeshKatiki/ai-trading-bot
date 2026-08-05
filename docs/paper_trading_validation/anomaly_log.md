@@ -6,6 +6,65 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-08-05 — end-of-day wrap-up
+
+**Session:** continuous monitoring from ~12:57 IST through market close
+(15:30 IST) and past it to 16:47 IST, on top of the morning's own
+full-reset session (10:46 IST restart, see below). ~18-minute check
+cadence during market hours per established preference.
+
+**Trades:** 12 completed option round-trips today (23 raw BUY/SELL rows
+in `state.db`, all NIFTY weekly CE/PE — see the entries above for the
+detailed breakdown). Should have been 3 — the other 9 came from the
+now-fixed daily-cap-doesn't-survive-restart bug,
+each triggered by one of my own monitoring/fix-deploy restarts. All 9
+"extra" trades closed at exactly breakeven (flat market each time), so
+**zero net financial impact**, but this could have gone differently in a
+moving market — see the trade-cap entry above for the honest accounting.
+Final state: equity 99,925.65, daily pnl -74.35, `active_positions.json`
+flat (`{}`) at close.
+
+**Findings today (4, all fixed and live-verified same day):**
+1. Test-suite output leaking into the live `fyersApi.log` (via
+   `api_bridge.py`'s root-logger handler attached at import time) —
+   caused 4 false "circuit breaker tripped" alarms across the day.
+2. (Investigated, no fix needed) SignalAgent LSTM "model not found" /
+   "today is 2099" errors — same test-log-leakage bug, not live.
+3. Entry-side option-premium fetch had no rate-limit throttle — caused a
+   ~250-error burst right at market close.
+4. `RiskManager.trades_today` never survived a restart — let the daily
+   3-trade cap be silently reset (and re-hit) up to 4 times today.
+
+Also investigated but left unresolved (non-blocking, documented above):
+the intermittent `broker_credentials.json` integrity-check false alarm
+(paper mode never reads these credentials, so zero effect on validation —
+flagged for the live-mode Go decision) and confirmed the "duplicate
+process" pattern from this morning is a benign git-bash/venv launch
+artifact, not a real competing-engine risk.
+
+**Current GO/NO-GO status: NO-GO**, unchanged. Today did not produce a
+"zero new findings" session — 4 genuine bugs found and fixed. Per the
+checklist's own rule, today does not advance the clean-session count.
+§2.6 (reconciliation while holding a position) and §2.8 (kill-switch) are
+still untested. Two items still need the user's own action (Fyers
+API-key rotation; migrating/deleting `trading-system/settings.json`'s
+plaintext legacy credentials) — unchanged from earlier reports, mentioning
+again since it's been a few sessions.
+
+**Process observation worth carrying forward:** 3 of today's 4 bugs
+(everything except the credentials flakiness) were only discoverable by
+actually restarting the live engine to test a fix — and one of those
+restarts itself (finding #4) was a genuine new risk introduced by the
+monitoring/fixing process itself, not something that existed before today.
+Worth keeping in mind: a restart during active monitoring is not a free
+action even when done carefully with `active_positions.json` checked
+first.
+
+Continuous monitoring stopped for today (market closed, positions flat,
+no rescheduled check pending). Will resume next live session.
+
+---
+
 ## 2026-08-05 (market-close session) — entry-side quote-fetch rate-limit burst at close; daily trade cap didn't survive a restart
 
 ### 15:37-15:40 IST — real burst of ~250 Fyers /quotes rate-limit + empty-body errors right at market close
