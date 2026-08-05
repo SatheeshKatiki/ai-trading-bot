@@ -6,6 +6,150 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-08-05 — three real positions force-closed by a reconciliation bug; full state.db reset
+
+Session picked up mid-flight: `shared/risk/manager.py`/`portfolio_risk.py`
+(equity not persisted across restarts) and `main.py`'s option-premium
+fetch throttle (self-inflicted rate-limiting leaving positions unmanaged)
+had already been drafted and were sitting uncommitted from an interrupted
+prior session. Verifying and deploying those fixes triggered a much
+bigger, previously-untested code path — §2.6's broker-reconnect
+reconciliation, holding a real position, for the first time this
+validation window. It failed, three separate times.
+
+### 10:22–10:25 IST — CRITICAL: broker-reconnect reconciliation force-closed 3 real positions using fabricated exit prices
+**Symptom:** immediately after restarting the engine to deploy the
+premium-throttle fix, the log showed `STATE MISMATCH: Local position
+NSE:NIFTY50-INDEX exists but broker is flat` followed by `RECONCILIATION:
+... falling back to the stop-loss price ... as an ESTIMATE`, closing the
+real open `NSE:NIFTY2681123750CE` position (entered 10:05 IST) within
+seconds of the restart. Two more real positions (`NSE:NIFTY2681124550CE`,
+opened and closed within ~6 seconds of each other) were hit the same way
+during a reconnect storm at 10:25 IST — before this was caught.
+
+**Root cause (two independent bugs in `trading_bot/reconciliation.py` /
+`main.py`'s `sync_broker_state()`):**
+1. `FyersBroker.get_positions()` unconditionally returns `[]` in paper
+   mode (no persistent broker-side state across restarts). Reconciliation
+   treated that as "the broker confirms this position is closed" on
+   *every* WebSocket (re)connect, including the very first connect after
+   a fresh process start — meaning it would force-close any real open
+   position on every single restart in paper mode, using the stop-loss
+   price as a fabricated estimate.
+2. Independently, `compute_reconciliation()` reconciled against the
+   `active_positions` dict *key* instead of `local_pos.symbol`. Option
+   strategies are deliberately keyed by the *underlying* (e.g.
+   `NSE:NIFTY50-INDEX` — see the "We MUST key active_positions by the
+   base symbol" comment at `main.py`'s entry sites), not the traded
+   option itself (e.g. `NSE:NIFTY2681123750CE`). This means reconciliation
+   has likely never correctly matched a single option position against
+   the broker/order-book in this codebase's history — it was always
+   checking whether the underlying index was flat, which is trivially
+   always true (this system never holds the index itself).
+
+**Fix:** `sync_broker_state()` now skips reconciliation entirely when
+`broker.paper_mode` is true (there is no real broker account to reconcile
+against — `active_positions.json` is already authoritative). Separately,
+`compute_reconciliation()` now reconciles against `local_pos.symbol` (the
+real traded instrument) for both the broker-position and order-book
+lookups, and returns a new `local_key` field so the caller deletes the
+right dict entry. Added 2 regression tests
+(`test_option_position_keyed_by_underlying_reconciles_against_its_own_symbol`,
+`..._resolves_and_reports_local_key`) covering the exact key/symbol split
+that masked this for so long — every prior test happened to use the same
+string for both.
+
+**A second, related bug found while root-causing why reconciliation kept
+re-firing:** the premium-throttle fix (see below) added a
+`now_mono = time.monotonic()` call early in `on_tick()`. Two *pre-existing*
+local `import time` statements deeper in that same function (added before
+this session, now redundant since `main.py` already imports `time` at
+module level) made `time` a function-scope-local name in Python — so the
+new, earlier use crashed with `cannot access local variable 'time' where
+it is not associated with a value` on almost every tick cycle.
+`fyers_broker.py`'s `stream_quotes()` caught this exception and logged it
+as "WebSocket disconnected or failed", reconnecting every ~2–5 minutes —
+which is what repeatedly re-triggered the reconciliation bug above on
+whatever position happened to be open at the time. Fixed by deleting both
+redundant local imports (`main.py` lines that were at ~1148 and ~1520);
+also removed an equivalent harmless-but-redundant local import in
+`fyers_broker.py`'s `stream_quotes()` for consistency. Verified: engine
+ran 90+ seconds post-fix with zero disconnects, versus a disconnect every
+2–5 minutes before. (One `keepalive ping timeout` disconnect at 10:27/10:29
+looks unrelated/transient — not chased further, watching for recurrence.)
+
+**Damage this caused before the fix landed (all real, now baked into the
+state.db reset below):**
+- `NSE:NIFTY2681123750CE` (entered 898.40, 10:05 IST) force-closed at
+  10:22:49 using the stop-loss price (894.36) as an estimate. True exit
+  price is unrecoverable — the option's real premium wasn't being sampled
+  during the window it was open, itself a symptom of the (separately
+  fixed) rate-limit bug.
+- Two `NSE:NIFTY2681124550CE` positions force-closed the same way at
+  10:25 IST during the reconnect storm.
+- Also discovered: 4 `NIFTY-RATELIMIT-TEST` rows in the `trades` table —
+  test-script pollution that leaked into shared state, apparently left
+  over from the interrupted prior session validating the throttle fix.
+- My own mistake: live-verifying the reconciliation fix, I injected a
+  synthetic position using a non-CE/PE-shaped symbol
+  (`NSE:NIFTY-RECONCILE-FIX-VERIFY-TEST`) to confirm it would survive a
+  restart. It did — but its symbol didn't match the option-detection
+  check, so the exit logic compared the raw underlying LTP (24565.90)
+  against my placeholder `target=120.00`, immediately "hit" it, and wrote
+  a fabricated ₹15,90,283.50 profit into `state.db`.
+
+**Resolution:** given the mix of real bug-driven closures, old test
+pollution, and my own test artifact, reconstructing a trustworthy equity
+number by hand wasn't possible — decided (with explicit user confirmation)
+to do a full clean reset, same procedure as 2026-08-03's §0 baseline:
+backed up `state.db` + `config/active_positions.json` to
+`trading-system/backups/backup_20260805_104525/`, stopped both engine
+processes, cleared `trades` to 0 rows (reset `sqlite_sequence`), reset
+`state` to equity=100000.0/pnl=0.0, cleared `active_positions.json` to
+`{}`, and restarted both processes clean. Verified post-restart: `trades`
+= 0, `state` = (100000.0, 0.0), reconciliation correctly skipped with no
+position to falsely close, WebSocket stable with no disconnects.
+
+**Validation clock:** per the checklist's own rule, this resets the clock
+again — **2026-08-05 (this restart) is the new earliest possible session
+1.** Nothing before this counts toward §2's 10-session/30-trade window.
+§2.6 (reconciliation while holding a position) is arguably now "tested" in
+the sense that it was exercised and found broken and fixed — but should
+be watched closely across the next several sessions before being marked
+passing, per the same standard applied to every other fix this window.
+
+### (carried over from before this session — found & fixed, not yet verified live at the time) Equity/peak-equity discarded on every restart
+`RiskManager`/`PortfolioRiskEngine` only ever restored `daily_pnl` from
+`state.db` on restart — `current_equity`/`peak_equity` (and
+`peak_capital_daily`/`peak_capital_weekly`) silently reset to the static
+`initial_capital` every time, discarding real cumulative P&L and drawdown
+headroom across any restart. Fixed by threading the persisted equity
+(`state.db`'s `equity` column, already written by `update_equity()`)
+through to both engines' constructors via new optional
+`current_equity`/`current_capital` params, defaulting to the old
+behavior when omitted. 4 new regression tests
+(`test_current_equity_restores_across_a_restart`,
+`test_current_equity_omitted_defaults_to_initial_capital`,
+`test_current_capital_restores_peak_across_a_restart`,
+`test_current_capital_omitted_defaults_to_initial_capital`). Verified
+live across all three restarts this session — equity/pnl correctly
+carried forward each time (until the deliberate reset above).
+
+### (carried over from before this session) Option premium fetch self-rate-limited every tick, leaving a position unmanaged
+Exit-check logic fetched the option's live premium unconditionally on
+**every** tick — ticks arrive far faster than Fyers' real rate limit
+(~100/min per `DATA_LIMITER`'s own comment, never actually wired to
+anything). Live result: a position sat completely unmanaged for most of a
+session because every fetch attempt came back empty, almost certainly
+from self-inflicted rate limiting (`Exit check skipped for ... — could
+not fetch live option premium this tick`, repeating every tick). Fixed by
+throttling to at most one real fetch per second per symbol, reusing the
+last known premium (or a recent-enough stale one on a failed fetch) in
+between — SL/target checks still effectively run every tick, just against
+a premium that's at most ~1s old.
+
+---
+
 ### 23:24 IST — Session close: full report compiled
 Market closed 15:30 IST; engine ran continuously 10:31–23:35 without
 further restart (13+ hrs, stable). Full day's evidence (first live

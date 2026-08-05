@@ -36,6 +36,26 @@ previously-unexercised code path needs to visibly taper off before this
 is close to ready. The clean 10-session/30-trade count has not started
 yet — 2026-08-05 is the earliest possible session 1.
 
+**2026-08-05 update:** §2.6 got its first real exercise this session (a
+WebSocket reconnect storm while genuinely holding positions) and **failed**
+it — the broker-reconnect reconciliation logic force-closed 3 real
+positions using fabricated stop-loss-estimate prices, root-caused to two
+bugs (paper mode has no real broker state to reconcile against; the
+`active_positions` dict key was reconciled instead of the actual traded
+option symbol) plus an unrelated crash bug (`time` variable scope
+collision) that caused the reconnect storm itself. All three fixed and
+covered by new regression tests; full detail in `anomaly_log.md`. Also
+carried over and verified live: the equity/peak-equity restart-persistence
+fix and the option-premium fetch throttle fix, both drafted before this
+session. Because the reconciliation bug corrupted `state.db` beyond a
+reconstructable equity figure (real closures + old test pollution + a
+live-verification test artifact), did a full clean reset (backed up to
+`trading-system/backups/backup_20260805_104525/`) — same procedure as
+2026-08-03's §0 baseline. **Status remains NO-GO. The validation clock
+resets again — 2026-08-05 (10:46 IST restart) is the new earliest possible
+session 1**, superseding the date above. §2.6 needs a clean pass (reconcile
+correctly, not just "get exercised") before it can be marked done.
+
 This is a living document — check items off with a date and evidence
 reference as they're actually completed, don't mark something done because
 it's expected to pass.
