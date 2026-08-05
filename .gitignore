@@ -7,11 +7,33 @@ node_modules/
 *.json
 !package.json
 !tsconfig.json
+!package-lock.json
 *.log
 data/
 # Exception: small, committed test fixture CSVs (not real cached market
-# data) used by trading-system/tests/test_option_history_derivation.py
-# and test_history_endpoint_options.py — the blanket data/ rule above
-# would otherwise silently exclude them from every commit.
-!trading-system/tests/fixtures/data/
-!trading-system/tests/fixtures/data/*.csv
+# data) used by Testing_Automation_AI_Trading_Bot/python-unit's
+# test_option_history_derivation.py and test_history_endpoint_options.py —
+# the blanket data/ rule above would otherwise silently exclude them from
+# every commit.
+!Testing_Automation_AI_Trading_Bot/python-unit/fixtures/data/
+!Testing_Automation_AI_Trading_Bot/python-unit/fixtures/data/*.csv
+
+# ---------------------------------------------------------------------------
+# Testing_Automation_AI_Trading_Bot (Playwright/TypeScript suite)
+# ---------------------------------------------------------------------------
+# The blanket `*.json` rule above exists to keep runtime state files
+# (settings.json, broker_credentials.json, state snapshots) out of the repo.
+# It would also silently swallow this suite's committed source-of-truth
+# config and its API mock fixtures, so they are re-included explicitly.
+!Testing_Automation_AI_Trading_Bot/**/*.json
+Testing_Automation_AI_Trading_Bot/**/.auth/*.json
+
+# Generated run artifacts — never committed.
+Testing_Automation_AI_Trading_Bot/test-results/
+Testing_Automation_AI_Trading_Bot/playwright-report/
+Testing_Automation_AI_Trading_Bot/blob-report/
+Testing_Automation_AI_Trading_Bot/reports/
+Testing_Automation_AI_Trading_Bot/.auth/
+Testing_Automation_AI_Trading_Bot/.cache/
+Testing_Automation_AI_Trading_Bot/**/*.tsbuildinfo
+.pytest_cache/
