@@ -98,7 +98,7 @@ _m2m_last_update: float = 0.0
 
 # Import AI / Risk / Exit / Alert Modules
 from shared.ai import TradeFilterModel, compute_features
-from shared.risk import RiskManager, RiskConfig, TradeRecord
+from shared.risk import RiskManager, RiskConfig, TradeRecord, resolve_initial_stop
 from shared.exits import SmartExitEngine, Position, PyramidSizer
 from shared.alerts import alerter
 from trading_bot.portfolio_risk import PortfolioRiskEngine
@@ -249,6 +249,35 @@ def _load_settings() -> dict:
         "target_pct": 500.0,
         "stoploss_pct": 15.0,
         "auto_trade_enabled": True,
+
+        # ── Option stop-loss architecture ──────────────────────────────
+        # Premium-banded initial stop for option buying. `stoploss_pct`
+        # above still applies to non-option (index/equity) trades; these
+        # replace it for anything with CE/PE in the symbol.
+        # See shared/risk/option_stop_loss.py.
+        "option_sl_bands": [
+            {"lower": 0,   "upper": 10,   "min_points": 2,  "max_points": 3},
+            {"lower": 10,  "upper": 20,   "min_points": 3,  "max_points": 5},
+            {"lower": 20,  "upper": 50,   "min_points": 5,  "max_points": 8},
+            {"lower": 50,  "upper": 100,  "min_points": 10, "max_points": 15},
+            {"lower": 100, "upper": 150,  "min_points": 15, "max_points": 20},
+            {"lower": 150, "upper": 250,  "min_points": 20, "max_points": 30},
+        ],
+        # How to pick within a band: interpolate | min | mid | max.
+        "option_sl_band_mode": "interpolate",
+        # Above the table the stop is a percentage of premium, tapering
+        # from start_pct to end_pct (12% at ₹250 = ₹30, continuous with
+        # the last fixed band's max_points).
+        "option_sl_dynamic": {
+            "lower": 250.0, "start_pct": 12.0, "end_pct": 10.0, "taper_to": 500.0,
+        },
+        # A stop may never risk more than this share of the premium.
+        "option_sl_max_pct_of_premium": 60.0,
+        "option_sl_tick_size": 0.05,
+        # Derive option quantity from the stop distance instead of the
+        # fixed `quantity` setting, so risk-per-trade stays constant as
+        # the banded stop varies with premium.
+        "option_risk_based_sizing": True,
     }
     
     if _SETTINGS_PATH.is_file():
@@ -1409,15 +1438,74 @@ async def run_live_bot(symbols: List[str]) -> None:
                                 continue
 
                             entry_premium = live_premium
-                            # Option buying means we buy premium, so target is UP and SL is DOWN
-                            sl_price = entry_premium * (1 - sl_pct)
-                            tgt_price = entry_premium * (1 + target_pct)
+
+                            # ── Premium-banded initial stop-loss ──────────
+                            # Option buying means we buy premium, so the stop
+                            # sits BELOW entry for both CE and PE.
+                            #
+                            # The flat `stoploss_pct` this replaced could not
+                            # express option risk: the live 0.45% setting put
+                            # the stop ₹0.54 under a ₹120 premium — inside the
+                            # spread, so the position was stopped out by noise
+                            # rather than by being wrong. See
+                            # shared/risk/option_stop_loss.py for the table and
+                            # the reasoning.
+                            sl_decision = resolve_initial_stop(entry_premium, settings)
+                            if not sl_decision.is_tradeable:
+                                # Premium too small to carry a stop that is
+                                # both positive and a real distance from
+                                # entry — trading it would mean an instant
+                                # stop-out dressed up as risk management.
+                                logger.warning(
+                                    "Skipping %s: premium ₹%.2f is too small to place a "
+                                    "meaningful stop (would be ₹%.2f).",
+                                    entry_symbol, entry_premium, sl_decision.sl_price,
+                                )
+                                continue
+                            sl_price = sl_decision.sl_price
+
+                            # NO FIXED PROFIT TARGET. 0.0 means "unlimited
+                            # upside" to every downstream exit check
+                            # (main.py's hard-TP interceptor and
+                            # SmartExitEngine both guard on `target > 0`).
+                            # Profit management belongs entirely to the
+                            # trailing stop and the Smart Exit Engine, which
+                            # take over the moment this position is opened.
+                            tgt_price = 0.0
+
+                            logger.info(
+                                "SL BAND %s | premium ₹%.2f -> SL ₹%.2f (risk ₹%.2f/unit, %.2f%%, %s)%s",
+                                sl_decision.band_label, entry_premium, sl_price,
+                                sl_decision.sl_points, sl_decision.sl_pct,
+                                sl_decision.method,
+                                " [CLAMPED by max_pct_of_premium]" if sl_decision.clamped else "",
+                            )
                         else:
                             sl_price = entry_premium * (1 - sl_pct) if latest_signal == 1 else entry_premium * (1 + sl_pct)
                             tgt_price = entry_premium * (1 + target_pct) if latest_signal == 1 else entry_premium * (1 - target_pct)
 
                         # ── Compute Quantity ──
-                        if "quantity" in settings and int(settings["quantity"]) > 0:
+                        # Root cause for the option branch: a fixed `quantity`
+                        # setting makes rupee risk a function of the stop
+                        # width, which is exactly backwards. With premium-
+                        # banded stops the stop distance now varies ~15x
+                        # across the table (₹2 to ₹30), so a fixed 65 lots
+                        # would risk ₹130 on one trade and ₹1,950 on the next
+                        # with no relationship to the account. Risk-based
+                        # sizing inverts that: solve for quantity from the
+                        # stop distance so risk-per-trade stays roughly
+                        # constant no matter which strike is selected.
+                        #
+                        # Non-option trades keep the previous behaviour
+                        # exactly — this change is scoped to option buying.
+                        use_risk_sizing = is_option_trade and settings.get(
+                            "option_risk_based_sizing", True
+                        )
+                        if use_risk_sizing:
+                            total_shares = risk_manager.calculate_position_size(
+                                entry_premium, sl_price, ai_confidence=confidence
+                            ) or 1
+                        elif "quantity" in settings and int(settings["quantity"]) > 0:
                             total_shares = int(settings["quantity"])
                         else:
                             # Calculate position size based on risk amount
@@ -1476,11 +1564,20 @@ async def run_live_bot(symbols: List[str]) -> None:
                         # ── Risk Manager Gate ─────────────────────────────────────────
                         # Pass actual rupee risk so the per-trade risk limit is enforced
                         actual_risk_amount = abs(entry_premium - sl_price) * total_quantity
+
+                        # An option lot is indivisible: if this is already a
+                        # single lot, sizing has no smaller answer to give.
+                        # Tell the risk manager so it can allow it with a loud
+                        # RISK-CAP OVERRIDE warning instead of silently
+                        # rejecting every high-premium signal — see
+                        # RiskManager.can_trade's docstring.
+                        is_min_size = total_quantity <= lot_size
                         allowed, reject_reason = risk_manager.can_trade(
                             symbol=s,
                             risk_amount=actual_risk_amount,
                             ai_confidence=confidence,
                             current_volatility=current_volatility,
+                            is_minimum_tradeable_size=is_min_size,
                         )
                         if not allowed:
                             logger.info("Trade BLOCKED for %s: %s", s, reject_reason)
@@ -1492,9 +1589,13 @@ async def run_live_bot(symbols: List[str]) -> None:
 
                         # ── Execute (Live or Paper) ────────────────────────
                         if is_live:
+                            # TGT is deliberately absent for option entries —
+                            # profit management is the trailing stop's and the
+                            # Smart Exit Engine's job, with no cap on upside.
+                            tgt_display = f"{tgt_price:.2f}" if tgt_price > 0 else "NONE (trailing/smart-exit)"
                             logger.info(
-                                "ENTRY %s %s quantity=%d @ %.2f | SL=%.2f | TGT=%.2f | AI=%.0f%% [LIVE]",
-                                side_str, entry_symbol, total_quantity, entry_premium, sl_price, tgt_price, confidence * 100
+                                "ENTRY %s %s quantity=%d @ %.2f | SL=%.2f | TGT=%s | AI=%.0f%% [LIVE]",
+                                side_str, entry_symbol, total_quantity, entry_premium, sl_price, tgt_display, confidence * 100
                             )
                             # Rate-limit guard
                             if not ORDER_LIMITER.allow(broker.BROKER_ID):
@@ -1545,9 +1646,10 @@ async def run_live_bot(symbols: List[str]) -> None:
                                           {"symbol": s, "reason": str(ve)}, severity="WARNING")
                                 continue
                         else:
+                            tgt_display = f"{tgt_price:.2f}" if tgt_price > 0 else "NONE (trailing/smart-exit)"
                             logger.info(
-                                "ENTRY %s %s qty=%d @ %.2f | SL=%.2f | TGT=%.2f | AI=%.0f%% [PAPER]",
-                                side_str, entry_symbol, total_quantity, entry_premium, sl_price, tgt_price, confidence * 100
+                                "ENTRY %s %s qty=%d @ %.2f | SL=%.2f | TGT=%s | AI=%.0f%% [PAPER]",
+                                side_str, entry_symbol, total_quantity, entry_premium, sl_price, tgt_display, confidence * 100
                             )
 
                         # ── Send Telegram Alert ────────────────────────────

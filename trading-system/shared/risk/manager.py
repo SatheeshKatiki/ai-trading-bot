@@ -118,8 +118,28 @@ class RiskManager:
         risk_amount: float = 0.0,
         ai_confidence: float = 1.0,
         current_volatility: float = 0.0,
+        is_minimum_tradeable_size: bool = False,
     ) -> tuple[bool, str]:
         """Check whether a new trade is allowed.
+
+        Parameters
+        ----------
+        is_minimum_tradeable_size
+            Set by the caller when ``risk_amount`` is already the risk of the
+            smallest position that can legally be traded — one lot. Relaxes
+            *only* the per-trade risk cap, and only in that case; every other
+            gate (risk-off, daily loss, drawdown, consecutive losses, AI
+            confidence, volatility, trade count) still applies unchanged.
+
+            This exists because an option lot is indivisible. NIFTY trades in
+            lots of 65-75, so with premium-banded stops one lot of a ₹250
+            contract risks ~₹1,950 — about 2% of a ₹1L account, above the 1%
+            per-trade cap. Without this, the engine would reject every
+            high-premium signal and the only trace would be a log line: the
+            bot looks alive and simply never trades. Refusing to size below
+            one lot is a market rule, so the honest options are "take one lot
+            and say so loudly" or "do not trade this instrument at this
+            capital" — silently dropping signals is neither.
 
         Returns
         -------
@@ -171,7 +191,22 @@ class RiskManager:
             
         max_risk = self.current_equity * allowed_risk_pct
         if risk_amount > max_risk:
-            return False, f"Risk {risk_amount:.2f} exceeds limit {max_risk:.2f}"
+            if not is_minimum_tradeable_size:
+                return False, f"Risk {risk_amount:.2f} exceeds limit {max_risk:.2f}"
+
+            # One lot is the floor; sizing cannot go lower. Allow it, but make
+            # the true exposure impossible to miss — this is the line that
+            # tells an operator their per-trade risk policy and their capital
+            # are no longer compatible with the instruments being traded.
+            actual_pct = (risk_amount / self.current_equity * 100.0) if self.current_equity else 0.0
+            logger.warning(
+                "RISK-CAP OVERRIDE for %s: one lot risks %.2f (%.2f%% of equity), "
+                "above the %.2f%% per-trade limit (%.2f). Trading it because one "
+                "lot is the minimum tradeable size — reduce lot exposure, raise "
+                "risk_per_trade, or trade cheaper strikes if this is not intended.",
+                symbol or "?", risk_amount, actual_pct,
+                allowed_risk_pct * 100.0, max_risk,
+            )
 
         return True, "OK"
 
