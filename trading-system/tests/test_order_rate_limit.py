@@ -13,6 +13,15 @@ server), with BrokerFactory/ORDER_LIMITER mocked so nothing ever reaches
 a real broker or the real settings.json — never flip a shared, disk-
 backed live_trading_mode flag just to test this, since other processes
 on this machine may be reading that same file.
+
+Root-cause fix (found live, 2026-08-05): the endpoint's own
+`record_trade()` call was NOT mocked here, so every run of this file
+wrote a real "NIFTY-RATELIMIT-TEST" row into the actual, disk-backed
+`state.db` — shared.state resolves that path relative to its own
+module file, not any test fixture, so there is no isolated test DB to
+redirect to. This polluted the live paper-trading validation window's
+trade history every single time the suite ran on this machine. Now
+mocked like every other side effect here.
 """
 import sys
 from pathlib import Path
@@ -54,10 +63,12 @@ def test_paper_mode_order_ignores_rate_limiter_entirely():
     try:
         with patch("api_bridge.BrokerFactory.get_active_broker", return_value=_fake_broker(paper_mode=True)), \
              patch("api_bridge._load_config_settings", return_value={"live_trading_mode": False}), \
-             patch("api_bridge.ORDER_LIMITER.allow") as mock_allow:
+             patch("api_bridge.ORDER_LIMITER.allow") as mock_allow, \
+             patch("shared.state.record_trade") as mock_record_trade:
             resp = client.post("/api/order/execute", json=ORDER_PAYLOAD, headers=headers)
             assert resp.status_code == 200
             mock_allow.assert_not_called()
+            mock_record_trade.assert_called_once()
     finally:
         revoke_session(token)
 
@@ -67,11 +78,13 @@ def test_live_mode_order_allowed_by_limiter_succeeds():
     try:
         with patch("api_bridge.BrokerFactory.get_active_broker", return_value=_fake_broker(paper_mode=False)), \
              patch("api_bridge._load_config_settings", return_value={"live_trading_mode": True}), \
-             patch("api_bridge.ORDER_LIMITER.allow", return_value=True) as mock_allow:
+             patch("api_bridge.ORDER_LIMITER.allow", return_value=True) as mock_allow, \
+             patch("shared.state.record_trade") as mock_record_trade:
             resp = client.post("/api/order/execute", json=ORDER_PAYLOAD, headers=headers)
             assert resp.status_code == 200
             assert resp.json()["order_id"] == "TEST-ORDER-1"
             mock_allow.assert_called_once_with("fyers")
+            mock_record_trade.assert_called_once()
     finally:
         revoke_session(token)
 
