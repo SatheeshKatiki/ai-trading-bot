@@ -12,6 +12,7 @@ import {
   Crosshair, Square, ArrowRight, Minus, GitBranch, Circle, Trash2,
 } from "lucide-react";
 import { useTheme } from "@/components/theme-provider";
+import { parseBackendDatetimeToEpochMs, getISTNowParts, istWallTimeToEpochSeconds, isMarketOpenIST } from "@/lib/ist-time";
 
 // Crash-guard: patch formatToParts for bad klinecharts timestamps
 if (typeof Intl !== "undefined" && Intl.DateTimeFormat?.prototype && !(Intl.DateTimeFormat.prototype as any)._isPatched) {
@@ -30,15 +31,7 @@ if (typeof Intl !== "undefined" && Intl.DateTimeFormat?.prototype && !(Intl.Date
 
 // Market hours helper (IST)
 function isMarketOpen() {
-  const now = new Date();
-  const opts = { timeZone: "Asia/Kolkata", hour12: false, hour: "numeric", minute: "numeric", weekday: "short" } as const;
-  const parts = new Intl.DateTimeFormat("en-US", opts).formatToParts(now);
-  const weekday = parts.find((p) => p.type === "weekday")?.value ?? "";
-  if (weekday === "Sat" || weekday === "Sun") return false;
-  const h = parseInt(parts.find((p) => p.type === "hour")?.value ?? "0", 10);
-  const m = parseInt(parts.find((p) => p.type === "minute")?.value ?? "0", 10);
-  const t = h * 60 + m;
-  return t >= 9 * 60 + 15 && t <= 15 * 60 + 30;
+  return isMarketOpenIST();
 }
 
 interface AdvancedChartProps {
@@ -271,11 +264,8 @@ export default function AdvancedChart({ symbol, livePrice, timeframe }: Advanced
         const bars: KLineData[] = json.data
           .map((d: any) => {
             const raw = String(d.datetime ?? d.Datetime ?? d.date ?? "");
-            let safe = raw.includes(" ") ? raw.replace(" ", "T") : raw;
-            if (!safe.includes("+") && !safe.includes("Z") && safe.length > 10) {
-              safe += "+05:30";
-            }
-            return { timestamp: new Date(safe).getTime(), open: parseFloat(d.open ?? d.Open ?? 0), high: parseFloat(d.high ?? d.High ?? 0), low: parseFloat(d.low ?? d.Low ?? 0), close: parseFloat(d.close ?? d.Close ?? 0), volume: parseFloat(d.volume ?? d.Volume ?? 0) };
+            const timestamp = parseBackendDatetimeToEpochMs(raw) ?? NaN;
+            return { timestamp, open: parseFloat(d.open ?? d.Open ?? 0), high: parseFloat(d.high ?? d.High ?? 0), low: parseFloat(d.low ?? d.Low ?? 0), close: parseFloat(d.close ?? d.Close ?? 0), volume: parseFloat(d.volume ?? d.Volume ?? 0) };
           })
           .filter((b: KLineData) => isFinite(b.timestamp) && b.timestamp > 0)
           .sort((a: KLineData, b: KLineData) => a.timestamp - b.timestamp);
@@ -301,20 +291,23 @@ export default function AdvancedChart({ symbol, livePrice, timeframe }: Advanced
   useEffect(() => {
     if (!isMarketOpen() || !livePrice || livePrice <= 0 || !chartRef.current || !lastBarRef.current) return;
     const tfVal = parseInt(timeframe.split(" ")[0] ?? "5", 10);
-    const now = new Date();
+    // Root-cause fix (chart timestamp audit): candle-interval alignment must
+    // use real IST/NSE market time, not the viewer's own browser/system
+    // local time (only correct by accident for an IST-based machine).
+    const istNow = getISTNowParts();
     let ts = 0;
     if (timeframe.includes("Day") || timeframe.includes("Week") || timeframe.includes("Month")) {
-      const d = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-      ts = d.getTime();
+      ts = istWallTimeToEpochSeconds(istNow.year, istNow.month, istNow.day, 0, 0, 0) * 1000;
     } else {
-      const mins = now.getHours() * 60 + now.getMinutes();
+      const mins = istNow.hour * 60 + istNow.minute;
       const sinceOpen = Math.min(370, Math.max(0, mins - (9 * 60 + 15)));
       const slot = timeframe.includes("Hour")
         ? Math.floor(sinceOpen / (tfVal * 60)) * (tfVal * 60)
         : Math.floor(sinceOpen / tfVal) * tfVal;
-      const slotStart = new Date(now);
-      slotStart.setHours(9, 15 + slot, 0, 0);
-      ts = slotStart.getTime();
+      const totalMinsFromMidnight = 9 * 60 + 15 + slot;
+      const slotHour = Math.floor(totalMinsFromMidnight / 60);
+      const slotMinute = totalMinsFromMidnight % 60;
+      ts = istWallTimeToEpochSeconds(istNow.year, istNow.month, istNow.day, slotHour, slotMinute, 0) * 1000;
     }
     const last = lastBarRef.current;
     const bar = ts > last.timestamp

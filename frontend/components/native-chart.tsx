@@ -1,11 +1,12 @@
 "use client";
 
 import React, { useEffect, useRef, useState } from "react";
-import { createChart, ColorType, IChartApi, ISeriesApi, Time, CandlestickSeries, LineSeries, HistogramSeries, CrosshairMode, createSeriesMarkers } from "lightweight-charts";
+import { createChart, ColorType, IChartApi, ISeriesApi, Time, TickMarkType, CandlestickSeries, LineSeries, HistogramSeries, CrosshairMode, createSeriesMarkers } from "lightweight-charts";
 import { RefreshCw, Eye, EyeOff } from "lucide-react";
 import { useTheme } from "@/components/theme-provider";
 import { useChartSettingsStore } from "@/store/useChartSettingsStore";
 import { Settings2, X, ChevronDown } from "lucide-react";
+import { parseBackendDatetimeToEpochSeconds, getISTNowParts, istWallTimeToEpochSeconds, isMarketOpenIST, formatEpochISTParts } from "@/lib/ist-time";
 
 const SettingGroup = ({ title, active, onToggle, children }: { title: string, active: boolean, onToggle: () => void, children: React.ReactNode }) => (
   <div className="border border-border/50 rounded-lg overflow-hidden bg-background shadow-sm mb-3 transition-all duration-200">
@@ -123,22 +124,7 @@ function calculateRSI(data: any[], period: number = 14) {
 
 // Helper to check if Indian market is open
 function isMarketOpen() {
-  const now = new Date();
-  const options = { timeZone: 'Asia/Kolkata', hour12: false, hour: 'numeric', minute: 'numeric', weekday: 'short' } as const;
-  const formatter = new Intl.DateTimeFormat('en-US', options);
-  const parts = formatter.formatToParts(now);
-
-  const hourStr = parts.find(p => p.type === 'hour')?.value || '0';
-  const minStr = parts.find(p => p.type === 'minute')?.value || '0';
-  const weekday = parts.find(p => p.type === 'weekday')?.value || '';
-
-  if (weekday === 'Sat' || weekday === 'Sun') return false;
-
-  const hour = parseInt(hourStr, 10);
-  const minute = parseInt(minStr, 10);
-
-  const currentMins = hour * 60 + minute;
-  return currentMins >= 555 && currentMins < 930; // 09:15 AM to 03:30 PM IST
+  return isMarketOpenIST();
 }
 
 interface NativeChartProps {
@@ -283,6 +269,20 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
     const chart = createChart(chartContainerRef.current, {
       layout: { background: { type: ColorType.Solid, color: "transparent" }, textColor: isDark ? "#9CA3AF" : "#6B7280" },
       grid: { vertLines: { color: isDark ? "rgba(255, 255, 255, 0.03)" : "rgba(0, 0, 0, 0.05)" }, horzLines: { color: isDark ? "rgba(255, 255, 255, 0.03)" : "rgba(0, 0, 0, 0.05)" } },
+      // Root-cause fix (chart timestamp audit): lightweight-charts has no
+      // built-in per-chart timezone setting -- by default it formats the
+      // epochs it's given using JS Date's *UTC* getters, which (since every
+      // `time` value here is a true, timezone-independent Unix epoch) would
+      // display UTC wall-clock time, i.e. IST minus 5:30, to any viewer.
+      // Explicit localization/tickMarkFormatter force every axis label and
+      // crosshair time to real IST (Asia/Kolkata) regardless of the
+      // viewer's own browser/system timezone.
+      localization: {
+        timeFormatter: (time: Time) => {
+          const p = formatEpochISTParts(time as number);
+          return `${p.day} ${p.month} ${p.year}  ${p.hour}:${p.minute}`;
+        },
+      },
       timeScale: {
         timeVisible: true,
         secondsVisible: false,
@@ -291,7 +291,16 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
         barSpacing: 8,
         minBarSpacing: 0.2,
         fixLeftEdge: false,
-        fixRightEdge: false
+        fixRightEdge: false,
+        tickMarkFormatter: (time: Time, tickMarkType: TickMarkType) => {
+          const p = formatEpochISTParts(time as number);
+          switch (tickMarkType) {
+            case TickMarkType.Year: return p.year;
+            case TickMarkType.Month: return `${p.month} '${p.year.slice(-2)}`;
+            case TickMarkType.DayOfMonth: return `${p.day} ${p.month}`;
+            default: return `${p.hour}:${p.minute}`;
+          }
+        },
       },
       handleScroll: {
         mouseWheel: true,
@@ -382,15 +391,6 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
 
       if (data) {
         tooltipRef.current.style.display = "block";
-        const offset = new Date().getTimezoneOffset() * 60;
-        const trueUnixTime = (param.time as number) + offset;
-        const date = new Date(trueUnixTime * 1000);
-        const timeStr = date.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
-        // Create YYYY-MM-DD format based on local time
-        const year = date.getFullYear();
-        const month = String(date.getMonth() + 1).padStart(2, '0');
-        const day = String(date.getDate()).padStart(2, '0');
-        const dateStr = `${year}-${month}-${day}`;
         const volumeStr = volData && volData.value ? (volData.value >= 1000000 ? (volData.value / 1000000).toFixed(2) + 'M' : (volData.value / 1000).toFixed(2) + 'K') : '---';
 
         tooltipRef.current.innerHTML = `
@@ -483,12 +483,8 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
             symbolTrades.forEach((trade: any) => {
               const dateStr = String(trade.entry_time || trade.time);
               if (!dateStr || dateStr === "undefined" || dateStr === "null") return;
-              const safeDateStr = dateStr.includes(' ') ? dateStr.replace(' ', 'T') : dateStr;
-              const d = new Date(safeDateStr);
-              // Calculate adjusted time for marker
-              const offset = d.getTimezoneOffset() * 60;
-              const trueTime = Math.floor(d.getTime() / 1000);
-              const adjustedTime = trueTime - offset;
+              const adjustedTime = parseBackendDatetimeToEpochSeconds(dateStr);
+              if (adjustedTime === null) return;
 
               let closestTime = adjustedTime as Time;
               let minDiff = Infinity;
@@ -586,18 +582,14 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
 
         const formattedData = json.data.map((item: any) => {
           const dateStr = String(item.datetime || item.Datetime || item.date);
-          let safeDateStr = dateStr.includes(' ') ? dateStr.replace(' ', 'T') : dateStr;
-          if (!safeDateStr.includes('+') && !safeDateStr.includes('Z') && safeDateStr.length > 10) {
-            safeDateStr += '+05:30';
-          }
-          const date = new Date(safeDateStr);
-          const time = Math.floor(date.getTime() / 1000) as Time;
+          const time = parseBackendDatetimeToEpochSeconds(dateStr);
           return {
             time, open: parseFloat(item.open || item.Open), high: parseFloat(item.high || item.High),
             low: parseFloat(item.low || item.Low), close: parseFloat(item.close || item.Close),
             volume: parseFloat(item.volume || item.Volume || 0)
           };
-        }).sort((a: any, b: any) => (a.time as number) - (b.time as number));
+        }).filter((b: any) => b.time !== null && isFinite(b.time))
+          .sort((a: any, b: any) => (a.time as number) - (b.time as number));
 
         const uniqueData = [];
         const seenTimes = new Set();
@@ -771,12 +763,8 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
         const formatted = markers.map((m: any) => {
           let timeVal = m.time;
           if (typeof timeVal === 'string') {
-            const safeStr = timeVal.includes(' ') ? timeVal.replace(' ', 'T') : timeVal;
-            const dt = new Date(safeStr);
-            if (!isNaN(dt.getTime())) {
-              const offset = dt.getTimezoneOffset() * 60;
-              timeVal = (Math.floor(dt.getTime() / 1000) - offset) as Time;
-            }
+            const parsed = parseBackendDatetimeToEpochSeconds(timeVal);
+            if (parsed !== null) timeVal = parsed as Time;
           }
           return {
             time: timeVal,
@@ -804,18 +792,21 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
     if (livePrice && livePrice > 0 && seriesRef.current && lastCandleRef.current) {
       const lastCandle = lastCandleRef.current;
 
-      const now = new Date();
+      // Root-cause fix (chart timestamp audit): this used to read
+      // `new Date().getHours()/getMinutes()`, i.e. the VIEWER's own
+      // browser/system local time -- correct only by accident for a viewer
+      // whose machine happens to be set to IST. Candle-interval alignment
+      // must always be computed against real IST/NSE market time.
+      const istNow = getISTNowParts();
 
       // Calculate exact candle start time aligned to Indian Market Open (09:15)
       const tfVal = parseInt(timeframe.split(' ')[0] || "5");
       let currentCandleTime: number;
 
       if (timeframe.includes("Day")) {
-        const d = new Date(now);
-        d.setHours(0, 0, 0, 0);
-        currentCandleTime = Math.floor(d.getTime() / 1000);
+        currentCandleTime = istWallTimeToEpochSeconds(istNow.year, istNow.month, istNow.day, 0, 0, 0);
       } else {
-        const minutesSinceMidnight = now.getHours() * 60 + now.getMinutes();
+        const minutesSinceMidnight = istNow.hour * 60 + istNow.minute;
         const minutesSinceOpen = minutesSinceMidnight - (9 * 60 + 15);
         // Cap to 370 mins (15:25 PM IST) so post-market ticks do not generate candles after 3:30 PM
         const effectiveMins = Math.min(370, Math.max(0, minutesSinceOpen));
@@ -827,9 +818,10 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
           roundedMins = Math.floor(effectiveMins / tfVal) * tfVal;
         }
 
-        const d = new Date(now);
-        d.setHours(9, 15 + roundedMins, 0, 0);
-        currentCandleTime = Math.floor(d.getTime() / 1000);
+        const totalMinsFromMidnight = 9 * 60 + 15 + roundedMins;
+        const candleHour = Math.floor(totalMinsFromMidnight / 60);
+        const candleMinute = totalMinsFromMidnight % 60;
+        currentCandleTime = istWallTimeToEpochSeconds(istNow.year, istNow.month, istNow.day, candleHour, candleMinute, 0);
       }
 
       let updatedCandle;

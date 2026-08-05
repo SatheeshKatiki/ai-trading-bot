@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, PlayCircle, Loader2, ArrowUpRight, ArrowDownRight, Target, ShieldAlert } from 'lucide-react';
 import NativeChart from './native-chart';
+import { parseBackendDatetimeToEpochSeconds } from '@/lib/ist-time';
 
 interface Trade {
   id: string;
@@ -78,16 +79,19 @@ export function TradeReplayModal({ trade, symbol, timeframe, onClose }: TradeRep
             const dateStrRaw = candle.datetime || candle.Datetime || candle.date || candle.time;
             if (!dateStrRaw) return null;
 
-            const safeDateStrRaw = dateStrRaw.includes(' ') ? dateStrRaw.replace(' ', 'T') : dateStrRaw;
-            const d = new Date(safeDateStrRaw);
-            let candleTimeStr = "";
-            if (!isNaN(d.getTime())) {
-               candleTimeStr = d.toISOString().replace("T", " ").substring(0, 16);
-            }
+            // Root-cause fix (chart timestamp audit): this used to round-trip
+            // through `new Date(...).toISOString()` (UTC) to build the
+            // string compared against `trade.time` (a naive IST string from
+            // the backend) -- correct only for a viewer whose browser
+            // happens to be set to UTC+0. The backend string is already in
+            // the exact IST wall-clock representation we need; comparing it
+            // directly (no Date round-trip at all) is both simpler and
+            // actually timezone-independent.
+            const candleTimeStr = dateStrRaw.replace('T', ' ').substring(0, 16);
 
-            // Format for NativeChart (expects native-chart formatted payload)
-            const dateObj = new Date(safeDateStrRaw);
-            const time = (Math.floor(dateObj.getTime() / 1000) - (dateObj.getTimezoneOffset() * 60));
+            // Format for NativeChart (expects a true, timezone-independent epoch)
+            const time = parseBackendDatetimeToEpochSeconds(dateStrRaw);
+            if (time === null) return null;
 
             const formattedCandle = {
               time: time,

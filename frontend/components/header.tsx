@@ -7,6 +7,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import Link from "next/link";
 import { toast } from "sonner";
 import { useLiveMarketStore } from "@/store/useLiveMarketStore";
+import { isMarketOpenIST } from "@/lib/ist-time";
 
 // Institutional Level Asset Database for Autocomplete
 const INDIAN_MARKET_ASSETS = [
@@ -291,16 +292,7 @@ export default function Header() {
   // Check Market Status (IST 9:15 to 15:30 weekdays)
   useEffect(() => {
     const checkMarketStatus = () => {
-      const now = new Date();
-      const options = { timeZone: 'Asia/Kolkata' };
-      const istTime = new Date(now.toLocaleString('en-US', options));
-      const day = istTime.getDay();
-      const hours = istTime.getHours();
-      const minutes = istTime.getMinutes();
-      const timeInMinutes = hours * 60 + minutes;
-
-      const isOpen = day >= 1 && day <= 5 && timeInMinutes >= (9 * 60 + 15) && timeInMinutes <= (15 * 60 + 30);
-      setIsMarketOpen(isOpen);
+      setIsMarketOpen(isMarketOpenIST());
     };
 
     checkMarketStatus();

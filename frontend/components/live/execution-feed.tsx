@@ -2,6 +2,7 @@ import React from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Shield, ArrowUpRight, ArrowDownRight, Zap } from 'lucide-react';
 import { useLiveMarketStore } from '@/store/useLiveMarketStore';
+import { parseBackendDatetimeToEpochSeconds, getISTDateStringFromEpoch, getTodayISTDateString } from '@/lib/ist-time';
 
 function formatTradeDisplay(symbol: string, price: number, side: string, qty?: number) {
     if (symbol === "NIFTY") {
@@ -26,21 +27,23 @@ interface ExecutionFeedProps {
 
 export function ExecutionFeed({ showTodayOnly = true }: ExecutionFeedProps) {
     const trades = useLiveMarketStore(state => state.trades);
+    // Use IST timezone (not UTC) to avoid date rollover issues after 6:30 PM IST
+    const todayIST = getTodayISTDateString();
     const displayTrades = trades.filter(t => {
         if (!showTodayOnly) return true;
         if (!t.time) return false;
-        // Use IST timezone (not UTC) to avoid date rollover issues after 6:30 PM IST
-        const formatter = new Intl.DateTimeFormat('en-IN', {
-            timeZone: 'Asia/Kolkata',
-            year: 'numeric', month: '2-digit', day: '2-digit'
-        });
-        const parts = formatter.formatToParts(new Date());
-        const y = parts.find(p => p.type === 'year')?.value;
-        const m = parts.find(p => p.type === 'month')?.value;
-        const d = parts.find(p => p.type === 'day')?.value;
-        const todayIST = `${y}-${m}-${d}`;
-        const tradeDateStr = String(t.time).substring(0, 10);
-        return tradeDateStr === todayIST;
+        // Root-cause fix (chart timestamp audit): state.db's trade records
+        // are NOT consistently tagged -- some use IST isoformat, some use
+        // UTC (e.g. the manual dashboard order-execution endpoint). Naively
+        // substring-ing the raw string's first 10 characters silently
+        // trusted whatever calendar date the ORIGINAL timezone happened to
+        // produce, which is wrong for UTC-tagged trades placed in the
+        // ~5.5-hour window where the UTC and IST calendar dates differ.
+        // Parsing to a true epoch and re-deriving the date in IST is
+        // correct regardless of how the backend tagged the original string.
+        const epoch = parseBackendDatetimeToEpochSeconds(String(t.time));
+        if (epoch === null) return false;
+        return getISTDateStringFromEpoch(epoch) === todayIST;
     });
 
     return (

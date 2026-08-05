@@ -17,6 +17,7 @@ import { useLiveSettingsStore } from '@/store/useLiveSettingsStore';
 import { NumberInput } from "@/components/number-input";
 import NewsTicker from "@/components/news-ticker";
 import { ErrorBoundary } from "@/components/error-boundary";
+import { isMarketOpenIST } from "@/lib/ist-time";
 import { useState, useEffect, useRef, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
@@ -113,22 +114,7 @@ function formatTradeDisplay(symbol: string, price: number, side: string, qty?: n
 
 // Helper to check if Indian market is open
 function isMarketOpen() {
-    const now = new Date();
-    const options = { timeZone: 'Asia/Kolkata', hour12: false, hour: 'numeric', minute: 'numeric', weekday: 'short' } as const;
-    const formatter = new Intl.DateTimeFormat('en-US', options);
-    const parts = formatter.formatToParts(now);
-
-    const hourStr = parts.find(p => p.type === 'hour')?.value || '0';
-    const minStr = parts.find(p => p.type === 'minute')?.value || '0';
-    const weekday = parts.find(p => p.type === 'weekday')?.value || '';
-
-    if (weekday === 'Sat' || weekday === 'Sun') return false;
-
-    const hour = parseInt(hourStr, 10);
-    const minute = parseInt(minStr, 10);
-
-    const currentMins = hour * 60 + minute;
-    return currentMins >= 555 && currentMins < 930; // 09:15 AM to 03:30 PM IST
+    return isMarketOpenIST();
 }
 
 function IsolatedMarketTicker() {

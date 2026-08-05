@@ -4,18 +4,19 @@ import { useLiveMarketStore, type Trade } from "@/store/useLiveMarketStore";
 import { XCircle, Clock, CheckCircle2, AlertTriangle, X, Zap } from "lucide-react";
 import { toast } from "sonner";
 import { ExecutionFeed } from "./execution-feed";
+import { parseBackendDatetimeToEpochSeconds, getISTDateStringFromEpoch, getTodayISTDateString } from "@/lib/ist-time";
 
-// IST-aware today date string
-function getTodayIST(): string {
-    const formatter = new Intl.DateTimeFormat('en-IN', {
-        timeZone: 'Asia/Kolkata',
-        year: 'numeric', month: '2-digit', day: '2-digit'
-    });
-    const parts = formatter.formatToParts(new Date());
-    const y = parts.find(p => p.type === 'year')?.value;
-    const m = parts.find(p => p.type === 'month')?.value;
-    const d = parts.find(p => p.type === 'day')?.value;
-    return `${y}-${m}-${d}`;
+// Root-cause fix (chart timestamp audit): state.db's trade records are NOT
+// consistently tagged (some IST, some UTC isoformat -- see the manual
+// dashboard order-execution endpoint) -- a naive substring of the raw
+// string's first 10 characters silently trusted whatever calendar date the
+// ORIGINAL timezone happened to produce, wrong for UTC-tagged trades placed
+// in the ~5.5-hour window where the UTC and IST calendar dates differ.
+function isTradeFromTodayIST(time: unknown, todayIST: string): boolean {
+    if (!time) return false;
+    const epoch = parseBackendDatetimeToEpochSeconds(String(time));
+    if (epoch === null) return false;
+    return getISTDateStringFromEpoch(epoch) === todayIST;
 }
 
 // Confirmation Modal Component
@@ -72,10 +73,10 @@ export function LivePositions({ urlSymbol }: { urlSymbol: string }) {
     const pnl = useLiveMarketStore(state => state.pnl);
 
     const openTrades = trades.filter(t => t.status === "Entered");
-    const todayIST = getTodayIST();
+    const todayIST = getTodayISTDateString();
 
     const orderHistory = showTodayOnly
-        ? trades.filter(t => t.time && String(t.time).substring(0, 10) === todayIST)
+        ? trades.filter(t => isTradeFromTodayIST(t.time, todayIST))
         : trades;
 
     const doSquareOffAll = async () => {
@@ -147,7 +148,7 @@ export function LivePositions({ urlSymbol }: { urlSymbol: string }) {
         return null;
     };
 
-    const todayTradesCount = trades.filter(t => t.time && String(t.time).substring(0, 10) === todayIST).length;
+    const todayTradesCount = trades.filter(t => isTradeFromTodayIST(t.time, todayIST)).length;
 
     return (
         <>
