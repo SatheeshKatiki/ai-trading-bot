@@ -694,7 +694,6 @@ class FyersBroker(BaseBroker):
                             
                         for sym, val in raw_ticks.items():
                             # Emit ALL raw ticks so both base indices and options reach the aggregator!
-                            import time
                             await on_tick({"symbol": sym, "ltp": val["lp"], "timestamp": int(time.time()), "volume": 0})
             except Exception as e:
                 logger.error("API Bridge WebSocket disconnected or failed: %s. Retrying in 5 seconds...", e)

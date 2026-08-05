@@ -24,6 +24,7 @@ import logging.handlers
 import os
 import sys
 import threading
+import time
 
 # Force UTF-8 for terminal logging on Windows
 if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
@@ -485,6 +486,10 @@ async def run_live_bot(symbols: List[str]) -> None:
                   severity="WARNING")
 
     last_eval_time = 0.0
+    # (timestamp, last_known_premium) per option symbol — see the
+    # exit-check block in on_tick() for why this exists.
+    _option_premium_cache: Dict[str, tuple[float, float]] = {}
+    _OPTION_PREMIUM_FETCH_INTERVAL_S = 1.0
     _iceberg_semaphore = asyncio.Semaphore(3)
 
     async def background_iceberg_entry(broker, entry_req: OrderRequest, pos_obj: Position, s: str, is_option_trade: bool):
@@ -813,23 +818,57 @@ async def run_live_bot(symbols: List[str]) -> None:
             # values would be meaningless. Fetch the option's real live
             # premium on demand (same call already used at entry) and use
             # THAT for every exit-side decision below.
+            #
+            # Root-cause fix (found live, 2026-08-05): this used to fetch on
+            # EVERY tick unconditionally. Ticks can arrive far faster than
+            # Fyers' real rate limit (DATA_LIMITER's own comment: ~100/min),
+            # and there's nothing else in this codebase throttling
+            # get_market_data calls (DATA_LIMITER exists but was never
+            # wired to anything — a gap flagged but deliberately not acted
+            # on during the 2026-08-03 audit). Live result: a position sat
+            # completely unmanaged for the better part of a session because
+            # every single fetch attempt came back empty, almost certainly
+            # from self-inflicted rate limiting. Throttling to at most one
+            # real fetch per second per symbol, reusing the last known
+            # premium in between, fixes the self-inflicted overload while
+            # keeping SL/target checks running on effectively every tick
+            # (a ~1s-old premium is more than adequate for this purpose,
+            # and infinitely better than never fetching successfully at
+            # all).
             exit_check_price = ltp
             if is_opt_pos:
-                try:
-                    opt_quotes = broker.get_market_data([open_position.symbol])
-                    opt_quote = opt_quotes.get(open_position.symbol)
-                    if opt_quote and opt_quote.ltp > 0:
-                        exit_check_price = opt_quote.ltp
-                        _tick_option_premiums[open_position.symbol] = exit_check_price
-                    else:
-                        logger.warning(
-                            "Exit check skipped for %s — could not fetch live option premium this tick.",
-                            open_position.symbol,
-                        )
-                        return
-                except Exception as exc:
-                    logger.warning("Exit check failed to fetch premium for %s: %s", open_position.symbol, exc)
-                    return
+                now_mono = time.monotonic()
+                cached = _option_premium_cache.get(open_position.symbol)
+                if cached and (now_mono - cached[0]) < _OPTION_PREMIUM_FETCH_INTERVAL_S:
+                    exit_check_price = cached[1]
+                    _tick_option_premiums[open_position.symbol] = exit_check_price
+                else:
+                    try:
+                        opt_quotes = broker.get_market_data([open_position.symbol])
+                        opt_quote = opt_quotes.get(open_position.symbol)
+                        if opt_quote and opt_quote.ltp > 0:
+                            exit_check_price = opt_quote.ltp
+                            _option_premium_cache[open_position.symbol] = (now_mono, exit_check_price)
+                            _tick_option_premiums[open_position.symbol] = exit_check_price
+                        elif cached:
+                            # Fresh fetch failed but we have a recent-enough
+                            # stale value — better than skipping the check
+                            # entirely.
+                            exit_check_price = cached[1]
+                            _tick_option_premiums[open_position.symbol] = exit_check_price
+                        else:
+                            logger.warning(
+                                "Exit check skipped for %s — could not fetch live option premium this tick.",
+                                open_position.symbol,
+                            )
+                            return
+                    except Exception as exc:
+                        if cached:
+                            exit_check_price = cached[1]
+                            _tick_option_premiums[open_position.symbol] = exit_check_price
+                        else:
+                            logger.warning("Exit check failed to fetch premium for %s: %s", open_position.symbol, exc)
+                            return
 
             df = aggregator.get_latest_dataframe(sym)
             # Proper 14-bar rolling ATR (not single-candle range which is too noisy)
@@ -1105,8 +1144,7 @@ async def run_live_bot(symbols: List[str]) -> None:
         # ----------------------------------------------------------------
         try:
             aggregator.add_tick(tick)
-            
-            import time
+
             current_time_sec = time.time()
             # ZERO-LATENCY HFT TRIGGER: Evaluate every 200ms for ultra-fast execution
             if current_time_sec - last_eval_time >= 0.2:
@@ -1478,7 +1516,6 @@ async def run_live_bot(symbols: List[str]) -> None:
         # ----------------------------------------------------------------
         # 3. Calculate Unrealized M2M PNL and update dashboard
         # ----------------------------------------------------------------
-        import time
         global _m2m_last_update
             
         if time.time() - _m2m_last_update > 0.05:
