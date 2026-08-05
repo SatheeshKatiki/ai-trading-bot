@@ -65,10 +65,14 @@ jobs:
           FYERS_CLIENT_ID: CI_TEST_ID
           FYERS_SECRET_KEY: CI_TEST_KEY
         run: |
-          # -k "not test_bt" skips the one test that needs live broker
-          # credentials (tests/test_backtest.py::test_bt); every other
-          # collectible test under tests/ runs and must pass.
-          python -m pytest tests/ -v --tb=short -k "not test_bt"
+          # The suite moved to Testing_Automation_AI_Trading_Bot/python-unit/
+          # (see that folder's README). Its conftest.py chdirs back to
+          # trading-system/, which is why this step still runs from here.
+          #
+          # The old -k "not test_bt" exclusion is gone: the five assertion-free
+          # scripts that needed a live broker session are no longer collected
+          # at all — they now live in ../legacy-manual/ as probe_*.py.
+          python -m pytest ../Testing_Automation_AI_Trading_Bot/python-unit -v --tb=short
 
       - name: Run indicator smoke tests
         run: |
@@ -136,6 +140,69 @@ jobs:
         env:
           # Dummy env so API route files compile without real secrets
           NEXT_PUBLIC_API_URL: http://localhost:8000
+
+  # ---------------------------------------------------------------------------
+  # Playwright — UI + API automation (Testing_Automation_AI_Trading_Bot)
+  # ---------------------------------------------------------------------------
+  automation:
+    name: Playwright Suite (Node ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ["20"]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+          cache-dependency-path: |
+            frontend/package-lock.json
+            Testing_Automation_AI_Trading_Bot/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci --prefer-offline
+
+      - name: Install suite dependencies
+        working-directory: Testing_Automation_AI_Trading_Bot
+        run: npm ci --prefer-offline
+
+      - name: Type-check and lint the suite
+        working-directory: Testing_Automation_AI_Trading_Bot
+        run: |
+          npx tsc --noEmit
+          npx eslint .
+
+      - name: Install Playwright browsers
+        working-directory: Testing_Automation_AI_Trading_Bot
+        run: npx playwright install --with-deps chromium
+
+      - name: Run the suite
+        working-directory: Testing_Automation_AI_Trading_Bot
+        env:
+          # Mocked target: every /api/** call is served from fixtures inside
+          # the browser, so this job never needs (and can never reach) the
+          # Python backend. ALLOW_MUTATIONS is rejected outright when CI=1.
+          TEST_TARGET: mocked
+          BACKEND_URL: http://localhost:8000
+        run: npx playwright test
+
+      - name: Upload report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            Testing_Automation_AI_Trading_Bot/reports/
+            Testing_Automation_AI_Trading_Bot/test-results/
+          retention-days: 7
 
   # ---------------------------------------------------------------------------
   # Security — detect secrets accidentally committed
