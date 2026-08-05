@@ -460,6 +460,69 @@ function getAtmOptionSymbol(baseSymbol: string, price: number): string {
     return `${baseSymbol} ${strike} CE`;
 }
 
+interface LiveMarketChartContainerProps {
+    urlSymbol: string;
+    timeframe: string;
+    chartMode: "native" | "ultra";
+    showDynamicTrend: boolean;
+    isDualChart: boolean;
+    dualSyncMode: boolean;
+    manualOptionSymbol: string;
+}
+
+function LiveMarketChartContainer({
+    urlSymbol,
+    timeframe,
+    chartMode,
+    showDynamicTrend,
+    isDualChart,
+    dualSyncMode,
+    manualOptionSymbol
+}: LiveMarketChartContainerProps) {
+    // Only subscribe live ticks inside this focused component to avoid re-rendering the full page
+    const mainLivePrice = useLiveMarketStore(state => state.tickerData[urlSymbol]?.lp || state.currentPrice || 0);
+
+    const optionSymbol = dualSyncMode
+        ? getAtmOptionSymbol(urlSymbol, mainLivePrice)
+        : manualOptionSymbol;
+
+    const optionLivePrice = useLiveMarketStore(state => 
+        state.tickerData[optionSymbol]?.lp || (optionSymbol === urlSymbol ? mainLivePrice : 0)
+    );
+
+    return (
+        <div className={`w-full flex-1 min-h-0 rounded-lg overflow-hidden ${isDualChart ? 'grid grid-cols-1 md:grid-cols-2 gap-3' : 'flex flex-col'}`}>
+            <ErrorBoundary title="Chart Module Error">
+                {chartMode === 'native' ? (
+                    <NativeChart
+                        symbol={urlSymbol}
+                        livePrice={mainLivePrice}
+                        timeframe={timeframe}
+                        showDynamicTrend={showDynamicTrend}
+                    />
+                ) : (
+                    <AdvancedChart
+                        symbol={urlSymbol}
+                        livePrice={mainLivePrice}
+                        timeframe={timeframe}
+                    />
+                )}
+            </ErrorBoundary>
+
+            {isDualChart && (
+                <ErrorBoundary title="Option Chart Module Error">
+                    <NativeChart
+                        symbol={optionSymbol}
+                        livePrice={optionLivePrice}
+                        timeframe={timeframe}
+                        showDynamicTrend={showDynamicTrend}
+                    />
+                </ErrorBoundary>
+            )}
+        </div>
+    );
+}
+
 function LiveTradingContent() {
     const searchParams = useSearchParams();
     const urlSymbol = searchParams.get('symbol') || 'NIFTY';
@@ -1013,30 +1076,15 @@ function LiveTradingContent() {
                                 )}
 
                                 {/* Container for Native / Dual Chart */}
-                                <div
-                                    key={`${urlSymbol}-${timeframe}-${chartMode}-${isDualChart}-${dualSyncMode}-${manualOptionSymbol}`}
-                                    className={`w-full flex-1 min-h-0 rounded-lg overflow-hidden ${isDualChart ? 'grid grid-cols-1 md:grid-cols-2 gap-3' : 'flex flex-col'}`}
-                                >
-                                    <ErrorBoundary title="Chart Module Error">
-                                        {chartMode === 'native' ? (
-                                            <NativeChart symbol={urlSymbol} livePrice={0} timeframe={timeframe} showDynamicTrend={showDynamicTrend} lastTick={Date.now()} />
-                                        ) : (
-                                            <AdvancedChart symbol={urlSymbol} livePrice={0} timeframe={timeframe} />
-                                        )}
-                                    </ErrorBoundary>
-
-                                    {isDualChart && (
-                                        <ErrorBoundary title="Option Chart Module Error">
-                                            <NativeChart
-                                                symbol={dualSyncMode ? getAtmOptionSymbol(urlSymbol, useLiveMarketStore.getState().currentPrice) : manualOptionSymbol}
-                                                livePrice={0}
-                                                timeframe={timeframe}
-                                                showDynamicTrend={showDynamicTrend}
-                                                lastTick={Date.now()}
-                                            />
-                                        </ErrorBoundary>
-                                    )}
-                                </div>
+                                <LiveMarketChartContainer
+                                    urlSymbol={urlSymbol}
+                                    timeframe={timeframe}
+                                    chartMode={chartMode}
+                                    showDynamicTrend={showDynamicTrend}
+                                    isDualChart={isDualChart}
+                                    dualSyncMode={dualSyncMode}
+                                    manualOptionSymbol={manualOptionSymbol}
+                                />
                             </div>
                         </div>
 

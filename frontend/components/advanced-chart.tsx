@@ -271,7 +271,10 @@ export default function AdvancedChart({ symbol, livePrice, timeframe }: Advanced
         const bars: KLineData[] = json.data
           .map((d: any) => {
             const raw = String(d.datetime ?? d.Datetime ?? d.date ?? "");
-            const safe = raw.includes(" ") ? raw.replace(" ", "T") : raw;
+            let safe = raw.includes(" ") ? raw.replace(" ", "T") : raw;
+            if (!safe.includes("+") && !safe.includes("Z") && safe.length > 10) {
+              safe += "+05:30";
+            }
             return { timestamp: new Date(safe).getTime(), open: parseFloat(d.open ?? d.Open ?? 0), high: parseFloat(d.high ?? d.High ?? 0), low: parseFloat(d.low ?? d.Low ?? 0), close: parseFloat(d.close ?? d.Close ?? 0), volume: parseFloat(d.volume ?? d.Volume ?? 0) };
           })
           .filter((b: KLineData) => isFinite(b.timestamp) && b.timestamp > 0)
@@ -296,7 +299,7 @@ export default function AdvancedChart({ symbol, livePrice, timeframe }: Advanced
 
   // Live price tick
   useEffect(() => {
-    if (!livePrice || livePrice <= 0 || !chartRef.current || !lastBarRef.current || !isMarketOpen()) return;
+    if (!isMarketOpen() || !livePrice || livePrice <= 0 || !chartRef.current || !lastBarRef.current) return;
     const tfVal = parseInt(timeframe.split(" ")[0] ?? "5", 10);
     const now = new Date();
     let ts = 0;
@@ -305,7 +308,7 @@ export default function AdvancedChart({ symbol, livePrice, timeframe }: Advanced
       ts = d.getTime();
     } else {
       const mins = now.getHours() * 60 + now.getMinutes();
-      const sinceOpen = mins - (9 * 60 + 15);
+      const sinceOpen = Math.min(370, Math.max(0, mins - (9 * 60 + 15)));
       const slot = timeframe.includes("Hour")
         ? Math.floor(sinceOpen / (tfVal * 60)) * (tfVal * 60)
         : Math.floor(sinceOpen / tfVal) * tfVal;

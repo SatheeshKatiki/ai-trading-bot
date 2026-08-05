@@ -586,11 +586,12 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
 
         const formattedData = json.data.map((item: any) => {
           const dateStr = String(item.datetime || item.Datetime || item.date);
-          const safeDateStr = dateStr.includes(' ') ? dateStr.replace(' ', 'T') : dateStr;
+          let safeDateStr = dateStr.includes(' ') ? dateStr.replace(' ', 'T') : dateStr;
+          if (!safeDateStr.includes('+') && !safeDateStr.includes('Z') && safeDateStr.length > 10) {
+            safeDateStr += '+05:30';
+          }
           const date = new Date(safeDateStr);
-          // Apply timezone offset adjustment
-          const offset = date.getTimezoneOffset() * 60;
-          const time = (Math.floor(date.getTime() / 1000) - offset) as Time;
+          const time = Math.floor(date.getTime() / 1000) as Time;
           return {
             time, open: parseFloat(item.open || item.Open), high: parseFloat(item.high || item.High),
             low: parseFloat(item.low || item.Low), close: parseFloat(item.close || item.Close),
@@ -662,6 +663,7 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
           if (uniqueData.length > 0) {
             setLastCandleOpen(uniqueData[uniqueData.length - 1].open);
             lastCandleRef.current = uniqueData[uniqueData.length - 1];
+            chart.priceScale('right').applyOptions({ autoScale: true });
             chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, uniqueData.length - 150), to: uniqueData.length });
           } else {
             chart.timeScale().fitContent();
@@ -797,7 +799,6 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
 
   // 3. Handle live price updates and auto-generate new candles
   useEffect(() => {
-    // Stop updating the chart if market is closed (prevents fake candles in paper mode after hours)
     if (!isMarketOpen()) return;
 
     if (livePrice && livePrice > 0 && seriesRef.current && lastCandleRef.current) {
@@ -816,7 +817,8 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
       } else {
         const minutesSinceMidnight = now.getHours() * 60 + now.getMinutes();
         const minutesSinceOpen = minutesSinceMidnight - (9 * 60 + 15);
-        const effectiveMins = Math.max(0, minutesSinceOpen);
+        // Cap to 370 mins (15:25 PM IST) so post-market ticks do not generate candles after 3:30 PM
+        const effectiveMins = Math.min(370, Math.max(0, minutesSinceOpen));
 
         let roundedMins = 0;
         if (timeframe.includes("Hour")) {
@@ -827,9 +829,7 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
 
         const d = new Date(now);
         d.setHours(9, 15 + roundedMins, 0, 0);
-        // Adjust live candle time for lightweight charts timezone
-        const offset = d.getTimezoneOffset() * 60;
-        currentCandleTime = Math.floor(d.getTime() / 1000) - offset;
+        currentCandleTime = Math.floor(d.getTime() / 1000);
       }
 
       let updatedCandle;

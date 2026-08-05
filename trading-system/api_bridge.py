@@ -994,6 +994,80 @@ def load_csv_history(symbol: str, start_date: str, end_date: str, timeframe: str
                 logger.warning("Failed to load CSV history %s: %s", fpath, e)
     return []
 
+def _fetch_yfinance_today(symbol: str, timeframe: str) -> List[Dict[str, Any]]:
+    """Fetch today's intraday OHLCV candles via yfinance to ensure 09:15 to current time is always present."""
+    try:
+        import yfinance as yf
+        import pandas as pd
+        
+        yf_sym_map = {
+            "NSE:NIFTY50-INDEX": "^NSEI",
+            "NIFTY": "^NSEI",
+            "NSE:NIFTYBANK-INDEX": "^NSEBANK",
+            "BANKNIFTY": "^NSEBANK",
+            "BSE:SENSEX-INDEX": "^BSESN",
+            "SENSEX": "^BSESN",
+        }
+        clean_sym = symbol.replace("NSE:", "").replace("BSE:", "").replace("-INDEX", "").replace("-EQ", "").strip()
+        yf_symbol = yf_sym_map.get(symbol, yf_sym_map.get(clean_sym, f"{clean_sym}.NS"))
+        
+        tf_map = {
+            "1 Min": "1m", "5 Min": "5m", "15 Min": "15m", "30 Min": "30m",
+            "1 Hour": "60m", "1 Day": "1d", "1 Week": "1wk", "1 Month": "1mo"
+        }
+        interval = tf_map.get(timeframe, "5m")
+        period = "5d" if "Day" in timeframe or "Week" in timeframe or "Month" in timeframe else "1d"
+        
+        df = yf.download(yf_symbol, period=period, interval=interval, progress=False)
+        if df is None or df.empty:
+            return []
+        
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+            
+        candles = []
+        is_daily = "Day" in timeframe or "Week" in timeframe or "Month" in timeframe
+        fmt = "%Y-%m-%d" if is_daily else "%Y-%m-%d %H:%M:%S"
+        
+        for ts, row in df.iterrows():
+            dt_ist = ts.tz_convert("Asia/Kolkata") if getattr(ts, "tzinfo", None) else ts
+            candles.append({
+                "datetime": dt_ist.strftime(fmt),
+                "open": float(row["Open"]),
+                "high": float(row["High"]),
+                "low": float(row["Low"]),
+                "close": float(row["Close"]),
+                "volume": int(row.get("Volume", 0)) if not pd.isna(row.get("Volume", 0)) else 0
+            })
+        return candles
+    except Exception as e:
+        logger.warning(f"yfinance today candles fetch failed for {symbol}: {e}")
+        return []
+
+def _ensure_today_candles(data: List[Dict[str, Any]], symbol: str, timeframe: str) -> List[Dict[str, Any]]:
+    """Appends today's 09:15 to current time candles if missing from broker or CSV cache data."""
+    if not data:
+        return _fetch_yfinance_today(symbol, timeframe)
+        
+    today_candles = _fetch_yfinance_today(symbol, timeframe)
+    if not today_candles:
+        return data
+        
+    seen = {d.get("datetime") for d in data}
+    combined = list(data)
+    for tc in today_candles:
+        dt = tc.get("datetime")
+        if dt not in seen:
+            seen.add(dt)
+            combined.append(tc)
+        else:
+            for idx, item in enumerate(combined):
+                if item.get("datetime") == dt:
+                    combined[idx] = tc
+                    break
+            
+    return combined
+
 @app.get("/api/history")
 async def get_history(
     symbol: str = Query(..., description="The stock ticker or option symbol (e.g., RELIANCE, NIFTY, NIFTY 24350 CE)"),
@@ -1031,6 +1105,8 @@ async def get_history(
                 logger.info("Broker returned empty spot data for %s, trying CSV dataset cache fallback...", underlying_sym)
                 spot_data = load_csv_history(underlying_broker_sym, start_date, end_date, timeframe)
                 
+            spot_data = _ensure_today_candles(spot_data, underlying_broker_sym, timeframe)
+            
             if not spot_data:
                 raise HTTPException(status_code=404, detail=f"No underlying data returned for {underlying_broker_sym}")
                 
@@ -1058,6 +1134,8 @@ async def get_history(
             logger.info("Broker returned empty data for %s, trying CSV dataset cache fallback...", formatted_symbol)
             data = load_csv_history(formatted_symbol, start_date, end_date, timeframe)
             
+        data = _ensure_today_candles(data, formatted_symbol, timeframe)
+        
         if not data:
             raise HTTPException(status_code=404, detail=f"No data returned by broker for {formatted_symbol}")
             
