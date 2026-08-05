@@ -1570,6 +1570,21 @@ async def run_live_bot(symbols: List[str]) -> None:
     async def sync_broker_state():
         if not hasattr(broker, 'get_positions'):
             return
+        # Root-cause fix (found live, 2026-08-05): in paper mode there is no
+        # real broker account to reconcile against -- FyersBroker.get_positions()
+        # unconditionally returns [] in paper mode (it has no persistent
+        # state of its own across restarts), so this reconciliation would
+        # see EVERY locally tracked position as "the broker reports it
+        # flat" on every single WebSocket (re)connect, including the very
+        # first connect right after a fresh process start. Live result: a
+        # real open position was force-closed at its stop-loss price as an
+        # ESTIMATE within seconds of a routine restart, even though nothing
+        # had actually happened to it. In paper mode active_positions.json
+        # IS the authoritative position state -- there is nothing to
+        # reconcile it against, so skip entirely.
+        if getattr(broker, 'paper_mode', False):
+            logger.info("Skipping broker-state reconciliation — paper mode has no real broker account to reconcile against.")
+            return
         logger.info("Re-syncing with broker state after WebSocket reconnect...")
         try:
             broker_positions = broker.get_positions()
@@ -1612,7 +1627,7 @@ async def run_live_bot(symbols: List[str]) -> None:
                 ))
                 record_trade(result.symbol, result.state_action, result.exit_price, datetime.now(_IST).isoformat(), qty=result.quantity)
 
-                del active_positions[result.symbol]
+                del active_positions[result.local_key]
                 _save_positions(active_positions)
         except Exception as e:
             logger.error("Failed to sync broker state: %s", e)

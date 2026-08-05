@@ -206,3 +206,56 @@ def test_mixed_open_and_closed_positions_only_reconciles_the_closed_one():
 
 def test_empty_active_positions_returns_no_results():
     assert compute_reconciliation({}, broker_positions=[], order_book=[]) == []
+
+
+def test_option_position_keyed_by_underlying_reconciles_against_its_own_symbol():
+    """Root-cause regression (found live, 2026-08-05): main.py deliberately
+    keys `active_positions` by the underlying (e.g. NSE:NIFTY50-INDEX) for
+    option strategies, NOT by the actual traded option symbol -- see the
+    "We MUST key active_positions by the base symbol" comment at its entry
+    sites. Every prior test above happened to use the same string for both
+    the dict key and Position.symbol, masking a real bug: this function
+    used to reconcile against the dict key instead of `local_pos.symbol`,
+    so it checked whether the *underlying index* was flat at the broker
+    (trivially always true -- this system never holds the index itself),
+    causing every option position to be force-closed as "broker flat" the
+    moment reconciliation ran, regardless of the option's real state."""
+    underlying_key = "NSE:NIFTY50-INDEX"
+    option_symbol = "NSE:NIFTY2681123750CE"
+    local = Position(
+        symbol=option_symbol, side=1, entry_price=898.4, quantity=65,
+        entry_time="2026-08-05T10:05:07", highest_price=898.4,
+        lowest_price=898.4, stop_loss=894.3572, target=929.844,
+    )
+    active_positions = {underlying_key: local}
+    # The option itself is still genuinely open at the broker.
+    broker_positions = [BrokerPosition(symbol=option_symbol, side=PositionSide.LONG, quantity=65, average_price=898.4)]
+
+    results = compute_reconciliation(active_positions, broker_positions, order_book=[])
+
+    assert results == []  # must be left alone -- the option is still open
+    assert underlying_key in active_positions
+
+
+def test_option_position_keyed_by_underlying_resolves_and_reports_local_key():
+    """Same key/symbol split as above, but the option really has closed --
+    the result must reconcile against/report the real option symbol while
+    `local_key` carries the dict key the caller needs for deletion."""
+    underlying_key = "NSE:NIFTY50-INDEX"
+    option_symbol = "NSE:NIFTY2681123750CE"
+    local = Position(
+        symbol=option_symbol, side=1, entry_price=898.4, quantity=65,
+        entry_time="2026-08-05T10:05:07", highest_price=898.4,
+        lowest_price=898.4, stop_loss=894.3572, target=929.844,
+    )
+    active_positions = {underlying_key: local}
+    order_book = [_order_book_fill(option_symbol, OrderSide.SELL, traded_price=910.0)]
+
+    results = compute_reconciliation(active_positions, broker_positions=[], order_book=order_book)
+
+    assert len(results) == 1
+    r = results[0]
+    assert r.symbol == option_symbol       # the real traded instrument
+    assert r.local_key == underlying_key   # what the caller must delete from active_positions
+    assert r.exit_price == 910.0
+    assert r.is_estimate is False
