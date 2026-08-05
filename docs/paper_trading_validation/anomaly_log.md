@@ -65,6 +65,24 @@ defense against a genuinely different failure mode (a human/script
 actually invoking the start command twice from separate terminals), and
 correctly does *not* reject the benign stub/child pattern (verified live).
 
+### Investigated, inconclusive — 9x "SECURITY ALERT: broker_credentials.json integrity check FAILED" today (10:11-12:00 IST)
+Checked whether this is a real tamper/corruption risk. `broker_credentials.json`
+itself has been byte-identical (confirmed via mtime, unsigned/legacy
+format, no `# MAC:` trailer) since **2026-08-01 17:55** — untouched all
+day today. Since `_load_file()`'s MAC-mismatch branch can only fire when a
+MAC trailer is actually present, and the file on disk has never had one
+today, something must have been reading a transient in-memory or
+partially-written state distinct from the file's resting content —
+grepped every writer of this file (`brokers/credentials.py`,
+`scripts/auth/{save_broker_creds,resign_creds}.py`, `token_cache.py`,
+`disaster_recovery.py`) and found none that both run automatically today
+and would produce this. Not chasing further right now: **paper mode never
+reads broker credentials at all** (`Fyers: paper mode — skipping real
+authentication`, confirmed live in today's logs), so this has zero effect
+on the current validation window's correctness — but it should be
+revisited before any live-mode Go decision, since a flaky integrity check
+against real broker secrets is a legitimate concern for that phase.
+
 **Deployed:** killed all 4 pre-fix processes at 13:05 IST (verified
 `active_positions.json` was `{}` first — no open positions, zero-risk
 restart window), restarted both with the fixes above. Confirmed clean
