@@ -65,6 +65,20 @@ defense against a genuinely different failure mode (a human/script
 actually invoking the start command twice from separate terminals), and
 correctly does *not* reject the benign stub/child pattern (verified live).
 
+### Investigated, not a real bug — "SignalAgent failed to load LSTM model: __no_such_model__.zip.zip" / "today is 2099-01-01" in fyersApi.log
+Also a symptom of the same test-log-leakage bug fixed above, not a live
+defect. `"__no_such_model__.zip"` and the 2099-01-01 date are literal
+fixture values from `tests/test_signal_agent_lstm_state.py` (its
+`SignalAgent(model_path="__no_such_model__.zip")` fixture and a mocked
+`datetime(2099, 1, 1, ...)`). The `.zip.zip` doubling is stable_baselines3's
+own internal retry-with-suffix-appended fallback when the given path
+(already deliberately nonexistent, by test design) fails to load — not a
+path-construction bug in this codebase. Confirmed the real live model path
+(`trading-system/best_model.zip`, used by `MARLStrategy`) exists on disk,
+and confirmed today's actual `active_strategy` is `ema_rsi`, not
+`MARL_Ultra` — so this code path isn't even exercised live today. No code
+change needed; already resolved by the log-rotation fix above.
+
 ### Investigated, inconclusive — 9x "SECURITY ALERT: broker_credentials.json integrity check FAILED" today (10:11-12:00 IST)
 Checked whether this is a real tamper/corruption risk. `broker_credentials.json`
 itself has been byte-identical (confirmed via mtime, unsigned/legacy
