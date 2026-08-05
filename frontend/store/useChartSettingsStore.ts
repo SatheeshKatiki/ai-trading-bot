@@ -30,6 +30,10 @@ export interface ChartSettingsState {
     bearishNormalColor: string;
     chopColor: string;
 
+    showVwap: boolean;
+    vwapColor: string;
+    vwapLineWidth: number;
+
     // Actions
     setEma1Length: (val: number) => void;
     setEma1Color: (val: string) => void;
@@ -57,6 +61,10 @@ export interface ChartSettingsState {
     setBullishNormalColor: (val: string) => void;
     setBearishNormalColor: (val: string) => void;
     setChopColor: (val: string) => void;
+
+    setShowVwap: (val: boolean) => void;
+    setVwapColor: (val: string) => void;
+    setVwapLineWidth: (val: number) => void;
 }
 
 export const useChartSettingsStore = create<ChartSettingsState>()(
@@ -90,6 +98,10 @@ export const useChartSettingsStore = create<ChartSettingsState>()(
             bearishNormalColor: '#FF0000',
             chopColor: '#6B7280',
 
+            showVwap: false,
+            vwapColor: '#FFB300',
+            vwapLineWidth: 2,
+
             setEma1Length: (val) => set({ ema1Length: val }),
             setEma1Color: (val) => set({ ema1Color: val }),
             setEma1LineWidth: (val) => set({ ema1LineWidth: val }),
@@ -116,6 +128,10 @@ export const useChartSettingsStore = create<ChartSettingsState>()(
             setBullishNormalColor: (val) => set({ bullishNormalColor: val }),
             setBearishNormalColor: (val) => set({ bearishNormalColor: val }),
             setChopColor: (val) => set({ chopColor: val }),
+
+            setShowVwap: (val) => set({ showVwap: val }),
+            setVwapColor: (val) => set({ vwapColor: val }),
+            setVwapLineWidth: (val) => set({ vwapLineWidth: val }),
         }),
         {
             name: 'chart-settings-storage',

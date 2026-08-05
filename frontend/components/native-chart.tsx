@@ -2,10 +2,9 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { createChart, ColorType, IChartApi, ISeriesApi, Time, TickMarkType, CandlestickSeries, LineSeries, HistogramSeries, CrosshairMode, createSeriesMarkers } from "lightweight-charts";
-import { RefreshCw, Eye, EyeOff } from "lucide-react";
+import { RefreshCw, Settings2, X, ChevronDown, Maximize2 as ResetZoomIcon, Download, Tag } from "lucide-react";
 import { useTheme } from "@/components/theme-provider";
 import { useChartSettingsStore } from "@/store/useChartSettingsStore";
-import { Settings2, X, ChevronDown } from "lucide-react";
 import { parseBackendDatetimeToEpochSeconds, getISTNowParts, istWallTimeToEpochSeconds, isMarketOpenIST, formatEpochISTParts } from "@/lib/ist-time";
 
 const SettingGroup = ({ title, active, onToggle, children }: { title: string, active: boolean, onToggle: () => void, children: React.ReactNode }) => (
@@ -122,6 +121,33 @@ function calculateRSI(data: any[], period: number = 14) {
   return result;
 }
 
+// Volume-Weighted Average Price, resetting at each new IST trading day so
+// intraday sessions don't carry cumulative volume/price over from the
+// previous day. Returns the same running (cumPv, cumVol) state it ended on
+// so live ticks can extend it incrementally instead of recomputing from
+// the first candle of the day on every tick.
+function calculateVWAP(data: any[]): { series: any[]; lastDayKey: string | null; cumPv: number; cumVol: number } {
+  const series: any[] = [];
+  let cumPv = 0, cumVol = 0, lastDayKey: string | null = null;
+
+  for (const bar of data) {
+    const p = formatEpochISTParts(bar.time as number);
+    const dayKey = `${p.year}-${p.month}-${p.day}`;
+    if (dayKey !== lastDayKey) {
+      cumPv = 0;
+      cumVol = 0;
+      lastDayKey = dayKey;
+    }
+    const typicalPrice = (bar.high + bar.low + bar.close) / 3;
+    const vol = bar.volume || 0;
+    cumPv += typicalPrice * vol;
+    cumVol += vol;
+    const value = cumVol > 0 ? cumPv / cumVol : typicalPrice;
+    series.push({ time: bar.time, value: isNaN(value) ? typicalPrice : value });
+  }
+  return { series, lastDayKey, cumPv, cumVol };
+}
+
 // Helper to check if Indian market is open
 function isMarketOpen() {
   return isMarketOpenIST();
@@ -167,11 +193,13 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
     ema2Length, ema2Color, ema2LineWidth, ema2LineStyle,
     showVolume, showRsi, rsiLength, rsiColor, rsiLineWidth, rsiLineStyle, rsiOverbought, rsiOversold,
     showSmartTrend, bullishSurgeColor, bearishSurgeColor, bullishNormalColor, bearishNormalColor, chopColor,
-    
+    showVwap, vwapColor, vwapLineWidth,
+
     setEma1Length, setEma1Color, setEma1LineWidth, setEma1LineStyle,
     setEma2Length, setEma2Color, setEma2LineWidth, setEma2LineStyle,
     setShowVolume, setShowRsi, setRsiLength, setRsiColor, setRsiLineWidth, setRsiLineStyle, setRsiOverbought, setRsiOversold,
-    setShowSmartTrend, setBullishSurgeColor, setBearishSurgeColor, setBullishNormalColor, setBearishNormalColor, setChopColor
+    setShowSmartTrend, setBullishSurgeColor, setBearishSurgeColor, setBullishNormalColor, setBearishNormalColor, setChopColor,
+    setShowVwap, setVwapColor
   } = useChartSettingsStore();
 
   const [showSettings, setShowSettings] = useState(false);
@@ -186,6 +214,7 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
   const rsiSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
   const rsiObLineRef = useRef<any>(null);
   const rsiOsLineRef = useRef<any>(null);
+  const vwapSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
   const countdownRef = useRef<HTMLDivElement>(null);
 
@@ -200,12 +229,36 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
   const seriesMarkersPluginRef = useRef<any>(null);
   const initialSettingsRef = useRef<any>(null);
 
+  // Incremental indicator state -- seeded from a full recompute whenever
+  // the underlying candle array changes (fetch/cache/settings), then
+  // advanced in O(1) per live tick instead of re-scanning the whole
+  // dataset on every single price update (previously recomputed EMA over
+  // the entire candle history on every tick, and used hardcoded 9/21
+  // periods there regardless of the user's configured EMA lengths).
+  const lastEma1Ref = useRef<number | null>(null);
+  const lastEma2Ref = useRef<number | null>(null);
+  const vwapStateRef = useRef<{ dayKey: string | null; cumPv: number; cumVol: number }>({ dayKey: null, cumPv: 0, cumVol: 0 });
+
+  // Re-seeds the incremental live-tick indicator state (EMA1/EMA2 last
+  // value, VWAP running sums) from a fresh full-array computation. Called
+  // whenever the underlying candle array changes (fetch/cache/settings);
+  // live ticks then extend these in O(1) instead of re-scanning the whole
+  // array on every single price update.
+  const seedIncrementalState = (data: any[], ema1Data: any[], ema2Data: any[]) => {
+    lastEma1Ref.current = ema1Data.length > 0 ? ema1Data[ema1Data.length - 1].value : null;
+    lastEma2Ref.current = ema2Data.length > 0 ? ema2Data[ema2Data.length - 1].value : null;
+    const vwap = calculateVWAP(data);
+    vwapStateRef.current = { dayKey: vwap.lastDayKey, cumPv: vwap.cumPv, cumVol: vwap.cumVol };
+    if (vwapSeriesRef.current) vwapSeriesRef.current.setData(vwap.series);
+  };
+
   const handleOpenSettings = () => {
     initialSettingsRef.current = {
       ema1Length, ema1Color, ema1LineWidth, ema1LineStyle,
       ema2Length, ema2Color, ema2LineWidth, ema2LineStyle,
       showVolume, showRsi, rsiLength, rsiColor, rsiLineWidth, rsiLineStyle, rsiOverbought, rsiOversold,
-      showSmartTrend, bullishSurgeColor, bearishSurgeColor, bullishNormalColor, bearishNormalColor, chopColor
+      showSmartTrend, bullishSurgeColor, bearishSurgeColor, bullishNormalColor, bearishNormalColor, chopColor,
+      showVwap, vwapColor
     };
     setShowSettings(true);
   };
@@ -221,6 +274,7 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
       setBullishSurgeColor(s.bullishSurgeColor); setBearishSurgeColor(s.bearishSurgeColor);
       setBullishNormalColor(s.bullishNormalColor); setBearishNormalColor(s.bearishNormalColor);
       setChopColor(s.chopColor);
+      setShowVwap(s.showVwap); setVwapColor(s.vwapColor);
     }
     setShowSettings(false);
   };
@@ -372,6 +426,10 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
 
     const emaSeries = chart.addSeries(LineSeries, { color: ema1Color, lineWidth: ema1LineWidth as any, lineStyle: ema1LineStyle as any, crosshairMarkerVisible: false, priceLineVisible: false });
     const ema21Series = chart.addSeries(LineSeries, { color: ema2Color, lineWidth: ema2LineWidth as any, lineStyle: ema2LineStyle as any, crosshairMarkerVisible: false, priceLineVisible: false });
+    const vwapSeries = chart.addSeries(LineSeries, {
+      color: vwapColor, lineWidth: vwapLineWidth as any, lineStyle: 2 as any,
+      crosshairMarkerVisible: false, priceLineVisible: false, visible: showVwap,
+    });
 
     chartRef.current = chart;
     seriesRef.current = candleSeries;
@@ -379,6 +437,7 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
     smaSeriesRef.current = ema21Series;
     volumeSeriesRef.current = volumeSeries;
     rsiSeriesRef.current = rsiSeries;
+    vwapSeriesRef.current = vwapSeries;
 
     chart.subscribeCrosshairMove((param) => {
       if (!tooltipRef.current || !chartContainerRef.current) return;
@@ -415,8 +474,15 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
     });
     resizeObserver.observe(chartContainerRef.current);
 
-    // Sync countdown position to price line dynamically
-    let animationFrameId: number;
+    // Sync countdown position to price line dynamically.
+    // Performance fix: this previously ran an uninterruptible RAF loop for
+    // the entire component lifetime, burning a CPU/GPU frame 60x/sec even
+    // while the browser tab was in the background or no countdown badge
+    // was even showing. Now it stops scheduling frames whenever the tab is
+    // hidden (Page Visibility API) and resumes exactly where it left off
+    // when it becomes visible again -- the on-screen behavior while
+    // visible is unchanged.
+    let animationFrameId: number | null = null;
     const syncCountdownPosition = () => {
       if (countdownRef.current && seriesRef.current && lastCandleRef.current) {
         const y = seriesRef.current.priceToCoordinate(lastCandleRef.current.close);
@@ -426,10 +492,20 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
       }
       animationFrameId = requestAnimationFrame(syncCountdownPosition);
     };
-    syncCountdownPosition();
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        if (animationFrameId !== null) cancelAnimationFrame(animationFrameId);
+        animationFrameId = null;
+      } else if (animationFrameId === null) {
+        syncCountdownPosition();
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    if (!document.hidden) syncCountdownPosition();
 
     return () => {
-      cancelAnimationFrame(animationFrameId);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      if (animationFrameId !== null) cancelAnimationFrame(animationFrameId);
       resizeObserver.disconnect();
       chart.remove();
       chartRef.current = null;
@@ -439,6 +515,7 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
       smaSeriesRef.current = null;
       volumeSeriesRef.current = null;
       rsiSeriesRef.current = null;
+      vwapSeriesRef.current = null;
     };
   }, []); // Run only ONCE on mount
 
@@ -513,9 +590,12 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
 
     const fetchHistory = async () => {
       if (disableFetch && initialData) {
+        const ema1Data = calculateEMA(initialData, ema1Length);
+        const ema2Data = calculateSMA(initialData, ema2Length);
         candleSeries.setData(initialData);
-        emaSeries.setData(calculateEMA(initialData, ema1Length));
-        smaSeries.setData(calculateSMA(initialData, ema2Length));
+        emaSeries.setData(ema1Data);
+        smaSeries.setData(ema2Data);
+        seedIncrementalState(initialData, ema1Data, ema2Data);
         if (initialData.length > 0) {
           lastCandleRef.current = initialData[initialData.length - 1];
           chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, initialData.length - 150), to: initialData.length });
@@ -532,18 +612,16 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
         const cached = chartDataCache[cacheKey];
         if (!isMounted) return;
         
-        let dataToSet = cached;
         const ema1Data = calculateEMA(cached, ema1Length);
         const ema2Data = calculateSMA(cached, ema2Length);
-        
-        if (showSmartTrend) {
-           // We will let the dedicated settings useEffect handle the deep coloring, 
-           // but for instant load we just set base data and let the other hook color it
-        }
+        // Smart Trend coloring is intentionally skipped here for an instant
+        // cache-hit render -- the dedicated settings effect (2b) applies it
+        // right after.
 
         candleSeries.setData(cached);
         emaSeries.setData(ema1Data);
         smaSeries.setData(ema2Data);
+        seedIncrementalState(cached, ema1Data, ema2Data);
         lastCandleRef.current = cached[cached.length - 1];
         chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, cached.length - 150), to: cached.length });
         setLoading(false); // Instant load!
@@ -642,6 +720,7 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
           emaSeries.setData(ema1Data);
           smaSeries.setData(ema2Data);
           if (rsiSeriesRef.current) rsiSeriesRef.current.setData(rsiData);
+          seedIncrementalState(uniqueData, ema1Data, ema2Data);
 
           if (volumeSeriesRef.current) {
             const volumeData = uniqueData.map((d: any) => ({
@@ -693,6 +772,7 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
 
       if (rsiObLineRef.current) rsiObLineRef.current.applyOptions({ price: rsiOverbought });
       if (rsiOsLineRef.current) rsiOsLineRef.current.applyOptions({ price: rsiOversold });
+      if (vwapSeriesRef.current) vwapSeriesRef.current.applyOptions({ visible: showVwap, color: vwapColor, lineWidth: vwapLineWidth as any });
 
       // 2. Recalculate indicators
       const ema1Data = calculateEMA(cachedData, ema1Length);
@@ -736,7 +816,8 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
       if (emaSeriesRef.current) emaSeriesRef.current.setData(ema1Data);
       if (smaSeriesRef.current) smaSeriesRef.current.setData(ema2Data);
       if (rsiSeriesRef.current) rsiSeriesRef.current.setData(rsiData);
-      
+      seedIncrementalState(cachedData, ema1Data, ema2Data);
+
       // Update the last candle ref so live ticks don't revert colors immediately
       lastCandleRef.current = dataToSet[dataToSet.length - 1];
     }
@@ -746,6 +827,7 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
     rsiLength, rsiColor, rsiLineWidth, rsiLineStyle, rsiOverbought, rsiOversold,
     showVolume, showRsi, showSmartTrend,
     bullishSurgeColor, bearishSurgeColor, bullishNormalColor, bearishNormalColor, chopColor,
+    showVwap, vwapColor, vwapLineWidth,
     symbol, timeframe
   ]);
 
@@ -901,26 +983,59 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
         });
       }
 
-      // Update EMAs dynamically
+      // Update indicators incrementally instead of recomputing over the
+      // entire candle history on every single tick (previously O(n) per
+      // tick via calculateEMA(cached, ...) on the whole array). Also fixes
+      // a pre-existing bug: this path hardcoded periods 9/21 regardless of
+      // the user's configured ema1Length/ema2Length, and used the EMA
+      // formula for series 2 even though the historical/settings paths
+      // compute it as a simple moving average (calculateSMA) -- both
+      // series would silently jump to a different formula/period the
+      // instant a live tick arrived.
       const cacheKey = `${symbol}_${timeframe}`;
       const cached = chartDataCache[cacheKey];
       if (cached && emaSeriesRef.current && smaSeriesRef.current) {
         const lastIdx = cached.length - 1;
         if (lastIdx >= 0) {
+          const mult1 = 2 / (ema1Length + 1);
           if (cached[lastIdx].time === updatedCandle.time) {
             cached[lastIdx] = updatedCandle;
           } else {
+            // The bar that was forming until now has definitively closed --
+            // advance the EMA1 anchor by one real step using its final
+            // close before appending the new (still-forming) bar.
+            lastEma1Ref.current = lastEma1Ref.current !== null
+              ? (cached[lastIdx].close - lastEma1Ref.current) * mult1 + lastEma1Ref.current
+              : cached[lastIdx].close;
             cached.push(updatedCandle);
           }
-          const ema9 = calculateEMA(cached, 9);
-          const ema21 = calculateEMA(cached, 21);
-          emaSeriesRef.current.update(ema9[ema9.length - 1]);
-          smaSeriesRef.current.update(ema21[ema21.length - 1]);
+
+          // EMA1: live value for the still-forming last bar, anchored on
+          // the last fully-closed bar's EMA -- repeated ticks within the
+          // same forming bar recompute from that same fixed anchor rather
+          // than compounding, exactly matching what a full recompute would
+          // give for the bar in progress.
+          const liveEma1 = lastEma1Ref.current !== null
+            ? (updatedCandle.close - lastEma1Ref.current) * mult1 + lastEma1Ref.current
+            : updatedCandle.close;
+          emaSeriesRef.current.update({ time: updatedCandle.time, value: liveEma1 });
+
+          // EMA "2" is actually a simple moving average (calculateSMA) --
+          // a plain windowed average over the last ema2Length closes is
+          // O(period), not the O(n) full-array EMA this used to run.
+          const windowStart = Math.max(0, cached.length - ema2Length);
+          const window = cached.slice(windowStart);
+          const smaValue = window.reduce((sum: number, b: any) => sum + b.close, 0) / window.length;
+          smaSeriesRef.current.update({ time: updatedCandle.time, value: smaValue });
+
+          // VWAP is volume-weighted, and live ticks here never carry real
+          // volume (always 0, same as the volume series' own live update
+          // above) -- so it correctly holds its last historical value
+          // until the next fetch rather than needing an update here.
         }
       }
-
     }
-  }, [livePrice, timeframe, lastTick]);
+  }, [livePrice, timeframe, lastTick, ema1Length, ema2Length]);
 
   return (
     <div className="w-full h-full relative" style={{ minHeight: "450px" }}>
@@ -1069,6 +1184,16 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
                 <SettingGroup title="Volume" active={activeAccordion === 'vol'} onToggle={() => setActiveAccordion(activeAccordion === 'vol' ? null : 'vol')}>
                   <Toggle checked={showVolume} onChange={setShowVolume} label="Show Volume" />
                 </SettingGroup>
+
+                <SettingGroup title="VWAP" active={activeAccordion === 'vwap'} onToggle={() => setActiveAccordion(activeAccordion === 'vwap' ? null : 'vwap')}>
+                  <Toggle checked={showVwap} onChange={setShowVwap} label="Show VWAP" />
+                  {showVwap && (
+                    <>
+                      <div className="w-full h-px bg-border/40 my-1"></div>
+                      <ColorSwatch label="Line Color" color={vwapColor} onChange={setVwapColor} />
+                    </>
+                  )}
+                </SettingGroup>
               </div>
             )}
 
@@ -1136,10 +1261,38 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
         </div>
       )}
 
-      {/* Settings Gear Icon at Bottom Right */}
-      <div className="absolute bottom-1 right-2 z-20">
-        <button 
-          onClick={() => showSettings ? handleCancelSettings() : handleOpenSettings()} 
+      {/* Chart Toolbar: Reset Zoom / Toggle Markers / Export / Settings */}
+      <div className="absolute bottom-1 right-2 z-20 flex items-center gap-1.5">
+        <button
+          onClick={() => chartRef.current?.timeScale().fitContent()}
+          className="p-2 rounded-full bg-background/90 hover:bg-background text-muted-foreground hover:text-foreground transition-all shadow-lg border border-border/40 backdrop-blur-md pointer-events-auto flex items-center justify-center hover:scale-110 active:scale-95"
+          title="Reset Zoom"
+        >
+          <ResetZoomIcon size={16} />
+        </button>
+        <button
+          onClick={() => setShowMarkers(!showMarkers)}
+          className={`p-2 rounded-full transition-all shadow-lg border backdrop-blur-md pointer-events-auto flex items-center justify-center hover:scale-110 active:scale-95 ${showMarkers ? 'bg-primary/20 text-primary border-primary/30' : 'bg-background/90 hover:bg-background text-muted-foreground hover:text-foreground border-border/40'}`}
+          title={showMarkers ? "Hide Trade Markers" : "Show Trade Markers"}
+        >
+          <Tag size={16} />
+        </button>
+        <button
+          onClick={() => {
+            if (!chartRef.current) return;
+            const canvas = chartRef.current.takeScreenshot();
+            const link = document.createElement('a');
+            link.href = canvas.toDataURL('image/png');
+            link.download = `${symbol.replace(/[:\s]/g, '_')}_${timeframe.replace(/\s/g, '')}_chart.png`;
+            link.click();
+          }}
+          className="p-2 rounded-full bg-background/90 hover:bg-background text-muted-foreground hover:text-foreground transition-all shadow-lg border border-border/40 backdrop-blur-md pointer-events-auto flex items-center justify-center hover:scale-110 active:scale-95"
+          title="Export Chart as PNG"
+        >
+          <Download size={16} />
+        </button>
+        <button
+          onClick={() => showSettings ? handleCancelSettings() : handleOpenSettings()}
           className="p-2 rounded-full bg-background/90 hover:bg-background text-muted-foreground hover:text-foreground transition-all shadow-lg border border-border/40 backdrop-blur-md pointer-events-auto flex items-center justify-center hover:scale-110 active:scale-95"
           title="Chart Settings"
         >
