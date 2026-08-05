@@ -87,9 +87,17 @@ state.db reset below):**
   fixed) rate-limit bug.
 - Two `NSE:NIFTY2681124550CE` positions force-closed the same way at
   10:25 IST during the reconnect storm.
-- Also discovered: 4 `NIFTY-RATELIMIT-TEST` rows in the `trades` table —
-  test-script pollution that leaked into shared state, apparently left
-  over from the interrupted prior session validating the throttle fix.
+- Also discovered: 4 `NIFTY-RATELIMIT-TEST` rows in the `trades` table.
+  Initially assumed leftover from the interrupted prior session — actually
+  a long-standing documented hazard (first flagged 2026-08-03, see that
+  date's entry below: "this will keep recurring every time the suite runs
+  here") that I re-triggered myself: `tests/test_order_rate_limit.py`
+  hits the real `/api/order/execute` endpoint with `record_trade()`
+  unmocked, writing straight into the real `state.db` on every `pytest`
+  run. Two more rows appeared mid-session from my own test-suite runs,
+  re-polluting a reset I'd just done. Fixed properly this time — see the
+  dedicated `fix(tests)` commit — by mocking `shared.state.record_trade`
+  in both tests that reach it, instead of just re-flagging the hazard.
 - My own mistake: live-verifying the reconciliation fix, I injected a
   synthetic position using a non-CE/PE-shaped symbol
   (`NSE:NIFTY-RECONCILE-FIX-VERIFY-TEST`) to confirm it would survive a
