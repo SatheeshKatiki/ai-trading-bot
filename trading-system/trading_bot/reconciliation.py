@@ -14,7 +14,7 @@ updates, position-file persistence).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from brokers import OrderSide, OrderStatus
 from brokers.models import OrderBookEntry, Position as BrokerPosition
@@ -51,11 +51,25 @@ def compute_reconciliation(
     active_positions: Dict[str, Position],
     broker_positions: List[BrokerPosition],
     order_book: List[OrderBookEntry],
+    live_prices: Optional[Dict[str, float]] = None,
 ) -> List[ReconciliationResult]:
     """Return a ReconciliationResult for every local position the broker
     no longer shows as open (i.e. it closed while we were disconnected).
     Positions the broker still reports as open are left untouched — the
     caller should not modify them.
+
+    `live_prices` (optional, keyed by the traded symbol) is a second exit
+    price source, checked after the order book but before the stop-loss
+    estimate fallback. Added to let this same, already-well-tested pure
+    function double as the decision logic for an emergency force-close
+    (`main.py`'s `_emergency_flatten_all_positions`, wired to the
+    dashboard's panic-exit button) — that caller passes `broker_positions=[]`
+    and `order_book=[]` (there's nothing to reconcile against, every open
+    position must close) along with a fresh live quote per symbol, so it
+    gets a real market exit price instead of falling all the way back to
+    the stop-loss estimate meant for "we don't know what really happened
+    while disconnected". Omitting `live_prices` (or leaving a symbol out of
+    it) preserves the exact prior behavior for real reconciliation callers.
 
     `active_positions` is keyed by the *underlying* symbol (e.g.
     ``NSE:NIFTY50-INDEX``), not the actual traded instrument — main.py's
@@ -74,14 +88,18 @@ def compute_reconciliation(
     Exit price resolution order:
     1. The broker's order book, if it has a matching COMPLETE fill for
        the traded instrument on the expected exit side with a real traded
-       price.
-    2. Otherwise the local position's stop-loss price, flagged as an
+       price. Not an estimate.
+    2. A fresh live quote from `live_prices`, if the caller supplied one
+       for this symbol. Not an estimate — it's real market data, just not
+       a broker-confirmed fill.
+    3. Otherwise the local position's stop-loss price, flagged as an
        ESTIMATE via `is_estimate=True` — the caller should log this
        loudly rather than silently trusting it, since the position could
        have hit its target, been closed manually, or gapped through the
        stop-loss to a worse price.
     """
     broker_pos_dict = {p.symbol: p for p in broker_positions}
+    live_prices = live_prices or {}
     results: List[ReconciliationResult] = []
 
     for local_key, local_pos in active_positions.items():
@@ -99,9 +117,14 @@ def compute_reconciliation(
                 exit_price = entry.traded_price
                 break
 
-        is_estimate = exit_price is None
-        if is_estimate:
-            exit_price = local_pos.stop_loss
+        is_estimate = False
+        if exit_price is None:
+            live_price = live_prices.get(traded_symbol)
+            if live_price is not None and live_price > 0:
+                exit_price = live_price
+            else:
+                is_estimate = True
+                exit_price = local_pos.stop_loss
 
         is_option = "CE" in traded_symbol or "PE" in traded_symbol
         # `side` only flips the sign for a genuine short position in the

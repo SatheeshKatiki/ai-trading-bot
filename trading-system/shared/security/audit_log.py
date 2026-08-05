@@ -87,6 +87,7 @@ class AuditEvent:
     BOT_START        = "BOT_START"
     BOT_STOP         = "BOT_STOP"
     VALIDATION_ERROR = "VALIDATION_ERROR"
+    EMERGENCY_STOP   = "EMERGENCY_STOP"
 
 
 # ---------------------------------------------------------------------------

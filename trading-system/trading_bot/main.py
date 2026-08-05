@@ -788,7 +788,22 @@ async def run_live_bot(symbols: List[str]) -> None:
         # is free (no meaningful disk I/O) on the vast majority of ticks
         # regardless of how long it's been since the last real change.
         settings = _load_settings()
-        
+
+        # ----------------------------------------------------------------
+        # 🚨🚨 Emergency Stop (panic-exit) — force-close everything
+        # ----------------------------------------------------------------
+        # Root-cause fix (found live, 2026-08-05): see
+        # emergency_flatten_all_positions()'s own docstring for the full
+        # incident. Checked ahead of the plain `is_active` halt below on
+        # purpose -- `is_active=False` only freezes processing (existing
+        # positions are left completely unmanaged, SL/target included),
+        # which is the wrong behavior for a panic exit that needs to
+        # actively flatten everything, not just stop touching it.
+        if settings.get("emergency_stop", False):
+            if active_positions:
+                await emergency_flatten_all_positions("panic-exit triggered via dashboard")
+            return
+
         # ----------------------------------------------------------------
         # 🚨 Emergency Halt Check (Advanced Wiring)
         # ----------------------------------------------------------------
@@ -1693,6 +1708,81 @@ async def run_live_bot(symbols: List[str]) -> None:
                 _save_positions(active_positions)
         except Exception as e:
             logger.error("Failed to sync broker state: %s", e)
+
+    async def emergency_flatten_all_positions(reason: str) -> None:
+        """Force-close every open position right now, at a real market
+        price where one can be gotten. Wired to the dashboard's panic-exit
+        button via the `emergency_stop` flag in config/settings.json.
+
+        Root-cause fix (found live, 2026-08-05, while designing a safe way
+        to test the kill switch ahead of the next live session):
+        api_bridge.py's `/api/panic-exit` endpoint only ever called
+        `broker.get_positions()`/`get_order_book()`/`place_order()` directly
+        on the broker -- but `FyersBroker.get_positions()` and
+        `get_order_book()` both unconditionally return `[]` in paper mode,
+        so the endpoint always reported `closed=0, cancelled=0` and never
+        touched anything this engine actually has open. Worse: even with a
+        real broker, main.py runs in a SEPARATE process from api_bridge.py
+        with no shared state except `config/settings.json` and
+        `config/active_positions.json` -- main.py's own in-memory
+        `active_positions` dict and `trading_halted`-style state had zero
+        awareness a panic exit had even happened, so it could keep managing
+        (or worse, entering new) positions completely unaware. The kill
+        switch was, in effect, non-functional end-to-end during this entire
+        paper-trading validation window.
+
+        This closes the loop from main.py's side: `on_tick()` checks the
+        `emergency_stop` flag on every tick (settings.json is already
+        reloaded every tick for other settings, so this needs no new
+        polling), and calls this function once when the flag is first seen.
+        Reuses `compute_reconciliation()` -- the same pure, already
+        extensively tested decision logic behind the WebSocket-reconnect
+        reconciliation path -- via its `live_prices` parameter (added for
+        exactly this reuse) so the exit-price/PnL/state_action logic is
+        identical to, not a second hand-rolled copy of, the already-proven
+        reconciliation math.
+        """
+        if not active_positions:
+            return
+        logger.warning("!!! EMERGENCY STOP: force-closing %d open position(s) — %s !!!", len(active_positions), reason)
+
+        live_prices: Dict[str, float] = {}
+        for pos in active_positions.values():
+            try:
+                quotes = broker.get_market_data([pos.symbol])
+                quote = quotes.get(pos.symbol)
+                if quote and quote.ltp > 0:
+                    live_prices[pos.symbol] = quote.ltp
+            except Exception as e:
+                logger.error("Emergency stop: could not fetch live price for %s: %s", pos.symbol, e)
+
+        for result in compute_reconciliation(active_positions, broker_positions=[], order_book=[], live_prices=live_prices):
+            if result.is_estimate:
+                logger.error(
+                    "EMERGENCY STOP: could not get a live quote for %s — falling back to the "
+                    "stop-loss price (%.2f) as an ESTIMATE. Recorded PNL for this trade may be "
+                    "inaccurate; verify manually.",
+                    result.symbol, result.exit_price,
+                )
+            else:
+                logger.warning("EMERGENCY STOP: closed %s at %.2f (%s).", result.symbol, result.exit_price, reason)
+
+            portfolio_risk.update_pnl(result.pnl, risk_manager.current_equity)
+            risk_manager.record_trade(TradeRecord(
+                result.symbol, result.trade_side,
+                result.entry_price, result.exit_price, result.pnl, datetime.now(_IST).isoformat()
+            ))
+            record_trade(result.symbol, result.state_action, result.exit_price, datetime.now(_IST).isoformat(), qty=result.quantity)
+            update_equity(risk_manager.current_equity, risk_manager.daily_pnl)
+
+            audit.log(AuditEvent.EMERGENCY_STOP, {
+                "symbol": result.symbol, "exit_price": result.exit_price,
+                "pnl": result.pnl, "is_estimate": result.is_estimate, "reason": reason,
+            }, severity="WARNING")
+
+            del active_positions[result.local_key]
+
+        _save_positions(active_positions)
 
     logger.info("Starting live stream for symbols: %s", ", ".join(symbols))
     await broker.stream_quotes(symbols, on_tick, on_reconnect=sync_broker_state)

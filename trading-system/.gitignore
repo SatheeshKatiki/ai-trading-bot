@@ -51,6 +51,8 @@ state.db-wal
 state.db-shm
 # Orphaned duplicate from an earlier path layout — not read/written anywhere
 data/state.db
+# Singleton-instance lock files (shared/singleton_lock.py) — PIDs, machine-specific
+run/
 
 # ---------------------------------------------------------------------------
 # Audit logs (append-only, may contain order details)

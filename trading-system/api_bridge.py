@@ -746,74 +746,176 @@ async def execute_order(req: ExecuteOrderRequest, request: Request):
         logger.error(f"Order Execution Failed: {e}")
         raise HTTPException(status_code=500, detail='Order execution failed.')
 
+def _set_emergency_stop(active: bool) -> None:
+    """Atomically set/clear the `emergency_stop` flag in config/settings.json
+    -- the cross-process signal main.py's on_tick() checks every tick to
+    force-close all open positions (see emergency_flatten_all_positions()
+    in trading_bot/main.py for the full incident/design writeup). Scoped to
+    just this one key (its own tempfile+rename, not routed through the much
+    larger /api/settings endpoint) so this dangerous, time-critical action
+    never depends on unrelated credential-handling logic in that path.
+    """
+    import tempfile
+    settings_path = "config/settings.json"
+    existing = {}
+    if os.path.exists(settings_path):
+        with open(settings_path, "r", encoding="utf-8") as f:
+            existing = json.load(f)
+    existing["emergency_stop"] = active
+    os.makedirs("config", exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir="config", prefix="settings_tmp_", suffix=".json")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(existing, f, indent=4)
+    os.replace(tmp_path, settings_path)
+
+
 @app.post("/api/panic-exit")
 async def panic_exit(request: Request):
     """Nuclear Option: Immediately cancels all orders and squares off all positions."""
     if request.client and request.client.host not in ["127.0.0.1", "localhost", "::1"]:
         logger.warning(f"Unauthorized Panic Exit attempt from {request.client.host}")
         raise HTTPException(status_code=403, detail="Forbidden: Localhost access only")
-        
+
     try:
-        broker = BrokerFactory.get_active_broker()
-        if not broker.authenticate():
-            raise HTTPException(status_code=401, detail="Broker not authenticated")
-            
         logger.warning("!!! PANIC EXIT TRIGGERED !!!")
-        
-        # 1. Cancel all pending orders
-        from brokers import OrderStatus
-        pending_orders = broker.get_order_book()
-        cancelled_count = 0
-        for order in pending_orders:
-            if order.status in (OrderStatus.OPEN, OrderStatus.PENDING, OrderStatus.PARTIAL):
-                broker.cancel_order(order.order_id)
-                cancelled_count += 1
-                
-        # 2. Square off all active positions
-        positions = broker.get_positions()
-        closed_count = 0
-        for pos in positions:
-            if pos.quantity != 0:
-                # Opposite side market order
-                side = "SELL" if pos.quantity > 0 else "BUY"
-                qty = abs(pos.quantity)
+
+        # Root-cause fix (found live, 2026-08-05): this endpoint used to
+        # ONLY call broker.get_positions()/get_order_book()/place_order()
+        # directly -- but those all unconditionally return []/no-op in
+        # paper mode, and even with a real broker, main.py runs in a
+        # SEPARATE process with zero awareness this endpoint was ever hit.
+        # Setting this flag is the primary mechanism now (main.py checks it
+        # every tick and force-closes everything it actually has open,
+        # regardless of paper/live mode); the broker-level calls below
+        # remain as a live-mode-only best-effort belt-and-suspenders layer.
+        _set_emergency_stop(True)
+
+        # Snapshot what's actually open right now, from the same file
+        # main.py itself treats as authoritative -- broker.get_positions()
+        # is not a reliable count in paper mode (always empty) and even in
+        # live mode wouldn't reflect what THIS engine's own risk/exit logic
+        # is tracking.
+        flagged_positions = []
+        if os.path.exists("config/active_positions.json"):
+            with open("config/active_positions.json", "r", encoding="utf-8") as f:
                 try:
-                    broker.place_order(OrderRequest(
-                        symbol=pos.symbol,
-                        side=OrderSide.SELL if side == "SELL" else OrderSide.BUY,
-                        quantity=qty,
-                        order_type=OrderType.MARKET,
-                    ))
-                    closed_count += 1
-                    audit.log(AuditEvent.ORDER_PLACED,
-                              {"reason": "panic_exit", "symbol": pos.symbol, "side": side, "qty": qty})
-                except Exception as ex:
-                    logger.error("Panic exit failed for position %s: %s", pos.symbol, ex)
-                    audit.log(AuditEvent.ORDER_REJECTED,
-                              {"reason": "panic_exit", "symbol": pos.symbol, "side": side, "qty": qty, "error": str(ex)},
-                              severity="WARNING")
-        
-        # 3. Log the nuclear event
+                    flagged_positions = list(json.load(f).keys())
+                except Exception:
+                    flagged_positions = []
+
+        # Broker-level cancel/close is best-effort and live-mode-only in
+        # practice (paper mode's get_order_book()/get_positions() are
+        # always empty) -- the emergency_stop flag above is what actually
+        # guarantees this engine's real tracked positions get closed, so a
+        # broker-side hiccup here must not turn the whole panic exit into a
+        # reported failure.
+        cancelled_count = 0
+        closed_count = 0
+        try:
+            broker = BrokerFactory.get_active_broker()
+            if broker.authenticate():
+                from brokers import OrderStatus
+                pending_orders = broker.get_order_book()
+                for order in pending_orders:
+                    if order.status in (OrderStatus.OPEN, OrderStatus.PENDING, OrderStatus.PARTIAL):
+                        broker.cancel_order(order.order_id)
+                        cancelled_count += 1
+
+                positions = broker.get_positions()
+                for pos in positions:
+                    if pos.quantity != 0:
+                        side = "SELL" if pos.quantity > 0 else "BUY"
+                        qty = abs(pos.quantity)
+                        try:
+                            broker.place_order(OrderRequest(
+                                symbol=pos.symbol,
+                                side=OrderSide.SELL if side == "SELL" else OrderSide.BUY,
+                                quantity=qty,
+                                order_type=OrderType.MARKET,
+                            ))
+                            closed_count += 1
+                            audit.log(AuditEvent.ORDER_PLACED,
+                                      {"reason": "panic_exit", "symbol": pos.symbol, "side": side, "qty": qty})
+                        except Exception as ex:
+                            logger.error("Panic exit failed for broker position %s: %s", pos.symbol, ex)
+                            audit.log(AuditEvent.ORDER_REJECTED,
+                                      {"reason": "panic_exit", "symbol": pos.symbol, "side": side, "qty": qty, "error": str(ex)},
+                                      severity="WARNING")
+            else:
+                logger.warning("Panic exit: broker not authenticated, skipping broker-level cancel/close (emergency_stop flag is still set).")
+        except Exception as broker_exc:
+            logger.error("Panic exit: broker-level cancel/close failed (emergency_stop flag is still set): %s", broker_exc)
+
+        # Log the nuclear event
         log_file = "fyersApi.log"
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with open(log_file, "a") as f:
-            f.write(f"\n[{timestamp}] !!! PANIC EXIT EXECUTED !!! Cancelled: {cancelled_count}, Closed: {closed_count}\n")
+            f.write(
+                f"\n[{timestamp}] !!! PANIC EXIT TRIGGERED !!! emergency_stop flag set; "
+                f"{len(flagged_positions)} engine-tracked position(s) flagged for force-close: "
+                f"{flagged_positions}. Broker-level cancelled={cancelled_count}, closed={closed_count}\n"
+            )
 
         # Also record to the tamper-evident audit trail (the plaintext log
         # above is not append-only/HMAC-chained and can't detect tampering)
-        audit.log(AuditEvent.ORDER_CANCELLED,
-                  {"reason": "panic_exit", "cancelled": cancelled_count, "closed": closed_count},
+        audit.log(AuditEvent.EMERGENCY_STOP,
+                  {"reason": "panic_exit", "flagged_positions": flagged_positions,
+                   "broker_cancelled": cancelled_count, "broker_closed": closed_count},
                   severity="WARNING")
 
         return {
             "status": "success",
-            "message": "Panic Exit Executed Successfully",
-            "cancelled": cancelled_count,
-            "closed": closed_count
+            "message": (
+                "Emergency stop engaged. The live engine will force-close all tracked "
+                "positions on its next tick (sub-second, not synchronous with this "
+                "request) -- call GET /api/panic-exit/status to confirm it's actually "
+                "flat, or POST /api/panic-exit/clear once you've verified that and want "
+                "to resume normal trading."
+            ),
+            "flagged_positions": flagged_positions,
+            "broker_cancelled": cancelled_count,
+            "broker_closed": closed_count,
         }
     except Exception as e:
         logger.error("Panic Exit Failed: %s", e)
         raise HTTPException(status_code=500, detail='Panic exit failed.')
+
+
+@app.get("/api/panic-exit/status")
+async def panic_exit_status():
+    """Whether emergency_stop is currently engaged, and what the live
+    engine still shows as open (should reach `{}` within ~1 tick of the
+    flag being set)."""
+    settings = {}
+    if os.path.exists("config/settings.json"):
+        with open("config/settings.json", "r", encoding="utf-8") as f:
+            settings = json.load(f)
+    positions = {}
+    if os.path.exists("config/active_positions.json"):
+        with open("config/active_positions.json", "r", encoding="utf-8") as f:
+            try:
+                positions = json.load(f)
+            except Exception:
+                positions = {}
+    return {
+        "emergency_stop": bool(settings.get("emergency_stop", False)),
+        "open_positions": list(positions.keys()),
+    }
+
+
+@app.post("/api/panic-exit/clear")
+async def panic_exit_clear(request: Request):
+    """Deliberately re-arms normal trading after an emergency stop.
+    Requires the same localhost-only access as the panic-exit trigger --
+    this is not something a remote caller should ever be able to flip
+    either direction. Does NOT auto-clear on its own; a human must confirm
+    positions are actually flat first (see /api/panic-exit/status)."""
+    if request.client and request.client.host not in ["127.0.0.1", "localhost", "::1"]:
+        raise HTTPException(status_code=403, detail="Forbidden: Localhost access only")
+    _set_emergency_stop(False)
+    audit.log(AuditEvent.EMERGENCY_STOP, {"reason": "cleared_by_operator"}, severity="WARNING")
+    logger.warning("Emergency stop cleared by operator -- normal trading can resume.")
+    return {"status": "success", "message": "Emergency stop cleared. Normal trading can resume."}
 
 @app.get("/api/engine/status")
 async def get_engine_status():
@@ -853,7 +955,18 @@ async def get_funds():
         client_id = _get_fyers_client_id()
         
         fyers = fyersModel.FyersModel(client_id=client_id, is_async=False, token=token, log_path="")
-        funds = fyers.funds()
+        # Root-cause fix (found live, 2026-08-05): fyers_apiv3's FyersModel
+        # is a SYNCHRONOUS (blocking) HTTP client -- calling it directly
+        # inside an `async def` route handler blocks uvicorn's single
+        # event loop for the full duration of the call, freezing EVERY
+        # other request and WebSocket connection this server is handling,
+        # not just this one. Live incident: a hung Fyers response froze
+        # this entire process for ~2 hours (no crash, no error logged --
+        # it just silently stopped accepting any connection, including
+        # WebSocket keepalive pings, until manually restarted). Offloading
+        # to a thread via asyncio.to_thread keeps the event loop free to
+        # keep serving everything else while this call is in flight.
+        funds = await asyncio.to_thread(fyers.funds)
         return funds
     except Exception as e:
         return {"s": "error", "message": str(e)}
@@ -890,7 +1003,10 @@ async def get_quote(
                 logger.warning("Failed to subscribe to %s: %s", symbol, e)
 
         data = {"symbols": symbol}
-        quotes = fyers.quotes(data=data)
+        # See /api/funds's comment above for why this is offloaded to a
+        # thread -- this endpoint is polled far more frequently than funds,
+        # making it the more likely trigger for the same event-loop freeze.
+        quotes = await asyncio.to_thread(fyers.quotes, data=data)
         logger.debug("Quotes response for %s: %s", symbol, quotes)
         
         # Fallback: If WebSocket didn't receive ticks yet, populate from REST API!
@@ -2159,7 +2275,10 @@ async def get_option_chain(symbol: str = "NSE:NIFTY50-INDEX"):
                 elif "FINNIFTY" in symbol:
                     query_symbol = "NSE:FINNIFTY-INDEX"
 
-                quotes = fyers.quotes(data={"symbols": query_symbol})
+                # Root-cause fix (found live, 2026-08-05): this is the
+                # confirmed trigger of a real ~2-hour full-server freeze --
+                # see /api/funds's comment for the full incident writeup.
+                quotes = await asyncio.to_thread(fyers.quotes, data={"symbols": query_symbol})
                 if quotes and "d" in quotes and len(quotes["d"]) > 0:
                     base_price = float(quotes["d"][0]["v"]["lp"])
         except Exception as e:

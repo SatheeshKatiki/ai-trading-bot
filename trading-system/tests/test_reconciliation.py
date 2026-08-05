@@ -237,6 +237,77 @@ def test_option_position_keyed_by_underlying_reconciles_against_its_own_symbol()
     assert underlying_key in active_positions
 
 
+def test_live_price_is_preferred_over_stop_loss_estimate():
+    """live_prices lets a caller (the emergency-stop force-close path) get
+    a real market exit instead of falling all the way back to stop_loss --
+    added specifically so compute_reconciliation() can double as the
+    emergency-stop decision logic without duplicating this function."""
+    local = _local_long(symbol="NSE:NIFTY25AUG24000CE", entry_price=100.0, quantity=65, stop_loss=85.0)
+    active_positions = {local.symbol: local}
+
+    results = compute_reconciliation(
+        active_positions, broker_positions=[], order_book=[],
+        live_prices={local.symbol: 105.0},
+    )
+
+    assert len(results) == 1
+    r = results[0]
+    assert r.exit_price == 105.0
+    assert r.is_estimate is False  # a real live quote, not a synthetic estimate
+    assert r.pnl == (105.0 - 100.0) * 65 * 1
+
+
+def test_order_book_fill_still_wins_over_live_price():
+    """Order book (a real confirmed fill) outranks a live quote."""
+    local = _local_long(symbol="NSE:NIFTY25AUG24000CE", entry_price=100.0, quantity=65, stop_loss=85.0)
+    active_positions = {local.symbol: local}
+    order_book = [_order_book_fill(local.symbol, OrderSide.SELL, traded_price=110.0)]
+
+    results = compute_reconciliation(
+        active_positions, broker_positions=[], order_book=order_book,
+        live_prices={local.symbol: 105.0},
+    )
+
+    assert results[0].exit_price == 110.0
+    assert results[0].is_estimate is False
+
+
+def test_live_price_falls_back_to_stop_loss_when_missing_for_symbol():
+    local = _local_long(symbol="NSE:NIFTY25AUG24000CE", entry_price=100.0, quantity=65, stop_loss=85.0)
+    active_positions = {local.symbol: local}
+
+    results = compute_reconciliation(
+        active_positions, broker_positions=[], order_book=[],
+        live_prices={"NSE:NIFTY25AUG24100CE": 200.0},  # different symbol
+    )
+
+    assert results[0].exit_price == 85.0
+    assert results[0].is_estimate is True
+
+
+def test_zero_or_negative_live_price_is_rejected_falls_back_to_stop_loss():
+    local = _local_long(symbol="NSE:NIFTY25AUG24000CE", entry_price=100.0, quantity=65, stop_loss=85.0)
+    active_positions = {local.symbol: local}
+
+    results = compute_reconciliation(
+        active_positions, broker_positions=[], order_book=[],
+        live_prices={local.symbol: 0.0},
+    )
+
+    assert results[0].exit_price == 85.0
+    assert results[0].is_estimate is True
+
+
+def test_omitting_live_prices_entirely_preserves_prior_behavior():
+    local = _local_long(symbol="NSE:NIFTY25AUG24000CE", entry_price=100.0, quantity=65, stop_loss=85.0)
+    active_positions = {local.symbol: local}
+
+    results = compute_reconciliation(active_positions, broker_positions=[], order_book=[])
+
+    assert results[0].exit_price == 85.0
+    assert results[0].is_estimate is True
+
+
 def test_option_position_keyed_by_underlying_resolves_and_reports_local_key():
     """Same key/symbol split as above, but the option really has closed --
     the result must reconcile against/report the real option symbol while

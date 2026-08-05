@@ -95,6 +95,34 @@ trade-cap gap being the 3rd/4th) — the "session with zero new findings"
 bar has not been met yet. No open positions at market close; equity
 99,925.65 (pnl -74.35 today).
 
+**2026-08-05 evening update:** asked to design a safe way to test §2.6/§2.8
+ahead of the next live session (market closed, positions flat). Found §2.8
+was **completely non-functional**: `/api/panic-exit` only ever called
+`broker.get_positions()`/`get_order_book()`, both of which unconditionally
+return `[]` in paper mode, and `main.py`/`api_bridge.py` share no
+in-memory state across their separate processes anyway — the kill switch
+had zero effect end-to-end for the whole validation window, always
+reporting fake success. Fixed with a cross-process `emergency_stop` flag
+in `settings.json` that `main.py` checks every tick, wired to
+`compute_reconciliation()`'s existing (now-extended) exit-price logic;
+added `/api/panic-exit/status` and `/clear`. **Live-verified against the
+actually-running system tonight** — real trigger → confirmed `main.py`
+halted within one tick → confirmed via status → cleared → confirmed
+resumption. Still needs one more live pass with a genuinely open position
+during market hours (test plan in `anomaly_log.md`) before §2.8 can be
+marked done outright. Also found and fixed, independently: a real ~2-hour
+full freeze of `api_bridge.py` (three routes called a synchronous Fyers
+SDK client directly inside async handlers, blocking the entire single
+event loop — no crash, no error, it just silently stopped accepting any
+connection, including this engine's own WebSocket feed). Fixed with
+`asyncio.to_thread`. **Status remains NO-GO** — 2 more real bugs found
+(kill switch, event-loop freeze), the second discovered only because
+testing the first required hitting a live endpoint. Also flagged, not yet
+investigated: `main.py`↔`api_bridge.py`'s WebSocket has been dropping
+with keepalive timeouts roughly every 60-90s since tonight's restart —
+well above the §2.11 baseline, reconnecting cleanly each time but worth
+its own look.
+
 This is a living document — check items off with a date and evidence
 reference as they're actually completed, don't mark something done because
 it's expected to pass.

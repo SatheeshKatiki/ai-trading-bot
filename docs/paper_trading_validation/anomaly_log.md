@@ -6,6 +6,146 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-08-05 (evening) — designing a safe §2.8 kill-switch test found it was completely non-functional; also found and fixed a real ~2-hour full-server freeze
+
+Tasked with designing a safe way to test §2.6/§2.8 ahead of the next live
+session (market closed, positions flat — the right time to poke at this).
+
+### CRITICAL — the kill switch (`/api/panic-exit`) never actually closed anything in paper mode, and had zero cross-process effect even conceptually
+**Investigation, not yet a symptom anyone had seen — found by reading the
+code before trying to test it:** `panic_exit()` only ever called
+`broker.get_positions()` / `broker.get_order_book()` / `broker.place_order()`
+directly. Confirmed via `brokers/fyers_broker.py`: `get_positions()` and
+`get_order_book()` **both unconditionally return `[]` in paper mode**
+(no persistent broker-side state, same root fact behind the 2026-08-05
+morning reconciliation incident). So the endpoint would always report
+`closed=0, cancelled=0` and never touch anything, no matter what
+`trading_bot/main.py` actually had open.
+
+Worse, independent of paper/live mode: `main.py` and `api_bridge.py` are
+**separate OS processes** with no shared in-memory state at all. Even a
+real broker order placed by `panic_exit()` would leave main.py's own
+`active_positions` dict and risk state completely unaware anything
+happened — it could keep "managing" (or scaling into) a position that was
+just manually flattened, or place a duplicate closing order of its own
+later. The kill switch was non-functional end-to-end for the entire
+validation window to date, in a way that would never have been visible
+except by deliberately testing it — the endpoint always returned
+`{"status": "success"}` regardless.
+
+**Fix:**
+1. Extended `compute_reconciliation()` (the same pure, 11-test-covered
+   decision logic behind WebSocket-reconnect reconciliation) with an
+   optional `live_prices` parameter — a fresh quote per symbol, checked
+   after a real order-book fill but before the stop-loss estimate
+   fallback. 5 new tests (`tests/test_reconciliation.py`, 16 total now),
+   all existing tests unchanged/still passing (fully backward compatible).
+2. Added `emergency_flatten_all_positions()` to `main.py`: fetches a live
+   quote per open position and reuses `compute_reconciliation()` to decide
+   exit price/PnL/state_action — not a second hand-rolled copy of that
+   math.
+3. Added a cross-process `emergency_stop` flag in `config/settings.json`
+   (main.py already reloads that file every tick for other settings, so
+   this needed no new polling mechanism). `on_tick()` checks it first,
+   ahead of the existing `is_active` halt (which only freezes processing —
+   wrong behavior for a panic exit that needs to actively flatten
+   positions, not just stop touching them).
+4. `panic_exit()` now sets this flag as its primary action (the
+   broker-level cancel/close calls are demoted to a best-effort,
+   live-mode-only layer that can no longer block the response on failure).
+   Added `GET /api/panic-exit/status` and `POST /api/panic-exit/clear`
+   (localhost-only, like the trigger) so an operator can confirm the
+   engine actually went flat and deliberately re-arm normal trading.
+5. New `EMERGENCY_STOP` audit-log event type.
+6. 13 new tests (`tests/test_panic_exit.py`) exercising the real FastAPI
+   app via TestClient, isolated to a `tmp_path` config directory so
+   nothing ever touches this machine's real, disk-backed
+   `settings.json`/`active_positions.json` (the exact hazard
+   `test_order_rate_limit.py`'s own docstring already documents from a
+   past incident).
+
+**Live-verified end to end against the actually-running system** (safe to
+do — positions were flat, so there was nothing to actually close): created
+a real session token, called the real `/api/panic-exit` → confirmed
+`emergency_stop: true` written to the real `config/settings.json` →
+confirmed via `engine.log` that `main.py` picked it up on its very next
+settings reload and stopped all further signal evaluation immediately →
+confirmed via `/api/panic-exit/status` → called `/api/panic-exit/clear` →
+confirmed normal tick processing resumed. This is a real, live pass of the
+cross-process wiring; **still needs one more live confirmation with an
+actual open position during market hours** (see the test plan below) to
+fully close out §2.8 — tonight only proved "empty positions" flattens
+correctly (trivially true) and that the halt/resume signal reaches
+main.py, not that a real position gets closed at a real price.
+
+### CRITICAL — found while trying to run the drill above: api_bridge.py had been completely frozen for ~2 hours, silently
+**Symptom:** every request (including the public, no-auth `/health`
+endpoint) got `Connection refused`, despite the process still showing as
+`LISTENING` on port 8000 in `netstat` and consuming real CPU/kernel time.
+`main.py`'s own WebSocket client had been failing every reconnect attempt
+with `timed out during opening handshake` continuously since ~18:19 IST —
+over 2 hours, completely unnoticed, because my own process-health checks
+all day checked "is the process alive" (via `tasklist`/`wmic`) and "are
+logs still advancing," never "does it actually respond to a request."
+
+**Root cause:** three FastAPI route handlers (`/api/funds`, `/api/quote`,
+`/api/option-chain`) each instantiate `fyers_apiv3`'s `FyersModel` with
+`is_async=False` — a **synchronous, blocking** HTTP client — and call it
+directly inside an `async def` handler with no `await`. uvicorn's default
+config here is a single process, single event loop: a blocking call
+anywhere freezes literally everything else being served by that process —
+every other HTTP route, every open WebSocket connection (including
+keepalive pings, which is exactly what made `main.py`'s tick feed die),
+until that one blocking call returns. `api_bridge.py`'s own logs show its
+last successful request was `/api/option-chain?symbol=NIFTY` at 18:19:11 —
+consistent with a subsequent call to the same endpoint (dashboard-tab
+polling) hanging on Fyers' API and never returning, taking the whole
+server down with it. No crash, no exception, no error logged anywhere —
+it just silently stopped accepting anything.
+
+**Fix:** wrapped all three blocking `FyersModel` calls in
+`asyncio.to_thread(...)`, offloading them to a thread pool so the event
+loop stays free to keep serving everything else while a slow/hung Fyers
+response is in flight. Minimal, behavior-preserving change (same calls,
+same return values, just non-blocking). Restarted api_bridge.py to deploy;
+confirmed clean startup and a real `/health` 200 OK afterward.
+
+**Process lesson, folded into future monitoring:** "is the process alive"
+and "are logs advancing" are not sufficient to confirm an HTTP server is
+actually serving requests — a hung single-threaded event loop can look
+perfectly healthy by both of those signals while refusing every
+connection. Future health checks should include an actual request (even
+just `/health`), not just process/log inspection.
+
+**Not investigated further tonight (pre-existing, not part of this
+incident):** `main.py`↔`api_bridge.py`'s WebSocket connection has been
+dropping with `1011 keepalive ping timeout` roughly every 60-90 seconds
+continuously since the api_bridge restart, each time reconnecting
+successfully within ~5 seconds. Reconnects are clean (paper mode
+correctly no-ops reconciliation each time, per this morning's fix) and
+nothing is lost, but this frequency is far above the §2.11 baseline
+(~1 reconnect/160s) and should be looked at as its own item — flagging
+rather than chasing tonight given the two fixes above already covered a
+lot of ground.
+
+### Live test plan for tomorrow's market open (to fully close out §2.8)
+1. Let a real signal open a small position normally (or use the dashboard
+   to place one deliberately, if idle).
+2. Call `/api/panic-exit` while it's genuinely open.
+3. Confirm within ~1 tick: `engine.log` shows an `EMERGENCY STOP: closed
+   ... at ...` line, `config/active_positions.json` goes back to `{}`,
+   `state.db`'s `trades` table gets the closing leg, and equity/pnl update
+   correctly.
+4. Manually recompute the PnL from raw entry/live-exit price and confirm
+   it matches (this doubles as part of §2.9's evidence).
+5. Call `/api/panic-exit/clear`, confirm a fresh signal can open a new
+   position normally afterward (proves the halt doesn't get "stuck").
+6. Record the exact log lines and `state.db` rows as the §5 evidence
+   package's §2.8 entry — this is the first genuinely real trigger, not a
+   synthetic/empty-position one like tonight's.
+
+---
+
 ## 2026-08-05 — end-of-day wrap-up
 
 **Session:** continuous monitoring from ~12:57 IST through market close
