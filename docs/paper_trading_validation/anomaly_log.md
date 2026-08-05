@@ -6,6 +6,84 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-08-05 (market-close session) — entry-side quote-fetch rate-limit burst at close; daily trade cap didn't survive a restart
+
+### 15:37-15:40 IST — real burst of ~250 Fyers /quotes rate-limit + empty-body errors right at market close
+**Symptom:** `fyersApi.log` showed a genuine (not leaked-test-output this time)
+burst of ~130 "Expecting value: line 1 column 1" JSON-decode errors and
+~250 "request limit reached" (429) errors from Fyers' `/quotes` endpoint,
+concentrated in a 2-3 minute window right around the 15:30 IST close.
+Distinct from the already-fixed 10:00 IST burst (which had fully tapered
+off through 11:00-14:00) — this was a new pattern.
+
+**Root cause:** `trading_bot/main.py`'s entry-candidate premium fetch
+(`broker.get_market_data([entry_symbol])`, ~line 1350) had no throttle at
+all, unlike the exit-check path a few hundred lines below it which was
+already throttled on 2026-08-04 for the identical reason. Near/after
+market close, elevated volatility drives rapid re-evaluation across many
+different candidate strikes in quick succession, each firing its own
+unthrottled quote fetch — self-inflicted rate-limiting, same failure mode
+as the earlier exit-side incident, just on the entry side and triggered by
+a different condition (strike churn near close vs. per-tick exit checks).
+
+**Fix:** reused the exact same per-symbol `(timestamp, premium)` cache and
+1-second throttle interval already used by the exit-check path. Also added
+a *separate* short-lived failure cache (`_entry_premium_failure_cache`) —
+the success-only cache alone didn't help here, since after close quotes
+mostly never succeed at all, so a cache that only remembers successes never
+engages. The failure cache also throttles the "could not fetch premium"
+warning log itself (was logging on every single throttled attempt).
+**Verified live:** redeployed at 16:20 IST — rate-limit/JSON-decode errors
+dropped from ~250/2min to **zero** in the following window, and the
+"could not fetch" warning frequency dropped from several times/second to
+roughly once/second per symbol as intended.
+
+### Found while fixing the above — daily trade cap (max 3/day) did not survive a restart; real cap exceeded 4x today
+**How this was found:** deploying the fix above required 3 separate
+`main.py` restarts today (13:05 for the log-leakage fix, 15:53 and 16:20
+for this fix). After the 16:20 restart, `state.db` showed **12** real
+option-exit trades today instead of the configured cap of 3.
+
+**Root cause:** `shared/risk/manager.py`'s `RiskManager.trades_today` is a
+plain in-memory list, always initialized empty (`self.trades_today: List =
+[]`) with no restoration from persisted state — unlike `daily_pnl` and
+`current_equity`, which were already fixed for this exact restart-survival
+reason earlier today (see the 2026-08-05 §0-adjacent entries above). Every
+`main.py` restart during the trading day silently reset the count to zero,
+and the strategy correctly re-hit the "fresh" 3-trade cap each time:
+3 trades at 11:55 (organic, before any restart today), 3 more at 13:45
+(after the 13:05 restart), 3 more at 16:15 (after the 15:53 restart), 3
+more at 16:20 (after the 16:20 restart) — 12 total, 4x the intended daily
+limit, entirely because of restarts I performed to deploy other fixes.
+
+**Financial impact: zero.** All 9 "extra" trades (beyond the first
+legitimate 3) show identical buy and sell price per leg — the market was
+flat/quiet in each case, so every extra round-trip closed at exactly
+breakeven. `state.db`'s equity/pnl are unchanged by this finding. This
+does not generalize to future occurrences, though — a restart during an
+actively-moving market could have let extra trades through at real risk,
+not breakeven.
+
+**Fix:** added `_count_trades_already_executed_today()` (pure, unit-tested
+in `tests/test_daily_trade_cap_persistence.py`) to `trading_bot/main.py`,
+which reconstructs today's real completed-trade count from `state.db`'s
+raw trade rows (options-only exits are unambiguous: this system only ever
+buys options, so an exit is always tagged `side="SELL"` on a CE/PE symbol,
+entries never are) and seeds `risk_manager.trades_today` with that many
+placeholder records on startup. **Verified live:** the 16:47 IST restart
+logged `Restored 12 trade(s) already executed today into the daily trade
+cap (was about to reset to 0)` — correctly reflecting today's real count
+and preventing the cap from silently resetting again.
+
+**Process note for future restarts during market hours:** every deploy
+that requires restarting `main.py` mid-session now needs to happen with
+this in mind — the fix prevents the cap from resetting, but a restart
+still costs a few seconds of the engine being down, and (before today's
+fix) could silently blow through a real risk limit. Confirmed
+`active_positions.json` was `{}` before every restart performed today.
+
+---
+
 ## 2026-08-05 (afternoon session) — false-alarm circuit-breaker trip caused by test-log leakage; process-launch investigation
 
 ### 12:00:08 IST (and 11:01:31, 11:42:41, 11:43:59) — NOT REAL: "CIRCUIT BREAKER: Max Consecutive Losses Reached (10)" / "Max Daily Drawdown Reached" in fyersApi.log

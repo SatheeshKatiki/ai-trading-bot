@@ -403,6 +403,26 @@ async def run_live_bot(symbols: List[str]) -> None:
 
     # Initialize Core Engines
     risk_manager = RiskManager(initial_capital=_initial_capital, daily_pnl=saved_pnl, current_equity=saved_equity)
+
+    # Root-cause fix (found live, 2026-08-05): RiskManager.trades_today is a
+    # pure in-memory list, always starting empty -- unlike daily_pnl/equity
+    # above, it was never seeded from persisted state. Any restart during a
+    # trading day (a routine bug-fix redeploy, a crash-retry, anything)
+    # silently reset the day's trade count to 0, letting the engine place
+    # MORE real trades than the configured daily cap intended. Confirmed
+    # live: restarting to deploy the fix above let 3 additional trades
+    # through even though today's real 3-trade cap had already been hit
+    # hours earlier.
+    _today_trades = load_state(reload_trades=True).get("trades", [])
+    _executed_today = _count_trades_already_executed_today(_today_trades, datetime.now(_IST).strftime("%Y-%m-%d"))
+    if _executed_today:
+        risk_manager.trades_today = [
+            TradeRecord("restored", "SELL", 0.0, 0.0, 0.0, "") for _ in range(_executed_today)
+        ]
+        logger.info(
+            "Restored %d trade(s) already executed today into the daily trade cap (was about to reset to 0).",
+            _executed_today,
+        )
     ai_filter = TradeFilterModel()
     exit_engine = SmartExitEngine(atr_multiplier=1.5, partial_booking_pct=50.0)
     pyramid_sizer = PyramidSizer(pct_trigger=0.2, max_scales=2)
@@ -490,6 +510,17 @@ async def run_live_bot(symbols: List[str]) -> None:
     # exit-check block in on_tick() for why this exists.
     _option_premium_cache: Dict[str, tuple[float, float]] = {}
     _OPTION_PREMIUM_FETCH_INTERVAL_S = 1.0
+    # Separate from _option_premium_cache (which only ever holds a real
+    # premium, never None -- the exit-check path above assigns its cached
+    # value straight into a price used for SL/target math, so a None
+    # sneaking in there would crash it). This one just remembers the last
+    # time a given entry candidate's premium fetch FAILED, so repeated
+    # candidates for the same symbol within the same throttle window skip
+    # the API call entirely instead of retrying every single time -- the
+    # gap that mattered most in practice: near/after market close, quotes
+    # for many strikes never succeed at all, so a success-only cache never
+    # engages and every candidate re-hits the API.
+    _entry_premium_failure_cache: Dict[str, float] = {}
     _iceberg_semaphore = asyncio.Semaphore(3)
 
     async def background_iceberg_entry(broker, entry_req: OrderRequest, pos_obj: Position, s: str, is_option_trade: bool):
@@ -1316,19 +1347,50 @@ async def run_live_bot(symbols: List[str]) -> None:
                             # "entry" anyway. Skip the trade entirely instead:
                             # a real trade needs a real premium, and a wrong
                             # premium is worse than no trade.
+                            #
+                            # Root-cause fix (found live, 2026-08-05): this
+                            # fetched unconditionally on every candidate
+                            # entry, unlike the exit-check path below which
+                            # was already throttled for exactly this reason
+                            # (2026-08-04). Near market close, elevated
+                            # volatility drives rapid re-evaluation across
+                            # many different strikes, each firing its own
+                            # unthrottled get_market_data() call -- live
+                            # result: a burst of ~250 rate-limit/empty-body
+                            # errors from Fyers' /quotes endpoint in a two-
+                            # minute window right at close. Reusing the same
+                            # per-symbol cache as the exit path closes the
+                            # gap consistently instead of patching it twice.
                             live_premium = None
-                            try:
-                                live_quotes = broker.get_market_data([entry_symbol])
-                                if entry_symbol in live_quotes and live_quotes[entry_symbol].ltp > 0:
-                                    live_premium = live_quotes[entry_symbol].ltp
-                            except Exception as e:
-                                logger.error("Error fetching live option premium: %s", e)
+                            now_mono = time.monotonic()
+                            cached_entry = _option_premium_cache.get(entry_symbol)
+                            last_failure = _entry_premium_failure_cache.get(entry_symbol)
+                            throttled_recent_failure = False
+                            if cached_entry and (now_mono - cached_entry[0]) < _OPTION_PREMIUM_FETCH_INTERVAL_S:
+                                live_premium = cached_entry[1]
+                            elif last_failure is not None and (now_mono - last_failure) < _OPTION_PREMIUM_FETCH_INTERVAL_S:
+                                live_premium = None  # recently failed for this symbol -- don't re-hit the API yet
+                                throttled_recent_failure = True
+                            else:
+                                try:
+                                    live_quotes = broker.get_market_data([entry_symbol])
+                                    if entry_symbol in live_quotes and live_quotes[entry_symbol].ltp > 0:
+                                        live_premium = live_quotes[entry_symbol].ltp
+                                        _option_premium_cache[entry_symbol] = (now_mono, live_premium)
+                                    elif cached_entry:
+                                        live_premium = cached_entry[1]
+                                    else:
+                                        _entry_premium_failure_cache[entry_symbol] = now_mono
+                                except Exception as e:
+                                    logger.error("Error fetching live option premium: %s", e)
+                                    _entry_premium_failure_cache[entry_symbol] = now_mono
 
                             if live_premium is None:
-                                logger.warning(
-                                    "Could not fetch live option premium for %s — skipping this entry "
-                                    "rather than pricing it off the index level.", entry_symbol,
-                                )
+                                if not throttled_recent_failure:
+                                    logger.warning(
+                                        "Could not fetch live option premium for %s — skipping this entry "
+                                        "rather than pricing it off the index level.", entry_symbol,
+                                    )
                                 continue
 
                             entry_premium = live_premium
@@ -1680,6 +1742,33 @@ def _build_preload_failure_alert(failed_symbols: List[str]) -> str:
         f"empty candle buffer: {', '.join(failed_symbols)}\n\n"
         f"These symbols will not generate signals until enough live "
         f"ticks accumulate to satisfy strategy warmup requirements."
+    )
+
+
+def _count_trades_already_executed_today(trades: List[Dict[str, Any]], today_str: str) -> int:
+    """How many real trades were already executed today, for restoring
+    RiskManager.trades_today across a restart (root-cause fix, found live
+    2026-08-05 — see the call site in run_live_bot() for the incident).
+
+    `trades` is state.db's raw per-leg trade rows (one row per BUY or SELL,
+    not one per completed round-trip). risk_manager.record_trade() -- the
+    call that actually increments the day's cap -- is only ever invoked at
+    EXIT time, never at entry (grep every call site in this file to verify:
+    entries only ever call the free `record_trade()` that writes to
+    state.db, never `risk_manager.record_trade()`). This system only ever
+    BUYS options, never shorts the underlying directly, so an exit's
+    state.db row is always tagged side="SELL" for an option symbol, and an
+    entry never is -- counting today's option-tagged SELL rows is therefore
+    an exact count of real risk_manager.record_trade() calls today, not an
+    approximation. (A hypothetical direct underlying short would break this
+    -- its exit is tagged "BUY" -- but no current strategy in this codebase
+    does that.)
+    """
+    return sum(
+        1 for t in trades
+        if str(t.get("time", "")).startswith(today_str)
+        and t.get("side") == "SELL"
+        and ("CE" in str(t.get("symbol", "")) or "PE" in str(t.get("symbol", "")))
     )
 
 
