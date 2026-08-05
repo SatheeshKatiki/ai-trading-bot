@@ -11,10 +11,22 @@ import numpy as np
 import json
 import os
 import time
+import pytz
 from typing import Optional, List, Dict, Any
 
 # Module-level logger — NEVER use print() in async FastAPI code
 logger = logging.getLogger("api_bridge")
+
+# Root-cause fix (chart timestamp audit): trade timestamps written to
+# state.db must be consistently tagged so every consumer (this file's own
+# WebSocket feed, the frontend's "today" filters, chart trade markers) can
+# rely on a single, unambiguous convention. trading_bot/main.py already
+# tags every trade it records with real IST (Asia/Kolkata) via this same
+# constant; this endpoint used to tag its own manual/dashboard order trades
+# with UTC instead, an inconsistency that could shift a trade's apparent
+# calendar date by up to 5.5 hours' worth of look-alike-but-wrong entries
+# for any consumer that reads the raw string's calendar date directly.
+_IST = pytz.timezone("Asia/Kolkata")
 
 # ---------------------------------------------------------------------------
 # Log rotation — cap fyersApi.log at 5 MB × 3 backups (≈ 20 MB total max)
@@ -707,10 +719,10 @@ async def execute_order(req: ExecuteOrderRequest, request: Request):
         # Add to SQLite DB and global trades list for UI reflection
         from shared.state import record_trade
         record_trade(
-            symbol=req.symbol, 
-            side=req.action.upper(), 
-            price=response.price or req.price or 0.0, 
-            timestamp=datetime.now(timezone.utc).isoformat(),
+            symbol=req.symbol,
+            side=req.action.upper(),
+            price=response.price or req.price or 0.0,
+            timestamp=datetime.now(_IST).isoformat(),
             qty=req.quantity
         )
             
@@ -1415,7 +1427,9 @@ async def get_equity_data(symbol: str = "NIFTY"):
     try:
         broker = BrokerFactory.get_active_broker()
         broker.authenticate()
-        end_date = datetime.now()
+        # IST-anchored (not server-local) so "today" never silently excludes
+        # today's IST candles for a server whose OS clock isn't set to IST.
+        end_date = datetime.now(_IST)
         start_date = end_date - timedelta(days=2) # Last 2 days to ensure data
         
         # Map symbol using institutional formatter
@@ -1448,7 +1462,9 @@ def compute_signals(
 ):
     """Generates live signals using the actual strategy files and broker data."""
     try:
-        end_date = datetime.now()
+        # IST-anchored (not server-local) so "today" never silently excludes
+        # today's IST candles for a server whose OS clock isn't set to IST.
+        end_date = datetime.now(_IST)
         start_date = end_date - timedelta(days=10)
         
         # Map symbol using institutional formatter
@@ -2637,7 +2653,9 @@ async def auth_logout(request: Request, req: LogoutRequest = None):
 @app.get("/api/btst")
 async def get_btst_prediction(symbol: str = "NIFTY"):
     try:
-        end_date = datetime.now()
+        # IST-anchored (not server-local) so "today" never silently excludes
+        # today's IST candles for a server whose OS clock isn't set to IST.
+        end_date = datetime.now(_IST)
         start_date = end_date - timedelta(days=5)
         
         symbol_formatted = format_broker_symbol(symbol)
