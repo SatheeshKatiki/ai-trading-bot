@@ -19,6 +19,32 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 from trading_bot.portfolio_risk import PortfolioRiskEngine
 
 
+def test_current_capital_restores_peak_across_a_restart():
+    """Root-cause fix (found live, 2026-08-05): previously peak_capital_daily/
+    weekly always seeded from the static initial_capital, discarding real
+    cumulative equity on every engine restart -- meaning a restart could
+    silently reset how much drawdown headroom was left. current_capital
+    lets the caller pass the persisted equity back in."""
+    engine = PortfolioRiskEngine(max_daily_dd_pct=5.0, initial_capital=100_000.0, current_capital=105_000.0)
+    assert engine.peak_capital_daily == 105_000.0
+    assert engine.peak_capital_weekly == 105_000.0
+    # A drop back toward (but not below) the original initial_capital must
+    # NOT be treated as if starting fresh from 100_000 -- it's a real ~4.8%
+    # drawdown from the restored 105_000 peak.
+    engine.update_pnl(realized_pnl=-4_500.0, capital=100_500.0)
+    assert engine.trading_halted is False
+    engine.update_pnl(realized_pnl=-1_000.0, capital=99_500.0)
+    assert engine.trading_halted is True
+
+
+def test_current_capital_omitted_defaults_to_initial_capital():
+    """Backward compatible: omitting current_capital must behave exactly
+    like before this fix (fresh start / existing test constructions)."""
+    engine = PortfolioRiskEngine(max_daily_dd_pct=5.0, initial_capital=100_000.0)
+    assert engine.peak_capital_daily == 100_000.0
+    assert engine.peak_capital_weekly == 100_000.0
+
+
 def test_no_halt_under_normal_conditions():
     engine = PortfolioRiskEngine(max_daily_dd_pct=5.0, initial_capital=100_000.0)
     engine.update_pnl(realized_pnl=500.0, capital=100_500.0)

@@ -68,8 +68,29 @@ def test_reset_daily_if_needed_uses_ist_not_stale_date():
     assert rm.trades_today == []
 
 
+def test_current_equity_restores_across_a_restart():
+    """Root-cause fix (found live, 2026-08-05): only daily_pnl was ever
+    restored on restart -- current_equity/peak_equity silently reset to
+    initial_capital every time, discarding real cumulative P&L. Unlike
+    daily_pnl, equity is not a daily counter and must always carry
+    forward regardless of what day it was last updated."""
+    rm = RiskManager(initial_capital=100_000.0, current_equity=105_432.10)
+    assert rm.current_equity == 105_432.10
+    assert rm.peak_equity == 105_432.10
+
+
+def test_current_equity_omitted_defaults_to_initial_capital():
+    """Backward compatible: omitting current_equity must behave exactly
+    like before this fix (fresh start / existing test constructions)."""
+    rm = RiskManager(initial_capital=100_000.0)
+    assert rm.current_equity == 100_000.0
+    assert rm.peak_equity == 100_000.0
+
+
 if __name__ == "__main__":
     test_today_ist_matches_independent_utc_conversion()
     test_risk_manager_init_uses_ist_date()
     test_reset_daily_if_needed_uses_ist_not_stale_date()
+    test_current_equity_restores_across_a_restart()
+    test_current_equity_omitted_defaults_to_initial_capital()
     print("All IST daily-reset tests passed.")

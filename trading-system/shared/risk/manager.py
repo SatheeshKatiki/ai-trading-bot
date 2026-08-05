@@ -83,12 +83,22 @@ class RiskManager:
 
     def __init__(self, initial_capital: float = 100_000.0,
                  config: Optional[RiskConfig] = None,
-                 daily_pnl: float = 0.0):
+                 daily_pnl: float = 0.0,
+                 current_equity: Optional[float] = None):
         self.initial_capital = initial_capital
         self.config = config or RiskConfig()
 
-        self.current_equity = initial_capital
-        self.peak_equity = initial_capital
+        # Root-cause fix (found live, 2026-08-05): only daily_pnl was ever
+        # restored from disk on restart -- current_equity/peak_equity
+        # silently reset to initial_capital every time, discarding all
+        # real cumulative gains/losses. Across a validation window with
+        # many restarts, this meant position sizing (which uses
+        # current_equity) and drawdown tracking kept getting reseeded from
+        # a stale constant instead of the account's actual state. Caller
+        # should pass the persisted equity (state.db) when resuming a
+        # session; omit only for a genuinely fresh start (or tests).
+        self.current_equity = current_equity if current_equity is not None else initial_capital
+        self.peak_equity = max(self.current_equity, initial_capital)
         self.daily_pnl = daily_pnl
         self.today: date = _today_ist()
         self.consecutive_losses = 0

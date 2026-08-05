@@ -377,7 +377,18 @@ async def run_live_bot(symbols: List[str]) -> None:
     saved_state = load_state()
     saved_pnl = saved_state.get("pnl", 0.0)
     last_update_str = saved_state.get("last_update", "")
-    
+
+    # Root-cause fix (found live, 2026-08-05): equity is NOT a daily
+    # counter like pnl -- it's the account's actual cumulative balance and
+    # must always carry forward across restarts, regardless of which day
+    # it was last updated. Previously only daily_pnl was restored here;
+    # RiskManager/PortfolioRiskEngine both silently defaulted their
+    # equity tracking back to the static initial_capital on every
+    # restart, discarding all real cumulative gains/losses.
+    saved_equity = saved_state.get("equity")
+    if saved_equity is None:
+        saved_equity = _initial_capital
+
     # Check if last_update is from today
     today_str = datetime.now(_IST).strftime("%Y-%m-%d")
     if last_update_str and not last_update_str.startswith(today_str):
@@ -386,11 +397,11 @@ async def run_live_bot(symbols: List[str]) -> None:
         logger.info("New trading day detected. Resetting session PNL to 0.0")
     else:
         logger.info(f"Resuming session with previous PNL: {saved_pnl}")
-        
+
     aggregator = CandleAggregator(symbols, _tf_str)
 
     # Initialize Core Engines
-    risk_manager = RiskManager(initial_capital=_initial_capital, daily_pnl=saved_pnl)
+    risk_manager = RiskManager(initial_capital=_initial_capital, daily_pnl=saved_pnl, current_equity=saved_equity)
     ai_filter = TradeFilterModel()
     exit_engine = SmartExitEngine(atr_multiplier=1.5, partial_booking_pct=50.0)
     pyramid_sizer = PyramidSizer(pct_trigger=0.2, max_scales=2)
@@ -402,7 +413,7 @@ async def run_live_bot(symbols: List[str]) -> None:
     # reduction was supposed to begin, so the gradual-scaling behavior the
     # class was built for could never actually engage. Found during the
     # 2026-08-03 production-readiness audit.
-    portfolio_risk = PortfolioRiskEngine(max_daily_dd_pct=5.0, max_weekly_dd_pct=10.0, max_consecutive_losses=7, initial_capital=_initial_capital)
+    portfolio_risk = PortfolioRiskEngine(max_daily_dd_pct=5.0, max_weekly_dd_pct=10.0, max_consecutive_losses=7, initial_capital=_initial_capital, current_capital=saved_equity)
     iceberg_manager = IcebergManager(max_slice_qty=500)
 
     active_positions: Dict[str, Position] = _load_positions()

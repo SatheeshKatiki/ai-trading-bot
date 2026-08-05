@@ -1,5 +1,6 @@
 import logging
 from datetime import datetime
+from typing import Optional
 
 import pytz
 
@@ -31,21 +32,27 @@ class PortfolioRiskEngine:
     - Daily reset now carries over winning streak info
     """
     
-    def __init__(self, 
-                 max_daily_dd_pct: float = 5.0, 
+    def __init__(self,
+                 max_daily_dd_pct: float = 5.0,
                  max_weekly_dd_pct: float = 10.0,
                  max_consecutive_losses: int = 7,
-                 initial_capital: float = 100_000.0):
+                 initial_capital: float = 100_000.0,
+                 current_capital: Optional[float] = None):
         self.max_daily_dd_pct = max_daily_dd_pct
         self.max_weekly_dd_pct = max_weekly_dd_pct
         # Raised from 3 to 7 — at 3 we now reduce size, at 7 we halt
         self.max_consecutive_losses = max_consecutive_losses
-        
+
         self.daily_pnl = 0.0
         self.weekly_pnl = 0.0
-        # Seed from initial_capital so first drawdown check is correct
-        self.peak_capital_daily = initial_capital
-        self.peak_capital_weekly = initial_capital
+        # Root-cause fix (found live, 2026-08-05, same bug as
+        # shared/risk/manager.py's RiskManager): always seeded from the
+        # static initial_capital, discarding real cumulative equity on
+        # every restart. Caller should pass the persisted equity
+        # (state.db) when resuming a session.
+        _seed_capital = current_capital if current_capital is not None else initial_capital
+        self.peak_capital_daily = _seed_capital
+        self.peak_capital_weekly = _seed_capital
         
         self.consecutive_losses = 0
         self.trading_halted = False
