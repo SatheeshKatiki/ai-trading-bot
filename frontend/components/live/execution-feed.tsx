@@ -20,9 +20,14 @@ function formatTradeDisplay(symbol: string, price: number, side: string, qty?: n
     return `${side === "BUY" ? "Long" : "Short"} ${cleanSym}`;
 }
 
-export function ExecutionFeed() {
+interface ExecutionFeedProps {
+    showTodayOnly?: boolean;
+}
+
+export function ExecutionFeed({ showTodayOnly = true }: ExecutionFeedProps) {
     const trades = useLiveMarketStore(state => state.trades);
-    const todayTrades = trades.filter(t => {
+    const displayTrades = trades.filter(t => {
+        if (!showTodayOnly) return true;
         if (!t.time) return false;
         // Use IST timezone (not UTC) to avoid date rollover issues after 6:30 PM IST
         const formatter = new Intl.DateTimeFormat('en-IN', {
@@ -45,12 +50,12 @@ export function ExecutionFeed() {
                     <Zap className="w-5 h-5 text-warning" />
                     Live Execution Feed
                 </h3>
-                <span className="text-xs font-bold px-2 py-1 bg-muted/50 rounded-md text-muted-foreground">{todayTrades.length} Trades</span>
+                <span className="text-xs font-bold px-2 py-1 bg-muted/50 rounded-md text-muted-foreground">{displayTrades.length} Trades</span>
             </div>
 
             <div className="flex-1 overflow-y-auto pr-2 space-y-3 custom-scrollbar">
                 <AnimatePresence mode="popLayout">
-                    {todayTrades.length === 0 ? (
+                    {displayTrades.length === 0 ? (
                         <motion.div
                             initial={{ opacity: 0, scale: 0.9 }}
                             animate={{ opacity: 1, scale: 1 }}
@@ -67,7 +72,7 @@ export function ExecutionFeed() {
                             <p className="text-[10px] mt-1 opacity-50 uppercase tracking-wider">Awaiting Signals...</p>
                         </motion.div>
                     ) : (
-                        todayTrades.map((trade, i) => (
+                        displayTrades.map((trade, i) => (
                             <motion.div
                                 key={trade.id || i}
                                 initial={{ opacity: 0, x: -20, height: 0 }}

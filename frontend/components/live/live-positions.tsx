@@ -147,6 +147,8 @@ export function LivePositions({ urlSymbol }: { urlSymbol: string }) {
         return null;
     };
 
+    const todayTradesCount = trades.filter(t => t.time && String(t.time).substring(0, 10) === todayIST).length;
+
     return (
         <>
             {/* Square Off All Confirmation */}
@@ -171,10 +173,10 @@ export function LivePositions({ urlSymbol }: { urlSymbol: string }) {
                 />
             )}
 
-            <div className="w-full glass-card rounded-2xl border border-border/20 overflow-hidden flex flex-col shadow-sm mt-6">
+            <div className="flex flex-col h-full bg-card/60 border border-border/40 rounded-xl overflow-hidden shadow-sm mt-6">
                 {/* Header Tabs */}
-                <div className="flex items-center justify-between border-b border-border/40 px-4 bg-muted/20">
-                    <div className="flex gap-6">
+                <div className="flex items-center justify-between px-6 border-b border-border/40 bg-muted/20 shrink-0">
+                    <div className="flex items-center gap-6">
                         <button
                             onClick={() => setTab("positions")}
                             className={`py-3 text-sm font-bold border-b-2 transition-all ${tab === "positions" ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}
@@ -185,19 +187,19 @@ export function LivePositions({ urlSymbol }: { urlSymbol: string }) {
                             onClick={() => setTab("orders")}
                             className={`py-3 text-sm font-bold border-b-2 transition-all ${tab === "orders" ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}
                         >
-                            Order History ({orderHistory.length})
+                            Order History ({showTodayOnly ? orderHistory.length : trades.filter(t => t.time).length})
                         </button>
                         <button
                             onClick={() => setTab("execution")}
                             className={`py-3 text-sm font-bold border-b-2 transition-all flex items-center gap-1.5 ${tab === "execution" ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}
                         >
                             <Zap className="w-4 h-4 text-warning" />
-                            Live Execution Feed ({trades.length})
+                            Live Execution Feed ({showTodayOnly ? todayTradesCount : trades.length})
                         </button>
                     </div>
 
                     <div className="flex items-center gap-3">
-                        {tab === "orders" && (
+                        {(tab === "orders" || tab === "execution") && (
                             <button
                                 onClick={() => setShowTodayOnly(!showTodayOnly)}
                                 className={`text-[10px] font-bold px-2 py-1 rounded-lg border transition-colors ${showTodayOnly ? 'bg-primary/10 border-primary/30 text-primary' : 'border-border/50 text-muted-foreground hover:text-foreground'}`}
@@ -222,7 +224,7 @@ export function LivePositions({ urlSymbol }: { urlSymbol: string }) {
                 <div className="flex-1 overflow-y-auto max-h-[350px] bg-background/30">
                     {tab === "execution" ? (
                         <div className="p-4 h-[320px]">
-                            <ExecutionFeed />
+                            <ExecutionFeed showTodayOnly={showTodayOnly} />
                         </div>
                     ) : tab === "positions" ? (
                         <table className="w-full text-left text-sm whitespace-nowrap">
