@@ -1078,7 +1078,7 @@ RotatingFileHandler(
       </Section>
       <Section title="Frontend Optimizations">
         <Table headers={["Optimization", "Implementation", "Impact"]}>
-          <TR cells={["Dynamic imports", "next/dynamic for NativeChart, AdvancedChart", "Prevents SSR crash, lazy-loads heavy chart code"]} />
+          <TR cells={["Dynamic imports", "next/dynamic for NativeChart", "Prevents SSR crash, lazy-loads heavy chart code"]} />
           <TR cells={["Recursive setTimeout", "OptionsDesk uses recursive setTimeout not setInterval", "Prevents overlapping API calls under lag"]} />
           <TR cells={["Zustand fine-grained state", "Separate stores for market, settings, chart", "Only subscribed components re-render"]} />
           <TR cells={["isMounted guard", "All async effects check isMounted before setState", "Prevents memory leaks on unmount"]} />

@@ -84,7 +84,6 @@ import dynamic from "next/dynamic";
 
 // Dynamic imports for charts to prevent SSR hydration errors
 const NativeChart = dynamic(() => import("@/components/native-chart"), { ssr: false });
-const AdvancedChart = dynamic(() => import("@/components/advanced-chart"), { ssr: false });
 
 function formatTradeDisplay(symbol: string, price: number, side: string, qty?: number) {
     // Parse options symbol like "NSE:NIFTY26DEC2424000CE"
@@ -449,7 +448,6 @@ function getAtmOptionSymbol(baseSymbol: string, price: number): string {
 interface LiveMarketChartContainerProps {
     urlSymbol: string;
     timeframe: string;
-    chartMode: "native" | "ultra";
     showDynamicTrend: boolean;
     isDualChart: boolean;
     dualSyncMode: boolean;
@@ -459,7 +457,6 @@ interface LiveMarketChartContainerProps {
 function LiveMarketChartContainer({
     urlSymbol,
     timeframe,
-    chartMode,
     showDynamicTrend,
     isDualChart,
     dualSyncMode,
@@ -479,20 +476,12 @@ function LiveMarketChartContainer({
     return (
         <div className={`w-full flex-1 min-h-0 rounded-lg overflow-hidden ${isDualChart ? 'grid grid-cols-1 md:grid-cols-2 gap-3' : 'flex flex-col'}`}>
             <ErrorBoundary title="Chart Module Error">
-                {chartMode === 'native' ? (
-                    <NativeChart
-                        symbol={urlSymbol}
-                        livePrice={mainLivePrice}
-                        timeframe={timeframe}
-                        showDynamicTrend={showDynamicTrend}
-                    />
-                ) : (
-                    <AdvancedChart
-                        symbol={urlSymbol}
-                        livePrice={mainLivePrice}
-                        timeframe={timeframe}
-                    />
-                )}
+                <NativeChart
+                    symbol={urlSymbol}
+                    livePrice={mainLivePrice}
+                    timeframe={timeframe}
+                    showDynamicTrend={showDynamicTrend}
+                />
             </ErrorBoundary>
 
             {isDualChart && (
@@ -529,7 +518,6 @@ function LiveTradingContent() {
     const [isLoading, setIsLoading] = useState(true);
     const [isChartFullScreen, setIsChartFullScreen] = useState(false);
     const [showDynamicTrend, setShowDynamicTrend] = useState(false);
-    const [chartMode, setChartMode] = useState<"native" | "ultra">("native");
     const [notifications, setNotifications] = useState<Notification[]>([]);
     const [showLiveGuard, setShowLiveGuard] = useState(false);
 
@@ -904,24 +892,8 @@ function LiveTradingContent() {
                                         <p className="text-xs text-muted-foreground">Native Institutional Candlestick Chart (Live Feed)</p>
                                     </div>
 
-                                    {/* Timeframe Selector (TradingView Style) & Chart Mode Toggle */}
+                                    {/* Timeframe Selector (TradingView Style) */}
                                     <div className="flex items-center gap-4">
-                                        {/* Chart Mode Toggle */}
-                                        <div className="flex items-center bg-muted/30 rounded-lg p-1 border border-border/50">
-                                            <button
-                                                onClick={() => setChartMode('native')}
-                                                className={`cursor-pointer px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap ${chartMode === 'native' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'}`}
-                                            >
-                                                Basic
-                                            </button>
-                                            <button
-                                                onClick={() => setChartMode('ultra')}
-                                                className={`cursor-pointer px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap ${chartMode === 'ultra' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'}`}
-                                            >
-                                                Pro
-                                            </button>
-                                        </div>
-
                                         <div className="flex items-center bg-muted/30 rounded-lg p-1 border border-border/50 relative">
                                             {/* Starred Timeframes */}
                                             <div className="flex items-center">
@@ -987,15 +959,13 @@ function LiveTradingContent() {
 
                                             <div className="relative border-l border-border/50 ml-1 pl-2 flex items-center gap-1">
                                                 {/* Dynamic Trend Toggle */}
-                                                {chartMode === 'native' && (
-                                                    <button
-                                                        onClick={() => setShowDynamicTrend(!showDynamicTrend)}
-                                                        className={`cursor-pointer p-1.5 rounded-md transition-colors flex items-center justify-center ${showDynamicTrend ? 'bg-primary/20 text-primary' : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'}`}
-                                                        title={showDynamicTrend ? "Disable Dynamic Trend Candles" : "Enable Dynamic Trend Candles"}
-                                                    >
-                                                        <Activity className="w-4 h-4" />
-                                                    </button>
-                                                )}
+                                                <button
+                                                    onClick={() => setShowDynamicTrend(!showDynamicTrend)}
+                                                    className={`cursor-pointer p-1.5 rounded-md transition-colors flex items-center justify-center ${showDynamicTrend ? 'bg-primary/20 text-primary' : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'}`}
+                                                    title={showDynamicTrend ? "Disable Dynamic Trend Candles" : "Enable Dynamic Trend Candles"}
+                                                >
+                                                    <Activity className="w-4 h-4" />
+                                                </button>
                                                 {/* Dual Chart Layout Toggle */}
                                                 <button
                                                     onClick={() => setIsDualChart(!isDualChart)}
@@ -1065,7 +1035,6 @@ function LiveTradingContent() {
                                 <LiveMarketChartContainer
                                     urlSymbol={urlSymbol}
                                     timeframe={timeframe}
-                                    chartMode={chartMode}
                                     showDynamicTrend={showDynamicTrend}
                                     isDualChart={isDualChart}
                                     dualSyncMode={dualSyncMode}
