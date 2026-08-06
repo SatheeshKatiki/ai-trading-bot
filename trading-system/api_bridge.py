@@ -349,6 +349,14 @@ def start_fyers_socket():
         from brokers.token_cache import load_token
         token = load_token("fyers")
         if not token:
+            # NOTE: no FINNIFTY equivalent added here (mapping/download list
+            # below) — Yahoo Finance does not publish a reliable FINNIFTY
+            # index ticker the way it does ^NSEI/^BSESN/^NSEBANK. A FINNIFTY
+            # symbol in main.py's watchlist will get no ticks at all if this
+            # fallback path is ever active (no cached Fyers token). Flagging
+            # rather than guessing a ticker that may not exist or may be
+            # unreliable — this path is normally dormant, since it only
+            # triggers when there is no cached broker token.
             logger.warning("Token not found for WebSocket. Falling back to yfinance polling for Paper Mode.")
             import yfinance as yf
             import time
@@ -398,7 +406,21 @@ def start_fyers_socket():
                     logger.error("Emergency auto-login failed: %s", e)
         def on_open():
             global _subscribed_symbols
-            _subscribed_symbols.update({"NSE:NIFTY50-INDEX", "BSE:SENSEX-INDEX", "NSE:NIFTYBANK-INDEX", "NSE:RELIANCE-EQ", "NSE:TCS-EQ"})
+            # Root-cause fix: FINNIFTY was missing from this set entirely.
+            # /ws/live clients (including main.py's own broker WS client) are
+            # purely passive — they only ever see whatever current_market_data
+            # holds, which is only populated for symbols subscribed here. The
+            # dynamic-subscription path below (search "Dynamic Subscription
+            # Sync") only adds a symbol AFTER a position already exists for
+            # it, which doesn't help the underlying INDEX symbol a strategy
+            # needs live ticks for just to evaluate a signal in the first
+            # place. Without this, trading_bot/main.py could have
+            # "NSE:FINNIFTY-INDEX" in its symbols list and never receive a
+            # single live tick for it.
+            _subscribed_symbols.update({
+                "NSE:NIFTY50-INDEX", "BSE:SENSEX-INDEX", "NSE:NIFTYBANK-INDEX",
+                "NSE:FINNIFTY-INDEX", "NSE:RELIANCE-EQ", "NSE:TCS-EQ",
+            })
             logger.info("Fyers WS Connected!")
             if fyers_socket_instance:
                 fyers_socket_instance.subscribe(symbols=list(_subscribed_symbols), data_type="symbolData")
@@ -1105,10 +1127,21 @@ def load_csv_history(symbol: str, start_date: str, end_date: str, timeframe: str
         data_dir = os.path.join(os.path.dirname(__file__), "data")
 
     possible_files = [f"{clean_sym}_{clean_tf}.csv"]
+    # Order matters: "FINNIFTY" and "NIFTYBANK"/"BANKNIFTY" both contain the
+    # substring "NIFTY", so the generic NIFTY branch must be checked last —
+    # otherwise a FINNIFTY request with no cache file of its own would fall
+    # through to this branch and silently serve NIFTY candles mislabeled as
+    # FINNIFTY's history, exactly the bug this function's docstring already
+    # describes fixing for RELIANCE. FINNIFTY has no dedicated fallback file
+    # here (none is committed/cached yet); it still gets its own exact-match
+    # lookup via `possible_files[0]` above, it just has no *second* fallback
+    # the way NIFTY/BANKNIFTY/SENSEX do.
     if "NIFTYBANK" in clean_sym or "BANKNIFTY" in clean_sym:
         possible_files.append("NSE_NIFTYBANK-INDEX_5Min.csv")
     elif "SENSEX" in clean_sym:
         possible_files.append("BSE_SENSEX-INDEX_5Min.csv")
+    elif "FINNIFTY" in clean_sym:
+        pass  # no dedicated fallback file — see note above
     elif "NIFTY" in clean_sym or "NSEI" in clean_sym:
         possible_files += ["NSE_NIFTY50-INDEX_5Min.csv", "NIFTY_cache.csv"]
     elif "RELIANCE" in clean_sym:

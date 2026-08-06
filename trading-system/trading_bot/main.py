@@ -98,7 +98,8 @@ _m2m_last_update: float = 0.0
 
 # Import AI / Risk / Exit / Alert Modules
 from shared.ai import TradeFilterModel, compute_features
-from shared.risk import RiskManager, RiskConfig, TradeRecord, resolve_initial_stop
+from shared.risk import RiskManager, RiskConfig, TradeRecord, resolve_initial_stop, resolve_min_confidence
+from shared.instruments import normalize_instrument
 from shared.exits import SmartExitEngine, Position, PyramidSizer
 from shared.alerts import alerter
 from trading_bot.portfolio_risk import PortfolioRiskEngine
@@ -278,6 +279,17 @@ def _load_settings() -> dict:
         # fixed `quantity` setting, so risk-per-trade stays constant as
         # the banded stop varies with premium.
         "option_risk_based_sizing": True,
+
+        # ── Strike selection: ATM preferred, ITM as a liquidity fallback,
+        # never OTM. select_option() hard-clamps this regardless of what's
+        # configured here — see MIN/MAX_ITM_STRIKES in options_selector.py.
+        "option_strike_itm_offset": 1,
+
+        # ── Multi-instrument focus (shared/risk/instrument_focus.py) ──
+        # NIFTY/SENSEX trade at the active strategy's own confidence bar;
+        # everything else (BANKNIFTY/FINNIFTY) needs at least this bar.
+        "focus_instruments": ["NIFTY", "SENSEX"],
+        "secondary_instrument_min_confidence": 0.85,
     }
     
     if _SETTINGS_PATH.is_file():
@@ -1232,14 +1244,27 @@ async def run_live_bot(symbols: List[str]) -> None:
                 sl_pct = settings.get("stoploss_pct", 15.0) / 100.0
 
                 # AI confidence threshold: stricter for enhanced_ai strategy
-                min_confidence = 0.85 if strategy_name == "enhanced_ai" else 0.60
+                base_min_confidence = 0.85 if strategy_name == "enhanced_ai" else 0.60
 
                 for s in aggregator.symbols:
                     if s in active_positions or s in _evaluating_symbols:
                         continue  # Only one open position per symbol, and block concurrent evaluations
-                        
+
                     _evaluating_symbols.add(s)
                     try:
+                        # ── Per-instrument confidence gate ──────────────
+                        # "Mainly focus NIFTY and SENSEX": those trade at
+                        # whatever bar the active strategy already sets;
+                        # BANKNIFTY/FINNIFTY need a stricter one (default
+                        # 0.85 — the same bar enhanced_ai already uses).
+                        # Position sizing and every risk cap stay uniform
+                        # across all four instruments — this only changes
+                        # which signals are allowed through at all. See
+                        # shared/risk/instrument_focus.py.
+                        instrument_key = normalize_instrument(s)
+                        min_confidence = resolve_min_confidence(
+                            instrument_key, base_min_confidence, settings
+                        )
                         df = aggregator.get_latest_dataframe(s)
                         if len(df) < 50:  # Need enough warmup bars
                             continue
@@ -1262,11 +1287,21 @@ async def run_live_bot(symbols: List[str]) -> None:
                         
                         # ── Premium Strategy: uses engine directly for option selection ──
                         if strategy_name == "premium":
-                            instrument = s.replace("NSE:", "").replace("-INDEX", "").replace("-EQ", "")
+                            # Root-cause fix: this used to derive `instrument`
+                            # inline without stripping a "BSE:" prefix, so a
+                            # SENSEX signal through this branch built the key
+                            # "BSE:SENSEX" instead of "SENSEX", silently
+                            # failing to match INSTRUMENT_CONFIG. Reusing
+                            # instrument_key (shared.instruments.normalize_
+                            # instrument, already computed above) closes that
+                            # gap and keeps this in sync with the auto-map
+                            # branch below instead of maintaining a second
+                            # copy of the same remap.
                             premium_engine = PremiumSignalEngine(
-                                instrument=instrument,
+                                instrument=instrument_key,
                                 capital=risk_manager.current_equity,
                                 min_ai_confidence=min_confidence,
+                                itm_strikes=settings.get("option_strike_itm_offset", 1),
                             )
                             sig: PremiumSignal = await asyncio.to_thread(
                                 premium_engine.evaluate, df, confidence
@@ -1308,18 +1343,21 @@ async def run_live_bot(symbols: List[str]) -> None:
                             if latest_signal != 0 and ("INDEX" in s or s.startswith("NSE:NIFTY") or s.startswith("BSE:SENSEX")):
                                 try:
                                     from trading_bot.strategies.premium_selection.options_selector import select_option
-                                    instrument = s.replace("NSE:", "").replace("BSE:", "").replace("-INDEX", "").replace("-EQ", "")
-                                    # Underlying data symbols don't match the options
-                                    # instrument key 1:1 (e.g. "NIFTY50-INDEX" strips
-                                    # down to "NIFTY50", but the tradeable option series
-                                    # is "NIFTY") — this silently built an invalid,
-                                    # non-existent option symbol for every entry.
-                                    instrument = {"NIFTY50": "NIFTY", "NIFTYBANK": "BANKNIFTY"}.get(instrument, instrument)
+                                    # instrument_key (shared.instruments.
+                                    # normalize_instrument) already resolved
+                                    # the same NIFTY50->NIFTY / NIFTYBANK->
+                                    # BANKNIFTY remap this used to redo inline
+                                    # — see instrument_key's computation above
+                                    # for why that's now one function instead
+                                    # of two independently-maintained copies.
                                     opt_dir: Literal['CE', 'PE'] = "CE" if latest_signal == 1 else "PE"
-                                    opt = select_option(instrument, ltp, opt_dir, itm_strikes=1)
+                                    opt = select_option(
+                                        instrument_key, ltp, opt_dir,
+                                        itm_strikes=settings.get("option_strike_itm_offset", 1),
+                                    )
                                     entry_symbol = opt.symbol
                                     lot_size = opt.lot_size
-                                    logger.info("Auto-mapped %s %s signal to Option: %s", instrument, opt_dir, entry_symbol)
+                                    logger.info("Auto-mapped %s %s signal to Option: %s", instrument_key, opt_dir, entry_symbol)
                                 except Exception as e:
                                     logger.error("Failed to auto-map option for %s: %s", s, e)
                             
@@ -2000,7 +2038,18 @@ if __name__ == "__main__":
 
     SYMBOLS: List[str] = _boot_settings.get(
         "symbols",
-        ["NSE:NIFTY50-INDEX"],   # sensible default if not set in settings
+        # All four tradeable index instruments. NIFTY and SENSEX listed
+        # first (evaluated first each tick) and trade at the strategy's
+        # normal AI-confidence bar; BANKNIFTY/FINNIFTY trade alongside them
+        # but need a stricter bar by default — see
+        # shared/risk/instrument_focus.py and the "focus_instruments"/
+        # "secondary_instrument_min_confidence" settings.
+        [
+            "NSE:NIFTY50-INDEX",
+            "BSE:SENSEX-INDEX",
+            "NSE:NIFTYBANK-INDEX",
+            "NSE:FINNIFTY-INDEX",
+        ],
     )
     logger.info("Starting live bot with symbols: %s", SYMBOLS)
     import time
