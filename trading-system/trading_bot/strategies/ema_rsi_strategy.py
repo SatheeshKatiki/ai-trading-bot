@@ -74,17 +74,37 @@ def generate_signals(
     pandas.Series[int]
         ``1`` (buy), ``-1`` (sell), or ``0`` (no trade).
     """
-    df["ema_fast"] = ema(df["close"], window=ema_fast)
-    df["ema_slow"] = ema(df["close"], window=ema_slow)
-    df["rsi"] = rsi(df["close"], window=rsi_window)
-    
+    # Root-cause fix (found live, 2026-08-06): these used to be written
+    # straight into the caller's `df` one column at a time
+    # (`df["ema_fast"] = ...`, `df["ema_slow"] = ...`, ...). `df` here is
+    # `main.py`'s live CandleAggregator's own stored dataframe, and this
+    # function runs on it roughly every 0.2s for the active symbol — each
+    # incremental `df["new_col"] = ...` assignment calls through to
+    # pandas' `Index.insert()` to grow the column index by one label, and
+    # under pandas 3.0.3 that per-call cost was observed to become
+    # catastrophic in a long-running process: `py-spy dump` caught the
+    # live engine's event loop stuck inside exactly this class of call
+    # chain for 20+ minutes at 97-100% CPU with zero forward progress, on
+    # three separate live incidents the same day (root-caused primarily
+    # to the identical pattern in shared/ai/features.py — see that
+    # module's docstring and docs/paper_trading_validation/anomaly_log.md's
+    # 2026-08-06 entries for the full incident). Computing into local
+    # variables and only ever reading `close`/`rsi_series`/etc. (never
+    # `df["ema_fast"]`) avoids the same class of bug here too, since
+    # nothing downstream of this function actually needs these values
+    # written back onto `df`.
+    close = df["close"]
+    ema_fast_series = ema(close, window=ema_fast)
+    ema_slow_series = ema(close, window=ema_slow)
+    rsi_series = rsi(close, window=rsi_window)
+
     # Add Supertrend for extra confirmation
     from shared.indicators import supertrend
     st_df = supertrend(df, period=10, multiplier=3.0)
-    df["st_direction"] = st_df["direction"]
+    st_direction = st_df["direction"]
 
-    bullish = (df["ema_fast"] > df["ema_slow"]) & (df["rsi"] > rsi_buy_thresh) & (df["st_direction"] == 1) & _volume_filter(df)
-    bearish = (df["ema_fast"] < df["ema_slow"]) & (df["rsi"] < rsi_sell_thresh) & (df["st_direction"] == -1) & _volume_filter(df)
+    bullish = (ema_fast_series > ema_slow_series) & (rsi_series > rsi_buy_thresh) & (st_direction == 1) & _volume_filter(df)
+    bearish = (ema_fast_series < ema_slow_series) & (rsi_series < rsi_sell_thresh) & (st_direction == -1) & _volume_filter(df)
 
     signals = pd.Series(0, index=df.index, dtype=int)
     signals[bullish] = 1

@@ -103,10 +103,70 @@ watched symbol within `engine_stall_warning_s` (default 90s), regardless
 of open positions. 5 new tests. Deployed with the NIFTY-only restart
 above.
 
+**Update — real root cause found and fixed** (same investigation,
+continued). The livelock reproduced a THIRD time — this time on the
+NIFTY-only rollback itself, 11 minutes into an otherwise-idle restart
+(`py-spy dump` again: MainThread itself stuck, not just the worker
+thread, inside `compute_features -> DataFrame.__setitem__ -> _set_item
+-> Index.insert()`). This disproved the "4-instrument load" theory —
+the trigger is not instrument count, it is **pandas 3.0.3's
+`Index.insert()` cost for incremental `df["new_col"] = value` column
+assignment**, hit by three call sites on every evaluation cycle:
+`shared/ai/features.py::compute_features` (19 incremental columns, called
+~5x/second — by far the dominant contributor), `shared/indicators/
+supertrend.py::supertrend` (6 incremental columns on a fresh copy every
+call), and `trading_bot/strategies/ema_rsi_strategy.py::generate_signals`
+(4 incremental columns, written directly onto the live aggregator's own
+stored DataFrame). Two isolated offline benchmarks (a fresh CSV read, and
+a `pd.DataFrame(list-of-dicts)` construction matching the live
+aggregator's own shape) both stayed fast — ruling out "the code is
+inherently slow" and pointing at something that accumulates across many
+repeated calls within one process's lifetime (a known category of issue
+with pandas' PyArrow-backed string-dtype machinery), not a function of
+input size.
+
+**Fix:** rewrote all three functions to build every intermediate value as
+a plain `Series`/array first and construct the output DataFrame exactly
+once with every column already known (`pd.DataFrame(columns_dict,
+index=...)`), instead of growing the column index one `Index.insert()`
+call at a time. Verified bit-for-bit identical output against the
+pre-fix implementation on real data (100/500/full-22,787-row samples for
+`compute_features`; 100/500/full-22,788-row for `supertrend`;
+200/1,700/full-22,789-row for `generate_signals` — every value matches
+to floating-point equality, same columns, same index, and neither
+`supertrend` nor `generate_signals` mutates its caller's DataFrame,
+matching prior behavior). 11 new regression tests
+(`test_incremental_column_insert_regression.py`), including a bounded
+repeated-call smoke check.
+
+**Honesty about confidence level.** A 6,000-call offline stress test
+(simulating ~20 minutes of real eval cadence) showed per-call cost was
+flat for the first ~4,000 calls then climbed 2.4x (13ms -> 33ms) — better
+than the unbounded pre-fix growth, but not proven to be perfectly flat
+forever. Tried globally disabling pandas' `future.infer_string` option as
+a possible deeper fix; inconclusive and the test run itself became
+markedly slower, so that avenue was abandoned as more likely to introduce
+new risk than resolve this one within the time available — flagged as a
+follow-up avenue (a pandas version pin/downgrade), not pursued further
+today. Live-verified after deploying: `py-spy dump` immediately post-fix
+showed the classic pre-fix signature gone (no thread stuck reproducing
+the same call chain across repeated dumps) — 3 rapid successive dumps
+showed the process genuinely alternating between idle and brief active
+bursts, the expected healthy pattern, rather than the permanently-stuck
+signature of every single pre-fix dump today. CPU-delta readings in the
+first ~90s post-restart ran higher (59-67%) than the very first healthy
+baseline observed hours earlier (18%) — plausibly just real intraday tick
+volume rather than a residual problem, but not conclusively ruled
+out. **Continuing to monitor closely, tight cadence, rather than
+declaring this fully closed.**
+
 **Status: today's session has now found 4 new issues** (tick staleness,
-market-hours gate, engine-wide stall detection, and this CPU livelock —
-the most severe of the four, and the only one not yet fully fixed, only
-mitigated + made detectable). Far from a "zero new findings" session.
+market-hours gate, engine-wide stall detection, and this CPU livelock),
+**3 of 4 fully fixed and verified, 1 (engine-stall detection) mitigating
+rather than eliminating its trigger** — the livelock's root cause is now
+understood and fixed with high confidence, but not yet proven under
+sustained real-world load for long enough to close outright. Far from a
+"zero new findings" session.
 
 ---
 
