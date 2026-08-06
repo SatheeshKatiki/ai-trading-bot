@@ -98,7 +98,7 @@ _m2m_last_update: float = 0.0
 
 # Import AI / Risk / Exit / Alert Modules
 from shared.ai import TradeFilterModel, compute_features
-from shared.risk import RiskManager, RiskConfig, TradeRecord, resolve_initial_stop, resolve_min_confidence
+from shared.risk import RiskManager, RiskConfig, TradeRecord, resolve_initial_stop, resolve_min_confidence, find_stale_positions
 from shared.instruments import normalize_instrument
 from shared.exits import SmartExitEngine, Position, PyramidSizer
 from shared.alerts import alerter
@@ -290,6 +290,11 @@ def _load_settings() -> dict:
         # everything else (BANKNIFTY/FINNIFTY) needs at least this bar.
         "focus_instruments": ["NIFTY", "SENSEX"],
         "secondary_instrument_min_confidence": 0.85,
+
+        # ── Tick-staleness watchdog (observability only) ──────────────
+        # Warn when an open position's underlying hasn't ticked in this
+        # many seconds — see shared/risk/tick_staleness.py.
+        "tick_staleness_warning_s": 90.0,
     }
     
     if _SETTINGS_PATH.is_file():
@@ -547,6 +552,12 @@ async def run_live_bot(symbols: List[str]) -> None:
                   severity="WARNING")
 
     last_eval_time = 0.0
+    # time.monotonic() of the most recent tick per underlying symbol.
+    # Feeds tick_staleness_watchdog() below — see shared/risk/tick_staleness.py
+    # for why this exists (on_tick, and everything inside it including exit
+    # management, only ever runs when a real tick arrives; nothing else
+    # detects a feed that has simply gone quiet).
+    _last_tick_at: Dict[str, float] = {}
     # (timestamp, last_known_premium) per option symbol — see the
     # exit-check block in on_tick() for why this exists.
     _option_premium_cache: Dict[str, tuple[float, float]] = {}
@@ -814,6 +825,7 @@ async def run_live_bot(symbols: List[str]) -> None:
         nonlocal last_eval_time
         sym = tick["symbol"]
         ltp = tick["ltp"]
+        _last_tick_at[sym] = time.monotonic()
         # Populated by the exit-check block below (section 1) when it fetches
         # an option's live premium, so section 3's M2M calc can reuse it
         # instead of hitting the broker API a second time for the same
@@ -1923,6 +1935,59 @@ async def run_live_bot(symbols: List[str]) -> None:
             del active_positions[result.local_key]
 
         _save_positions(active_positions)
+
+    # ----------------------------------------------------------------
+    # Tick-staleness watchdog
+    # ----------------------------------------------------------------
+    # Root-cause fix (found live, 2026-08-06): on_tick() -- and everything
+    # inside it, including all exit management -- only ever runs when a
+    # real tick arrives. If the feed goes quiet while a position is open
+    # (market closed, or a genuine WS outage during real trading hours),
+    # nothing manages that position for as long as the silence lasts, and
+    # nothing previously reported that this was happening. Observed live:
+    # a position opened at 02:50 IST off one post-restart snapshot tick
+    # then went unmonitored for 7h49m. This task is pure observability --
+    # it warns and audit-logs, it does not halt trading, block entries, or
+    # touch any position. See shared/risk/tick_staleness.py.
+    _last_staleness_alert: Dict[str, float] = {}
+    # Re-alert cadence deliberately coarser than the check interval, so an
+    # ongoing gap logs once every few minutes instead of once every check.
+    _STALENESS_CHECK_INTERVAL_S = 30.0
+    _STALENESS_REALERT_INTERVAL_S = 300.0
+
+    async def tick_staleness_watchdog() -> None:
+        while True:
+            await asyncio.sleep(_STALENESS_CHECK_INTERVAL_S)
+            try:
+                settings = _load_settings()
+                open_positions = {key: pos.symbol for key, pos in active_positions.items()}
+                if not open_positions:
+                    continue
+                now = time.monotonic()
+                for stale in find_stale_positions(_last_tick_at, open_positions, now, settings):
+                    last_alert = _last_staleness_alert.get(stale.underlying_key, 0.0)
+                    if (now - last_alert) < _STALENESS_REALERT_INTERVAL_S:
+                        continue
+                    _last_staleness_alert[stale.underlying_key] = now
+                    age_display = (
+                        "never" if stale.seconds_since_tick == float("inf")
+                        else f"{stale.seconds_since_tick:.0f}s"
+                    )
+                    logger.warning(
+                        "TICK STALENESS: %s (position: %s) has not ticked in %s -- "
+                        "this position is receiving NO risk management (trailing/SL/"
+                        "partial-book) until a tick arrives. Feed outage or market closed.",
+                        stale.underlying_key, stale.traded_symbol, age_display,
+                    )
+                    audit.log(AuditEvent.TICK_STALENESS, {
+                        "underlying": stale.underlying_key,
+                        "symbol": stale.traded_symbol,
+                        "seconds_since_tick": stale.seconds_since_tick,
+                    }, severity="WARNING")
+            except Exception as e:
+                logger.error("Tick staleness watchdog error: %s", e)
+
+    asyncio.create_task(tick_staleness_watchdog())
 
     logger.info("Starting live stream for symbols: %s", ", ".join(symbols))
     await broker.stream_quotes(symbols, on_tick, on_reconnect=sync_broker_state)

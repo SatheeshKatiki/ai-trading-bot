@@ -6,6 +6,130 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-08-06 (morning) — deployed the new option stop-loss + ATM/ITM/multi-instrument architecture; found a position that traded and then sat unmonitored for 7h49m
+
+Session context: the previous evening's work (still same continuous
+session) implemented (1) premium-banded initial stop-loss with no fixed
+profit target, (2) a hard ATM/ITM-only clamp on strike selection, and (3)
+expansion from NIFTY-only to all four instruments (NIFTY, BANKNIFTY,
+FINNIFTY, SENSEX) with NIFTY/SENSEX given a lower AI-confidence bar. Both
+were unit-tested (206 + 58 = 264 tests) and briefly live-verified at
+restart, but neither had been through a real continuous-monitoring
+session yet — today is genuinely session 1 for this code, regardless of
+what came before it for the old flat-percentage-SL code path.
+
+### CRITICAL (found, root-caused, partially fixed; part flagged as policy) — a position opened at 02:50 IST off a stale post-restart snapshot, then received ZERO risk management for 7h49m because nothing detects a silent tick feed
+
+**Symptom, found while doing the routine pre-monitoring state.db check:**
+`trades` row id 24 — `NSE:NIFTY2681124600CE BUY qty=130 @ 132.95` —
+timestamped `2026-08-06T02:50:00`, hours before NSE market open (09:15
+IST) and minutes after an unrelated process restart (02:46:43 IST, done
+to deploy the stop-loss architecture itself).
+
+**Investigation.** `engine.log` lines 28924–28978 are the complete record
+of that process's life before the next restart at 10:39:28 IST — 54
+lines total, and every one of them accounted for:
+```
+02:46:46  Starting live bot with symbols: ['NSE:NIFTY50-INDEX']
+02:46:47  Connected to API Bridge WebSocket!
+02:50:00  Auto-mapped NIFTY CE signal to Option: NSE:NIFTY2681124600CE
+02:50:00  SL BAND ₹100-150 | premium ₹132.95 -> SL ₹114.65 (banded)
+02:50:00  ENTRY BUY CALL ... qty=130 @ 132.95 | TGT=NONE (trailing/smart-exit)
+10:09:47  Settings reloaded instantly from disk.        <- next line, 7h19m later
+```
+Between `02:50:00,193` and `10:39:28` — **7 hours 49 minutes** — there is
+no other line referencing this symbol, no tick, no exit-check, nothing.
+`trading_bot.main.on_tick()` is invoked purely by the broker's WS message
+callback (`brokers/fyers_broker.py:697`); there is no independent timer.
+Every piece of exit management (trailing stop, hard SL, partial booking,
+pyramiding) lives inside `on_tick`. **If the tick feed goes quiet while a
+position is open, nothing manages that position for as long as the
+silence lasts, and nothing existing reports that this is happening.**
+
+The entry itself: one tick evaluated at `02:50:00` (3m13s after WS
+connect — consistent with the strategy's warm-up threshold on a single
+static post-connect snapshot, not a live stream), a signal fired on it,
+and the engine happily opened a real paper position using that snapshot
+premium at half past two in the morning. A real broker would reject any
+order placed outside the exchange session; nothing in this system does.
+
+**What happened when ticks finally resumed** (10:39:28, first tick after
+market reopened elsewhere in symbols/restart): the position's premium
+appeared to the engine to have moved from 132.95 to ~181.00 in a single
+step — a ~36% "jump" that is not a real market move, it is the gap
+between a stale snapshot and the first live quote 7h49m later. That
+single evaluation cascaded: `TRAILING SL MOVED 114.65 -> 132.95`,
+`Partial Profit Booking (1:1.0)`, then two immediate `PYRAMID SCALE`
+entries (32 qty @ 181.00 and 32 qty @ 180.45) — all real exit/sizing
+decisions made in response to a data artifact, not genuine price
+discovery. This directly contaminates today's headline equity/PnL figures
+(equity 109,668.70, pnl +9,743.05 as of the restart) — a meaningful share
+of that gain is the stale-to-live snapshot gap, not trading skill or real
+market movement. **Today's PnL figures must not be used as-is for the
+§2.9 evidence package** without excluding this trade or noting the
+distortion explicitly.
+
+**Root cause, precisely:** two independent gaps, not one bug:
+1. No gate prevents a *new* entry from executing outside real exchange
+   trading hours.
+2. No mechanism detects or reports that an *already-open* position has
+   gone unmonitored because the tick feed has been silent.
+
+**Fix applied — (2) only, as pure observability, no behavior change:**
+new `shared/risk/tick_staleness.py` (`find_stale_positions`, pure
+function) plus a background `tick_staleness_watchdog()` task in
+`main.py`, checking every 30s whether any open position's underlying has
+gone >= `tick_staleness_warning_s` (default 90s — above the §2.11 idle
+reconnect baseline of ~160s between individual reconnects, but well
+below "hours") without a tick, logging a `WARNING` and a new
+`AuditEvent.TICK_STALENESS` audit record (re-alert throttled to once per
+5 minutes per symbol to avoid log spam on an ongoing gap). This does
+**not** halt trading, block entries, or touch any position — it only
+makes a previously-invisible condition visible. Generalizes beyond the
+overnight case: the identical mechanism would leave a position equally
+unmonitored during a genuine multi-minute WebSocket outage in real
+market hours with real capital at risk, which is the reason this was
+fixed immediately rather than filed as "overnight-only, low priority."
+10 new tests (`test_tick_staleness.py`). Deployed and live-verified: main.py
+restarted 11:17:33 IST, clean boot, zero errors, watchdog confirmed silent
+(as expected — no open positions, and the market is open so this
+session's ticks are flowing normally).
+
+**Deliberately NOT fixed — flagged as a policy decision:** whether new
+entries should be gated to actual NSE trading hours (09:15–15:30 IST,
+weekdays). This is a strategy/business-logic boundary, not wiring — a
+real broker enforces it structurally, so it has never needed an explicit
+policy in this codebase before, but paper mode has no such enforcement.
+Needs an explicit answer to questions like: should the gate be a hard
+calendar check, or tied to actual tick recency (so a genuinely-live
+session near market close/open isn't blocked by clock skew)? What about
+special sessions (Muhurat trading)? Left for the next conversation turn
+rather than guessed at.
+
+### Also observed, not new — the AI-confidence override is unconditionally active on every trade
+Every entry log line today shows `AI Confidence Override active (100%)
+-> Risk Limit increased to 3.5%`. This is the same root cause already
+documented in `docs/OPTION_STOP_LOSS_ARCHITECTURE.md` §7 and
+`docs/ATM_ITM_AND_MULTI_INSTRUMENT_ARCHITECTURE.md` §7 (with
+`enable_ai_filter` off, `main.py` falls back to a hardcoded
+`confidence = 1.0`, which is `>= high_confidence_threshold` (0.85) by
+construction) — noted here only because today's live logs are the first
+direct, concrete confirmation that it fires on *literally every single
+entry*, not an occasional edge case. Concretely: every trade today has
+been sized at the elevated 3.5% per-trade risk tier, not the intended
+base 1% tier. Not a new finding; re-flagged because the concrete evidence
+belongs in this log alongside today's other findings, and because it
+means today's position sizes (and therefore PnL swings) are ~3.5x larger
+than the base-tier config would produce.
+
+**Status: today's session already has 1 new bug found and fixed (tick
+staleness observability) plus 1 new policy question raised (market-hours
+entry gate) before market-hours continuous monitoring has even properly
+begun.** Continuing the "session with zero new findings" pattern from
+prior days — not yet met.
+
+---
+
 ## 2026-08-05 (evening) — designing a safe §2.8 kill-switch test found it was completely non-functional; also found and fixed a real ~2-hour full-server freeze
 
 Tasked with designing a safe way to test §2.6/§2.8 ahead of the next live
