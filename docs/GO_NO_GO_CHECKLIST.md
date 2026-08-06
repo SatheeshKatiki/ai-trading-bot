@@ -123,6 +123,45 @@ with keepalive timeouts roughly every 60-90s since tonight's restart —
 well above the §2.11 baseline, reconnecting cleanly each time but worth
 its own look.
 
+**2026-08-06 update:** shipped and deployed live, same session: a
+premium-banded option stop-loss with no fixed profit target (replacing a
+flat 0.45%/3.5% SL/target), a hard ATM/ITM-only strike-selection clamp,
+and expansion from NIFTY-only to all four instruments
+(NIFTY/BANKNIFTY/FINNIFTY/SENSEX). This was the first live exercise of
+all three, and — consistent with this window's established pattern —
+found four real, previously-invisible bugs the moment it actually ran:
+(1) no detection for a silent tick feed, letting a position opened at
+02:50 IST off a stale post-restart snapshot sit with zero risk
+management for 7h49m, until real ticks resumed and produced a fake ~36%
+price "jump" that triggered real trailing-SL/partial-book/pyramid
+decisions off a data artifact; (2) no gate preventing new entries outside
+real NSE trading hours at all, root cause of (1); (3) — the most
+severe — a CPU livelock (97-100% CPU, zero log output for 20+ minutes at
+a time, reproduced on 3 of 4 restarts including once on NIFTY-only alone)
+caused by pandas 3.0.3's `Index.insert()` cost under incremental
+`df["x"] = value` column assignment in three hot-path functions, called
+~5x/second; (4) confirmed but not previously quantified, the AI-confidence
+fallback (`enable_ai_filter` off → hardcoded 1.0) makes every trade run at
+the elevated 3.5% risk tier instead of the intended 1% base tier. All four
+fixed and unit-tested (49 new tests, 313 total); the livelock fix
+specifically verified live via repeated `py-spy` process dumps across
+multiple monitoring cycles, but has only ~2 hours of clean observation
+behind it, not a full trading day. Multi-instrument was rolled back to
+NIFTY-only as an emergency stability mitigation during the livelock
+investigation — re-enabling it is an explicit open decision, not resolved.
+Full detail: `docs/paper_trading_validation/anomaly_log.md`'s 2026-08-06
+entries and `docs/paper_trading_validation/reports/2026-08-06.md`.
+**Status remains NO-GO — this is the least-clean session yet by bug
+count** (4 new findings, one CRITICAL), and the validation clock has not
+started for any of today's new code. §2.6 and §2.8 remain completely
+untested across the entire validation window to date; today's own trades
+are not usable §2.9 evidence (all downstream of the stale-snapshot
+incident); §2.7's daily-trade-cap guard got real, repeated live
+confirmation (2,112 correct blocks) but the daily-loss circuit breaker
+still hasn't fired in any session. §0's Fyers key rotation and plaintext
+credential migration remain outstanding, unrelated to today but still
+blocking final sign-off regardless of §2.
+
 This is a living document — check items off with a date and evidence
 reference as they're actually completed, don't mark something done because
 it's expected to pass.
