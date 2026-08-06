@@ -1,4 +1,5 @@
-"""shared/risk/tick_staleness.py — detecting an unmonitored open position.
+"""shared/risk/tick_staleness.py — detecting an unmonitored open position,
+and a stalled engine even when flat.
 
 Root cause: on_tick() (and everything inside it, including all exit
 management) only ever runs when a real tick arrives. If the feed goes
@@ -10,15 +11,24 @@ tick, then received zero risk management for 7h49m.
 find_stale_positions() is the pure detection logic behind the watchdog
 task in main.py — these tests cover it directly since the watchdog itself
 is an infinite asyncio loop that isn't practical to unit test.
+
+seconds_since_any_tick() covers a second, related incident from the same
+session: main.py went CPU-bound for 22+ minutes with zero log output while
+genuinely flat (no open position for find_stale_positions to protect).
+Nothing reported it; it was only caught by a human cross-checking process
+CPU against log timestamps. This is the engine-wide counterpart, checked
+regardless of whether any position is open.
 """
 import _bootstrap  # noqa: F401  (side-effect: puts trading-system/ on sys.path)
 
 import pytest
 
 from shared.risk.tick_staleness import (
+    DEFAULT_ENGINE_STALL_WARNING_S,
     DEFAULT_STALENESS_WARNING_S,
     StalePosition,
     find_stale_positions,
+    seconds_since_any_tick,
 )
 
 
@@ -131,3 +141,52 @@ def test_the_docstring_scenario_is_reproduced():
 
     assert len(result) == 1
     assert result[0].seconds_since_tick == pytest.approx(28_140.0)
+
+
+# ---------------------------------------------------------------------------
+# seconds_since_any_tick — engine-wide stall, independent of open positions
+# ---------------------------------------------------------------------------
+
+def test_no_ticks_ever_is_infinitely_stale():
+    assert seconds_since_any_tick({}, now=100_000.0) == float("inf")
+
+
+def test_recent_tick_on_any_symbol_means_the_engine_is_alive():
+    last_tick_at = {"NSE:NIFTY50-INDEX": 995.0, "BSE:SENSEX-INDEX": 990.0}
+    assert seconds_since_any_tick(last_tick_at, now=1_000.0) == pytest.approx(5.0)
+
+
+def test_uses_the_most_recent_tick_across_all_symbols_not_the_oldest():
+    """One symbol ticking is enough to prove the feed/event-loop is alive —
+    this must not be dragged down by a different symbol that happens to be
+    individually quiet (that's find_stale_positions's job, not this one's)."""
+    last_tick_at = {
+        "NSE:NIFTY50-INDEX": 500.0,     # stale on its own
+        "BSE:SENSEX-INDEX": 999.0,      # just ticked
+        "NSE:NIFTYBANK-INDEX": 700.0,
+    }
+    assert seconds_since_any_tick(last_tick_at, now=1_000.0) == pytest.approx(1.0)
+
+
+def test_the_live_incident_is_reproduced():
+    """The exact scenario this function was built from: 22+ minutes of
+    silence across every watched symbol, engine otherwise flat."""
+    last_tick_at = {
+        "NSE:NIFTY50-INDEX": 0.0,
+        "BSE:SENSEX-INDEX": 0.0,
+        "NSE:NIFTYBANK-INDEX": 0.0,
+        "NSE:FINNIFTY-INDEX": 0.0,
+    }
+    twenty_two_minutes = 22 * 60
+
+    age = seconds_since_any_tick(last_tick_at, now=float(twenty_two_minutes))
+
+    assert age == pytest.approx(1_320.0)
+    assert age >= DEFAULT_ENGINE_STALL_WARNING_S
+
+
+def test_default_engine_stall_threshold_matches_the_position_threshold():
+    """Not load-bearing behavior, just documents the deliberate choice that
+    both default to the same value even though they're independently
+    configurable — see the module docstring."""
+    assert DEFAULT_ENGINE_STALL_WARNING_S == DEFAULT_STALENESS_WARNING_S

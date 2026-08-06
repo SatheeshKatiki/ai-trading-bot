@@ -6,6 +6,110 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-08-06 (midday) — CRITICAL: the 4-instrument engine livelocks on ~2 of 3 restarts; temporarily reverted to NIFTY-only
+
+Found during the first continuous-monitoring cycle after deploying the
+tick-staleness/market-hours fixes below. This is the most severe finding
+of the day and **blocks any GO recommendation on its own** — §2.10 of
+`docs/GO_NO_GO_CHECKLIST.md` requires "no performance decay... engine
+process still responsive," and this violates it directly and repeatedly.
+
+**Symptom.** After restarting `main.py` with all four instruments
+(NIFTY/SENSEX/BANKNIFTY/FINNIFTY) live, the process would sometimes go
+completely silent — zero new `engine.log` lines, zero sentiment-fetch
+heartbeat (normally every ~5 min) — while `Get-Process`'s CPU counter
+showed **97–100% sustained utilization** (confirmed via two independent
+before/after CPU-delta measurements a few seconds apart, not a single
+misleading cumulative-counter snapshot). The process was never
+unresponsive at the OS level (`/health` always returned 200) and never
+crashed — it just stopped doing anything useful while consuming an
+entire CPU core. Reproduced on 2 of 3 restarts today; the one restart
+that looked clean (13:11 IST) was only observed for ~10 minutes before
+being superseded, so it may simply not have been watched long enough to
+catch onset.
+
+**Investigation.** `py-spy dump --pid <pid>` (installed fresh into the
+venv for this — not previously available) taken repeatedly across both
+livelocked instances, several seconds apart each time:
+- The stack **changed between every dump** — `get_aggression_masks`
+  (institutional filters) → `supertrend`'s indicator loop →
+  `ema_rsi_strategy.generate_signals` → pandas Arrow-string `.insert()`
+  internals → a `KeyError`/`repr()` path (`Series.__repr__` via
+  `get_loc`) → `rsi()`'s `.clip()`. This rules out a **deadlock** (which
+  would show the identical frame every time) — it is a **livelock**:
+  real, ordinary indicator/strategy computation genuinely executing and
+  completing, just never finishing a full evaluation cycle across all
+  four symbols before the next tick makes it start falling behind again.
+- One dump caught the computation running directly on **MainThread**
+  (not the `asyncio.to_thread` worker) inside `rsi()` — meaning
+  `compute_features()`, which `on_tick` calls synchronously
+  (unlike `registry.run_strategy`, correctly wrapped in
+  `asyncio.to_thread`), can itself block the event loop directly when
+  slow. This is the more dangerous of the two: while it's running,
+  *nothing* else can happen on that tick, including exit-checks for any
+  open position on a different symbol.
+- Offline benchmark, to rule out "the code itself is just slow": loaded
+  the full 22,781-row real NIFTY cache and timed `registry.run_strategy
+  ('ema_rsi', ...)` and `compute_features()` directly — **0.1s and
+  0.03s respectively**, nowhere close to explaining a 20+ minute stall.
+  The problem is not raw per-call cost; it's aggregate load (up to 4
+  symbols' worth of full re-evaluation contending every ~0.2s) crossing
+  a threshold this architecture cannot sustain, likely worsened by
+  `compute_features` running unthreaded on the event loop and/or a
+  WebSocket keepalive-timeout reconnect (`1011 keepalive ping timeout`,
+  observed in `fyersApi.log` at 13:20:12) delivering a backlog of ticks
+  that all demand evaluation near-simultaneously.
+
+**Root cause: not fully pinned to one line.** This is stated plainly
+rather than overclaiming certainty the evidence doesn't support. What
+*is* established with high confidence: (1) it is compute-bound
+aggregate load from the multi-instrument expansion, not a hang/deadlock;
+(2) `compute_features` runs synchronously on the event loop where
+`registry.run_strategy` does not, which is architecturally the riskier
+half; (3) it reproduces at a real rate (~2/3 today) specifically with 4
+concurrent instruments and has never once been observed with NIFTY
+alone, today or in any prior session across this entire validation
+window.
+
+**Immediate mitigation — reverted `symbols` to NIFTY-only.**
+`config/settings.json`'s `symbols` list temporarily set back to
+`["NSE:NIFTY50-INDEX"]`, restarted, confirmed stable (~18–19% CPU across
+two consecutive 10s delta measurements, vs. 82–100% on the 4-symbol
+config). This is a live-system stability rollback, not a reversal of the
+earlier "enable all 4 now" decision — the multi-instrument code itself
+(strike selection, confidence gating, symbol normalization) is unaffected
+and re-tested; only how many instruments are concurrently watched was
+turned back down until the performance issue has a real fix. **Flagging
+for an explicit decision on the path forward** rather than silently
+guessing at one: profile and fix `compute_features`/indicator cost
+properly (move it off the event loop, cache/incrementally update instead
+of full-recompute per tick), reduce eval frequency for secondary
+instruments specifically, or keep NIFTY+SENSEX only until BANKNIFTY/
+FINNIFTY get their own performance pass.
+
+**Also fixed today, as a direct result of this investigation — engine-
+wide stall detection.** `find_stale_positions` (from the earlier entry
+below) only ever checks symbols with an open position, by design. This
+incident happened while completely flat, so it went undetected by that
+watchdog and was only caught by a human manually cross-referencing
+process CPU against log timestamps — exactly the kind of check this
+continuous-monitoring session exists to do, but it should not require a
+human doing it by hand. Added `shared/risk/tick_staleness.py::
+seconds_since_any_tick()` (pure function, engine-wide instead of
+per-position) and wired it into the same watchdog task, gated to real
+market hours via today's `is_market_open()`. Logs a `WARNING` and a new
+`AuditEvent.ENGINE_STALL` audit record if no tick has landed for *any*
+watched symbol within `engine_stall_warning_s` (default 90s), regardless
+of open positions. 5 new tests. Deployed with the NIFTY-only restart
+above.
+
+**Status: today's session has now found 4 new issues** (tick staleness,
+market-hours gate, engine-wide stall detection, and this CPU livelock —
+the most severe of the four, and the only one not yet fully fixed, only
+mitigated + made detectable). Far from a "zero new findings" session.
+
+---
+
 ## 2026-08-06 (morning) — deployed the new option stop-loss + ATM/ITM/multi-instrument architecture; found a position that traded and then sat unmonitored for 7h49m
 
 Session context: the previous evening's work (still same continuous

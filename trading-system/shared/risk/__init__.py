@@ -16,8 +16,10 @@ from .instrument_focus import (
 )
 from .tick_staleness import (
     DEFAULT_STALENESS_WARNING_S,
+    DEFAULT_ENGINE_STALL_WARNING_S,
     StalePosition,
     find_stale_positions,
+    seconds_since_any_tick,
 )
 
 __all__ = [
@@ -34,6 +36,8 @@ __all__ = [
     "DEFAULT_SECONDARY_MIN_CONFIDENCE",
     "resolve_min_confidence",
     "DEFAULT_STALENESS_WARNING_S",
+    "DEFAULT_ENGINE_STALL_WARNING_S",
     "StalePosition",
     "find_stale_positions",
+    "seconds_since_any_tick",
 ]

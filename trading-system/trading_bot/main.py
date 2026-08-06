@@ -98,7 +98,7 @@ _m2m_last_update: float = 0.0
 
 # Import AI / Risk / Exit / Alert Modules
 from shared.ai import TradeFilterModel, compute_features
-from shared.risk import RiskManager, RiskConfig, TradeRecord, resolve_initial_stop, resolve_min_confidence, find_stale_positions
+from shared.risk import RiskManager, RiskConfig, TradeRecord, resolve_initial_stop, resolve_min_confidence, find_stale_positions, seconds_since_any_tick
 from shared.instruments import normalize_instrument
 from shared.market_hours import is_market_open
 from shared.exits import SmartExitEngine, Position, PyramidSizer
@@ -296,6 +296,9 @@ def _load_settings() -> dict:
         # Warn when an open position's underlying hasn't ticked in this
         # many seconds — see shared/risk/tick_staleness.py.
         "tick_staleness_warning_s": 90.0,
+        # Warn when NO watched symbol has ticked in this many seconds
+        # during market hours, regardless of open positions.
+        "engine_stall_warning_s": 90.0,
     }
     
     if _SETTINGS_PATH.is_file():
@@ -1970,16 +1973,53 @@ async def run_live_bot(symbols: List[str]) -> None:
     # ongoing gap logs once every few minutes instead of once every check.
     _STALENESS_CHECK_INTERVAL_S = 30.0
     _STALENESS_REALERT_INTERVAL_S = 300.0
+    _last_engine_stall_alert = 0.0
 
     async def tick_staleness_watchdog() -> None:
         while True:
             await asyncio.sleep(_STALENESS_CHECK_INTERVAL_S)
             try:
                 settings = _load_settings()
+                now = time.monotonic()
+
+                # ── Engine-wide stall check (runs regardless of open positions) ──
+                # Root-cause fix (found live, 2026-08-06): the per-position
+                # check below only ever runs when a position is open, by
+                # design -- it exists to protect capital at risk. That left
+                # a real gap: main.py went CPU-bound for 22+ minutes with
+                # zero log output while genuinely flat (confirmed via
+                # repeated py-spy dumps -- ongoing computation across
+                # different pandas/indicator code paths, not a deadlock;
+                # exact trigger not fully pinned down, did not reproduce on
+                # a clean restart). Nothing in the system reported it; it
+                # was only caught by manually cross-checking process CPU
+                # against log timestamps. This check closes that gap --
+                # only evaluated during real market hours, since silence
+                # outside trading hours is expected, not a fault.
+                nonlocal _last_engine_stall_alert
+                if is_market_open(settings=settings):
+                    stall_threshold = float(settings.get("engine_stall_warning_s", 90.0))
+                    stall_age = seconds_since_any_tick(_last_tick_at, now)
+                    if stall_age >= stall_threshold and (now - _last_engine_stall_alert) >= _STALENESS_REALERT_INTERVAL_S:
+                        _last_engine_stall_alert = now
+                        age_display = "never" if stall_age == float("inf") else f"{stall_age:.0f}s"
+                        logger.warning(
+                            "ENGINE STALL: no tick received for ANY watched symbol in %s "
+                            "during market hours -- the engine cannot process exits OR "
+                            "new entries until a tick arrives. Check the WS connection "
+                            "and process CPU (a stuck process can look alive while doing "
+                            "no useful work).",
+                            age_display,
+                        )
+                        audit.log(AuditEvent.ENGINE_STALL, {
+                            "seconds_since_any_tick": stall_age,
+                            "symbols": list(_last_tick_at.keys()),
+                        }, severity="WARNING")
+
+                # ── Per-position staleness check ──────────────────────────
                 open_positions = {key: pos.symbol for key, pos in active_positions.items()}
                 if not open_positions:
                     continue
-                now = time.monotonic()
                 for stale in find_stale_positions(_last_tick_at, open_positions, now, settings):
                     last_alert = _last_staleness_alert.get(stale.underlying_key, 0.0)
                     if (now - last_alert) < _STALENESS_REALERT_INTERVAL_S:
