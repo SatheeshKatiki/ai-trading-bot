@@ -95,16 +95,25 @@ restarted 11:17:33 IST, clean boot, zero errors, watchdog confirmed silent
 (as expected — no open positions, and the market is open so this
 session's ticks are flowing normally).
 
-**Deliberately NOT fixed — flagged as a policy decision:** whether new
-entries should be gated to actual NSE trading hours (09:15–15:30 IST,
-weekdays). This is a strategy/business-logic boundary, not wiring — a
-real broker enforces it structurally, so it has never needed an explicit
-policy in this codebase before, but paper mode has no such enforcement.
-Needs an explicit answer to questions like: should the gate be a hard
-calendar check, or tied to actual tick recency (so a genuinely-live
-session near market close/open isn't blocked by clock skew)? What about
-special sessions (Muhurat trading)? Left for the next conversation turn
-rather than guessed at.
+**Update — market-hours gate confirmed and implemented.** Flagged as a
+policy decision above; asked, and confirmed: add a hard market-hours gate
+on new entries, existing open positions unaffected. Implemented as
+`shared/market_hours.py::is_market_open()` (pure function, weekday +
+09:15–15:30 IST, mirrors `frontend/lib/ist-time.ts`'s `isMarketOpenIST()`
+exactly so both sides of the system agree on the definition — no holiday
+calendar, matching the existing frontend indicator rather than
+introducing a second, stricter standard). Wired into `main.py`
+immediately after `if latest_signal == 0: continue`, common to both
+entry paths (the "premium" strategy branch and the generic index
+auto-map branch both converge there) — before any SL/sizing/order-
+placement work happens, and never consulted anywhere on the exit path.
+An explicit, loud `market_hours_override` settings key exists for
+deliberate manual testing outside real hours, distinct from silently
+disabling the gate. 23 new tests (`test_market_hours.py`) covering the
+exact incident timestamp, both window boundaries, weekends, timezone
+conversion, and the override. Deployed and live-verified: `main.py`
+restarted 12:04:33 IST (no open positions at restart, so no disruptive
+re-evaluation this time), clean boot, zero errors.
 
 ### Also observed, not new — the AI-confidence override is unconditionally active on every trade
 Every entry log line today shows `AI Confidence Override active (100%)

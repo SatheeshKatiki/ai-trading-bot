@@ -100,6 +100,7 @@ _m2m_last_update: float = 0.0
 from shared.ai import TradeFilterModel, compute_features
 from shared.risk import RiskManager, RiskConfig, TradeRecord, resolve_initial_stop, resolve_min_confidence, find_stale_positions
 from shared.instruments import normalize_instrument
+from shared.market_hours import is_market_open
 from shared.exits import SmartExitEngine, Position, PyramidSizer
 from shared.alerts import alerter
 from trading_bot.portfolio_risk import PortfolioRiskEngine
@@ -1375,6 +1376,21 @@ async def run_live_bot(symbols: List[str]) -> None:
                             
 
                         if latest_signal == 0:
+                            continue
+
+                        # ── Market-hours gate (NEW entries only) ───────────
+                        # Root-cause fix (found live 2026-08-06): nothing
+                        # previously stopped a new entry from executing
+                        # outside real NSE trading hours -- a real broker
+                        # enforces this structurally, paper mode did not.
+                        # See shared/market_hours.py and the 2026-08-06
+                        # anomaly_log.md entry for the live incident this
+                        # closes. Deliberately placed only in the entry
+                        # path -- already-open positions keep full exit
+                        # management (trailing/SL/EOD/partial-book/
+                        # pyramiding) regardless of the time of day; this
+                        # gate is never consulted there.
+                        if not is_market_open(settings=settings):
                             continue
 
                         # ── Macro Sentiment Blocks ─────────────────────────
