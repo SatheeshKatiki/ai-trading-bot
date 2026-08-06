@@ -4,7 +4,7 @@ Selects the optimal At-The-Money (ATM) Nifty option strike based on:
 1. Spot price → calculate ATM depth (0 points)
 2. Round to nearest 50-point strike interval
 3. Approximate delta using moneyness
-4. Handle Thursday expiry rollover to next week
+4. Handle expiry-day rollover to next week (Tuesday for NIFTY)
 """
 
 from __future__ import annotations
@@ -21,8 +21,16 @@ from .config import (
 
 logger = logging.getLogger(__name__)
 
-# Nifty weekly options expire every Thursday
-EXPIRY_WEEKDAY = 3  # Thursday (Monday=0, ..., Thursday=3)
+# Root-cause fix: NSE consolidated weekly index-options expiry to Tuesday
+# for NIFTY/BANKNIFTY (verified 2026-08-03 against Fyers' live NSE_FO symbol
+# master — see the identical fix and verification note in
+# trading_bot/strategies/premium_selection/options_selector.py's
+# INSTRUMENT_CONFIG). This module is NIFTY-only (see class docstring), so it
+# needs Tuesday, not the old Thursday value that predates the exchange's
+# calendar change and would have built a symbol for a non-existent contract
+# for every entry, had this (currently dormant — only institutional_momentum
+# wires it up) selector been active.
+EXPIRY_WEEKDAY = 1  # Tuesday (Monday=0, ..., Thursday=3)
 
 
 class ITMOptionSelector:
@@ -113,22 +121,22 @@ class ITMOptionSelector:
 
     @staticmethod
     def get_current_expiry(reference_date: Optional[date] = None) -> date:
-        """Get this week's Thursday expiry date."""
+        """Get this week's expiry date (Tuesday for NIFTY)."""
         today = reference_date or date.today()
-        days_until_thursday = (EXPIRY_WEEKDAY - today.weekday()) % 7
-        if days_until_thursday == 0:
-            return today  # Today IS Thursday
-        return today + timedelta(days=days_until_thursday)
+        days_until_expiry = (EXPIRY_WEEKDAY - today.weekday()) % 7
+        if days_until_expiry == 0:
+            return today  # Today IS expiry day
+        return today + timedelta(days=days_until_expiry)
 
     @staticmethod
     def get_next_expiry(reference_date: Optional[date] = None) -> date:
-        """Get next week's Thursday expiry date."""
+        """Get next week's expiry date (Tuesday for NIFTY)."""
         current = ITMOptionSelector.get_current_expiry(reference_date)
         return current + timedelta(days=7)
 
     @staticmethod
     def is_expiry_day(reference_date: Optional[date] = None) -> bool:
-        """Check if today is expiry Thursday."""
+        """Check if today is expiry day (Tuesday for NIFTY)."""
         today = reference_date or date.today()
         return today.weekday() == EXPIRY_WEEKDAY
 
@@ -155,7 +163,7 @@ class ITMOptionSelector:
         delta = self.estimate_delta(spot_price, strike, direction)
         option_type = "CE" if direction == 1 else "PE"
 
-        # Theta rollover: on Thursday, use next week's expiry
+        # Theta rollover: on expiry day itself, use next week's expiry
         is_rollover = self.is_expiry_day()
         if is_rollover:
             expiry_date = self.get_next_expiry()

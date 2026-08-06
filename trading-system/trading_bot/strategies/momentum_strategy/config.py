@@ -117,7 +117,7 @@ class ITMSelection:
     symbol: str               # Full broker symbol (e.g., "NSE:NIFTY26MAY23500CE")
     estimated_delta: float    # Approximate delta
     itm_depth: float          # Points in-the-money
-    is_rollover: bool = False # True if using next week's expiry (Thursday)
+    is_rollover: bool = False # True if using next week's expiry (rolled on expiry day itself)
 
 
 @dataclass

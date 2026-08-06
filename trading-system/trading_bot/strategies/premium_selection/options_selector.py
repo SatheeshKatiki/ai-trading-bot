@@ -151,6 +151,15 @@ INSTRUMENT_CONFIG = {
 }
 
 
+#: Hard bounds on how far from ATM a selected strike may sit, in strikes.
+#: 0 = ATM. Negative would be OTM, which this system never buys — see the
+#: clamp in select_option(). MAX_ITM_STRIKES=2 is reserved for the 0DTE
+#: Greeks Guard's emergency deep-ITM shift (protects delta/theta on
+#: expiry-day entries after 2 PM); ordinary entries use 0 or 1.
+MIN_ITM_STRIKES = 0
+MAX_ITM_STRIKES = 2
+
+
 @dataclass
 class OptionContract:
     """Represents a selected option contract."""
@@ -263,13 +272,25 @@ def select_option(
     instrument  : "NIFTY", "BANKNIFTY", "SENSEX", etc.
     spot_price  : current underlying spot price
     direction   : "CE" for Call, "PE" for Put
-    itm_strikes : 0 = ATM, 1 = 1 strike ITM (recommended for liquidity), 2 = 2 strikes ITM
+    itm_strikes : 0 = ATM (preferred), 1 = 1 strike ITM (liquidity fallback).
+                  Clamped to [MIN_ITM_STRIKES, MAX_ITM_STRIKES] — see below.
     from_date   : override today's date (for backtesting)
 
     Returns
     -------
     OptionContract with all details needed to place the order.
     """
+    # Hard architectural guarantee, not a caller convention: this system
+    # only ever buys ATM or ITM option premium, never OTM. A negative
+    # itm_strikes would push the strike the wrong side of spot (OTM for
+    # both CE and PE, given the sign convention below), and an
+    # unreasonably large positive value would go far deeper ITM than "a
+    # little" ever means. Clamping here — rather than trusting every
+    # current and future caller to only ever pass 0 or 1 — makes an OTM
+    # entry structurally impossible regardless of what any config,
+    # strategy, or future call site passes in.
+    itm_strikes = max(MIN_ITM_STRIKES, min(int(itm_strikes), MAX_ITM_STRIKES))
+
     cfg = INSTRUMENT_CONFIG.get(instrument.upper(), INSTRUMENT_CONFIG["NIFTY"])
     step = cfg["strike_step"]
     lot_size = _get_dynamic_lot_size(instrument.upper(), cfg["lot_size"])
