@@ -41,6 +41,26 @@ from .premium_simulator import DEFAULT_IV
 
 __all__ = ["SimTrade", "BacktestResult", "run_strategy_backtest"]
 
+# "MARL_Ultra" only exists as a registry entry as a side effect of
+# importing trading_bot.main (its own explicit
+# `registry.register("MARL_Ultra", marl_signals)` call, main.py:129) --
+# this harness deliberately never imports main.py (heavy live-process
+# side effects), so without this, "MARL_Ultra" would be silently absent
+# from `registry.registered_strategies` and skipped entirely (found live
+# during the first full validation run: it never appeared in results at
+# all). Registering it here, pointing at the exact same
+# `marl_strategy.generate_signals` main.py itself uses, closes that gap
+# without importing main.py. "MARL_Ultra" and the separately-autodiscovered
+# "marl_strategy" name call identical signal-generation code but are NOT
+# behaviorally identical: MARL_Ultra additionally receives closed-loop P&L
+# feedback on every exit (`record_trade_outcome`, wired into
+# `_close_position` below) that feeds `marl_strategy`'s module-level
+# adaptive risk-agent singleton -- the plain "marl_strategy" registration
+# never gets this feedback call anywhere in this codebase.
+if "MARL_Ultra" not in registry.registered_strategies:
+    from trading_bot.strategies.marl_strategy import generate_signals as _marl_signals
+    registry.register("MARL_Ultra", _marl_signals)
+
 
 @dataclass
 class SimTrade:
@@ -140,7 +160,7 @@ def run_strategy_backtest(
             days_to_expiry = (position["expiry"] - bar_date).days
             if days_to_expiry < 0:
                 premium = position["premium_candles"][-1]["close"]  # last known, contract has expired
-                _close_position(result, risk_manager, position, premium, ts, "EXPIRED")
+                _close_position(result, risk_manager, position, premium, ts, "EXPIRED", strategy_name=strategy_name)
                 position = None
                 continue
 
@@ -161,7 +181,7 @@ def run_strategy_backtest(
             )
             if should_exit:
                 qty = exit_qty or pos_obj.quantity
-                _close_position(result, risk_manager, position, premium, ts, reason, qty=qty)
+                _close_position(result, risk_manager, position, premium, ts, reason, qty=qty, strategy_name=strategy_name)
                 if qty >= pos_obj.quantity:
                     position = None
                 else:
@@ -241,7 +261,7 @@ def run_strategy_backtest(
     # Force-close anything still open at the end of the data.
     if position is not None:
         last_premium = position["premium_candles"][-1]["close"]
-        _close_position(result, risk_manager, position, last_premium, underlying_df.index[-1], "END_OF_DATA")
+        _close_position(result, risk_manager, position, last_premium, underlying_df.index[-1], "END_OF_DATA", strategy_name=strategy_name)
 
     result.final_equity = risk_manager.current_equity
     return result
@@ -250,6 +270,7 @@ def run_strategy_backtest(
 def _close_position(
     result: BacktestResult, risk_manager: RiskManager, position: dict,
     exit_premium: float, exit_time: Any, reason: str, qty: Optional[int] = None,
+    strategy_name: str = "",
 ) -> None:
     pos_obj: Position = position["pos_obj"]
     quantity = qty if qty is not None else pos_obj.quantity
@@ -263,6 +284,20 @@ def _close_position(
         position["symbol"], "SELL", pos_obj.entry_price, exit_premium, pnl,
         pd.Timestamp(exit_time).isoformat(),
     ))
+
+    # MARL_Ultra-specific: main.py calls this on every real position close
+    # (two call sites, main.py:836 and :1272) to feed the MARL model's
+    # module-level adaptive risk-agent singleton — without it, "MARL_Ultra"
+    # would behave identically to the plain "marl_strategy" registration
+    # in this harness despite being a genuinely different, feedback-driven
+    # strategy live. See the registration comment near this module's top.
+    if strategy_name == "MARL_Ultra":
+        try:
+            from trading_bot.strategies.marl_strategy import record_trade_outcome
+            record_trade_outcome(pnl)
+        except Exception:
+            pass
+
     result.trades.append(SimTrade(
         symbol=position["symbol"], direction=position["direction"],
         entry_time=entry_time, entry_premium=pos_obj.entry_price,
