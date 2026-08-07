@@ -6,6 +6,89 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-08-07 (close) — CRITICAL: new entries allowed right up to the EOD force-close cutoff, burning the entire daily trade cap on three sub-250ms fake round-trips
+
+**Symptom.** Checking `state.db` at close-boundary time (16:40 IST) — not
+the "0 trades" expected from the day's earlier quiet monitoring cycles —
+found 6 trade rows, all from 15:15 IST: three BUY/SELL pairs, each pair at
+the **identical price**, closed **50-250ms** after opening.
+
+**Investigation.** Cross-referenced `logs/engine.log` for
+2026-08-07 15:15:00, 15:15:28, 15:15:55: each shows a normal `ENTRY BUY
+PUT ...` line (correct SL band, correct "TGT=NONE"), immediately followed
+by `shared.exits.exit_engine: EOD Exit triggered ... at 2026-08-07
+15:15:0X` and an `EXIT ... (Time-based EOD Exit)` line, all within the
+same second. After the third round-trip, every subsequent real candidate
+signal for the rest of the day was rejected with `Trade BLOCKED ...: Max
+trades per day reached (3)` — the daily cap, meant to limit real trading
+risk, was instead fully consumed by three trades that were never live
+market exposure at all.
+
+**Root cause.** `SmartExitEngine` (`shared/exits/exit_engine.py`)
+force-closes every open position at/after `eod_exit_time` (default
+`"15:15:00"`) — a sensible safety net against holding into the last
+volatile minutes or a delayed close. But the entry path in `main.py` had
+no matching cutoff: a signal could open a brand-new position at, say,
+15:15:00.881, and the very next exit-evaluation tick (15:15:01.088, ~200ms
+later) would immediately force-close it via that same EOD rule. This
+repeated three times in 55 seconds before the daily cap itself stopped
+further attempts. Net effect: the trade-cap counter, `state.db`, and the
+day's realized-trade history all got polluted with fake round-trips that
+carried real (if brief) position risk in a live paper account, and every
+genuine late-session signal for the rest of the day was blocked purely
+because the cap was already exhausted on these artifacts. This is exactly
+the kind of production risk this validation window exists to catch before
+it could happen with real capital.
+
+**Why the earlier `is_market_open()` gate (2026-08-06) didn't catch this.**
+That gate stops entries outside 09:15-15:30 IST; 15:15 is still well
+inside that window by design — the EOD cutoff is a separate, tighter
+constraint specific to the exit engine's own square-off time, which the
+entry path never knew about.
+
+**Fix.** Added `shared/market_hours.py::is_before_eod_cutoff()` +
+`EOD_ENTRY_CUTOFF_TIME` (`15:15`, deliberately kept equal to
+`SmartExitEngine`'s `eod_exit_time` default), following the exact same
+shape/scope as the existing `is_market_open()` gate (NEW entries only —
+already-open positions keep full exit management, including this same
+EOD rule, regardless of time of day). Wired into `main.py`'s entry path
+immediately after the market-hours check. 16 new tests in
+`test_market_hours.py`, including one that pins `is_before_eod_cutoff`'s
+cutoff constant against `SmartExitEngine().eod_exit_time` directly so the
+two can't silently drift apart again. Full suite: 333 passed (317 + 16
+new), no regressions.
+
+**Deployment.** Market was already closed (16:40+ IST) and no position
+was open at deploy time — zero risk window. Restarted only the `main.py`
+pair (PID 20580/5380 -> 29784/16892); `api_bridge`/frontend untouched.
+Clean boot confirmed: 1725 candles preloaded, WS reconnected, prior PNL
+resumed, and the persisted daily-trade-cap mechanism (fixed 2026-08-05)
+correctly restored "3 trade(s) already executed today" rather than
+resetting to 0. **Not live-verified against a real 15:15 entry attempt**
+— market is closed for the day, so this gate's first live exercise will
+be tomorrow's session; verification today is unit-test-only.
+
+**Today's other finding:** see the CPU/registry.py `np.select` fix
+earlier in today's entries (deployed 13:49:37 IST, confirmed holding —
+CPU settled to 14.1-14.8% across two clean post-fix cycles before this
+EOD-cutoff issue was found at close).
+
+**Trade-cap accounting note.** The 3 phantom round-trips are not undone —
+`state.db`'s trade rows and the persisted daily-cap counter for
+2026-08-07 are left as the true record of what actually executed, matching
+this log's established practice of never rewriting historical state. This
+matters for any future PnL/trade-count read of today: **3 of today's
+trades are known non-representative artifacts, not real strategy
+performance**, in the same spirit as the 2026-08-06 stale-snapshot entry's
+flagged-unreliable trades.
+
+**Status: today's session found 2 new issues** (the registry.py CPU
+finding and this EOD-entry-cutoff finding), both fixed and unit-tested,
+only the first live-reverified before close. **Not a "zero new findings"
+session** — the validation clock resets again from today.
+
+---
+
 ## 2026-08-07 (midday) — elevated CPU (58-71% vs. ~15-17% baseline) traced to a second, previously-unfixed incremental-`Series.__setitem__` call site; fixed and redeployed
 
 **Symptom.** Routine monitoring cadence (09:52/10:22/10:57 IST CPU-delta

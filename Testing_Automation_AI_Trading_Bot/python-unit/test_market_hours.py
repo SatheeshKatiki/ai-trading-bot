@@ -16,7 +16,10 @@ import _bootstrap  # noqa: F401  (side-effect: puts trading-system/ on sys.path)
 
 import pytest
 
-from shared.market_hours import IST, MARKET_CLOSE_TIME, MARKET_OPEN_TIME, is_market_open
+from shared.market_hours import (
+    IST, MARKET_CLOSE_TIME, MARKET_OPEN_TIME, is_market_open,
+    EOD_ENTRY_CUTOFF_TIME, is_before_eod_cutoff,
+)
 
 
 def _ist(year, month, day, hour, minute):
@@ -113,3 +116,68 @@ def test_override_none_explicitly_also_falls_through():
     """Distinguish 'key present but None' from 'key absent' — both mean
     'no override', not 'override to falsy'."""
     assert is_market_open(_ist(*_A_WEEKDAY, 10, 0), {"market_hours_override": None}) is True
+
+
+# ---------------------------------------------------------------------------
+# is_before_eod_cutoff
+#
+# Root cause: SmartExitEngine force-closes every open position at/after
+# 15:15 IST (eod_exit_time), but nothing stopped a brand-new entry from
+# opening seconds before that cutoff — only to be force-closed on the same
+# or next tick. Found live 2026-08-07: three sub-250ms round-trips
+# (15:15:00, 15:15:28, 15:15:55) burned through the entire daily 3-trade
+# cap on trades that were never real market exposure. See
+# docs/paper_trading_validation/anomaly_log.md's 2026-08-07 entry.
+# ---------------------------------------------------------------------------
+
+def test_the_incident_timestamps_are_correctly_reported_as_past_cutoff():
+    """The exact live incident this gate exists to prevent."""
+    assert is_before_eod_cutoff(_ist(*_A_WEEKDAY, 15, 15)) is False
+    assert is_before_eod_cutoff(_ist(2026, 8, 7, 15, 15)) is False
+
+
+@pytest.mark.parametrize("hour,minute", [(9, 15), (12, 30), (15, 0), (15, 14)])
+def test_entries_allowed_before_cutoff(hour, minute):
+    assert is_before_eod_cutoff(_ist(*_A_WEEKDAY, hour, minute)) is True
+
+
+@pytest.mark.parametrize("hour,minute", [(15, 15), (15, 16), (15, 29), (15, 30), (18, 0)])
+def test_entries_blocked_at_or_after_cutoff(hour, minute):
+    assert is_before_eod_cutoff(_ist(*_A_WEEKDAY, hour, minute)) is False
+
+
+def test_cutoff_boundary_is_exclusive():
+    hour, minute = EOD_ENTRY_CUTOFF_TIME.hour, EOD_ENTRY_CUTOFF_TIME.minute
+    assert is_before_eod_cutoff(_ist(*_A_WEEKDAY, hour, minute)) is False
+    assert is_before_eod_cutoff(_ist(*_A_WEEKDAY, hour, minute - 1)) is True
+
+
+def test_cutoff_matches_smart_exit_engine_default():
+    """Pins the two in sync — if SmartExitEngine's eod_exit_time default
+    ever changes, this test should force EOD_ENTRY_CUTOFF_TIME to change
+    with it rather than silently drifting apart again."""
+    import _bootstrap  # noqa: F401
+    from shared.exits.exit_engine import SmartExitEngine
+
+    engine = SmartExitEngine()
+    cutoff_str = f"{EOD_ENTRY_CUTOFF_TIME.hour:02d}:{EOD_ENTRY_CUTOFF_TIME.minute:02d}:00"
+    assert engine.eod_exit_time == cutoff_str
+
+
+def test_eod_cutoff_default_now_uses_the_real_clock():
+    result = is_before_eod_cutoff()
+    assert isinstance(result, bool)
+
+
+def test_eod_cutoff_override_true_forces_allowed_even_past_cutoff():
+    assert is_before_eod_cutoff(_ist(*_A_WEEKDAY, 15, 20), {"eod_entry_cutoff_override": True}) is True
+
+
+def test_eod_cutoff_override_false_forces_blocked_even_before_cutoff():
+    assert is_before_eod_cutoff(_ist(*_A_WEEKDAY, 10, 0), {"eod_entry_cutoff_override": False}) is False
+
+
+def test_eod_cutoff_override_absent_or_none_falls_through():
+    assert is_before_eod_cutoff(_ist(*_A_WEEKDAY, 10, 0), {}) is True
+    assert is_before_eod_cutoff(_ist(*_A_WEEKDAY, 10, 0), None) is True
+    assert is_before_eod_cutoff(_ist(*_A_WEEKDAY, 10, 0), {"eod_entry_cutoff_override": None}) is True
