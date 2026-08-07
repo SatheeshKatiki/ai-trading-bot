@@ -162,6 +162,44 @@ still hasn't fired in any session. §0's Fyers key rotation and plaintext
 credential migration remain outstanding, unrelated to today but still
 blocking final sign-off regardless of §2.
 
+**2026-08-07 update:** second live day on the SL/ATM-ITM/market-hours-gate
+architecture. Quiet morning (0 trades through ~15:00 IST), then two more
+real, previously-invisible bugs found the same session: (1) a routine
+71.6% CPU-delta check (vs. ~15-17% baseline) traced via `py-spy` to a
+*second* incremental-`Series.__setitem__` call site
+(`trading_bot/strategies/registry.py`) sharing the exact `get_loc`/
+`repr()` call-chain signature seen in 2026-08-06's actual livelock —
+yesterday's fix only covered `compute_features`/`supertrend`/
+`generate_signals`, never this one. Fixed via `np.select`, deployed
+13:49:37 IST with no position at risk, live-verified via `py-spy` and two
+subsequent clean CPU-delta checks (14.1%, 14.8%) over the following ~40
+minutes. (2) — found only at close-boundary review (16:40 IST), after the
+day was expected to log as "0 trades" — `SmartExitEngine`'s EOD
+force-close (15:15 IST) had no matching entry-side cutoff: three real
+signals opened positions at 15:15:00/28/55 that were each force-closed by
+the very next exit tick 50-250ms later at the identical price, burning
+the entire daily 3-trade cap on zero real market exposure and blocking
+every genuine signal for the rest of the session. Fixed via a new
+`shared/market_hours.py::is_before_eod_cutoff()` entry gate (pinned to
+`SmartExitEngine.eod_exit_time` via a dedicated test), deployed ~17:00
+IST — **market was already closed at deploy time, so this fix has zero
+live observation; tomorrow's ~15:15 IST window is its first real test.**
+16 new tests, full suite 333 passed (317 + 16), no regressions. Two
+commits, both local, neither pushed. Full detail:
+`docs/paper_trading_validation/anomaly_log.md`'s 2026-08-07 entries and
+`docs/paper_trading_validation/reports/2026-08-07.md`.
+**Status remains NO-GO.** Two more new findings means the validation
+clock resets again — it has not started for either of today's fixes, and
+the EOD-cutoff fix in particular carries less confidence than usual since
+it has no live confirmation at all yet. §2.7 (risk guards) got an
+informative confirmation today: the daily-trade-cap guard fired correctly
+and repeatedly, but on 3 artifacts rather than 3 real trades — itself the
+bug being fixed, not a guard failure. §2.9 has no usable evidence from
+today (today's only trades are the zero-PnL EOD artifacts). §2.6 and §2.8
+remain completely untested, unchanged. Multi-instrument re-enablement
+remains an open decision, unchanged. §0's outstanding items remain
+undone, independent of §2.
+
 This is a living document — check items off with a date and evidence
 reference as they're actually completed, don't mark something done because
 it's expected to pass.
