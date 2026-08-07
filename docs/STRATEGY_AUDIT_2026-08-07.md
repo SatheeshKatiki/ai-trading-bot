@@ -4,6 +4,15 @@
 this document. Every finding below is a candidate for a future, separately-approved
 fix pass, prioritized by risk level.
 
+**Remediation status (updated 2026-08-07 evening):** §1.1, §1.2, and §4.7 fixed,
+tested, and deployed the same evening — see `anomaly_log.md`'s
+"2026-08-07 (evening, post-close)" entry for full detail and honest validation-status
+caveats (market was closed at deploy time; none of the three has been live-exercised
+yet). §2.1 (ATR unit mismatch) has an approved-for-design-only technical design
+document, `docs/ATR_TRAILING_STOP_DESIGN_2026-08-07.md` — **no code changed**, pending
+a decision on which approach to implement. §2.2 (backtest engine architecture)
+explicitly deferred, not started.
+
 **Method:** Full read-through of every strategy module in `trading_bot/strategies/`
 (active, inactive, experimental, legacy, AI/ML/RL, institutional, premium, momentum),
 plus the shared cross-cutting infrastructure every strategy ultimately depends on
@@ -94,6 +103,11 @@ against `momentum_strategy/__init__.py:29` (`STRATEGY_NAME = "institutional_mome
 
 ### 1.1 CRITICAL — No gate if `select_option()` fails; entry path can fall through to the raw index symbol
 
+> **Status: FIXED 2026-08-07 evening** (`_should_abort_missing_option_mapping()`,
+> `trading_bot/main.py`; 5 new tests). No known live trigger exercised this path
+> today or historically — verified via unit tests only, no live re-verification
+> plan needed beyond continued normal monitoring. See `anomaly_log.md`.
+
 - **File(s):** `trading_bot/main.py:1347` (`entry_symbol = s`), `1360-1378`
   (auto-map try/except with no abort), `1463`, `1540`, `1695-1706`
 - **Root cause:** `entry_symbol` defaults to the raw underlying index symbol before
@@ -126,6 +140,13 @@ against `momentum_strategy/__init__.py:29` (`STRATEGY_NAME = "institutional_mome
   unaffected.
 
 ### 1.2 CRITICAL — `ema_rsi_strategy.py` reproduces the 2026-08-06 livelock's exact signature, upstream of today's fix
+
+> **Status: FIXED 2026-08-07 evening** (`np.select` rewrite, matching the
+> `registry.py` fix pattern; 6 new tests, bit-identical to pre-fix output).
+> **NOT YET LIVE-VERIFIED** — market was closed at deploy time, and this class of
+> defect only manifests under sustained live tick volume over hours. Pending:
+> tomorrow's live session, watching the full-day CPU-delta trend. See
+> `anomaly_log.md`.
 
 - **File:** `trading_bot/strategies/ema_rsi_strategy.py:109-111`
   ```python
@@ -713,6 +734,14 @@ are one settings change away.)*
   re-document this as a secondary momentum proxy.
 
 ### 4.7 HIGH — No validation anywhere that `active_strategy` is a real, registered strategy name
+
+> **Status: FIXED 2026-08-07 evening** (`_validate_active_strategy()`, called once
+> per settings reload; 6 new tests, including one pinning
+> `institutional_momentum`'s registered name against the actual `STRATEGY_NAME` so
+> §4.4's now-resolved cross-fork question can't silently recur). Confirmed live at
+> boot that today's real `active_strategy="ema_rsi"` does not false-positive.
+> Startup/config-path fix, not tick-frequency behavior — no further live
+> re-verification specifically planned. See `anomaly_log.md`.
 
 - **Files:** `trading_bot/main.py:874, 1044, 1257` (all read `active_strategy` with
   no validation), `trading_bot/strategies/registry.py:28-31` (raises `ValueError` if

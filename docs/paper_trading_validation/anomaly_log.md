@@ -6,6 +6,111 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-08-07 (evening, post-close) — remediation sprint: 3 of the 5 top-priority findings from today's STRATEGY_AUDIT fixed and deployed
+
+Market closed at 15:30 IST; this is a post-close fix pass against
+`docs/STRATEGY_AUDIT_2026-08-07.md`'s consolidated risk register, scoped
+to exactly the three findings approved for tonight (§1.1, §1.2, §4.7).
+§2.1 (ATR unit mismatch) is design-only tonight per explicit instruction —
+see the companion doc `docs/ATR_TRAILING_STOP_DESIGN_2026-08-07.md`, no
+code touched for it. §2.2 (backtest engine architecture) explicitly out of
+scope, not touched.
+
+**Fix 1 — `ema_rsi_strategy.py`'s own instance of the 2026-08-06 livelock
+signature (audit §1.2).** `generate_signals()`'s `signals[bullish] = 1` /
+`signals[bearish] = -1` rebuilt via a single `np.select` call, identical
+fix shape to yesterday's `registry.py` change. This is the strategy
+actually live today (`active_strategy = "ema_rsi"`) and this line runs
+upstream of `registry.py`'s already-fixed instance on every tick — the
+most likely explanation for the "not conclusively ruled out" post-restart
+CPU transients logged earlier today. 6 new tests
+(`test_ema_rsi_signals_setitem_regression.py`), including an end-to-end
+bit-identical comparison against the pre-fix implementation on realistic
+OHLCV data.
+
+**Fix 2 — no abort when `select_option()` fails (audit §1.1).** Entry path
+used to fall through with `entry_symbol` still equal to the raw
+underlying index symbol if option strike/expiry selection raised for any
+reason — every downstream check would then treat the index's own price as
+an option premium, a direct violation of the option-buying-only mandate.
+Fixed by tracking `option_mapping_required`/`option_mapping_succeeded`
+explicitly and aborting the tick via a new pure helper,
+`_should_abort_missing_option_mapping()`, extracted specifically for
+testability (mirrors this file's own existing precedent —
+`_count_trades_already_executed_today`, `_build_preload_failure_alert`).
+5 new tests (`test_option_mapping_abort_gate.py`) covering all four
+required/succeeded combinations plus the `"premium"` strategy's exemption
+(it never uses this code path at all — already gated by its own
+`sig.is_tradeable` check).
+
+**Fix 3 — no validation that `active_strategy` is a real registered
+strategy name (audit §4.7).** A typo, or a strategy that failed to
+auto-register due to an import error, would make
+`registry.run_strategy()` raise on every tick forever, caught by a broad
+handler and just logged — the engine would report healthy at the
+process/health-check level while generating zero real trade signals
+indefinitely. Fixed with `_validate_active_strategy()`, called once per
+actual settings (re)load (not per-tick, so it can't itself become a
+log-spam or CPU source) from inside `_load_settings()`. Logs one
+`CRITICAL` line the first time a bad value is seen, stays quiet on
+repeats of the *same* bad value, and warns again if that same bad value
+reappears later after being corrected in between. 6 new tests
+(`test_active_strategy_validation.py`), including one that pins
+`institutional_momentum`'s registered name against
+`momentum_strategy/__init__.py`'s actual `STRATEGY_NAME` so the two can't
+silently drift apart (closing the exact class of doubt one of today's
+audit forks flagged and this session then resolved by direct grep).
+
+**Full suite: 350 passed (333 + 17 new across the three fixes), no
+regressions.**
+
+**Deployment.** No open position at deploy time (`active_positions.json`
+was `{}`), market already closed — zero risk window. Restarted only the
+`main.py` pair (PID 29784/16892 → 19416/16796); `api_bridge`/frontend
+untouched. Clean boot confirmed: 1725 candles preloaded, WS reconnected,
+prior day's PNL (+9,743.05) and the 3-trade daily cap correctly restored,
+`/health` OK, no spurious `CRITICAL` from the new `active_strategy`
+validation (today's real value, `"ema_rsi"`, correctly passes). `py-spy`
+dump post-restart shows all threads idle/normal — no stuck pattern.
+
+**Honesty about validation status — market is closed, none of these three
+fixes have been live-exercised yet:**
+- Fix 1 (ema_rsi livelock line): **cannot be live-verified tonight** —
+  meaningfully re-checking this needs sustained live tick volume over
+  hours, exactly the condition that triggers the pathology in the first
+  place. **Pending: tomorrow's live session, watching CPU-delta trend
+  across the full day rather than just the post-restart window.**
+- Fix 2 (option-mapping abort gate): the failure condition it guards
+  against (`select_option()` raising) has no known live trigger under
+  today's normal conditions — there is nothing to observe live tonight or
+  tomorrow that would exercise this path under normal operation. Verified
+  via the extracted pure-function unit tests only. **Pending: no specific
+  live re-verification plan beyond continued normal monitoring**, since
+  forcing a live failure injection wasn't in tonight's scope.
+  - Also noticed, not a bug, worth a note: `select_option()`'s Greek
+    computation for a rejected (out-of-market-hours) candidate still runs
+    to completion, i.e. before the market-hours/EOD-cutoff gates reject
+    it later in the same tick — a real, if today's session confirmed
+    small, wasted-computation ordering issue observed live at 18:34-18:35
+    IST post-close, correctly rejected with no order placed or position
+    left open. Not part of tonight's approved scope; flagged for a future
+    pass, not fixed tonight.
+- Fix 3 (`active_strategy` validation): confirmed live at boot tonight
+  that today's real, valid `active_strategy="ema_rsi"` does NOT trigger a
+  false-positive `CRITICAL`. The actual failure path (a genuinely invalid
+  `active_strategy` value) has not been exercised against a real running
+  process tonight. **Pending: no specific live re-verification planned**
+  — this is a startup/config-validation code path, not tick-frequency
+  behavior, so tonight's clean-boot confirmation is the primary evidence
+  this fix needs.
+
+**None of tonight's three fixes should be treated as fully validated until
+Fix 1 specifically has survived a full live trading day with the CPU-delta
+trend staying at or below the established ~15-17% baseline throughout —
+not just immediately post-restart.**
+
+---
+
 ## 2026-08-07 (close) — CRITICAL: new entries allowed right up to the EOD force-close cutoff, burning the entire daily trade cap on three sub-250ms fake round-trips
 
 **Symptom.** Checking `state.db` at close-boundary time (16:40 IST) — not
