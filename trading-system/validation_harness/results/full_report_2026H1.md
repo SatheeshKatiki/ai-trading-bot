@@ -21,7 +21,7 @@
 | 9 | meta_agent_swarm | **IMPROVE** | 242 | ₹36290.38 | 1.13 | 70.2% | 42.72% |
 | 10 | premium | **IMPROVE** | 135 | ₹13915.01 | 1.17 | 74.1% | 11.47% |
 | 11 | ema_crossover | **IMPROVE** | 25 | ₹13239.06 | 1.71 | 80.0% | 10.1% |
-| 12 | enhanced_ai | **IMPROVE** | 587 | ₹-22777.78 | 0.97 | 68.1% | 61.64% |
+| 12 | enhanced_ai | **IMPROVE** | 585 | ₹-16159.66 | 0.98 | 68.4% | 55.31% |
 
 ## Summary
 
@@ -212,16 +212,16 @@
 
 ### enhanced_ai — IMPROVE
 
-**Reasons:** Overall PF=0.97, expectancy=-38.8, net=-22777.78. Profitable in 2/5 regimes traded — mixed, not consistent enough for KEEP or REMOVE. Max drawdown 61.64% is a real concern even where profitable.
+**Reasons:** Overall PF=0.98, expectancy=-27.62, net=-16159.66. Profitable in 2/5 regimes traded — mixed, not consistent enough for KEEP or REMOVE. Max drawdown 55.31% is a real concern even where profitable.
 
-**Overall:** trades=587, net_profit=₹-22777.78 (-22.78%), profit_factor=0.97, win_rate=68.1%, expectancy=₹-38.8, max_drawdown=61.64%, recovery_factor=-0.37, max_consecutive_losses=4, avg_trade=₹-38.8, avg_holding=27.0min, realized_R:R=0.45
+**Overall:** trades=585, net_profit=₹-16159.66 (-16.16%), profit_factor=0.98, win_rate=68.4%, expectancy=₹-27.62, max_drawdown=55.31%, recovery_factor=-0.29, max_consecutive_losses=4, avg_trade=₹-27.62, avg_holding=26.8min, realized_R:R=0.45
 
-**Diagnostics:** candidate_signals=1080, rejected_untradeable_sl=0, rejected_risk_gate=501, rejected_market_hours=124, elapsed=25.8s
+**Diagnostics:** candidate_signals=1060, rejected_untradeable_sl=0, rejected_risk_gate=487, rejected_market_hours=119, elapsed=10.5s
 
 | Regime | Trades | Net Profit | Profit Factor | Win Rate | Expectancy |
 |---|---|---|---|---|---|
-| trending | 197 | ₹-524.84 | 1.0 | 69.0% | ₹-2.66 |
-| sideways | 285 | ₹20112.59 | 1.06 | 68.4% | ₹70.57 |
+| trending | 195 | ₹-1022.47 | 1.0 | 69.2% | ₹-5.24 |
+| sideways | 283 | ₹12850.69 | 1.04 | 68.6% | ₹45.41 |
 | high_volatility | 13 | ₹2049.61 | 1.09 | 76.9% | ₹157.66 |
 | low_volatility | 20 | ₹-23353.6 | 0.3 | 55.0% | ₹-1167.68 |
-| gap_day | 72 | ₹-21061.53 | 0.84 | 66.7% | ₹-292.52 |
+| gap_day | 74 | ₹-6683.89 | 0.95 | 67.6% | ₹-90.32 |

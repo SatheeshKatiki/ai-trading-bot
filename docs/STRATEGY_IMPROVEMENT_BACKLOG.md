@@ -346,7 +346,73 @@ smaller and less urgent than the original item implied.
   magnitude of PF/DD improvement is not).
 - **Risk:** low. Isolated to one file, no shared infrastructure touched.
 
-### #2 — Cross-cutting: `enhanced_ai` is the only net-negative strategy
+### ✅ #2 — `enhanced_ai` RSI dual-confirmation defect — FIXED 2026-08-08 · verdict **IMPROVE**
+
+- **Root cause (measured, not inferred):** the bull and bear RSI
+  confirmations were `rsi > 40` and `rsi < 60`. Those ranges **overlap**
+  across the entire 40-60 band — where RSI spends most of its life.
+  Measured over the real validation window (9,219 bars): the RSI layer
+  awarded a confirmation point to **both** directions on **50.6%** of
+  bars, and awarded at least one point on **100.0%** of bars. It was
+  never silent.
+- **Why the old implementation was weak:** a confirmation layer that
+  confirms both directions simultaneously carries zero information, yet
+  it counted toward the "5 of 6 layers must agree" threshold exactly like
+  a genuine one — effectively lowering the real bar to 4-of-5 and
+  systematically admitting under-confirmed signals.
+- **Fix:** split at the RSI midline so at most one side can claim the
+  point, preserving the intended "RSI momentum confirmation" philosophy.
+  A guard collapses any overlapping caller/settings values back to the
+  midline, so the defect cannot be reintroduced by configuration.
+- **Before/after (same 123-day window):**
+
+  | Metric | BEFORE | AFTER |
+  |---|---|---|
+  | Net profit | -₹22,778 | **-₹16,160** (loss cut 29%) |
+  | Expectancy | -₹38.80 | **-₹27.62** |
+  | Max drawdown | 61.6% | **55.3%** |
+  | Recovery factor | -0.37 | -0.29 |
+  | Profit factor | 0.97 | 0.98 |
+  | Trades | 587 | 585 |
+  | Realized R:R | 0.45 | 0.45 (unchanged) |
+
+  Biggest regime shift: gap_day went from -₹21,062 (PF 0.84) to
+  **-₹6,684 (PF 0.95)** — the under-confirmed signals the defect was
+  admitting were concentrated exactly where a weak confirmation hurts
+  most.
+- **A hypothesis I formed and then disproved, recorded honestly:** the
+  entire remaining loss sits in `low_volatility` (-₹23,354; everything
+  else nets **+₹7,194**). I suspected this was the documented
+  5-minute-bar gap-through artifact hitting cheap near-expiry contracts.
+  **It is not.** Inspecting all 20 trades: the losses are overwhelmingly
+  liquid ₹150-250-band contracts exiting at sensible stop distances
+  (228.64→193.69, 182.39→148.92, 199.55→169.56). These are legitimate,
+  correctly-executed stop-losses, not measurement artifacts.
+- **What the data actually shows:** the losses are *temporally*
+  concentrated, not artifactual. The worst 3 trades are 69% of the net
+  loss, and **8 of the 9 losing trades fall in five consecutive June
+  days** (2026-06-16 → 06-22). "low_volatility" in this window is
+  effectively one bad week plus a single April day — 6 days total.
+- **Verdict: IMPROVE, not REMOVE.** Removal is not supportable on this
+  evidence: excluding one concentrated bad week the strategy is roughly
+  breakeven (PF 0.98), and a 6-day regime sample cannot carry a removal
+  decision. The fix is a genuine, mechanism-justified improvement and is
+  kept. The strategy is *not* production-grade — a 68% win rate against a
+  0.45 realized R:R is marginal by construction — but it is a candidate
+  for further improvement, not elimination.
+- **Next candidate for this strategy (not yet done):** the volume layer
+  has the *identical* defect class — `vol_bearish = vol_bullish`, so it
+  awards the same point to both directions and cannot discriminate
+  either. Whether that is a legitimate "conviction gate" (the code's
+  stated intent) or a second free point inflating the 5-of-6 threshold is
+  the next thing to test.
+- **Tests:** 6 new regression tests pinning mutual exclusivity, the
+  settings-overlap guard, and that legitimate non-overlapping custom
+  thresholds still pass through. Full suite: **416 passed**.
+
+---
+
+### ~~#2 original~~ — `enhanced_ai` is the only net-negative strategy
 - **Strategy:** enhanced_ai (587 trades, PF 0.97, net -₹22,778, 61.6% max DD)
 - **Root cause candidates (needs the post-regime-fix data to separate):**
   (a) audit §4.6 — its "Option Chain Analysis" confirmation layer is
