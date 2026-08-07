@@ -18,6 +18,7 @@ The logic follows the rules:
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 from shared.indicators import ema, rsi
@@ -106,7 +107,21 @@ def generate_signals(
     bullish = (ema_fast_series > ema_slow_series) & (rsi_series > rsi_buy_thresh) & (st_direction == 1) & _volume_filter(df)
     bearish = (ema_fast_series < ema_slow_series) & (rsi_series < rsi_sell_thresh) & (st_direction == -1) & _volume_filter(df)
 
-    signals = pd.Series(0, index=df.index, dtype=int)
-    signals[bullish] = 1
-    signals[bearish] = -1
+    # Root-cause fix (found live, 2026-08-07): built via np.select rather
+    # than incremental boolean-mask Series.__setitem__ calls
+    # (`signals[bullish] = 1`, `signals[bearish] = -1`) -- those routed
+    # through Series._set_with_engine -> Index.get_loc, the exact call
+    # chain implicated in the 2026-08-06 CPU-livelock's own py-spy dumps.
+    # This function runs on every live tick for the active symbol, ahead
+    # of registry.py's own (already-fixed, same date) instance of the
+    # identical pattern -- see docs/STRATEGY_AUDIT_2026-08-07.md and
+    # docs/paper_trading_validation/anomaly_log.md. Bearish listed first
+    # so it wins on the (structurally impossible, since bullish/bearish
+    # are built from mutually exclusive comparisons) overlap case,
+    # matching the prior overwrite order.
+    signals = pd.Series(
+        np.select([bearish.to_numpy(), bullish.to_numpy()], [-1, 1], default=0),
+        index=df.index,
+        dtype=int,
+    )
     return signals
