@@ -67,6 +67,7 @@ def run_strategy_day_isolated(
     for day in all_dates:
         if dates is not None and day not in dates:
             continue
+        _set_simulated_session_date(day)
         window_start = pd.Timestamp(day) - pd.Timedelta(days=_WARMUP_CALENDAR_DAYS)
         window_df = df.loc[str(window_start.date()):str(day)]
         day_bar_count = (window_df.index.date == day).sum()
@@ -85,6 +86,29 @@ def run_strategy_day_isolated(
         diagnostics["rejected_market_hours"] += result.rejected_market_hours
 
     return all_trades, diagnostics
+
+
+def _set_simulated_session_date(day) -> None:
+    """Run session-scoped strategy state on the BACKTEST's clock rather
+    than the wall clock.
+
+    `RiskAgent`'s Capital Protection Mode expires per IST trading day via
+    `_today_ist()`. A backtest compresses 123 simulated trading days into
+    ~90 seconds of real time, so against the wall clock that rollover
+    would never fire and the backtest would keep reproducing the very
+    deadlock the daily reset exists to prevent — measuring a bug that no
+    longer exists in production rather than the strategy.
+
+    Pointing the agent's clock at the simulated date is the faithful
+    model, not a workaround: in production, real days genuinely do pass
+    between these sessions. The agent's own logic is untouched — it still
+    decides when to reset; it is simply told what "today" is.
+    """
+    try:
+        from drl.marl import risk_agent as _ra
+        _ra._today_ist = lambda _d=day: _d
+    except Exception:
+        pass  # best-effort: never let harness hygiene break a run
 
 
 def _reset_cross_strategy_singletons() -> None:

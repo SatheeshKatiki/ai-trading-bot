@@ -1,7 +1,23 @@
 import logging
+from datetime import date, datetime
+
+import pytz
+
 from drl.marl.base_agent import BaseAgent
 
 logger = logging.getLogger(__name__)
+
+# Capital Protection Mode is documented as a per-SESSION rule ("stop
+# trading for the session"), so its expiry must roll over at midnight IST
+# — the market this system trades — not at midnight in whatever timezone
+# the host happens to run in. Same rationale and same pattern as
+# shared/risk/manager.py's _IST/_today_ist(), reused deliberately rather
+# than inventing a second convention.
+_IST = pytz.timezone("Asia/Kolkata")
+
+
+def _today_ist() -> date:
+    return datetime.now(_IST).date()
 
 class RiskAgent(BaseAgent):
     """
@@ -24,13 +40,59 @@ class RiskAgent(BaseAgent):
         self._consecutive_losses = 0
         self._last_trade_result = None  # "WIN" or "LOSS"
         self._capital_protection_mode = False
-        
+        # Trading session this streak belongs to. Capital Protection is a
+        # per-session rule (see record_trade_result's docstring), so the
+        # streak must not outlive the day that produced it.
+        self._session_date: date = _today_ist()
+
+    def _reset_daily_if_needed(self) -> None:
+        """Expire Capital Protection Mode at the start of a new IST
+        trading day.
+
+        Root-cause fix (found and measured 2026-08-07): without this, the
+        3-consecutive-loss block was PERMANENT, not per-session as its own
+        docstring states. The deadlock chain: 3 losses ->
+        get_position_size_multiplier() returns 0.0 ->
+        marl_strategy.generate_signals() blocks every new entry -> no
+        entries means no closes -> record_trade_result() is never called
+        again -> the streak can never reach the win that would clear it.
+        Measured impact over a 123-day validation window: MARL_Ultra
+        traded on 14 days, all in February, and never again after
+        2026-02-19 — silently dead for ~104 of 123 days while still
+        looking healthy at the process level.
+
+        Deliberately called from the READ path
+        (get_position_size_multiplier) as well as the write path
+        (record_trade_result). Read-path placement is what actually breaks
+        the deadlock: once entries are blocked the write path is
+        unreachable by construction, so a write-only reset would never
+        fire. This mirrors shared/risk/manager.py::RiskManager, which
+        likewise checks on both can_trade() and record_trade().
+
+        The protection itself is unchanged in strength — 2 losses still
+        halves size, 3 still stops trading — it simply expires with the
+        session it was earned in, exactly as documented.
+        """
+        today = _today_ist()
+        if today != self._session_date:
+            if self._consecutive_losses > 0:
+                logger.info(
+                    "[RiskAgent] New trading session (%s) — clearing Capital "
+                    "Protection state from %s (%d consecutive losses).",
+                    today, self._session_date, self._consecutive_losses,
+                )
+            self._session_date = today
+            self._consecutive_losses = 0
+            self._capital_protection_mode = False
+            self._last_trade_result = None
+
     def record_trade_result(self, pnl: float) -> None:
         """
         Call this after each trade closes to track consecutive losses.
         Professional rule: After 2 consecutive losses, switch to half-size mode.
         After 3 consecutive losses, stop trading for the session.
         """
+        self._reset_daily_if_needed()
         if pnl > 0:
             self._consecutive_losses = 0
             self._capital_protection_mode = False
@@ -51,7 +113,13 @@ class RiskAgent(BaseAgent):
         - Normal: 1.0 (full size)
         - After 2 consecutive losses: 0.5 (half size)
         - After 3+ consecutive losses: 0.0 (stop trading)
+
+        Checks for a session rollover first — this is the read path that
+        actually releases Capital Protection Mode, since once it engages
+        the write path (record_trade_result) becomes unreachable. See
+        _reset_daily_if_needed().
         """
+        self._reset_daily_if_needed()
         if self._consecutive_losses >= 3:
             logger.warning("[RiskAgent] 3+ consecutive losses. Position size: 0 (trading stopped).")
             return 0.0

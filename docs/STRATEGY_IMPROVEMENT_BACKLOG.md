@@ -96,7 +96,74 @@ robustness/consistency/drawdown, **not** by backtest profit alone.
 
 ## Queued — ranked by expected impact
 
-### #0a — 🔴 MARL_Ultra Capital Protection Mode is a permanent deadlock (HIGH severity, live-reachable)
+### ✅ #0a — MARL_Ultra Capital Protection deadlock — FIXED 2026-08-07
+
+- **Fix:** `RiskAgent` now carries a `_session_date` and an IST-anchored
+  `_reset_daily_if_needed()`, mirroring
+  `shared/risk/manager.py::RiskManager` exactly. Capital Protection Mode
+  expires with the session that earned it — precisely what
+  `record_trade_result()`'s docstring always claimed ("stop trading for
+  the session"). Protection strength is unchanged: 2 losses still halves
+  size, 3 still stops trading, a win still clears the streak.
+- **Load-bearing detail:** the reset is checked on the **read** path
+  (`get_position_size_multiplier`) as well as the write path. Read-path
+  placement is what actually breaks the deadlock — once entries are
+  blocked the write path is unreachable by construction, so a write-only
+  reset would never fire. A dedicated test pins this
+  (`test_reset_happens_on_the_read_path_specifically`).
+- **Harness change required to validate it:** a backtest compresses 123
+  simulated days into ~90s of wall clock, so against the real clock the
+  daily rollover would never fire and the backtest would keep reproducing
+  a bug that no longer exists in production. The harness now runs the
+  agent on the **simulated** date (`_set_simulated_session_date`). This
+  is the faithful model, not a workaround — in production, real days
+  genuinely do pass between sessions. The agent's own logic is untouched;
+  it is simply told what "today" is.
+- **Before/after (same 123-day window):**
+
+  | Metric | BEFORE (deadlocked) | AFTER (fixed) |
+  |---|---|---|
+  | **Trading days** | **14 of 123** | **122 of 123** |
+  | Months traded | February only | Feb, Mar, Apr, May, Jun, Jul |
+  | Last trade | 2026-02-19 | 2026-07-31 |
+  | Trades | 127 | 976 |
+  | Net profit | ₹53,456 | **₹130,399** |
+  | Recovery factor | — | 3.16 |
+  | Profit factor | 1.41 | 1.10 |
+  | Max drawdown | 16.5% | 41.3% |
+
+- **⚠️ Read the PF/DD movement correctly — it is NOT a regression.** The
+  "before" figures were never a real six-month result; they were three
+  weeks of trading followed by silence. Comparing a 3-week sample against
+  a 6-month sample on PF and drawdown is not like-for-like. The apparent
+  "degradation" is the removal of an accidental survivorship effect in
+  the measurement: the strategy was never achieving PF 1.41 across the
+  window, it was achieving it across 14 days and then not trading at all.
+  Net profit — the metric least distorted by the truncation — went up
+  144%.
+
+- **🔴 The fix exposed a second finding: MARL_Ultra is now a byte-identical
+  duplicate of `marl_strategy`.** Post-fix, every single metric matches
+  exactly (976 trades, ₹130,399.24, PF 1.10, WR 70.4%, expectancy 133.61,
+  DD 41.26%). The only thing distinguishing the two registrations was the
+  `record_trade_outcome()` feedback loop, and that loop's only observable
+  effect was the permanent deadlock — 3 consecutive losses *within a
+  single day* is evidently rare enough never to bind. So MARL_Ultra's
+  former "2nd-best profit factor in the suite" was **entirely an artifact
+  of the deadlock** truncating it to a favourable 3-week sample.
+  **Disposition change:** MARL_Ultra is now a redundancy/consolidation
+  candidate — not on performance grounds, but because it is the same
+  strategy under a second name. That is a product decision, not a
+  unilateral one; flagged, not acted on.
+- **Tests:** 9 new regression tests, including the deadlock-breaks-on-new-
+  session case and same-session-persistence (protection must survive
+  intraday). Full suite: **410 passed**, no regressions.
+
+---
+
+### ~~#0a original finding~~ (kept below for the root-cause record)
+
+### 🔴 MARL_Ultra Capital Protection Mode is a permanent deadlock (HIGH severity, live-reachable)
 
 **This is the most serious finding of the improvement pass and jumps the
 queue.** It is a correctness/safety bug, not an optimization.
