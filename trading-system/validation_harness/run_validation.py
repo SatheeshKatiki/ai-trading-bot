@@ -87,6 +87,35 @@ def run_strategy_day_isolated(
     return all_trades, diagnostics
 
 
+def _reset_cross_strategy_singletons() -> None:
+    """Clear process-global strategy state between strategies so one
+    strategy's simulated results can't contaminate the next one's.
+
+    Root cause (found 2026-08-07, first corrected-regime full run):
+    `marl_strategy` reported 0 trades where an earlier run reported 976.
+    Both "MARL_Ultra" and "marl_strategy" resolve to the same
+    module-level `_marl_instance` singleton, and this harness (correctly,
+    for live fidelity) feeds MARL_Ultra's closed-trade P&L back into that
+    singleton's RiskAgent via `record_trade_outcome()`. "MARL_Ultra"
+    sorts before "marl_strategy", so it ran first, drove the shared
+    RiskAgent to 3+ consecutive losses (its documented "Capital
+    Protection Mode"), and `marl_strategy` inherited a permanently
+    entry-blocked agent — measuring the leaked state, not the strategy.
+
+    Note this leakage is a harness artifact, but the underlying
+    never-resets behavior is a real production concern in its own right —
+    see docs/STRATEGY_IMPROVEMENT_BACKLOG.md's MARL capital-protection
+    deadlock item.
+    """
+    try:
+        from trading_bot.strategies import marl_strategy as _marl
+        if getattr(_marl, "_marl_instance", None) is not None:
+            agent = _marl._marl_instance.master_agent.risk_agent
+            agent._consecutive_losses = 0
+    except Exception:
+        pass  # best-effort: never let harness hygiene break a run
+
+
 def run_full_validation(
     strategy_names: list[str],
     df: pd.DataFrame,
@@ -107,6 +136,7 @@ def run_full_validation(
                      "strategies": {}}
 
     for name in strategy_names:
+        _reset_cross_strategy_singletons()
         t0 = time.perf_counter()
         trades, diag = run_strategy_day_isolated(name, df, instrument, initial_capital, settings)
         elapsed = time.perf_counter() - t0

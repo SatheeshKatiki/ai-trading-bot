@@ -96,6 +96,74 @@ robustness/consistency/drawdown, **not** by backtest profit alone.
 
 ## Queued — ranked by expected impact
 
+### #0a — 🔴 MARL_Ultra Capital Protection Mode is a permanent deadlock (HIGH severity, live-reachable)
+
+**This is the most serious finding of the improvement pass and jumps the
+queue.** It is a correctness/safety bug, not an optimization.
+
+- **Strategy:** MARL_Ultra (live-reachable today via a one-line
+  `active_strategy` settings change; `marl_strategy` shares the same
+  singleton but never receives the feedback that triggers it).
+- **Root cause chain** (each link verified in source):
+  1. `record_trade_outcome()` (`marl_strategy.py:114`) feeds every closed
+     MARL_Ultra trade's P&L into a **module-level singleton**
+     `_marl_instance`'s `RiskAgent`. `main.py` calls this on every
+     position close (two sites: `main.py:836`, `main.py:1272`).
+  2. On a loss, `RiskAgent.record_trade_result()`
+     (`drl/marl/risk_agent.py:28`) increments `_consecutive_losses`; on a
+     **win** it resets to 0 (`risk_agent.py:35`).
+  3. At `_consecutive_losses >= 3`, `get_position_size_multiplier()`
+     returns `0.0` (`risk_agent.py:55`).
+  4. `generate_signals()` calls `is_capital_protection_blocking_entries()`
+     and, when true, **blocks every new entry signal for that call**
+     (`marl_strategy.py:253-265`).
+  5. Blocked entries ⇒ no new positions ⇒ no new closes ⇒
+     `record_trade_outcome()` is never called again ⇒ `_consecutive_losses`
+     can never reach the win that would reset it.
+- **Result: after 3 consecutive losses, MARL_Ultra stops trading
+  permanently** — for the entire remaining life of the process. There is
+  no daily reset (`RiskAgent` has no `reset_daily`, unlike
+  `shared/risk/manager.py::RiskManager._reset_daily_if_needed()`), and
+  `_marl_instance` is constructed once per process.
+- **The implementation contradicts its own documented intent.**
+  `RiskAgent.record_trade_result()`'s docstring
+  (`drl/marl/risk_agent.py:31-32`) states the rule as: *"After 2
+  consecutive losses, switch to half-size mode. After 3 consecutive
+  losses, **stop trading for the session**."* The intent is explicitly
+  **session-scoped** — but no session boundary exists anywhere in the
+  class: no daily reset, no time decay, no external reset call. The only
+  path back to normal is a winning trade, which the block itself makes
+  unreachable. This is a missing-reset bug against a clearly stated
+  design, not a debatable design choice.
+- **Why this was never caught:** the strategy's own comment
+  (`marl_strategy.py:257-259`) explicitly assumes *"a fresh backtest
+  process/run always starts with a clean RiskAgent... so this never fires
+  there."* That assumption held for every previous backtest tool, because
+  none of them fed trade outcomes back. This harness does (deliberately,
+  for live fidelity) — which is precisely how the deadlock surfaced, in
+  the form of `marl_strategy` reporting 0 trades after MARL_Ultra ran
+  first and poisoned the shared singleton.
+- **Evidence:** `[RiskAgent] 3+ consecutive losses. Position size: 0
+  (trading stopped).` repeats ~80 consecutive times at the tail of the
+  MARL_Ultra run log, never once recovering.
+- **Proposed fix (not yet implemented — needs approval, and it is a risk
+  parameter, not an infra bug):** give `RiskAgent` the same IST-anchored
+  daily reset `RiskManager` already has, so Capital Protection Mode
+  expires at the start of each trading day rather than persisting
+  forever. That preserves the intended protection (stop trading after a
+  bad streak *today*) while removing the permanent-lock failure mode.
+  An alternative — a time-decay or a manual reset endpoint — would also
+  work; this needs a decision, not a unilateral change.
+- **Expected impact:** MARL_Ultra currently posts the 2nd-best profit
+  factor in the entire suite (1.41) on only 127 trades. If it is
+  deadlocking partway through the validation window, its true trade count
+  and profit are both being understated, and in live trading it would
+  silently stop working after any 3-loss streak.
+- **Confidence: high** on the mechanism (verified line by line);
+  **unknown** on how much of its current backtest is affected.
+
+
+
 ### #1a — `meta_agent_swarm`: gate out gap-day and high-volatility regimes (direct follow-on)
 - **Evidence:** post-fix, 100% of this strategy's net losses come from
   gap_day (PF 0.62) and high_volatility (PF 0.48) — 29 of 242 trades
