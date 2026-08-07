@@ -98,6 +98,28 @@ def test_slice_by_regime_returns_only_matching_days():
                    set(labels[labels == some_regime].index) for ts in sliced.index)
 
 
+def test_gap_days_stay_a_minority_of_the_sample():
+    """Regression for the 2026-08-07 finding: a hardcoded 0.5% gap
+    threshold labelled 36% of real NIFTY days as "gap days" (real median
+    overnight move is 0.331%), and since gap_day is checked first, those
+    days were also removed from every other regime's statistics. A gap
+    day must remain what the name implies -- an outlier, not a third of
+    the sample."""
+    df = _synthetic_intraday(days=120, noise=6.0, mean_revert=True)
+    labels = classify_daily_regimes(df)
+    gap_share = (labels == "gap_day").sum() / len(labels)
+    assert gap_share <= 0.20, f"gap_day is {gap_share:.0%} of days -- threshold too loose"
+
+
+def test_gap_threshold_respects_the_absolute_floor_on_a_calm_sample():
+    """A pathologically calm series must not have its trivial overnight
+    drift promoted to "gap day" purely for being that sample's top
+    decile -- GAP_MIN_ABS_PCT is the backstop."""
+    df = _synthetic_intraday(days=60, noise=0.2, mean_revert=True)
+    labels = classify_daily_regimes(df)
+    assert (labels == "gap_day").sum() == 0
+
+
 def test_slice_by_regime_with_no_matching_days_returns_empty():
     df = _synthetic_intraday(days=5)
     labels = classify_daily_regimes(df)
