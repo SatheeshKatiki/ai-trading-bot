@@ -38,7 +38,22 @@ def generate_signals(df: pd.DataFrame, **kwargs) -> pd.Series:
     for agent in agents:
         try:
             if agent in registry._strategies:
-                signal = registry._strategies[agent](df, **kwargs)
+                result = registry._strategies[agent](df, **kwargs)
+                # Root-cause fix (found live 2026-08-07 by executing this
+                # under the validation harness): a sub-agent's
+                # generate_signals() may return either a bare Series or a
+                # (signals, rejection_logs) tuple —
+                # `institutional_momentum` returns the tuple form
+                # (momentum_strategy/__init__.py:199), every other
+                # sub-agent returns a bare Series. Assigning the raw tuple
+                # into a DataFrame column raised "Length of values (2) does
+                # not match length of index (N)" on EVERY call, was
+                # swallowed by the except below, and silently reduced this
+                # swarm from the documented 5 technical brains to 4 — a
+                # consensus threshold tuned for the full vote pool applied
+                # to a permanently smaller one. main.py's own entry loop
+                # already unwraps this exact case; this mirrors it.
+                signal = result[0] if isinstance(result, tuple) else result
                 votes_df[agent] = signal
                 votes_df['total_score'] += signal.fillna(0)
             else:
