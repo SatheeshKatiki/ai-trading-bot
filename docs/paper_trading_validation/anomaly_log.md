@@ -6,6 +6,91 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-08-07 (midday) — elevated CPU (58-71% vs. ~15-17% baseline) traced to a second, previously-unfixed incremental-`Series.__setitem__` call site; fixed and redeployed
+
+**Symptom.** Routine monitoring cadence (09:52/10:22/10:57 IST CPU-delta
+checks all read 15.2-17.5%, the established quiet-market baseline). The
+11:22 IST check read **71.6%** — no new trade/signal-candidate log lines
+explained it (only sentiment heartbeats since the last bookmark), so per
+the standing escalation rule (50%+ CPU → `py-spy dump`) this was
+investigated rather than assumed benign.
+
+**Investigation.** Several `py-spy dump --pid <pid>` snapshots a few
+seconds apart: MainThread was idle in every dump (the event loop itself
+was never blocked — the 2026-08-06 livelock's most dangerous symptom was
+absent), and the worker thread (`asyncio_0`, correctly running via
+`asyncio.to_thread`) showed genuinely different call chains each time —
+`get_cpr_rejection_masks`'s groupby aggregation, `supertrend`/`atr`
+computation, then one dump caught `StrategyRegistry.run_strategy`
+(`trading_bot/strategies/registry.py:51`, `filtered_signals[f_bull] = 1`)
+active inside `Series.__setitem__ -> _set_with_engine -> Index.get_loc ->
+Series.__repr__ -> to_string -> _get_formatted_values`. This is a
+livelock-shaped stack (real work, forward progress, no repeated-frame
+hang) rather than a deadlock, but that exact `get_loc`/`repr()` call-chain
+signature also appears in the 2026-08-06 CPU-livelock investigation's own
+`py-spy` dumps (see that entry, "The stack changed between every dump" —
+one of the listed frames is "a `KeyError`/`repr()` path (`Series.__repr__`
+via `get_loc`)"). That day's fix only targeted the three incremental-
+*column*-insert call sites (`compute_features`, `supertrend`,
+`generate_signals`); it never touched this incremental-*boolean-mask*-
+assignment call site in `registry.py`, which is architecturally the same
+class of problem (an incremental `Series`/`DataFrame` mutation hitting a
+costly pandas/pyarrow index-machinery path under this app's specific
+long-running-process conditions) at a fourth call site nobody had looked
+at. Re-checked: no open position at the time (last trade was yesterday,
+2026-08-06 10:43 IST) — zero capital risk while investigating.
+
+**Root cause.** `run_strategy`'s post-institutional-filter signal
+construction built `filtered_signals` via two incremental boolean-mask
+`Series.__setitem__` calls (`filtered_signals[f_bull] = 1`,
+`...[f_bear] = -1`) instead of building the result in one vectorized call.
+An isolated 200-call offline benchmark showed this is ~5x more expensive
+than the alternative even at a small scale (0.59ms vs. 0.11ms mean per
+call on a 2000-row frame) — real but modest in isolation, consistent with
+2026-08-06's own finding that isolated short benchmarks understate this
+class of cost, which "accumulates across many repeated calls within one
+process's lifetime" rather than showing up in a fresh, short-lived
+interpreter.
+
+**Fix.** `trading_bot/strategies/registry.py`: `filtered_signals` now
+built via a single `np.select([f_bear.to_numpy(), f_bull.to_numpy()],
+[-1, 1], default=0)` call, eliminating both `Series.__setitem__` calls on
+it entirely (bear listed first so it wins on the — structurally
+impossible in real usage, since `bullish`/`bearish` derive from mutually
+exclusive signal values — overlap case, preserving the original overwrite
+order). 4 new regression tests
+(`test_registry_filtered_signals_regression.py`): bit-for-bit match
+against the pre-fix implementation on a real boolean-mask distribution,
+an all-False case, a forced-overlap case confirming overwrite-order
+parity, and an end-to-end `run_strategy` call through real institutional
+filters. Full suite: 317 passed (313 + 4 new), no regressions.
+
+**Deployment.** No open position → safe window. Stopped and restarted
+only the `main.py` process pair (PID 476/24764 → 20580/5380), leaving the
+healthy `api_bridge` pair and frontend untouched. Clean boot: 1705
+candles preloaded, WebSocket reconnected, prior day's PNL (+9,743.05)
+correctly resumed, `/health` OK. Post-restart `py-spy` dumps (5 taken
+across ~10s) show no recurrence of the `get_loc`/`repr()` signature at
+`registry.py:51` — the fixed line specifically is confirmed gone from the
+observed call chains.
+
+**Honesty about confidence level.** CPU-delta readings in the first ~60-90s
+post-restart ran 44.7-46.7% — elevated vs. the ~15-17% established
+baseline, but 2026-08-06's own restart showed the identical pattern
+(59-67% in the first ~90s, said there to be "plausibly just real
+intraday tick volume... not conclusively ruled out"). This fix closes one
+concretely-identified, previously-unaddressed contributor sharing the
+exact call-chain signature seen in the actual livelock, verified via
+bit-identical tests and live `py-spy` confirmation that the specific line
+is no longer reproducing — but it is **not** proven to be the sole or
+complete explanation for the 58-71% readings, and the same "not fully
+proven under sustained load" caveat from 2026-08-06 applies here too.
+Continuing to monitor at a tightened cadence to see whether CPU settles
+toward baseline as the post-restart transient passes, per the same
+practice as every prior restart this validation window.
+
+---
+
 ## 2026-08-06 (midday) — CRITICAL: the 4-instrument engine livelocks on ~2 of 3 restarts; temporarily reverted to NIFTY-only
 
 Found during the first continuous-monitoring cycle after deploying the

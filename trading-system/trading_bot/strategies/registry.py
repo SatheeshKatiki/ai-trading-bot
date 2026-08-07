@@ -6,6 +6,7 @@ Allows dynamic registration and execution of multiple trading strategies.
 import logging
 from typing import Any, Callable, Dict, List
 
+import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
@@ -46,10 +47,21 @@ class StrategyRegistry:
             bearish = (signals == -1)
             
             f_bull, f_bear = apply_institutional_filters(df, bullish, bearish, **kwargs)
-            
-            filtered_signals = pd.Series(0, index=df.index, dtype=int)
-            filtered_signals[f_bull] = 1
-            filtered_signals[f_bear] = -1
+
+            # Built via np.select rather than incremental boolean-mask
+            # Series.__setitem__ calls (`filtered_signals[f_bull] = 1`,
+            # ...[f_bear] = -1`) -- those routed through
+            # Series._set_with_engine -> Index.get_loc, the same call
+            # chain implicated (alongside the incremental-column-insert
+            # pattern) in the 2026-08-06 CPU-livelock py-spy dumps. Bear
+            # listed first so it wins on the (structurally impossible,
+            # since bullish/bearish derive from mutually exclusive signal
+            # values) case of overlap, matching the prior overwrite order.
+            filtered_signals = pd.Series(
+                np.select([f_bear.to_numpy(), f_bull.to_numpy()], [-1, 1], default=0),
+                index=df.index,
+                dtype=int,
+            )
             signals = filtered_signals
         except ImportError:
             pass  # If module doesn't exist, proceed with raw signals
