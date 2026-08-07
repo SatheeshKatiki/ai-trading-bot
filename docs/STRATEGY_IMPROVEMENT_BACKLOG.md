@@ -271,6 +271,55 @@ queue.** It is a correctness/safety bug, not an optimization.
   excluded regimes contribute nothing, with a meaningful DD reduction.
   **Confidence: medium-high** on direction, lower on magnitude.
 
+#### ⚠️ Premise re-verified 2026-08-07 — recommendation NARROWED, and blocked on a design decision
+
+Re-checked against the post-5-brain-fix, corrected-regime data before
+implementing. The headline premise holds (losing regimes total -₹26,348
+against +₹62,638 from trending/sideways), **but the two regimes are not
+equally supportable and must not be treated as one change:**
+
+| Regime | Trades | **Days** | Net | Avg/trade | Max consec. losses |
+|---|---|---|---|---|---|
+| gap_day | 21 | 13 | -₹14,639 | -₹697 | 1 |
+| high_volatility | 8 | **3** | -₹11,524 | -₹1,441 | 3 |
+| low_volatility | 6 | 6 | -₹184 | -₹31 | 1 |
+
+- **gap_day gate — defensible.** 21 trades over 13 distinct days, losses
+  *dispersed* (max consecutive loss = 1, so this is a persistent drag,
+  not one blow-up), and it has an independent mechanism: a
+  momentum-consensus design has no reason to hold an edge through an
+  overnight gap that invalidates the prior session's momentum reading
+  before the open. Mechanism first, statistics confirming — the right
+  order.
+- **high_volatility gate — NOT defensible, do not implement.** 8 trades
+  across **3 days**. Excluding a regime on a 3-day sample is textbook
+  curve-fitting, and the -₹1,441/trade average with 3 consecutive losses
+  suggests one bad cluster dominating rather than a repeatable regime
+  effect. This would be exactly the "optimize blindly on backtest
+  profit" failure the project's own rules forbid. Revisit only with a
+  materially larger sample (a longer window or additional instruments).
+- **low_volatility — ignore.** -₹184 over 6 trades is noise.
+
+**Architectural blocker (needs a decision before any of this can ship):**
+regime classification currently lives in `validation_harness/regimes.py`,
+which is *validation* code. A production strategy must not import from
+the harness — that inverts the dependency. Implementing any regime gate
+therefore requires one of:
+  1. **Promote regime detection into `shared/`** as production code, with
+     the harness then consuming it too (single source of truth, and a
+     prerequisite for the eventual Market Regime Strategy Router — likely
+     the right long-term call, but a real piece of work).
+  2. **Self-contained in-strategy gap check** — `meta_agent_strategy.py`
+     computes the overnight gap from the `df` it already receives. Minimal
+     and dependency-free, but a second, private definition of "gap day"
+     that will drift from the harness's.
+  3. Defer until the Router work makes option 1 necessary anyway.
+
+**Recommendation:** option 1, scoped as its own backlog item, then the
+gap_day gate on top of it. Not implemented unilaterally — this changes
+production architecture, and the sample-size finding means the change is
+smaller and less urgent than the original item implied.
+
 ### ~~#1~~ (superseded — completed above)
 - **Strategy:** meta_agent_swarm (also degrades ultra_meta_dip_swarm's sibling pattern)
 - **Root cause:** `meta_agent_strategy.py:41-43` assigns
