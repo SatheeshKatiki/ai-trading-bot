@@ -21,6 +21,11 @@ from .tick_staleness import (
     find_stale_positions,
     seconds_since_any_tick,
 )
+from .option_atr import (
+    MIN_CANDLES_FOR_OPTION_ATR,
+    OptionAtrDecision,
+    resolve_option_atr,
+)
 
 __all__ = [
     "RiskManager",
@@ -40,4 +45,7 @@ __all__ = [
     "StalePosition",
     "find_stale_positions",
     "seconds_since_any_tick",
+    "MIN_CANDLES_FOR_OPTION_ATR",
+    "OptionAtrDecision",
+    "resolve_option_atr",
 ]

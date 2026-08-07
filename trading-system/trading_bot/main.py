@@ -98,7 +98,7 @@ _m2m_last_update: float = 0.0
 
 # Import AI / Risk / Exit / Alert Modules
 from shared.ai import TradeFilterModel, compute_features
-from shared.risk import RiskManager, RiskConfig, TradeRecord, resolve_initial_stop, resolve_min_confidence, find_stale_positions, seconds_since_any_tick
+from shared.risk import RiskManager, RiskConfig, TradeRecord, resolve_initial_stop, resolve_min_confidence, find_stale_positions, seconds_since_any_tick, resolve_option_atr
 from shared.instruments import normalize_instrument
 from shared.market_hours import is_market_open, is_before_eod_cutoff
 from shared.exits import SmartExitEngine, Position, PyramidSizer
@@ -1028,6 +1028,22 @@ async def run_live_bot(symbols: List[str]) -> None:
                             exit_check_price = opt_quote.ltp
                             _option_premium_cache[open_position.symbol] = (now_mono, exit_check_price)
                             _tick_option_premiums[open_position.symbol] = exit_check_price
+                            # Feed this fresh premium sample into the same
+                            # CandleAggregator already building the index's
+                            # own candles, keyed by the option's own
+                            # contract symbol -- builds a real premium-scale
+                            # candle history for resolve_option_atr() below.
+                            # See shared/risk/option_atr.py and
+                            # docs/STRATEGY_AUDIT_2026-08-07.md §2.1. Reuses
+                            # the exact same aggregation/interval-flooring
+                            # logic already live for index symbols rather
+                            # than a second, duplicate candle builder.
+                            aggregator.add_tick({
+                                "timestamp": time.time(),
+                                "symbol": open_position.symbol,
+                                "ltp": exit_check_price,
+                                "volume": 0,
+                            })
                         elif cached:
                             # Fresh fetch failed but we have a recent-enough
                             # stale value — better than skipping the check
@@ -1048,15 +1064,38 @@ async def run_live_bot(symbols: List[str]) -> None:
                             logger.warning("Exit check failed to fetch premium for %s: %s", open_position.symbol, exc)
                             return
 
-            df = aggregator.get_latest_dataframe(sym)
-            # Proper 14-bar rolling ATR (not single-candle range which is too noisy)
-            if not df.empty and len(df) >= 2:
-                tr_series = (df["high"] - df["low"]).abs()
-                current_atr = tr_series.rolling(min(14, len(df))).mean().iloc[-1]
-                if pd.isna(current_atr) or current_atr <= 0:
-                    current_atr = exit_check_price * 0.005
+            if is_opt_pos:
+                # Root-cause fix (found 2026-08-07 audit,
+                # docs/STRATEGY_AUDIT_2026-08-07.md §2.1): this used to
+                # compute current_atr from the UNDERLYING INDEX's own
+                # candles (aggregator.get_latest_dataframe(sym), sym being
+                # the index symbol the tick carries — the live feed never
+                # subscribes to option contracts directly) and feed that
+                # index-point-scale value straight into the trailing-stop
+                # math against position.highest_price, which for an option
+                # is the PREMIUM. Spot is for entry-signal generation only;
+                # every option risk/exit decision must be sized in the
+                # option's own premium units. option_df is the option
+                # contract's OWN candle series, built from the fresh
+                # premium samples fed into `aggregator` just above —
+                # resolve_option_atr() computes a real ATR(14) from it once
+                # enough history exists, bridging with the same
+                # premium-banded proxy the initial stop uses during the
+                # unavoidable cold-start window right after entry. See
+                # shared/risk/option_atr.py.
+                option_df = aggregator.get_latest_dataframe(open_position.symbol)
+                atr_decision = resolve_option_atr(option_df, exit_check_price, settings)
+                current_atr = atr_decision.atr_value
             else:
-                current_atr = exit_check_price * 0.005
+                df = aggregator.get_latest_dataframe(sym)
+                # Proper 14-bar rolling ATR (not single-candle range which is too noisy)
+                if not df.empty and len(df) >= 2:
+                    tr_series = (df["high"] - df["low"]).abs()
+                    current_atr = tr_series.rolling(min(14, len(df))).mean().iloc[-1]
+                    if pd.isna(current_atr) or current_atr <= 0:
+                        current_atr = exit_check_price * 0.005
+                else:
+                    current_atr = exit_check_price * 0.005
 
             from shared.sentiment import get_current_sentiment
             sentiment_data = get_current_sentiment()
@@ -2128,6 +2167,28 @@ async def run_live_bot(symbols: List[str]) -> None:
                             "symbols": list(_last_tick_at.keys()),
                         }, severity="WARNING")
 
+                # ── Stale option-candle buffer sweep ───────────────────────
+                # Root-cause fix (2026-08-07, option-premium ATR
+                # architecture — docs/STRATEGY_AUDIT_2026-08-07.md §2.1):
+                # every open option position feeds its own premium samples
+                # into `aggregator`, keyed by its own contract symbol.
+                # Nothing else ever removes those entries, and unlike the
+                # underlying index symbols (a small, fixed set), option
+                # contract symbols are effectively unique per trade —
+                # without this sweep the candle buffer would grow
+                # unboundedly over a long-running process. Runs every
+                # cycle regardless of market hours or whether any position
+                # is currently open, so a closed position's buffer is
+                # evicted promptly rather than lingering until the next
+                # trade. See _stale_option_candle_symbols()'s own
+                # docstring for the full reasoning.
+                stale_symbols = _stale_option_candle_symbols(
+                    list(aggregator.candles.keys()),
+                    [pos.symbol for pos in active_positions.values()],
+                )
+                for stale_symbol in stale_symbols:
+                    aggregator.candles.pop(stale_symbol, None)
+
                 # ── Per-position staleness check ──────────────────────────
                 open_positions = {key: pos.symbol for key, pos in active_positions.items()}
                 if not open_positions:
@@ -2193,6 +2254,48 @@ def _should_reset_failure_count(run_duration_s: float) -> bool:
     """True if the bot ran long enough before this crash that it should be
     treated as a fresh start rather than another rapid crash-loop cycle."""
     return run_duration_s >= _RETRY_SUSTAINED_UPTIME_RESET_S
+
+
+def _stale_option_candle_symbols(tracked_symbols, open_position_symbols) -> List[str]:
+    """Option-contract symbols with a premium candle buffer but no
+    corresponding open position -- safe to evict.
+
+    Root cause this exists for: the option-premium ATR architecture
+    (`shared/risk/option_atr.py`, docs/STRATEGY_AUDIT_2026-08-07.md §2.1)
+    feeds each open option position's own live premium samples into the
+    shared `CandleAggregator`, keyed by the option's own contract symbol.
+    Unlike the underlying index symbols (a small, fixed set for the life
+    of the process), option contract symbols are effectively unique per
+    trade -- a different symbol every time the strike or expiry changes.
+    Nothing else ever removes an entry from `aggregator.candles`, so
+    without this sweep, every distinct option contract ever traded across
+    a long-running process (potentially many per day, every trading day)
+    would accumulate in memory forever. Pulled out as its own pure
+    function so it's unit-testable without a live aggregator or broker
+    connection, matching this file's existing precedent
+    (`_build_preload_failure_alert`, `_count_trades_already_executed_today`).
+
+    Parameters
+    ----------
+    tracked_symbols
+        Every symbol currently present in `aggregator.candles` (mixes
+        underlying index symbols and option contract symbols).
+    open_position_symbols
+        The `.symbol` of every currently-open position.
+
+    Returns
+    -------
+    List[str]
+        The subset of `tracked_symbols` that are option contracts
+        (CE/PE) with no matching open position -- never includes an
+        underlying index symbol, which must keep accumulating candles
+        for strategy signal generation regardless of position state.
+    """
+    open_set = set(open_position_symbols)
+    return [
+        sym for sym in tracked_symbols
+        if ("CE" in sym or "PE" in sym) and sym not in open_set
+    ]
 
 
 def _build_preload_failure_alert(failed_symbols: List[str]) -> str:
