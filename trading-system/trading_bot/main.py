@@ -234,6 +234,80 @@ def _load_positions() -> Dict[str, Position]:
     return {}
 
 
+# Handled entirely inside main.py's entry loop via a dedicated branch
+# (PremiumSignalEngine) — the only `active_strategy` value that never goes
+# through `registry.run_strategy()`, so it doesn't need to be a registered
+# strategy name to be valid.
+_STRATEGIES_OUTSIDE_REGISTRY = frozenset({"premium"})
+
+# The single current `active_strategy` value we've already warned about, if
+# any — not a growing set, since only one value is ever "current" at a time.
+# Reset to None whenever the current value is valid, so a bad value that
+# reappears later (after being corrected in between) warns again instead of
+# staying silenced forever.
+_last_bad_active_strategy: Optional[str] = None
+
+
+def _validate_active_strategy(strategy_name: Optional[str]) -> None:
+    """Warn loudly, once per distinct bad value, if `active_strategy` isn't
+    a real, tradeable strategy name.
+
+    Root-cause fix (found 2026-08-07 audit, docs/STRATEGY_AUDIT_2026-08-07.md
+    §4.7): `registry.run_strategy()` raises `ValueError` for an unregistered
+    name, but that's caught by a broad `try/except Exception` deep in the
+    entry loop and just logged — a typo, or a strategy that failed to
+    auto-register due to an import error, would make the engine raise and
+    retry on every single tick, forever, while still reporting healthy at
+    the process/health-check level and generating zero real trade signals.
+    Called once per actual settings (re)load, not per-tick, so this can't
+    itself become a source of per-tick log spam or CPU cost.
+    """
+    global _last_bad_active_strategy
+    if (
+        not strategy_name
+        or strategy_name in _STRATEGIES_OUTSIDE_REGISTRY
+        or strategy_name in registry.registered_strategies
+    ):
+        _last_bad_active_strategy = None
+        return
+    if strategy_name == _last_bad_active_strategy:
+        return
+    _last_bad_active_strategy = strategy_name
+    logger.critical(
+        "active_strategy=%r is not a registered strategy (known: %s, plus %s). "
+        "The engine will raise and silently retry on every tick until this is "
+        "corrected — no real trade signals will be generated in the meantime.",
+        strategy_name,
+        sorted(registry.registered_strategies),
+        sorted(_STRATEGIES_OUTSIDE_REGISTRY),
+    )
+
+
+def _should_abort_missing_option_mapping(
+    strategy_name: str, option_mapping_required: bool, option_mapping_succeeded: bool
+) -> bool:
+    """True if this tick's entry must be skipped because it needed an
+    option mapped but none was successfully selected.
+
+    Root-cause fix (found 2026-08-07 audit, docs/STRATEGY_AUDIT_2026-08-07.md
+    §1.1): a failed `select_option()` call used to fall through with
+    `entry_symbol` still equal to the raw underlying index symbol — every
+    downstream check (`is_option_trade`, `resolve_initial_stop`, order
+    placement) would then treat the INDEX's own price as if it were an
+    option premium, a direct violation of the option-buying-only mandate.
+    This system only ever buys options; if mapping to one was required for
+    this tick and didn't succeed, the entry must be skipped rather than
+    falling back to trading the raw index.
+
+    The `"premium"` strategy is excluded: it builds `entry_symbol` via its
+    own `PremiumSignalEngine` path (already gated by `sig.is_tradeable`,
+    which `continue`s before this check is ever reached), not the
+    `option_mapping_required`/`option_mapping_succeeded` pair this
+    function checks.
+    """
+    return strategy_name != "premium" and option_mapping_required and not option_mapping_succeeded
+
+
 def _load_settings() -> dict:
     """Read settings from disk, using an in-memory cache that checks for file modifications."""
     import os
@@ -312,6 +386,7 @@ def _load_settings() -> dict:
                 _settings_cache = defaults
                 _settings_last_mtime = current_mtime
                 logger.info("Settings reloaded instantly from disk.")
+                _validate_active_strategy(defaults.get("active_strategy"))
         except Exception as e:
             logger.error(f"Failed to check/load settings: {e}")
             
@@ -1356,7 +1431,9 @@ async def run_live_bot(symbols: List[str]) -> None:
                                     continue
 
                             # Auto-map to Options if it's an Index trade
-                            if latest_signal != 0 and ("INDEX" in s or s.startswith("NSE:NIFTY") or s.startswith("BSE:SENSEX")):
+                            option_mapping_required = latest_signal != 0 and ("INDEX" in s or s.startswith("NSE:NIFTY") or s.startswith("BSE:SENSEX"))
+                            option_mapping_succeeded = False
+                            if option_mapping_required:
                                 try:
                                     from trading_bot.strategies.premium_selection.options_selector import select_option
                                     # instrument_key (shared.instruments.
@@ -1373,12 +1450,29 @@ async def run_live_bot(symbols: List[str]) -> None:
                                     )
                                     entry_symbol = opt.symbol
                                     lot_size = opt.lot_size
+                                    option_mapping_succeeded = True
                                     logger.info("Auto-mapped %s %s signal to Option: %s", instrument_key, opt_dir, entry_symbol)
                                 except Exception as e:
                                     logger.error("Failed to auto-map option for %s: %s", s, e)
-                            
+
 
                         if latest_signal == 0:
+                            continue
+
+                        # Root-cause fix (found 2026-08-07 audit,
+                        # docs/STRATEGY_AUDIT_2026-08-07.md §1.1): a failed
+                        # select_option() call used to fall through with
+                        # entry_symbol still equal to the raw underlying
+                        # index symbol — every downstream check
+                        # (is_option_trade, resolve_initial_stop, order
+                        # placement) would then treat the INDEX's own price
+                        # as if it were an option premium, a direct
+                        # violation of the option-buying-only mandate. This
+                        # system only ever buys options; if mapping to one
+                        # was required for this tick and didn't succeed,
+                        # skip the entry outright rather than falling back
+                        # to trading the raw index.
+                        if _should_abort_missing_option_mapping(strategy_name, option_mapping_required, option_mapping_succeeded):
                             continue
 
                         # ── Market-hours gate (NEW entries only) ───────────
