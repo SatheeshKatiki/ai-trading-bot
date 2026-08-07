@@ -154,13 +154,38 @@ queue.** It is a correctness/safety bug, not an optimization.
   bad streak *today*) while removing the permanent-lock failure mode.
   An alternative — a time-decay or a manual reset endpoint — would also
   work; this needs a decision, not a unilateral change.
-- **Expected impact:** MARL_Ultra currently posts the 2nd-best profit
-  factor in the entire suite (1.41) on only 127 trades. If it is
-  deadlocking partway through the validation window, its true trade count
-  and profit are both being understated, and in live trading it would
-  silently stop working after any 3-loss streak.
-- **Confidence: high** on the mechanism (verified line by line);
-  **unknown** on how much of its current backtest is affected.
+- **🔴 MEASURED IMPACT — the deadlock fires early and kills 85% of the
+  window.** Tested directly by extracting the trade-date distribution
+  from a clean, isolated MARL_Ultra run over the 123-day window:
+
+  | | |
+  |---|---|
+  | Days evaluated | 123 |
+  | Days it actually traded | **14** |
+  | First trade day | 2026-02-02 |
+  | **Last trade day** | **2026-02-19** |
+  | Trading days per month | `{'2026-02': 14}` — February only |
+
+  It hit 3 consecutive losses around 2026-02-19 and **never traded again
+  for the remaining ~104 trading days (March–July)**. Its headline
+  "PF 1.41 on 127 trades — 2nd-best in the suite" is therefore **three
+  weeks of trading, not six months**, and its rank in the comparison
+  table is not comparable to strategies that traded the full window.
+  The day-isolated harness gives each day a fresh `RiskManager`, but the
+  MARL singleton is process-global and outlives that reset — exactly
+  mirroring live behavior, where the engine process runs continuously
+  across days.
+- **Severity upgraded to CRITICAL.** This is not "understated results" —
+  the strategy is silently non-functional for the overwhelming majority
+  of any period longer than its first loss streak. In live trading it
+  would appear healthy at the process level (no crash, no error, signals
+  still evaluated) while never taking another trade. That is the exact
+  "looks alive, does nothing" failure class this validation window has
+  now found four separate times (2026-08-06 tick staleness, the
+  EOD-entry-cutoff artifact, `active_strategy` typo silent-retry, and
+  this).
+- **Confidence: high on the mechanism** (verified line by line) **and now
+  high on the impact** (measured directly, reproducible).
 
 
 
