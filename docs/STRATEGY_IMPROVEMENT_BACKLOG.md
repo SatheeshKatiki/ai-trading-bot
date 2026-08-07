@@ -432,6 +432,97 @@ smaller and less urgent than the original item implied.
 - **Expected impact:** turning off the worst regime alone should move PF
   above 1.0. **Confidence: medium** — needs post-fix regime data first.
 
+### ❌ #2b — `ema_rsi` trailing-offset scale hypothesis — TESTED, REJECTED, NO CHANGE MADE
+
+Recorded because a negative result is evidence, and the project rule is
+"improve only if there is measurable evidence; otherwise keep the
+strategy unchanged."
+
+- **Hypothesis:** `trailing_offset_pct = 0.35` is an *index-scale*
+  parameter (0.35% is a meaningful NIFTY move) applied to *option-premium*
+  percentage moves that routinely swing 10-40%. A 0.35pp giveback is
+  noise on a premium, so it should be cutting winners far too early —
+  the same unit-mismatch bug class as the ATR/premium defect already
+  fixed.
+- **Supporting evidence that looked damning:** measured premium % move
+  captured at exit, `ema_rsi`, 123-day window:
+
+  | Exit type | n | Median % captured |
+  |---|---|---|
+  | Stop-Loss Hit | 156 | **-16.01%** |
+  | Trailing Stop-Loss Hit | 245 | **+5.87%** |
+  | Partial Profit Booking | 147 | +17.24% |
+
+  Losses run the full banded stop (~16-18%) while trailing exits cut
+  winners at a median of +5.87% — a ~3:1 adverse asymmetry.
+- **A/B test of the mechanism** (offset disabled entirely, leaving ATR
+  trailing + banded SL + partial booking):
+
+  | Metric | Current (0.35) | Mechanism OFF |
+  |---|---|---|
+  | Net profit | **₹247,201** | ₹195,956 (-21%) |
+  | Profit factor | **1.38** | 1.33 |
+  | Win rate | **72.1%** | 66.5% |
+  | Max drawdown | 47.9% | **36.1%** |
+  | Realized R:R | 0.53 | **0.67** |
+  | Recovery factor | 5.16 | **5.43** |
+
+- **Verdict: hypothesis half-confirmed, change REJECTED.** The R:R
+  mechanism is real — winners genuinely do run further without the tight
+  offset (0.53 → 0.67) and drawdown improves materially (47.9% → 36.1%).
+  But net profit falls 21% and win rate falls 5.6pp, because the tight
+  offset is not a miscalibration — it is deliberately harvesting a
+  high-win-rate scalping edge. This is a **risk/return tradeoff, not a
+  defect**, and it is the opposite of the ROI objective. `ema_rsi` is left
+  unchanged.
+- **Kept for the record because it reframes the drawdown item (#3):**
+  ema_rsi's 47.9% drawdown is not a bug to be fixed, it is the *price* of
+  its profit profile. Any future attempt to cut that drawdown should
+  expect to give up roughly proportional profit unless the edge itself
+  improves.
+
+---
+
+### 🔑 #2c — **The single highest-ROI lever, and it is already deferred by design**
+
+Not a defect — a structural observation from the validation data that
+directly answers "how do we improve ROI":
+
+- **`ema_rsi` earns ₹230,108 of its ₹247,201 (93%) in ONE regime**
+  (sideways, PF 1.71), while:
+  - trending contributes only +₹30,264 at PF 1.14 with a 43% drawdown
+  - low_volatility **loses** ₹18,293 (PF 0.31)
+  - gap_day **loses** ₹5,785 (PF 0.92)
+- Simply not trading the two losing regimes is worth **+₹24,078 (~+10%
+  ROI)** on this strategy alone, before considering capital
+  reallocation toward the sideways edge.
+- The same shape holds across the suite (e.g. `enhanced_ai` is
+  breakeven-to-positive everywhere except one concentrated week;
+  `meta_agent_swarm` earns +₹62,638 in trending/sideways against
+  -₹26,348 in gap/high-vol).
+- **This is precisely what the Market Regime Detector + Strategy Router
+  is for**, which is explicitly scheduled as a separate later
+  architectural phase. Flagged here so the ROI case for that phase is
+  quantified and waiting when it starts.
+
+### ⚠️ Live risk-tier finding (decision needed, not a unilateral change)
+
+`config/settings.json` does not set `enable_ai_filter`, so it defaults to
+`False`, so `main.py` falls back to `confidence = 1.0`, which clears
+`RiskConfig.high_confidence_threshold` (0.85) — meaning **every live
+trade is sized at `high_confidence_risk_per_trade` = 3.5%, not the 1%
+base tier.** All backtest figures in this document are at that 3.5%
+tier, which is what produces both the large net-profit numbers and the
+large drawdowns.
+
+This is a leverage setting, not an edge setting: moving it changes
+returns and drawdown roughly proportionally without improving
+risk-adjusted performance. Raising ROI by leaving/raising leverage is not
+a strategy improvement. Flagged for an explicit decision — it is a risk
+parameter and out of scope for unilateral change.
+
+---
+
 ### #3 — Cross-cutting: drawdown is the single biggest blocker to any KEEP verdict
 - **Strategies:** advanced_ai (61.9%), enhanced_ai (61.6%), ema_rsi
   (47.9%), marl_strategy (41.3%), meta_agent_swarm (40.2%), drl (39.2%)
