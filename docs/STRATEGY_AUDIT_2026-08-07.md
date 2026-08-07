@@ -107,6 +107,19 @@ against `momentum_strategy/__init__.py:29` (`STRATEGY_NAME = "institutional_mome
 > `trading_bot/main.py`; 5 new tests). No known live trigger exercised this path
 > today or historically — verified via unit tests only, no live re-verification
 > plan needed beyond continued normal monitoring. See `anomaly_log.md`.
+>
+> **Re-verification addendum (2026-08-07 late evening):** the "premium" strategy's
+> entry path has the same-shaped fallback (`option_symbol = sig.option.symbol if
+> sig.option else s`, `main.py:1445`) but was confirmed **already safe** by a
+> different mechanism, not requiring this same fix: `select_option()`'s return type
+> (`-> OptionContract`, never `Optional`) means it always either succeeds or raises;
+> `PremiumSignalEngine.evaluate()` has no try/except around that call, so a raise
+> propagates out of `evaluate()` entirely (never reaching the `option=None` case)
+> and is caught by `main.py`'s own outer `except Exception: logger.exception(...)`
+> wrapping the whole tick's entry-evaluation block — the tick is safely abandoned,
+> never falls through to the raw index symbol. Locked in with a dedicated test
+> (`test_premium_signal_engine_option_selection_safety.py`) rather than left as an
+> assumption.
 
 - **File(s):** `trading_bot/main.py:1347` (`entry_symbol = s`), `1360-1378`
   (auto-map try/except with no abort), `1463`, `1540`, `1695-1706`
@@ -301,6 +314,17 @@ post-fix institutional-filter consumption: independently re-verified correct.
 ## 2. Shared infrastructure (affects every strategy, live or dormant)
 
 ### 2.1 CRITICAL — ATR fed into option trailing stops is index-scale, not premium-scale
+
+> **Status: FIXED 2026-08-07 late evening.** Real option-premium-candle ATR
+> architecture implemented per explicit direction (`shared/risk/option_atr.py`,
+> candle-feeding + eviction sweep in `main.py`) — the design doc's Approach 4, not
+> the originally-recommended Approach 2, with the Approach 2 proxy retained only as
+> the post-entry cold-start bridge. 26 new tests (unit + integration, using the real
+> `CandleAggregator`), full suite green. Single fix point also resolves §3.4 below
+> as a side effect. **NOT YET LIVE-VERIFIED** — market closed at deploy time, no
+> option position has exercised the candle-feeding pipeline live yet. See
+> `docs/ATR_TRAILING_STOP_DESIGN_2026-08-07.md` §7 and `anomaly_log.md`'s
+> "2026-08-07 (late evening)" entry.
 
 - **File(s):** `trading_bot/main.py:976-984` (ATR computed from
   `aggregator.get_latest_dataframe(sym)`, where `sym` is the **underlying index**
@@ -586,6 +610,14 @@ settings change.)*
   sitting inside every other exit threshold, assert a forced EOD exit fires.
 
 ### 3.4 HIGH — The index-vs-premium ATR mismatch (§2.1) recurs independently in this package's own exit manager
+
+> **Status: RESOLVED AS A SIDE EFFECT of §2.1's fix, 2026-08-07 late evening.**
+> `current_atr` is computed exactly once per exit-check tick in `main.py` and passed
+> identically to both the generic/`ema_rsi` path and this dormant
+> `institutional_momentum` path — fixing the single computation site fixed both
+> consumers with zero changes needed inside `momentum_strategy/exit_manager.py`
+> itself. Not independently live-verified (this strategy remains dormant), but the
+> mechanism fix is identical to §2.1's and carries the same evidence.
 
 - **File:** `momentum_strategy/exit_manager.py:188-209`
   (`_evaluate_exhaustion()`, `profit_points >= 1.5 * current_atr`)

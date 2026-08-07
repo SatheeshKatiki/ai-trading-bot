@@ -1,7 +1,14 @@
 # Technical Design — Fixing the ATR/Premium Unit Mismatch (Audit §2.1)
 
-**Status: DESIGN ONLY. No code has been changed to produce this document.**
-Waiting for a decision on which approach to implement before writing any code.
+**Status: IMPLEMENTED 2026-08-07 evening**, per explicit direction to build the
+full real-option-premium-candle architecture (this document's Approach 4) rather
+than the originally-recommended Approach 2. See
+`docs/paper_trading_validation/anomaly_log.md`'s "2026-08-07 (late evening)" entry
+for the complete implementation, test, and deployment record, and
+`docs/STRATEGY_AUDIT_2026-08-07.md` §2.1/§3.4 for the audit-finding status update.
+The comparison below is kept as-written (historical record of the options
+considered) — the decision that was actually made is documented in the entries
+linked above.
 
 ## 1. Restating the problem precisely
 
@@ -183,4 +190,57 @@ a priority in its own right, independent of this specific fix.
 4. No changes needed inside `shared/exits/exit_engine.py` or
    `momentum_strategy/exit_manager.py`'s trailing-stop math itself.
 
-Waiting for your decision on Approach 2 vs. an alternative before touching any code.
+## 7. What was actually built (2026-08-07 evening)
+
+Explicit direction was given to implement Approach 4 (real option-premium-candle
+ATR) as the primary path, with the following architecture, matching the direction
+given:
+
+- **Spot chart → entry decisions only.** Unchanged — signal generation still reads
+  the underlying index's own candles exactly as before.
+- **Option premium chart → all position management.** After entry, every fresh
+  option premium sample already being fetched (the existing ~1/sec throttled
+  `broker.get_market_data()` poll — see §7.1 on why this wasn't replaced with a new
+  push-based subscription) is now also fed into the same `CandleAggregator` already
+  building the index's own candles, keyed by the option's own contract symbol. This
+  builds a genuine rolling OHLC history of the option's own premium.
+- **`shared/risk/option_atr.py`** (new module) — `resolve_option_atr()` computes a
+  true Wilder ATR(14) from the option's own candles (reusing
+  `shared/indicators/atr.py` verbatim — no second ATR formula) once
+  `MIN_CANDLES_FOR_OPTION_ATR` (14) of the option's own history exist, and falls
+  back to the already-shipped premium-banded proxy (`resolve_stop_points`, this
+  document's Approach 2) during the unavoidable post-entry cold-start window. The
+  underlying index's ATR is never consulted for an option position, in either
+  branch.
+- **`_stale_option_candle_symbols()`** (new pure helper in `main.py`) + a sweep
+  wired into the existing 30s tick-staleness watchdog loop — evicts an option
+  contract's candle buffer once its position closes, preventing unbounded memory
+  growth over a long-running process trading many different contracts across many
+  days.
+- **Single fix point covers both live consumers.** `current_atr` is computed once
+  per exit-check tick and passed to both the generic/`ema_rsi` path
+  (`SmartExitEngine.evaluate_exit()`) and the dormant `institutional_momentum` path
+  (`TieredExitManager.manage_active_trades()`) — fixing the one computation site
+  resolves audit finding §3.4 as a side effect, with no changes needed inside
+  `momentum_strategy/exit_manager.py` itself.
+
+### 7.1 Deviation from "subscribe" worth being explicit about
+
+The direction said "immediately subscribe to the traded option contract." This
+codebase has no push-based WebSocket subscription mechanism for individual option
+contracts today — the live feed only ever subscribes to the underlying index; option
+premiums are obtained via a throttled REST poll (`broker.get_market_data()`,
+~1/second per symbol, already rate-limit-safe, already exactly the mechanism this
+system uses at entry and on every existing exit check). Building a genuine
+per-contract push subscription would require extending `api_bridge.py` (a separate
+OS process) with dynamic subscription management — a materially larger, riskier,
+cross-process change than this fix warrants. The implementation instead feeds the
+candle aggregator from the *existing* poll, which already only runs while a position
+is open (a natural "subscribe on entry, stop on exit" lifecycle falls out of the
+existing code for free) and already avoids duplicate/excess fetches via the existing
+per-symbol throttle-and-cache. A genuine push-based option-WS subscription remains a
+valid, larger future enhancement if lower-latency premium data ever becomes a
+priority in its own right.
+
+Full implementation, test, and deployment record:
+`docs/paper_trading_validation/anomaly_log.md`'s "2026-08-07 (late evening)" entry.

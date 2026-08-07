@@ -6,6 +6,184 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-08-07 (late evening) — Fix #2: real option-premium-candle ATR architecture; Fix #4/#5 re-verified
+
+Continuation of the same evening's remediation sprint (see the entry immediately
+below). Market remained closed throughout — all validation tonight is offline
+(unit + integration tests, clean-boot/`py-spy` confirmation) unless noted
+otherwise.
+
+### Fix #2 — ATR/premium unit mismatch (audit §2.1, §3.4)
+
+Explicit direction was given to implement the "real option-premium-candle ATR"
+architecture (the design doc's Approach 4) rather than the originally-recommended
+Approach 2 (premium-banded proxy) — spot data for entry decisions only, option
+premium data for all position management. Full comparison and the
+as-built architecture are in `docs/ATR_TRAILING_STOP_DESIGN_2026-08-07.md` (updated
+tonight with a new §7 documenting exactly what was built and why one detail — how
+"subscribe" was interpreted — deviated from a literal reading, with the reasoning
+laid out explicitly rather than silently assumed).
+
+**What changed:**
+- **New module `shared/risk/option_atr.py`** — `resolve_option_atr()`: computes a
+  genuine Wilder ATR(14) from the option contract's own candles (reusing
+  `shared/indicators/atr.py` verbatim, zero duplicate ATR math) once
+  `MIN_CANDLES_FOR_OPTION_ATR` (14) of the option's own history exists; falls back
+  to the already-shipped premium-banded distance table
+  (`option_stop_loss.py::resolve_stop_points`) during the unavoidable post-entry
+  cold-start window. The underlying index's ATR is never consulted for an option
+  position, in either branch. Pure function, 9 new unit tests.
+- **`trading_bot/main.py`'s exit-check loop:** every fresh option premium sample
+  already being fetched (the existing ~1/sec throttled `broker.get_market_data()`
+  poll) is now also fed into the same `CandleAggregator` that builds the index's
+  own candles, keyed by the option's own contract symbol
+  (`aggregator.add_tick({...})`). `current_atr`'s computation now branches on
+  `is_opt_pos`: options resolve via the new `resolve_option_atr()` against their own
+  candle series; non-option positions keep the exact prior index-ATR computation
+  unchanged (audit's own "preserve existing behaviour for non-option workflows"
+  requirement).
+- **New pure helper `_stale_option_candle_symbols()`** + a sweep wired into the
+  existing 30s tick-staleness watchdog loop — evicts an option contract's candle
+  buffer once its position closes (checked every cycle, regardless of market hours
+  or whether any position is currently open), preventing unbounded memory growth
+  over a long-running process trading many different contracts across many days.
+  Never touches an underlying index symbol's own candle buffer. 6 new unit tests.
+- **5 new integration tests** using the REAL `CandleAggregator` class (not a mock)
+  covering: building a real candle series from fed ticks, isolation (option ticks
+  never contaminate the index's own series), the cold-start-to-warm transition,
+  sweep eviction after the real aggregator has tracked a symbol, and same-interval
+  tick merging (confirming reuse of the aggregator's existing, already-tested
+  bucketing logic rather than any new/duplicate aggregation code).
+
+**Single fix point covers both live consumers.** `current_atr` is computed exactly
+once per exit-check tick and passed to both the generic/`ema_rsi` path
+(`SmartExitEngine.evaluate_exit()`) and the dormant `institutional_momentum` path
+(`TieredExitManager.manage_active_trades()`, via `m_strategy.manage_active_trades(...,
+current_atr=current_atr)`) — confirmed by direct grep of every `current_atr`
+reference in `main.py`. Fixing the one computation site resolves audit finding §3.4
+as a side effect, with zero changes needed inside `momentum_strategy/exit_manager.py`
+itself.
+
+**Compatibility, addressed by construction (not touched, therefore not broken):**
+`shared/exits/exit_engine.py`'s `SmartExitEngine.evaluate_exit()` internals are
+completely unchanged — only the *value* handed to it as `current_atr` changed for
+option positions. Same for `shared/risk/manager.py` (Risk Manager), `shared/exits/
+pyramid_sizer.py` (Pyramid — and since a pyramid scale-in adds to the *same* symbol,
+its candle series continues building uninterrupted, no special-casing needed),
+reconciliation, dashboard (state.db writes untouched), and journal/PnL recording
+(untouched). The full 371-test suite (up from 350 this morning) passing with zero
+failures is the regression evidence for all of the above — in particular
+`test_panic_exit.py`, `test_reconciliation.py`, and every pyramid/risk-manager test
+already in the suite passed unchanged.
+
+**Evidence against the specific risks the scope called out:**
+- *Duplicate ATR implementations:* none introduced — `option_atr.py` calls
+  `shared/indicators/atr.py::atr()` directly; a dedicated test
+  (`test_matches_shared_atr_indicator_directly`) pins the two never drifting apart.
+- *Memory leaks / unbounded candle growth:* addressed by the eviction sweep;
+  covered by both unit and integration tests.
+- *Subscription leaks / duplicate subscriptions:* no new subscription mechanism was
+  introduced (see the design doc's §7.1 for why) — the existing throttled
+  poll-and-cache already prevents duplicate fetches, and the candle feed naturally
+  only runs while a position is open.
+- *Race conditions:* the tick-feed (`add_tick`) and the sweep (`aggregator.candles
+  .pop()`) both run on the single-threaded asyncio event loop with no `await` in
+  the middle of either operation — cooperative scheduling means neither can
+  interleave with the other mid-mutation. No new locking was needed or added.
+- *Performance:* the new per-tick cost is one dict feed (already-throttled to
+  ~1/sec) plus, on the existing 30s watchdog cycle, an O(n) scan over currently-
+  tracked symbols — both negligible relative to the strategy-evaluation and
+  institutional-filter costs already documented elsewhere this validation window.
+
+**Deployment.** No open position, market closed (19:41 IST) — zero risk window.
+Restarted only the `main.py` pair (PID 19416/16796 → 3820/26064); `api_bridge`/
+frontend untouched. Clean boot confirmed (candles preloaded, WS reconnected, prior
+PNL/trade cap restored, `/health` OK), `py-spy` dump shows all threads idle/normal,
+no crash from any of the new code paths executing at startup.
+
+**Honesty about validation status.** This is the audit's most significant fix and
+has the least live evidence of the three completed tonight: **the entire
+candle-feeding pipeline has never processed a real option premium tick** — no
+option position has been open since this was deployed, and none will be until
+tomorrow's live session. The unit and integration tests prove the pipeline is wired
+correctly and behaves correctly against realistic synthetic data (including using
+the real `CandleAggregator`, not a mock), but genuinely new: (a) how quickly a real
+position accumulates 14 candles at whatever the system's configured timeframe is
+(if 5-minute, that's 70 minutes — a meaningful fraction of many trades' actual
+lifetime, meaning the cold-start proxy path may be what's actually governing
+trailing behavior for a large share of real trades, exactly as anticipated in the
+design doc's own risk discussion); (b) whether the throttled ~1/sec premium poll
+produces a genuinely representative candle range compared to what a real
+tick-by-tick feed would show; (c) whether the eviction sweep behaves correctly
+under real, possibly-rapid open/close/reopen sequences (the EOD-cutoff incident
+from earlier today showed this system is capable of producing exactly that
+pattern). **Pending: tomorrow's live session — specifically watching the first
+option position opened, confirming candles accumulate as expected in the logs, and
+watching CPU/behavior through at least one full cold-start-to-warm transition.**
+
+### Fix #4 re-verification — every entry path checked, not just the one already fixed
+
+Grepped every `entry_symbol =` assignment site in `main.py` (3 total, not 2) to
+confirm full coverage:
+1. The generic/`ema_rsi` auto-map path — already fixed this evening (see the entry
+   below), covered by `_should_abort_missing_option_mapping()`.
+2. The `"premium"` strategy's own `option_symbol = sig.option.symbol if sig.option
+   else s` — **investigated fresh, confirmed already safe by a different, existing
+   mechanism** (not by this evening's fix): `select_option()`'s return type never
+   permits `None` without raising, and `PremiumSignalEngine.evaluate()`'s lack of a
+   try/except around that call means a raise propagates all the way out to
+   `main.py`'s own outer per-tick exception handler, which safely abandons the tick.
+   Locked in with a new, dedicated test
+   (`test_premium_signal_engine_option_selection_safety.py`) rather than left as an
+   inference from reading the code. Documented in `STRATEGY_AUDIT_2026-08-07.md`
+   §1.1 as an addendum.
+3. The auto-map success path itself (`entry_symbol = opt.symbol`) — unaffected,
+   correct by construction.
+
+**Conclusion: every entry path in this codebase is now confirmed incapable of
+placing an order on the raw underlying index symbol when option mapping was
+required**, via either an explicit gate (path 1) or a pre-existing exception-
+propagation safety net (path 2), both now covered by tests.
+
+### Fix #5 re-verification — startup, reload, and fallback behavior confirmed
+
+- **Reload path (the common case):** already covered by this evening's 6 tests;
+  re-confirmed still passing after tonight's additional changes.
+- **Startup (first load) path:** `_load_settings()` calls `_load_settings()` at
+  `run_live_bot()`'s very start (line ~497), before `broker.stream_quotes(...)` ever
+  runs — validation happens before any live tick is processed, as early as this
+  architecture allows.
+- **Missing-settings-file edge case (new observation, not a defect):** if
+  `config/settings.json` doesn't exist at all, `_load_settings()`'s file-existence
+  guard means `_validate_active_strategy()` is never called for that load — but the
+  hardcoded `defaults["active_strategy"]` value used in that fallback path is
+  `"institutional_momentum"`, itself always a valid, registered strategy name, so
+  there is no actual risk from this gap — just a code path where the new validation
+  function doesn't happen to run because it doesn't need to. Noted as a remaining
+  observation, not fixed (no real defect to fix).
+- **Malformed-JSON edge case (verified safe):** a `json.load()` failure is caught by
+  the pre-existing broad `except Exception as e: logger.error(...)` around the
+  reload block, before reaching the validation call — `_settings_cache` retains
+  whatever the last-known-good value was (or the safe hardcoded `defaults` on a
+  first-ever failed load), never a corrupted or partially-applied state.
+- **"Fail fast" interpretation, made explicit:** the fix logs a `CRITICAL` line
+  immediately (operator-visible) the first time an invalid `active_strategy` value
+  is loaded, but deliberately does **not** crash the engine process or halt trading
+  outright. Reasoning: this process also manages every currently-open position's
+  exits; a config-validation failure crashing the whole engine would strip risk
+  management from any open position purely because of an unrelated typo in a
+  different setting — the exact class of incident this entire validation window
+  exists to prevent, not something to reintroduce as a side effect of a safety fix.
+  A loud, deduplicated, immediate log line is judged the correct "fail fast for the
+  operator" behavior without the operational risk of a full process crash.
+
+Full suite: **371 passed** (350 this morning + 21 new tonight: 9 option_atr + 6
+stale-candle-sweep + 5 integration + 1 premium-path-safety), zero regressions.
+
+---
+
+---
+
 ## 2026-08-07 (evening, post-close) — remediation sprint: 3 of the 5 top-priority findings from today's STRATEGY_AUDIT fixed and deployed
 
 Market closed at 15:30 IST; this is a post-close fix pass against
