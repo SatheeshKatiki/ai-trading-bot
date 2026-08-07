@@ -41,6 +41,31 @@ def calculate_greeks(spot: float, strike: float, days_to_expiry: float, vol: flo
     return {"delta": delta, "theta": theta}
 
 
+def calculate_option_price(spot: float, strike: float, days_to_expiry: float, vol: float = 0.15, option_type: str = "CE") -> float:
+    """Black-Scholes theoretical premium — same d1/d2 machinery as
+    calculate_greeks() above, added alongside it rather than duplicated,
+    since that function computes delta/theta but not the price itself.
+
+    Used by the Production Strategy Validation Harness
+    (validation_harness/) to synthesize a plausible premium series from
+    historical index OHLCV, since this repository has no real historical
+    option-premium data — see validation_harness/premium_simulator.py.
+    Also directly usable live as a sanity-check against a fetched
+    premium, though nothing currently calls it for that purpose.
+    """
+    t = max(days_to_expiry / 365.0, 0.0001)
+    r = 0.07  # 7% risk-free rate, matching calculate_greeks()
+    d1 = (math.log(spot / strike) + (r + 0.5 * vol**2) * t) / (vol * math.sqrt(t))
+    d2 = d1 - vol * math.sqrt(t)
+
+    if option_type == "CE":
+        price = spot * norm_cdf(d1) - strike * math.exp(-r * t) * norm_cdf(d2)
+    else:
+        price = strike * math.exp(-r * t) * norm_cdf(-d2) - spot * norm_cdf(-d1)
+
+    return max(price, 0.05)  # a premium can't price below one tick
+
+
 _LOT_SIZE_CACHE: dict = {}
 _LOT_SIZE_CACHE_TTL_S = 300.0  # re-check every 5 minutes
 
