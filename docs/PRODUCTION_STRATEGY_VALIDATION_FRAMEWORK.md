@@ -53,25 +53,105 @@ reimplemented a second time.
   verdict either way (tested explicitly — see
   `test_validation_harness_classify.py`).
 
+## 2a. Production-readiness criteria — revised 2026-08-08 (PF ≥ 1.30 retired)
+
+The original `profit_factor >= 1.30` primary gate was re-evaluated
+objectively and replaced. Full derivation lives in
+`validation_harness/classify.py`'s module docstring; summary:
+
+**PF failed as a primary gate for three independent reasons.**
+1. *Mechanically redundant.* PF = (WR/(1−WR)) × R:R. Verified against
+   actuals: `institutional_momentum` (0.727/0.273)×0.46 = **1.22**
+   (observed 1.22); `ema_rsi` = **1.37** (observed 1.38);
+   `ema_crossover` = **1.72** (observed 1.71). It adds no signal beyond
+   two metrics already reported.
+2. *Barely discriminates.* Across 12 strategies PF spans only 0.98–1.71,
+   8 of them inside 1.10–1.41. An option-buying system with structurally
+   sub-1.0 realized R:R (0.41–0.58 suite-wide — the premium-banded stop
+   is wider than the typical trailing exit) cannot produce the PF values
+   a futures/equity trend system would. A 1.30 bar imported from that
+   context is not meaningful here.
+3. *Silent on risk.* Under the old gate `ema_rsi` (PF 1.38) **passed**
+   with a 47.9% drawdown while `institutional_momentum` (PF 1.22)
+   **failed** with a 16.7% drawdown — the exact inversion of
+   production-readiness.
+
+**Replacement framework** (every threshold derived from a principle):
+
+| Gate | Test | Derivation |
+|---|---|---|
+| N1 | expectancy > 0 and PF > 1.0 | definition of an edge |
+| N2 | ≥ 30 trades | central-limit minimum for a mean estimate |
+| N3 | no unresolved critical defect | statistics cannot see a broken strategy |
+| N4 | drawdown ≤ 30% | recovery asymmetry: D needs D/(1−D); 30%→+43%, 50%→+100% |
+| Q1 | recovery factor ≥ 2.0 | earned ≥ 2× its worst drawdown |
+| Q2 | DD ÷ (consec_losses × risk/trade) ≤ 2.0 | drawdown explained by the risk model, not by something outside it |
+| Q3 | profitable in a majority of sampled regimes | not a single-condition bet |
+
+**Q2 is the genuinely new discriminator.** A strategy risking R per trade
+that suffers C consecutive losses should show a drawdown near C×R. A
+ratio near 1.0 means drawdown is fully accounted for by ordinary streaks;
+a large ratio means risk is arriving from outside the model (correlated
+or overlapping losses, or losses exceeding designed per-trade risk via
+gap-through/slippage). This is invisible to PF, net profit, and even
+recovery factor. Measured spread across the suite: 0.82 → 3.95.
+
+**Evidence the framework is not reverse-engineered:** applying it
+**demotes the two highest-net-profit strategies** — `advanced_ai`
+(₹277,101) and `ema_rsi` (₹247,201) — on survivability grounds. A gate
+fitted to flatter the portfolio would not do that. It also *promoted*
+`institutional_momentum`, which the old gate rejected. The reordering
+runs in both directions.
+
 ## 3. Results summary (2026-02-01 → 2026-07-31)
 
-**0 KEEP, 12 IMPROVE, 0 REMOVE.** Full ranked table and per-strategy/per-regime
-detail: `validation_harness/results/full_report_2026H1.md`, raw data in the
-sibling `.json`.
+**3 KEEP · 7 IMPROVE · 2 REMOVE** under the revised framework (§2a).
+Full ranked table and per-regime detail:
+`validation_harness/results/full_report_2026H1.md`.
 
-No strategy cleared the KEEP bar in this window — every one either showed
-regime-inconsistent profitability (profitable in some but not most regimes
-traded) or a drawdown at or above the 30% threshold. No strategy hit the
-conservative REMOVE bar either — even `enhanced_ai` (the only strategy with a net
-loss, -₹22,778) was profitable in 3 of 5 regimes traded, meaning the aggregate
-loss reflects a minority of bad conditions dragging down an otherwise mixed
-picture, not a uniform absence of edge — exactly the situation the "not from a
-single backtest" rule exists to prevent from becoming a false REMOVE.
+| # | Strategy | Verdict | Trades | Net | PF | DD | Blocking gate(s) |
+|---|---|---|---|---|---|---|---|
+| 1 | institutional_momentum | **KEEP** | 319 | ₹78,397 | 1.22 | 16.7% | — |
+| 2 | buy_the_dip | **KEEP** | 306 | ₹74,102 | 1.25 | 22.1% | — |
+| 3 | ultra_meta_dip_swarm | **KEEP** | 246 | ₹58,036 | 1.24 | 25.0% | — |
+| 4 | advanced_ai | IMPROVE | 993 | ₹277,101 | 1.24 | 61.9% | N4 survivability, Q2 |
+| 5 | ema_rsi | IMPROVE | 609 | ₹247,201 | 1.38 | 47.9% | N4 survivability, Q2 |
+| 6 | MARL_Ultra | IMPROVE | 976 | ₹130,399 | 1.10 | 41.3% | N4 |
+| 7 | marl_strategy | IMPROVE | 976 | ₹130,399 | 1.10 | 41.3% | N4 |
+| 8 | meta_agent_swarm | IMPROVE | 242 | ₹36,290 | 1.13 | 42.7% | N4, Q1, Q2 |
+| 9 | premium | IMPROVE | 135 | ₹13,915 | 1.17 | 11.5% | Q1 recovery 1.21 |
+| 10 | ema_crossover | IMPROVE | 25 | ₹13,239 | 1.71 | 10.1% | N2 sample (25 < 30) |
+| 11 | drl_strategy | **REMOVE** | 1,189 | ₹109,161 | 1.07 | 39.2% | N3 market-blind |
+| 12 | enhanced_ai | **REMOVE** | 585 | -₹16,160 | 0.98 | 55.3% | N1 no edge |
 
-**This "zero KEEP" result should be read as "nothing here is validated as
-production-ready yet," not "everything is broken."** See §4 for why the bar was
-hard to clear given this run's specific limitations, and §5 for what closing that
-gap would need.
+### Verdict changes worth calling out
+
+- **`institutional_momentum` promoted to KEEP.** The old PF gate rejected
+  it at 1.22 despite the lowest drawdown of any profitable strategy
+  (16.7%), the best recovery factor (4.68), profitability in 4 of 5
+  regimes, and a clean audit + live-code re-verification.
+- **`advanced_ai` and `ema_rsi` demoted to IMPROVE** — the two highest
+  earners in the suite — purely on survivability (61.9% and 47.9%
+  drawdowns, both also failing Q2 at 2.95× and 2.74× the drawdown their
+  own loss streaks explain). Their profits are real; their risk profiles
+  are not production-grade.
+- **`enhanced_ai` moved from my earlier IMPROVE to REMOVE.** I had argued
+  IMPROVE on the grounds that its loss concentrates in one bad June week.
+  The framework overrides that, and it is right to: negative expectancy
+  over **585 trades** is a large sample, and "profitable once you exclude
+  its losses" is the reasoning that produces overfitted systems. It also
+  already received one genuine mechanism-based fix (the RSI
+  dual-confirmation defect, which cut the loss 29%) and remained
+  negative. Recording the change of verdict explicitly rather than
+  quietly.
+- **`MARL_Ultra` and `marl_strategy` are now byte-identical** (976 trades,
+  ₹130,399.24, PF 1.10, 41.26% DD) once the capital-protection deadlock
+  was fixed. They are the same strategy under two names — a
+  consolidation candidate independent of their shared IMPROVE verdict.
+
+**Neither REMOVE has been executed.** Both are recommendations pending
+confirmation; deleting/deregistering a strategy is destructive and
+production-affecting.
 
 ## 4. Known limitations of this evaluation (read before acting on the numbers)
 
