@@ -1156,6 +1156,104 @@ cap wiring reverted. Suite: **449 passed, 2 xfailed.**
 
 ---
 
+### ❌ #11 — `ema_rsi` entry-filter and trade-cap ablation — TESTED, **NO CHANGE MADE**, verdict KEEP
+
+The obvious follow-on to #10: production runs four institutional filters
+and a 3-trade daily cap that had never been measured. Every one of them
+was audited individually and in combination against the production
+baseline. **No configuration change survived the evidence bar, so none
+was made.** Recorded in full because the negative result is the deliverable.
+
+**Baseline (production, `config/settings.json`):** 145 positions, net
+₹81,922, expectancy 422, PF 1.42, max DD 15.24%, recovery 5.38, win 75.3%,
+R:R 0.47, Q2 1.45, false-signal 35.9%, first-touch edge +14.5pp, rally
+capture 23.4%. **KEEP.**
+
+**Method.** `run_filter_ablation.py` (17 full 123-day day-isolated runs)
+and `run_filter_significance.py`. One variable at a time: leave-one-out
+from production, each filter alone against the unfiltered path, and the
+cap swept independently. The rally set (381 sustained underlying moves)
+is computed once and identical for every configuration, so only coverage
+moves.
+
+**What the headline numbers said** — removing `cpr` improved *every*
+axis (net +₹27,759, PF +0.05, DD −0.79pp, recovery +2.21, false-signal
+−1.9pp, edge +2.5pp, rally +3.4pp), and removing `cpr` + `aggression`
+without the cap looked spectacular (net ₹197,009, PF 1.55, recovery
+12.23, edge +19.4pp, rally 33.3%). Monthly splits looked consistent, and
+leave-one-month-out kept the `cpr` gain positive in all six months.
+
+**What killed it.** Three tests, run symmetrically over all four filters
+so nothing was selected after the fact:
+
+| Filter | day-level bootstrap P(Δ>0) | blocked-cohort P(mean>0) | signal-population verdict |
+|---|---|---|---|
+| squeeze | 38.9% | 48.2% (n=79) | **rejected signals genuinely worse at every threshold** |
+| extension | 32.7% | 63.0% (n=13) | no effect, n too small |
+| cpr | 77.9% | 86.0% (n=32) | **sign flips with threshold** |
+| aggression | 78.8% | 71.8% (n=85) | **sign flips with threshold** |
+
+Every 95% CI for a *change* straddles zero. `ema_rsi` trades ~145-190
+positions over 123 days on heavy-tailed option P&L: the single worst day
+(−₹23,060) and best day (+₹22,979) each rival the entire ₹27,759 `cpr`
+effect, which moved only 26 of 123 days. 78-86% confidence is suggestive,
+not defensible.
+
+**The one thing that IS established.** The best-powered test — all 725
+signals the unfiltered strategy emits, scored on the underlying's own
+first touch of ±T — found `squeeze` is doing real work:
+
+| Threshold | rejected (n=250) | allowed (n=475) | difference | 95% CI | P(rejected worse) |
+|---|---|---|---|---|---|
+| ±0.15% | −5.2pp | +11.2pp | −16.4pp | [−29.6, −3.1] | 99.2% |
+| ±0.21% | −4.8pp | +13.7pp | −18.5pp | [−30.6, −6.0] | 99.7% |
+| ±0.30% | −5.2pp | +7.6pp | −12.8pp | [−23.2, −2.5] | 99.3% |
+
+Squeeze rejects signals whose edge is **negative** while passing signals
+with strongly positive edge — stable in sign and magnitude across every
+threshold, CI excluding zero at all three. It is the only component of
+the entry stack with proven value, and the ablation's own headline
+(removing it costs net, PF, DD, edge and 6.1pp of first-touch edge)
+agrees. **Do not remove it to buy trade count.** For `cpr` and
+`aggression` the same test flips sign between thresholds, which is what
+"no reliable effect" looks like.
+
+**The daily cap.** It binds on **7 of 123 days** (1.59 trades/day). The
+sweep is non-monotone — cap 3 ₹81,922, cap 4 ₹77,342, cap 5 ₹93,151,
+cap 6 ₹98,239, unlimited ₹92,023 — which is the signature of noise, not
+of a level worth choosing. Removing it entirely looked better (+₹10,101,
+DD −0.24pp) but the monthly split is 3-3. **A nearly-inert risk control
+should not be loosened for an effect this size.**
+
+**Rejected on risk, separately from significance.** Dropping `aggression`
+as well as `cpr` (config E) more than doubled net profit, but: Q2 rose
+0.65 → 1.53, and the same pair *with* the cap (config C) hit DD 20.80%
+and Q2 1.98 — a hair under the gate. A 4.7pp drawdown swing from the cap
+alone, in a configuration where the cap is otherwise nearly inert, is
+fragility. March also flips from +₹16,108 to −₹12,556. That is buying
+profit with disproportionate and unstable risk.
+
+**Remaining risks if this is revisited.** The `cpr` improvement, though
+not significant, is concentrated in `sideways` (+₹41,591 of the +₹27,759
+total) and is *offset* by `high_volatility` going +₹16,231 → −₹6,829 on
+a 6-7 trade sample. Any future re-test should treat the high-volatility
+regime as unsampled rather than as evidence either way.
+
+**Verdict: KEEP the production configuration unchanged.** The honest
+summary is that at 123 days this strategy cannot resolve filter-level
+differences of the size on offer. The way to settle `cpr` is more
+evidence — a longer window or forward paper-trading of the
+`cpr`-disabled configuration — not a decision on 86% confidence.
+
+**Tests:** 6 new regression tests
+(`test_institutional_filter_isolation.py`) pinning the property the whole
+study rests on — each `enable_*_filter` flag controls exactly one mask,
+filters compose as an intersection, leave-one-out changes only the
+dropped filter, and string `"true"` behaves like `True` so the JSON and
+dashboard paths cannot diverge. Suite: **455 passed, 2 xfailed.**
+
+---
+
 ### #3 — Cross-cutting: drawdown is the single biggest blocker to any KEEP verdict
 - **Strategies:** advanced_ai (61.9%), enhanced_ai (61.6%), ema_rsi
   (47.9%), marl_strategy (41.3%), meta_agent_swarm (40.2%), drl (39.2%)
