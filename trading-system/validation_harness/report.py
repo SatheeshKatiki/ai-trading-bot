@@ -8,7 +8,18 @@ from pathlib import Path
 from .classify import classify_strategy
 from .regimes import REGIME_NAMES
 
-__all__ = ["render_markdown_report"]
+__all__ = ["render_markdown_report", "KNOWN_CRITICAL_DEFECTS"]
+
+#: Defects proven by execution that statistics cannot see. Feeds gate N3.
+#: See docs/STRATEGY_IMPROVEMENT_BACKLOG.md for the evidence behind each.
+KNOWN_CRITICAL_DEFECTS = {
+    "drl_strategy": (
+        "market-blind — a +7,500pt uptrend and a -7,500pt downtrend produce "
+        "byte-identical signals (286 BUY / 0 SELL in both); constant observation "
+        "vector plus a collapsed model artifact, and attaching real features "
+        "changed nothing"
+    ),
+}
 
 
 def _fmt(v):
@@ -30,7 +41,12 @@ def render_markdown_report(report: dict, title: str = "Production Strategy Valid
 
     verdicts = {}
     for name, strat in report["strategies"].items():
-        verdicts[name] = classify_strategy(strat["overall"], strat["by_regime"])
+        defect = KNOWN_CRITICAL_DEFECTS.get(name)
+        verdicts[name] = classify_strategy(
+            strat["overall"], strat["by_regime"],
+            has_critical_defect=defect is not None,
+            defect_note=defect or "",
+        )
 
     order = {"KEEP": 0, "IMPROVE": 1, "REMOVE": 2}
     ranked = sorted(
