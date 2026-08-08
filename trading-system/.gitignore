@@ -185,3 +185,9 @@ logs/
 *.tmp
 *.bak
 *.orig
+
+# Validation-harness trade caches: regenerable by
+# `python -m validation_harness.run_dd_attribution --refresh` (~45 min for
+# the full sweep), tens of MB, and superseded on every strategy change.
+# The reports generated FROM them are tracked; the caches are not.
+validation_harness/results/*.pkl
