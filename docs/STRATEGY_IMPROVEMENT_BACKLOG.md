@@ -650,6 +650,86 @@ flagged for an explicit decision rather than adjusted.
 
 ---
 
+### ✅ #6 — `advanced_ai` re-entry churn — FIXED 2026-08-08 · Q2 violation resolved · still IMPROVE
+
+**Two hypotheses tested and DISPROVEN before finding the real cause:**
+1. *Gap-through / oversized losses.* Measured actual loss ÷ designed
+   per-trade risk: `advanced_ai` 1.27x mean, 1.17x median. But
+   `institutional_momentum` — which has a 16.7% drawdown — overshoots
+   **more** (1.38x / 1.23x). Per-trade loss size is not the mechanism.
+2. *Slippage artifacts.* Same measurement rules this out; only 2% of
+   losses exceed 3x designed risk.
+
+**Actual root cause, proven from production code + backtest evidence:**
+the ML confidence score stays above threshold for long stretches —
+measured **64% of all bars**, in 453 runs averaging 2.2 bars and
+reaching 22. Both `main.py`'s live entry path and the harness are
+**level-triggered** ("if flat and signal != 0, enter"), so every
+stop-out inside a run was immediately followed by re-entry into the
+same losing direction, for as long as the run lasted.
+
+Comparison that isolates it: `institutional_momentum` signals on only
+**5%** of bars (Donchian breakout is an *event*), giving it a natural
+cooldown — and it has the lowest drawdown in the suite.
+
+Measured consequences before the fix: **8.1 trades/day** (vs 2.9),
+**52 of 122 days breaching the ₹5,000 daily-loss limit**, worst day
+**-₹17,252**.
+
+**Fix (smallest possible):** emit the signal only on the transition into
+a run. A sustained run above the confidence threshold is ONE setup, not
+one per bar — every setup the strategy detects is preserved, only the
+churn is removed. The legacy backtest engine *already* edge-triggers
+internally (`sig_vals[i-1] != 1`); this aligns the strategy's own output
+with that semantics for the live path, which does not.
+
+**Before/after (123-day window):**
+
+| Metric | BEFORE | AFTER |
+|---|---|---|
+| **Q2 (DD ÷ explained)** | **2.95** ❌ | **1.32** ✅ |
+| Max drawdown | 61.9% | **46.0%** |
+| Recovery factor | 4.48 | **7.19** (best in suite) |
+| Net profit | ₹277,101 | **₹331,195** (+19.5%) |
+| Expectancy | ₹279.05 | **₹363.15** (+30%) |
+| Profit factor | 1.24 | **1.32** |
+| Win rate | 71.0% | 72.0% |
+| Trades | 993 | 912 |
+| Realized R:R | 0.51 | 0.51 (unchanged) |
+| Max consecutive losses | 6 | 10 |
+
+**Regime detail — the churn was concentrated where it hurt most:**
+
+| Regime | PF before → after | Net before → after |
+|---|---|---|
+| gap_day | 0.83 → **1.23** | **-₹27,843 → +₹29,186** (+₹57k swing) |
+| trending | 1.34 → 1.43 | ₹141,467 → ₹154,311 |
+| sideways | 1.35 → 1.37 | ₹178,326 → ₹186,006 |
+| low_volatility | 1.12 → 0.70 | +₹4,627 → -₹8,153 (28 trades) |
+| high_volatility | 0.17 → 0.00 | -₹19,475 → -₹30,154 (5 trades) |
+
+Gap days swung by ₹57k — exactly where repeatedly re-entering into
+violent directional moves was most destructive. The two regressions sit
+in thin samples (28 and 5 trades) and are not actionable evidence.
+
+**Honest note on Q2:** it improved both because drawdown fell
+(61.9%→46.0%) *and* because max consecutive losses rose (6→10), which
+raises the "explained" denominator. The drawdown reduction and the
+recovery-factor jump (4.48→7.19) are the unambiguous wins; Q2's
+improvement is partly compositional and should be read alongside them,
+not alone.
+
+**Verdict: still IMPROVE.** It now passes N1, N2, Q1, Q2 and Q3, but
+fails **N4 survivability** — 46.0% drawdown still exceeds the 30% gate
+(recovering it requires +85%). A genuine, large improvement that does
+not yet reach production-grade.
+
+4 regression tests, including one asserting a genuine direction flip
+(+1 → -1) still fires immediately rather than being swallowed as a
+duplicate. Full suite: **427 passed, 2 xfailed**.
+
+---
+
 ### #3 — Cross-cutting: drawdown is the single biggest blocker to any KEEP verdict
 - **Strategies:** advanced_ai (61.9%), enhanced_ai (61.6%), ema_rsi
   (47.9%), marl_strategy (41.3%), meta_agent_swarm (40.2%), drl (39.2%)

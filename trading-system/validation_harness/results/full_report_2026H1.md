@@ -13,7 +13,7 @@
 | 1 | institutional_momentum | **KEEP** | 319 | ₹78397.06 | 1.22 | 72.7% | 16.74% |
 | 2 | buy_the_dip | **KEEP** | 306 | ₹74101.73 | 1.25 | 73.2% | 22.05% |
 | 3 | ultra_meta_dip_swarm | **KEEP** | 246 | ₹58035.97 | 1.24 | 74.4% | 24.99% |
-| 4 | advanced_ai | **IMPROVE** | 993 | ₹277101.03 | 1.24 | 71.0% | 61.86% |
+| 4 | advanced_ai | **IMPROVE** | 912 | ₹331195.07 | 1.32 | 72.0% | 46.03% |
 | 5 | ema_rsi | **IMPROVE** | 609 | ₹247201.47 | 1.38 | 72.1% | 47.89% |
 | 6 | MARL_Ultra | **IMPROVE** | 976 | ₹130399.24 | 1.1 | 70.4% | 41.26% |
 | 7 | marl_strategy | **IMPROVE** | 976 | ₹130399.24 | 1.1 | 70.4% | 41.26% |
@@ -84,19 +84,19 @@
 
 ### advanced_ai — IMPROVE
 
-**Reasons:** N4 survivability: 61.9% drawdown exceeds 30% (recovering it requires +162%) Q2 drawdown unexplained by risk model: 61.9% is 2.95x the 21.0% that 6 consecutive losses at 3.5%/trade would produce
+**Reasons:** N4 survivability: 46.0% drawdown exceeds 30% (recovering it requires +85%)
 
-**Overall:** trades=993, net_profit=₹277101.03 (277.1%), profit_factor=1.24, win_rate=71.0%, expectancy=₹279.05, max_drawdown=61.86%, recovery_factor=4.48, max_consecutive_losses=6, avg_trade=₹279.05, avg_holding=28.8min, realized_R:R=0.51
+**Overall:** trades=912, net_profit=₹331195.07 (331.2%), profit_factor=1.32, win_rate=72.0%, expectancy=₹363.15, max_drawdown=46.03%, recovery_factor=7.19, max_consecutive_losses=10, avg_trade=₹363.15, avg_holding=27.6min, realized_R:R=0.51
 
-**Diagnostics:** candidate_signals=2537, rejected_untradeable_sl=0, rejected_risk_gate=1563, rejected_market_hours=198, elapsed=308.8s
+**Diagnostics:** candidate_signals=1397, rejected_untradeable_sl=0, rejected_risk_gate=594, rejected_market_hours=92, elapsed=403.8s
 
 | Regime | Trades | Net Profit | Profit Factor | Win Rate | Expectancy |
 |---|---|---|---|---|---|
-| trending | 328 | ₹141466.54 | 1.34 | 69.8% | ₹431.3 |
-| sideways | 498 | ₹178325.84 | 1.35 | 73.3% | ₹358.08 |
-| high_volatility | 9 | ₹-19475.28 | 0.17 | 22.2% | ₹-2163.92 |
-| low_volatility | 45 | ₹4627.18 | 1.12 | 71.1% | ₹102.83 |
-| gap_day | 113 | ₹-27843.25 | 0.83 | 68.1% | ₹-246.4 |
+| trending | 318 | ₹154310.64 | 1.43 | 71.1% | ₹485.25 |
+| sideways | 466 | ₹186006.13 | 1.37 | 73.6% | ₹399.15 |
+| high_volatility | 5 | ₹-30154.16 | 0.0 | 0.0% | ₹-6030.83 |
+| low_volatility | 28 | ₹-8153.28 | 0.7 | 71.4% | ₹-291.19 |
+| gap_day | 95 | ₹29185.76 | 1.23 | 71.6% | ₹307.22 |
 
 ### ema_rsi — IMPROVE
 
