@@ -1018,6 +1018,144 @@ run starts within 19s of a minute boundary (~32% of runs).
 
 ---
 
+### ✅ #10 — `ema_rsi` entry-quality audit → validation was measuring the wrong entry path — FIXED 2026-08-08
+
+A deep entry-quality audit of `ema_rsi`. It produced **no strategy
+change** — every candidate the data was asked about came back negative —
+and one genuine defect that invalidates the input to every verdict in
+this document.
+
+**Method.** `validation_harness/entry_quality.py` + `run_entry_quality.py`.
+The headline measure is deliberately **exit-independent**: for each
+position, walk the premium path forward and record which comes first,
+**+1R or −1R**, where R is the real `resolve_initial_stop` distance the
+live system risks. That asks only "did the market go the signalled way
+before it went against us, by the size we were risking" — a bad exit
+cannot be mistaken for a bad entry. `false entry` = loss-first. Signal
+reconstruction reproduces the day-isolated 30-day warm-up windowing and
+is verified before use: **397/397 entries land on an independently
+reconstructed signal of the matching direction.**
+
+**Entry quality as measured** (123 days, 397 positions) —
+`validation_harness/results/entry_quality_ema_rsi.md`:
+
+| Measure | Result |
+|---|---|
+| win-first / loss-first / neither | 51.1% / **37.8%** / 11.1% |
+| right-first among resolved | **57.5%** (edge **+15.0pp**) |
+| premium never rose at all after entry | **10.6%** |
+| MFE / MAE, median | **+1.58R** / **−1.13R** |
+| rally coverage (runs ≥0.30% with a position open) | **40.9%**; among covered, **32.3%** of the run held |
+
+The entry has a real, modest edge. What it does **not** have is any way
+to tell a good setup from a bad one.
+
+**Negative result 1 — the confirmation stack does not discriminate.**
+All three conditions must hold for a signal, so none can be tested by
+presence; what can be tested is degree. None is monotone:
+
+| Component | Best bucket | Worst bucket |
+|---|---|---|
+| RSI margin past threshold | 0-2 (**+31.9pp**) | 15+ (+2.3pp) |
+| EMA separation | 0.05-0.1% (**+35.2pp**) | 0.4%+ (0.0pp) |
+| Supertrend leg age | 2-3 bars (+33.3pp) | 0-1 fresh flip (+7.9pp) |
+| Price stretch past fast EMA | 0-0.05% (+31.8pp) | 0.1-0.2% (**−1.5pp**) |
+| Volume vs 20-bar average | no pattern | no pattern |
+
+A composite scored from the strategy's own three conditions is
+**inverted**: score 0 → +43.4pp edge and ₹88,847 net; score 2 → +2.6pp;
+score 3 → −₹2,537. **Stronger setups by the strategy's own criteria
+perform worse.** There is therefore no threshold to tune and no
+confirmation filter to add that the evidence supports — the obvious
+"improvements" are all foreclosed.
+
+**Negative result 2 — the CE/PE asymmetry is an artifact.** Headline:
+CE 203 trades net −₹1,926 (+4.4pp edge), PE 194 trades net +₹203,966
+(+22.7pp). Controlling for the direction the index actually moved that
+day collapses it — aligned trades win and misaligned trades lose,
+symmetrically:
+
+| Day | CE | PE |
+|---|---|---|
+| up day | +17.2pp, n=134 | −27.6pp, n=29 |
+| down day | −34.5pp, n=29 | +37.9pp, n=145 |
+
+The window drifted −1.62% (with a −9.94% March), so far more PE
+positions were opened on days that went the PE way. **Acting on the
+headline split would be fitting the window's drift.**
+
+**Negative result 3 — the misses are not a defect.** Of 225 uncovered
+runs: **61.8% had no setup at all** (the strategy's philosophy, not a
+bug), **28.0% happened while holding an opposite-direction position**
+(would require reversal logic — a philosophy change), **8.4% signalled
+but were blocked**, and **1.8% were suppressed by the edge-trigger**.
+All 67 risk-gate rejections are `Daily loss limit exceeded` across 21
+days — a risk control working as designed. **The anti-churn fix (#7) is
+not costing rallies and the data gives no reason to weaken it.**
+
+**The actual defect — the validated entry path is not production's.**
+`registry.run_strategy()` applies four institutional filters gated on
+`enable_*_filter`. `config/settings.json` has **all four ENABLED**. The
+harness called it with `settings={}`, so all four were **OFF** in every
+validation number ever produced. Separately `main.py` copies
+`max_trades_per_day` (3) into `risk_manager.config.max_trades_per_day`;
+the harness left the cap at 0 = unlimited. Production takes **70.8%
+fewer signals** (725 → 212 signal bars) than the strategy that was
+measured and given its KEEP verdict.
+
+The overlap was checked rather than assumed: of 39 keys in
+`settings.json`, the harness path reads 12, and the other 8
+(`option_sl_*`, sizing, ITM offset) produce **bit-identical** stops and
+sizing to the harness's own defaults across the whole premium range. The
+entry path is the only behavioural delta.
+
+**Fix:** `validation_harness/production_settings.py` loads the live
+settings; `harness.py` honours the daily cap with `main.py`'s exact key
+precedence (the file carries BOTH `max_trades_per_day` and
+`max_daily_trades`, so reading the wrong one models a cap production does
+not enforce); `run_validation.py` defaults to `--entry-path production`
+and stamps the path into every report, with `--entry-path legacy`
+reproducing every earlier run. **No strategy code was touched.**
+
+**Before/after, `ema_rsi`, same window, same code:**
+
+| Metric | Legacy (validated) | Production (actual) |
+|---|---|---|
+| trades / positions | 522 / 392 | 194 / 145 |
+| net profit | ₹211,316 | **₹81,922** |
+| expectancy | 404.82 | **422.28** |
+| profit factor | 1.39 | **1.42** |
+| max drawdown | 19.01% | **15.24%** |
+| recovery factor | 11.12 | 5.38 |
+| win rate | 72.60% | **75.30%** |
+| realised R:R | 0.53 | 0.47 |
+| false-signal rate | 37.50% | **35.86%** |
+| first-touch edge | +13.78pp | **+14.48pp** |
+| never-rose | 10.71% | 11.03% |
+| rally coverage | 40.94% | 23.36% |
+| held % of covered run | 32.29% | 22.22% |
+| Q2 violated | No | No |
+| **verdict** | KEEP | **KEEP** |
+
+The production filters are mildly **quality-positive per trade** and
+heavily **volume-negative**: better PF, win rate, expectancy, drawdown
+and false-signal rate, at 61% less profit and roughly half the rally
+coverage. Whether that trade is worth making is a **risk-appetite
+decision for the operator, not a code change** — both configurations
+pass the readiness framework, so `ema_rsi` remains KEEP either way.
+
+**Open follow-up, flagged not actioned:** every other strategy's numbers
+and verdict in this document were produced on the legacy path. They are
+all measurements of a configuration production does not run and should
+be regenerated with `--entry-path production` before any further
+verdict is relied on. Not done here — the brief was `ema_rsi` only.
+
+**Tests:** 10 new regression tests
+(`test_validation_entry_path_fidelity.py`), verified to fail with the
+cap wiring reverted. Suite: **449 passed, 2 xfailed.**
+
+---
+
 ### #3 — Cross-cutting: drawdown is the single biggest blocker to any KEEP verdict
 - **Strategies:** advanced_ai (61.9%), enhanced_ai (61.6%), ema_rsi
   (47.9%), marl_strategy (41.3%), meta_agent_swarm (40.2%), drl (39.2%)
