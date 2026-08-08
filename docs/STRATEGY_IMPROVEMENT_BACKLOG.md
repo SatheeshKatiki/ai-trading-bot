@@ -480,6 +480,14 @@ strategy unchanged."
   its profit profile. Any future attempt to cut that drawdown should
   expect to give up roughly proportional profit unless the edge itself
   improves.
+- **Re-tested and re-confirmed 2026-08-08 (#9),** on post-edge-trigger
+  numbers and with the unit hypothesis now *measured* rather than
+  asserted: premium elasticity is **70.8x**, so 0.35pp of premium is
+  ~1.2 NIFTY points against the ~84 the rule was designed for. The
+  mechanism is therefore proven — but neutralising it still costs more
+  than it returns (net −17%, drawdown 20.84 → 32.27%). Same verdict,
+  stronger evidence: **the tight offset is load-bearing for this
+  strategy's edge.**
 
 ---
 
@@ -884,6 +892,129 @@ strongest strategy in the suite.
 **Status: measured and documented, awaiting a decision on the
 per-strategy override.** Not implemented unilaterally because it changes
 shared exit infrastructure used by every strategy and by live trading.
+
+---
+
+### ✅ #9 — `ema_rsi` exit-quality audit → partial-booking runner re-baseline — FIXED 2026-08-08
+
+A dedicated exit-quality and trend-capture audit of `ema_rsi`, run
+against production-architecture data before any change was considered.
+It produced one shipped fix, one rejected hypothesis, and one finding
+that reframes what this strategy actually is.
+
+**Method.** `validation_harness/exit_quality.py` + `run_exit_quality.py`
+re-price every simulated trade's full option-premium path — during the
+hold *and after the exit* — and measure MFE, capture %, give-back,
+post-exit continuation at +5/15/30/60 min, premature-exit rate, trend
+capture, and per-mechanism trailing behaviour. Contract reconstruction is
+exact (it replays the harness's own `select_option` call rather than
+parsing the symbol, which mis-priced 106 of 528 legs on monthly
+expiries), and fidelity is asserted on every leg before any conclusion is
+drawn: **528/528 legs reproduced with 0.0 premium error.**
+`validation_harness/exit_replay.py` then re-runs only `SmartExitEngine`
+over those exact paths with entries held fixed; it reproduces the
+harness bit-for-bit (net ₹202,040.49616460118, identical reason mix).
+
+**Audit findings** (123 days, 397 positions / 528 legs) —
+`validation_harness/results/exit_quality_ema_rsi.md`:
+
+| Finding | Measurement |
+|---|---|
+| Exit mix (positions) | trailing-offset **54.4%**, stop 34.5%, EOD 10.3%, ATR trail **0.5%**, target **0%** |
+| Capture of the in-trade move | median **63.1%**; trailing-offset exits **68.1%** |
+| Trend capture vs the day's full available move | median **17.7%**; on days with ≥30% premium available, **14.3%** |
+| Premature exits (price exceeded the exit within 60 min) | **84.3%** of all positions; median missed upside **+8.85%**, p90 **+69.5%** |
+| Post-exit continuation after a trailing exit | +3.6% at 15 min, +6.0% at 30 min, **+9.0% at 60 min** |
+| Partial-booking runners | **75.6%** closed by the trailing offset, median survival **2 bars** |
+| `Profit Target Hit` | **0** — inert by design (`target=0.0`), confirmed not silently firing |
+
+**Root cause, quantified.** `trailing_offset_pct` is a give-back in
+percentage points of P&L. Its value (0.35 — the engine default *and*
+`config/settings.json`) was carried into `SmartExitEngine` by commit
+`7e0ec15` from `backtesting_engine/run.py`, which applies it to the P&L %
+of the **underlying index** ("Give 0.35% room so we don't exit too early
+on volatility"). `SmartExitEngine` only ever manages **option** positions.
+Measured premium elasticity over 2,161 held bars is **70.8x**, so:
+
+- 0.35pp of premium = **0.0049% of the index** ≈ **1.2 NIFTY points**,
+  about **70x tighter than the rule's own stated design intent** (~84
+  points).
+- **92.4%** of individual 5-minute bars move the premium by more than the
+  entire allowance on their own — the threshold is below one bar's noise
+  floor.
+- Consequently it is not a trailing stop but "exit on the first close
+  below the peak": **70.1%** of offset exits fired on exactly that bar,
+  and the realised give-back is 9x the nominal threshold simply because a
+  5-minute bar cannot resolve 0.35pp. Live polls at ~1s, so **live is
+  worse than the harness shows.**
+- The engine's correctly-scaled ATR trailing stop (give-back in the
+  option's own premium ATR) fired **2 times in 528 legs** — it is dead
+  code, permanently pre-empted.
+
+**Rejected: floor the offset at the ATR distance** (no new constant —
+reuses `atr_multiplier`/`current_atr`). The fixed-entry replay screen
+liked it (+23% net, sequence drawdown 46.3→39.1). The **full 123-day
+day-isolated run did not**: net ₹202,040 → ₹167,518, PF 1.37 → 1.31,
+**max drawdown 20.84% → 32.27%**, recovery 9.70 → 5.19. Holding entries
+fixed had hidden that longer holds change which later signals become
+trades and how they are sized. **The screen is a filter, never a
+verdict** — that is now written into `exit_replay.py`'s docstring.
+Independently corroborates #2b, on post-anti-churn numbers.
+
+**Shipped: re-baseline the runner's peak at partial booking**
+(`exit_engine.py`, one assignment per branch). Partial booking already
+re-baselines the position's *risk* — stop to breakeven — but left
+`max_pnl_pct` at the peak the **booked half** had reached. Since section
+4 returns before section 5 updates the peak, the runner was born in
+give-back against a peak it never kept, and the 0.35pp allowance let the
+next downtick close it. A state-consistency defect, not a preference — so
+applied to every strategy rather than opted into per strategy.
+
+**Full 123-day re-validation, every strategy with a cached baseline**
+(`validation_harness/results/ab_validation.md`):
+
+| Strategy | Net | PF | Max DD | Recovery |
+|---|---|---|---|---|
+| ema_rsi | ₹202,040 → **₹211,316** | 1.37 → **1.39** | 20.84 → **19.01%** | 9.70 → **11.12** |
+| institutional_momentum | ₹78,397 → **₹88,511** | 1.22 → **1.25** | 16.74 → **15.12%** | 4.68 → **5.85** |
+| enhanced_ai | −₹16,160 → **₹14,711** | 0.98 → **1.02** | 55.31 → **46.97%** | −0.29 → **0.31** |
+| MARL_Ultra | ₹130,399 → **₹149,120** | 1.10 → **1.12** | 41.26 → **40.34%** | 3.16 → **3.70** |
+| buy_the_dip | ₹74,102 → ₹68,485 | 1.25 → 1.23 | 22.05 → 22.05% | 3.36 → 3.11 |
+| ultra_meta_dip_swarm | ₹58,036 → ₹53,892 | 1.24 → 1.22 | 24.99 → 25.50% | 2.32 → 2.11 |
+
+Four improve on return **and** drawdown. The two mean-reversion
+strategies give up ~7% of net — their edge is a fast bounce, so the
+premature runner exit suited them by accident — but **neither leaves its
+drawdown gate**, unlike every previous trailing change tested (#2b, #8),
+which pushed them to 30.7%/31.8%.
+
+For `ema_rsi` the gain is **entirely on the loss side**: gross profit
+−₹2,264 (flat), gross loss **−₹11,540**. The runner now survives to its
+breakeven stop instead of being dumped mid-move. Best regime improvement
+is `trending` (₹23,482 → ₹31,506, DD 35.40 → 30.82%), which is what a
+trend-capture repair should look like.
+
+**Reframing finding — `ema_rsi` is not primarily a trend strategy.**
+Trend capture is 14-18% and 84.3% of exits are premature, yet the
+strategy is the suite's most profitable. Its P&L is produced mainly by a
+fast, high-win-rate profit-take that the exit engine supplies by
+accident, not by the EMA/RSI/Supertrend signal riding moves. Two
+independent attempts to make it capture trends (#2b and this audit's
+rejected candidate) both raised realised R:R and both cost net profit or
+drawdown. **Its 20.8% drawdown is the price of that profile, not a bug** —
+consistent with #2b's conclusion. Any future ROI work here should target
+the entry edge, not the exit.
+
+**Tests:** 8 new regression tests
+(`test_partial_booking_runner_rebaseline.py`), verified to FAIL with the
+fix reverted and pass with it, including tests pinning what must *not*
+change (booking ratio, quantity, breakeven stop, never-booked positions).
+Suite: **439 passed, 2 xfailed.**
+
+**Pre-existing flake noted, not caused here:**
+`test_option_premium_atr_integration.py::test_no_duplicate_candle_growth_from_repeated_same_second_ticks`
+builds 20 ticks from `time.time()` spanning 19s, so it fails whenever the
+run starts within 19s of a minute boundary (~32% of runs).
 
 ---
 
