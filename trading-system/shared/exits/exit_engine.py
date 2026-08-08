@@ -171,6 +171,40 @@ class SmartExitEngine:
                 return True, "Profit Target Hit", None
 
         # 4. Partial Profit Booking
+        #
+        # Both branches below re-baseline the position: the stop moves to
+        # breakeven, and `max_pnl_pct` — the peak-profit tracker the
+        # percentage trailing stop in 5b measures give-back against — is
+        # reset so the remaining "runner" trails from its OWN peak.
+        #
+        # Why the reset is load-bearing (2026-08-08): it used to keep the
+        # peak the BOOKED half had already reached, so the runner was born
+        # deep in give-back against a peak it never got to keep. 5b exits
+        # once profit falls `trailing_offset_pct` (0.35 points by default)
+        # below `max_pnl_pct`, while booking fires at 1:1 reward:risk —
+        # far above that offset. The runner was therefore eligible to be
+        # closed on the very next tick that ticked down.
+        #
+        # Measured on ema_rsi over the 123-day validation window (397
+        # positions, 131 partially booked): runners survived a MEDIAN OF 2
+        # BARS after booking, and 75.6% were closed by that trailing stop
+        # rather than by a stop, a target or the EOD cutoff. See
+        # validation_harness/results/exit_quality_ema_rsi.md.
+        #
+        # Full 123-day re-validation, every strategy with a cached
+        # baseline (net, then max drawdown %):
+        #   ema_rsi                202,040 -> 211,316   20.84 -> 19.01
+        #   institutional_momentum  78,397 ->  88,511   16.74 -> 15.12
+        #   enhanced_ai            -16,160 ->  14,711   55.31 -> 46.97
+        #   MARL_Ultra             130,399 -> 149,120   41.26 -> 40.34
+        #   buy_the_dip             74,102 ->  68,485   22.05 -> 22.05
+        #   ultra_meta_dip_swarm    58,036 ->  53,892   24.99 -> 25.50
+        # Four improve on return AND drawdown. The two mean-reversion
+        # strategies give up ~7% of net — their edge is a fast bounce, so
+        # the premature runner exit suited them by accident — but neither
+        # leaves its drawdown gate. Applied to every strategy rather than
+        # opted into per strategy because it is a state-consistency
+        # defect, not a preference.
         if not position.is_partially_booked:
             risk = abs(position.entry_price - position.stop_loss)
             if risk > 0:
@@ -185,10 +219,12 @@ class SmartExitEngine:
                         position.is_partially_booked = True
                         # Move stop loss to breakeven after partial booking
                         position.stop_loss = position.entry_price
+                        position.max_pnl_pct = 0.0  # runner trails from its own peak (see above)
                         return True, f"Partial Profit Booking (1:{self.partial_target_reward})", qty_to_book
                     elif position.quantity == 1:
                         position.is_partially_booked = True
                         position.stop_loss = position.entry_price
+                        position.max_pnl_pct = 0.0  # runner trails from its own peak (see above)
                         import logging
                         logging.getLogger(__name__).info("Single lot partial target reached. Trailing SL to breakeven for %s", position.symbol)
 
