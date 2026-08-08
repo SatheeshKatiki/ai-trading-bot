@@ -523,6 +523,61 @@ parameter and out of scope for unilateral change.
 
 ---
 
+### ❌ #5a — `drl_strategy` — verdict **REMOVE** (execution pending approval)
+
+The only REMOVE verdict issued so far, and the evidence is conclusive
+rather than statistical. Two independent faults, both proven by running
+the code, not by reading it:
+
+**Fault 1 — broken observation pipeline.** `compute_features()` reads
+`'rsi'`/`'macd_hist'`/`'atr'`/`'vol_change'` off the dataframe via
+`.get(col, default)`. Those columns do not exist on the raw OHLCV frame
+`generate_signals()` receives, so every lookup silently returns its
+hardcoded default. The model's observation is the constant
+`[50, 0, 0, 0]` on **every bar of every market**. Verified directly: a
+strong uptrend and a strong downtrend yield byte-identical feature
+vectors.
+
+**Fault 2 — collapsed model artifact.** I attached real,
+correctly-computed RSI / MACD-histogram / ATR / volume-change features
+(the fix the audit proposed) and re-tested. **It changed nothing.**
+Output remained byte-identical across opposite markets and remained
+100% one-directional. The trained model has degenerated to a single
+action independent of input.
+
+**Decisive test:** a **+7,500-point uptrend** and a **-7,500-point
+downtrend** produced *identical* signal sequences — **286 BUY, 0 SELL in
+both**.
+
+- **What its production-validation result actually means:** 1,189 trades
+  at PF 1.07 — the largest sample in the suite — is **not evidence of a
+  market edge**. It is "buy a call on nearly every bar and let the Smart
+  Exit Engine manage it." The apparent profit belongs to the exit
+  architecture, not to this strategy. (Interesting corollary worth
+  noting for the Router phase: the shared exit engine produces a
+  positive expectancy even on effectively random, permanently-long
+  entries.)
+- **Why it cannot be improved with evidence-based changes:** the
+  strategy-level fix was attempted and demonstrably failed. The only
+  remaining remedy is retraining the RL model — which is *building a new
+  strategy*, explicitly out of scope. My feature-pipeline change was
+  therefore **reverted**, since it added per-call CPU cost for zero
+  behavioural benefit.
+- **Encoded as an executable spec** rather than prose:
+  `test_drl_strategy_market_blindness.py` asserts what a *correct*
+  strategy must do (respond to market data; be able to emit both
+  directions), marked `xfail` so the suite stays green while the defect
+  stays documented — and flips to XPASS automatically if the model is
+  ever retrained properly. A third test pins the constant-observation
+  behaviour directly, so fixing the pipeline causes a visible,
+  intentional failure rather than passing silently.
+- **Removal not executed.** Deleting/deregistering a strategy is a
+  destructive, production-affecting change (it is explicitly registered
+  in `main.py:128` as well as auto-discovered). Verdict and evidence are
+  recorded; the removal itself awaits confirmation.
+
+---
+
 ### #3 — Cross-cutting: drawdown is the single biggest blocker to any KEEP verdict
 - **Strategies:** advanced_ai (61.9%), enhanced_ai (61.6%), ema_rsi
   (47.9%), marl_strategy (41.3%), meta_agent_swarm (40.2%), drl (39.2%)
