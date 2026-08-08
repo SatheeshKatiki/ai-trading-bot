@@ -578,6 +578,78 @@ both**.
 
 ---
 
+### ❌ #5b — `institutional_momentum` filter-activation hypothesis — TESTED, REJECTED, NO CHANGE MADE
+
+Verdict: **IMPROVE by the letter of the criteria — but it is the
+strongest strategy in the suite, and the criteria may be the wrong
+gate. See the note at the end.**
+
+**Audit findings re-verified against the live code path — all clean:**
+- `donchian_high = high.shift(1).rolling(period).max()` — correctly
+  shifted. **No look-ahead / self-reference** in the breakout condition
+  (the classic Donchian defect). Verified directly.
+- Bear filters correctly mirror bull filters throughout (EMA/VWAP
+  inverted; ADX and volume shared, which is correct since both are
+  direction-agnostic; RSI and candle-strength properly inverted).
+- No non-discriminating "confirms both directions" layer of the kind
+  found in `enhanced_ai`.
+
+This strategy is genuinely well-constructed, which is consistent with it
+having the best regime consistency in the suite.
+
+**Finding: 7 of its 10 designed filters are OFF by default.** Only
+`enable_ema_filter`, `enable_vwap_filter`, `enable_rsi_filter` default
+to `True`. Session, volume, ADX, squeeze, extension, CPR and aggression
+all default to `False` — with their thresholds (chop-aware ADX 20/25,
+volume 1.2x/1.5x) fully designed in but never reached.
+
+**Hypothesis (mechanism-based, not a sweep):** the two disabled filters
+most core to an "institutional momentum breakout" thesis are ADX
+(trend strength) and volume surge. Both directly target *false
+breakouts* — the known failure mode of Donchian systems. Enabling the
+strategy's *own* designed filters at its *own* designed thresholds
+should raise signal quality.
+
+**Result (123-day window):**
+
+| Config | Trades | Net | PF | DD | Recovery | R:R |
+|---|---|---|---|---|---|---|
+| **BASELINE (3 filters)** | 319 | **₹78,397** | 1.22 | **16.74%** | **4.68** | 0.46 |
+| + ADX | 284 | ₹64,826 | 1.21 | 18.28% | 3.55 | 0.46 |
+| + Volume | 175 | ₹55,748 | 1.27 | 26.42% | 2.11 | 0.52 |
+| + ADX + Volume | 158 | ₹59,975 | **1.32** | 22.47% | 2.67 | 0.54 |
+
+**Verdict: REJECTED, strategy left unchanged.** Every filtered variant
+raises the *ratio* metrics (PF, R:R) while degrading the things that
+matter more: net profit (-24%), drawdown (16.7% → 22.5%) and recovery
+factor (4.68 → 2.67, nearly halved). Fewer, "higher-quality" signals did
+not translate into better risk-adjusted performance.
+
+**⚠️ A metric-gaming trap, named explicitly:** the `+ADX+Volume` variant
+reaches **PF 1.32, which clears this framework's own KEEP threshold of
+1.30** — while being worse on net profit, drawdown *and* recovery
+factor. Enabling it would have "achieved KEEP" by gaming the
+classification criteria rather than improving the strategy. It was not
+done, and the temptation is recorded so the next person does not fall
+into it.
+
+**Open question for the classification criteria themselves (decision, not
+a unilateral change):** `institutional_momentum` fails KEEP on exactly
+one criterion — PF 1.22 vs the 1.30 bar — while being:
+- profitable in **4 of 5 regimes** (best in suite)
+- lowest drawdown of any profitable strategy (**16.74%**)
+- best recovery factor in the suite (**4.68**)
+- free of any defect found in audit or live-code re-verification
+
+A PF ≥ 1.30 gate may simply be the wrong discriminator for an
+option-buying system whose realized R:R is structurally < 1 across
+*every* strategy (0.45-0.67 suite-wide). Recovery factor and drawdown
+arguably describe production-readiness better here. Changing the
+criteria to let a strategy pass would be circular reasoning, so it is
+flagged for an explicit decision rather than adjusted.
+
+---
+
 ### #3 — Cross-cutting: drawdown is the single biggest blocker to any KEEP verdict
 - **Strategies:** advanced_ai (61.9%), enhanced_ai (61.6%), ema_rsi
   (47.9%), marl_strategy (41.3%), meta_agent_swarm (40.2%), drl (39.2%)
