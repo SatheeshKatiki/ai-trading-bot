@@ -29,6 +29,7 @@ import pandas as pd
 
 from .harness import BacktestResult, SimTrade, run_strategy_backtest
 from .metrics import compute_metrics
+from .production_settings import load_production_settings, resolve_max_trades_per_day
 from .regimes import REGIME_NAMES, classify_daily_regimes
 
 __all__ = ["run_strategy_day_isolated", "run_full_validation"]
@@ -140,6 +141,24 @@ def _reset_cross_strategy_singletons() -> None:
         pass  # best-effort: never let harness hygiene break a run
 
 
+#: Entry-path-defining keys, for the stamp on every report. Deliberately
+#: not "all settings": these are the ones proven to change which entries
+#: happen (`production_settings.py` documents the audit that established
+#: the rest are inert for this harness).
+_ENTRY_PATH_KEYS = (
+    "enable_squeeze_filter", "enable_extension_filter",
+    "enable_cpr_filter", "enable_aggression_filter",
+)
+
+
+def _describe_entry_path(settings: Optional[dict]) -> dict:
+    settings = dict(settings or {})
+    return {
+        "filters": {k: bool(settings.get(k, False)) for k in _ENTRY_PATH_KEYS},
+        "max_trades_per_day": resolve_max_trades_per_day(settings),
+    }
+
+
 def run_full_validation(
     strategy_names: list[str],
     df: pd.DataFrame,
@@ -157,6 +176,11 @@ def run_full_validation(
     report: dict = {"instrument": instrument, "initial_capital": initial_capital,
                      "date_range": [str(df.index.min()), str(df.index.max())],
                      "total_days": len(regime_labels), "regime_day_counts": regime_labels.value_counts().to_dict(),
+                     # Stamped into every report because a run's entry path is
+                     # not recoverable from its numbers, and two runs of the
+                     # same strategy over the same window are not comparable
+                     # across paths. See `production_settings.py`.
+                     "entry_path": _describe_entry_path(settings),
                      "strategies": {}}
 
     for name in strategy_names:
@@ -215,6 +239,15 @@ if __name__ == "__main__":
     parser.add_argument("--strategies", nargs="+", default=None)
     parser.add_argument("--instrument", default="NIFTY")
     parser.add_argument("--initial-capital", type=float, default=100_000.0)
+    parser.add_argument(
+        "--entry-path", choices=("production", "legacy"), default="production",
+        help="'production' (default) loads config/settings.json, so the run "
+             "models the entry path the live bot actually takes -- its four "
+             "institutional filters and its daily trade cap. 'legacy' passes "
+             "no settings, reproducing every report written before "
+             "2026-08-08, which measured an unfiltered, uncapped entry path "
+             "that production has never run. See production_settings.py.",
+    )
     parser.add_argument("--out", default=None)
     args = parser.parse_args()
 
@@ -230,7 +263,14 @@ if __name__ == "__main__":
     default_strategies = sorted(set(registry.registered_strategies))
     strategies = args.strategies or default_strategies
 
-    report = run_full_validation(strategies, df, instrument=args.instrument, initial_capital=args.initial_capital)
+    run_settings = load_production_settings() if args.entry_path == "production" else {}
+    if args.entry_path == "production" and not run_settings:
+        print("WARNING: --entry-path production requested but config/settings.json "
+              "could not be read; falling back to the legacy unfiltered path.", file=sys.stderr)
+    print(f"Entry path: {args.entry_path} -> {_describe_entry_path(run_settings)}", file=sys.stderr)
+
+    report = run_full_validation(strategies, df, instrument=args.instrument,
+                                 initial_capital=args.initial_capital, settings=run_settings)
 
     out_path = args.out or "validation_harness/results/latest_report.json"
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)

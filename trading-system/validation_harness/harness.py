@@ -38,6 +38,7 @@ from trading_bot.strategies.premium_selection.signal_engine import PremiumSignal
 from trading_bot.strategies.registry import registry
 
 from .premium_simulator import DEFAULT_IV
+from .production_settings import resolve_max_trades_per_day
 
 __all__ = ["SimTrade", "BacktestResult", "run_strategy_backtest"]
 
@@ -132,6 +133,16 @@ def run_strategy_backtest(
     """
     settings = dict(settings or {})
     risk_manager = RiskManager(initial_capital=initial_capital)
+
+    # Daily trade cap, wired the way main.py wires it (same key precedence,
+    # same target attribute). Without this the harness left the cap at
+    # RiskConfig's default of 0 = unlimited while production ran a real cap,
+    # so the harness could take entries production would have refused. 0
+    # keeps the previous unlimited behaviour, so a caller passing no
+    # settings is unaffected.
+    max_trades = resolve_max_trades_per_day(settings)
+    if max_trades > 0:
+        risk_manager.config.max_trades_per_day = max_trades
     exit_engine = SmartExitEngine(atr_multiplier=1.5, partial_booking_pct=50.0)
     result = BacktestResult(strategy_name=strategy_name, initial_capital=initial_capital)
 
