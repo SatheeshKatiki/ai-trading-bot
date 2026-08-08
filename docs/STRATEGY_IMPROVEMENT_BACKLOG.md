@@ -811,6 +811,82 @@ edge-trigger tests. Suite: **431 passed, 2 xfailed**.
 
 ---
 
+### 🔑 #8 — Trailing activation is archetype-dependent — MEASURED, **not implemented**, needs an architecture decision
+
+**The most consequential finding of the improvement programme, and a
+change I deliberately did NOT ship.**
+
+**Root cause (proven):** `SmartExitEngine` arms its percentage trailing
+stop at `trailing_activation_pct` = 1.0% profit — effectively
+immediately. Partial Profit Booking fires at 1:1 reward:risk (~15-18% of
+premium for typical bands). So trailing **pre-empts partial booking on
+most winners**. Measured on `ema_rsi` post-edge-trigger:
+
+| Exit reason | n | Median premium move captured |
+|---|---|---|
+| Partial Profit Booking | 131 | **+17.54%** |
+| Trailing Stop-Loss Hit | 218 | **+5.70%** |
+| Stop-Loss Hit | 137 | -16.22% |
+
+Winners are cut at roughly a third of what they reach when allowed to
+run — the direct cause of the sub-1.0 realized R:R seen suite-wide.
+
+**Hypothesis tested:** arm trailing only once the position has earned
+its own risk unit (1R), so the banded stop governs below 1R and trailing
+governs above it. Anchored to the position's own risk, not an arbitrary
+number.
+
+**Result — it does NOT generalize. It splits by strategy archetype:**
+
+| Strategy | Archetype | Net | PF | DD | Recovery | R:R |
+|---|---|---|---|---|---|---|
+| institutional_momentum | trend | **+106%** ₹78k→₹161k | 1.22→**1.43** | 16.7→**11.0%** | 4.68→**14.68** | 0.46→0.73 |
+| ema_rsi | trend | **+23%** ₹202k→₹248k | 1.37→**1.45** | 20.8→23.6% | 9.70→**10.51** | 0.51→0.85 |
+| buy_the_dip | mean-reversion | **−73%** ₹74k→₹20k | 1.25→1.05 | 22.1→**30.7%** | 3.36→**0.66** | 0.46→0.74 |
+| ultra_meta_dip_swarm | mean-reversion | **−53%** ₹58k→₹27k | 1.24→1.09 | 25.0→**31.8%** | 2.32→**0.86** | 0.43→0.76 |
+
+**Why this is mechanistically coherent, not noise:** a trend strategy's
+edge *is* the sustained move, so delaying the trailing stop captures it.
+A dip-buying strategy's edge is a quick mean-reversion bounce — holding
+for 1R before trailing gives the bounce back. R:R improved for **all
+four** (0.43-0.51 → 0.73-0.85), but for the dip strategies the win-rate
+collapse outweighed it, pushing both **past the 30% survivability gate
+and out of KEEP**.
+
+**Why it was not shipped:** `trailing_activation_pct` is a **shared**
+`SmartExitEngine` parameter driven by a single global
+`settings["trail_trigger"]`. There is no per-strategy override today.
+Applying it globally on `ema_rsi`'s evidence alone would have destroyed
+two currently-production-ready strategies. This is exactly the failure
+mode the "test generalization before shipping" discipline exists to
+catch.
+
+**What implementing it properly requires (an architecture decision, not
+a parameter tweak):**
+1. A per-strategy trailing-activation override — e.g. an optional
+   `TRAILING_ACTIVATION_PCT` module constant each strategy may declare,
+   read by `main.py` and the harness, defaulting to today's value so
+   every non-declaring strategy is bit-identical. Opt-in, zero blast
+   radius.
+2. Ideally anchored to the position's **actual** initial risk rather
+   than a percentage proxy — which also fixes audit §2.3 (partial
+   booking currently recomputes its reward:risk ratio against a stop
+   that trailing may already have moved). That needs `initial_risk_pct`
+   captured on `Position` at entry.
+
+**Estimated value if implemented for the two trend strategies only:**
+roughly **+₹128k** over the 123-day window (institutional_momentum
++₹82.8k, ema_rsi +₹45.6k) with *both* drawdowns still inside the gate —
+and `institutional_momentum`'s drawdown actually *improving* to 11.0%
+with a recovery factor of 14.68, which would make it comfortably the
+strongest strategy in the suite.
+
+**Status: measured and documented, awaiting a decision on the
+per-strategy override.** Not implemented unilaterally because it changes
+shared exit infrastructure used by every strategy and by live trading.
+
+---
+
 ### #3 — Cross-cutting: drawdown is the single biggest blocker to any KEEP verdict
 - **Strategies:** advanced_ai (61.9%), enhanced_ai (61.6%), ema_rsi
   (47.9%), marl_strategy (41.3%), meta_agent_swarm (40.2%), drl (39.2%)
