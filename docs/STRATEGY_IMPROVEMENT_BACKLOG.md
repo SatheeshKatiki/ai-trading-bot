@@ -730,6 +730,87 @@ duplicate. Full suite: **427 passed, 2 xfailed**.
 
 ---
 
+### ✅ #7 — `ema_rsi` re-entry churn — FIXED 2026-08-08 · **IMPROVE → KEEP** (live strategy)
+
+**Mechanism tested, not assumed.** The same diagnostic battery that
+proved the defect in `advanced_ai` was run here before any code changed.
+
+*Disproven first:* per-trade loss overshoot (1.29x designed risk —
+statistically indistinguishable from `institutional_momentum`'s 1.38x,
+which has the lowest drawdown in the suite). Not the mechanism.
+
+*Proven:* direct measurement of re-entry behaviour over the 123-day
+window —
+
+| | median gap after exit | re-entry ≤15min | of which SAME direction |
+|---|---|---|---|
+| **ema_rsi (before)** | **5 min (one bar)** | 64% | **63%** |
+| institutional_momentum (best DD) | 20 min | 49% | 49% |
+
+`ema_rsi` re-entered a median of **one bar** after the previous trade
+closed, and 63% of those re-entries were in the *same direction as the
+trade that had just stopped out*. The EMA/RSI/Supertrend condition holds
+for long stretches (21% of bars, runs to 29), and both `main.py` and the
+harness are level-triggered — so a stop-out inside a run was immediately
+followed by re-entry into the same losing move.
+
+**Fix:** identical to `advanced_ai` — emit only on the transition into a
+run. Every setup preserved, only churn removed.
+
+**Before/after (123 days):**
+
+| Metric | BEFORE | AFTER |
+|---|---|---|
+| **Max drawdown** | 47.89% | **20.84%** (-56%) |
+| **Recovery factor** | 5.16 | **9.70** (best in suite) |
+| **Q2 (DD ÷ explained)** | **2.74** ❌ | **1.49** ✅ |
+| Max consecutive losses | 5 | 4 |
+| Win rate | 72.1% | 72.7% |
+| Profit factor | 1.38 | 1.37 |
+| Net profit | ₹247,201 | ₹202,041 (**-18%**) |
+| Expectancy | ₹405.91 | ₹382.65 (-6%) |
+| Trades | 609 | 528 |
+| Realized R:R | 0.53 | 0.51 |
+
+**Regime detail:**
+
+| Regime | PF before → after | Net before → after |
+|---|---|---|
+| gap_day | 0.92 → **1.58** | **-₹5,785 → +₹24,642** (+₹30k) |
+| sideways | 1.71 → 1.65 | ₹230,108 → ₹178,556 |
+| trending | 1.14 → 1.13 | ₹30,264 → ₹23,482 |
+| high_volatility | 1.55 → 0.77 | +₹10,907 → -₹4,616 (13 trades) |
+| low_volatility | 0.31 → 0.25 | -₹18,292 → -₹20,024 (13 trades) |
+
+Same signature as `advanced_ai`: gap_day swings hardest positive
+(+₹30k), because repeatedly re-entering a violent directional move is
+where churn is most destructive.
+
+**Verdict: IMPROVE → KEEP.** Now passes every gate — N4 survivability
+(20.84% ≤ 30%) and Q2 (1.49 ≤ 2.0) were the two blockers and both
+cleared.
+
+**The honest trade-off:** this costs **18% of net profit** (₹247k →
+₹202k) to more than halve drawdown (47.9% → 20.8%). Risk-adjusted it is
+unambiguous — recovery factor nearly doubled to 9.70, the best in the
+suite — and it is the difference between production-ready and not under
+the criteria. But it *does* reduce headline ROI, which conflicts with a
+pure-ROI objective. Flagging explicitly rather than burying it: if
+maximum ROI is preferred over survivability, this fix is the trade to
+revisit, though the pre-fix 47.9% drawdown fails the survivability gate
+for a reason (recovering it requires +92%).
+
+**Test-suite note:** two pre-existing oracles
+(`test_ema_rsi_signals_setitem_regression.py`,
+`test_incremental_column_insert_regression.py`) encoded the old
+level-triggered output. They exist to pin the CPU-livelock rewrites, not
+to freeze signal semantics, so both oracles were updated to model the
+deliberate edge-trigger — with a comment saying exactly that, so the
+change is not mistaken for weakening a regression test. 4 new
+edge-trigger tests. Suite: **431 passed, 2 xfailed**.
+
+---
+
 ### #3 — Cross-cutting: drawdown is the single biggest blocker to any KEEP verdict
 - **Strategies:** advanced_ai (61.9%), enhanced_ai (61.6%), ema_rsi
   (47.9%), marl_strategy (41.3%), meta_agent_swarm (40.2%), drl (39.2%)

@@ -231,6 +231,13 @@ def _generate_signals_reference(df, ema_fast=20, ema_slow=50, rsi_window=14, rsi
     signals = pd.Series(0, index=df.index, dtype=int)
     signals[bullish] = 1
     signals[bearish] = -1
+    # Deliberate edge-trigger added to ema_rsi in backlog #7 (2026-08-08)
+    # to remove level-triggered re-entry churn. Mirrored here because
+    # this oracle exists to pin the incremental-column-insert rewrite
+    # (the CPU-livelock fix), not to freeze signal semantics — without
+    # it this test would fail purely for detecting an intentional,
+    # separately-tested behavioural improvement.
+    signals[(signals == signals.shift(1)) & (signals != 0)] = 0
     return signals
 
 

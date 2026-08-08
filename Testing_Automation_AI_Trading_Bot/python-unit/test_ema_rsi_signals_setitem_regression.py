@@ -99,7 +99,18 @@ def test_signal_construction_matches_pre_fix_reference_overlap_bearish_wins():
 
 
 def test_generate_signals_end_to_end_matches_pre_fix_reference():
-    """End-to-end through the real function on realistic OHLCV data."""
+    """End-to-end through the real function on realistic OHLCV data.
+
+    NOTE (2026-08-08): the oracle below now applies the same
+    edge-trigger step the strategy gained in backlog #7. This test's
+    purpose is to pin that the `np.select` CONSTRUCTION is equivalent to
+    the original incremental boolean-mask assignment (the CPU-livelock
+    fix) — not to freeze the strategy's signal semantics forever.
+    Edge-triggering is a deliberate, separately-tested behavioural
+    change applied *after* construction, so the oracle models it too;
+    otherwise this test would fail purely for detecting an intentional
+    improvement.
+    """
     from shared.indicators import ema, rsi, supertrend
     from trading_bot.strategies.ema_rsi_strategy import _volume_filter
 
@@ -115,6 +126,8 @@ def test_generate_signals_end_to_end_matches_pre_fix_reference():
         signals = pd.Series(0, index=df.index, dtype=int)
         signals[bullish] = 1
         signals[bearish] = -1
+        # same deliberate edge-trigger the strategy applies
+        signals[(signals == signals.shift(1)) & (signals != 0)] = 0
         return signals
 
     df = _synthetic_ohlcv(400, seed=7)
@@ -139,3 +152,54 @@ def test_generate_signals_does_not_mutate_its_input():
     generate_signals(df)
 
     assert list(df.columns) == original_columns
+
+
+# ---------------------------------------------------------------------------
+# Edge-triggering (backlog #7, 2026-08-08)
+#
+# Root cause proven by direct measurement over the 123-day validation
+# window: ema_rsi re-entered after a MEDIAN gap of 5 minutes (one bar)
+# from the previous trade's exit, with 63% of those re-entries in the
+# SAME direction as the trade that had just closed. The EMA/RSI/
+# Supertrend condition stays true for long stretches (21% of bars, runs
+# up to 29), and both main.py and the harness are level-triggered, so a
+# stop-out inside a run was immediately followed by re-entry into the
+# same losing direction. Reference: institutional_momentum, the lowest-
+# drawdown strategy in the suite, re-enters after a 20-minute median.
+# ---------------------------------------------------------------------------
+
+def test_no_two_consecutive_identical_nonzero_signals():
+    """THE regression: a sustained run must collapse to a single edge."""
+    df = _synthetic_ohlcv(600, seed=3)
+    signals = generate_signals(df)
+    duplicates = ((signals == signals.shift(1)) & (signals != 0)).sum()
+    assert duplicates == 0, (
+        f"{duplicates} bars repeat the previous bar's non-zero signal — "
+        "level-triggered re-entry churn has been reintroduced"
+    )
+
+
+def test_edge_triggering_thins_but_does_not_silence():
+    df = _synthetic_ohlcv(600, seed=3)
+    signals = generate_signals(df)
+    nonzero = int((signals != 0).sum())
+    assert nonzero > 0, "edge-triggering silenced the strategy entirely"
+
+
+def test_direction_flip_still_fires_immediately():
+    """A genuine reversal (+1 -> -1) is a new setup and must not be
+    swallowed as a duplicate."""
+    s = pd.Series([0, 1, 1, -1, -1, 0, 1], dtype=int)
+    s[(s == s.shift(1)) & (s != 0)] = 0
+    assert s.iloc[3] == -1   # the flip survives
+    assert s.iloc[2] == 0    # continuation suppressed
+    assert s.iloc[4] == 0    # continuation suppressed
+    assert s.iloc[6] == 1    # re-arms after a zero gap
+
+
+def test_edge_trigger_preserves_first_bar_of_every_run():
+    """Every run's opening bar must survive — no setup is lost."""
+    raw = pd.Series([0, 1, 1, 1, 0, -1, -1, 0, 1], dtype=int)
+    edged = raw.copy()
+    edged[(edged == edged.shift(1)) & (edged != 0)] = 0
+    assert list(edged) == [0, 1, 0, 0, 0, -1, 0, 0, 1]

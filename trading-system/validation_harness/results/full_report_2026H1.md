@@ -10,11 +10,11 @@
 
 | Rank | Strategy | Verdict | Trades | Net Profit | Profit Factor | Win Rate | Max DD |
 |---|---|---|---|---|---|---|---|
-| 1 | institutional_momentum | **KEEP** | 319 | ₹78397.06 | 1.22 | 72.7% | 16.74% |
-| 2 | buy_the_dip | **KEEP** | 306 | ₹74101.73 | 1.25 | 73.2% | 22.05% |
-| 3 | ultra_meta_dip_swarm | **KEEP** | 246 | ₹58035.97 | 1.24 | 74.4% | 24.99% |
-| 4 | advanced_ai | **IMPROVE** | 912 | ₹331195.07 | 1.32 | 72.0% | 46.03% |
-| 5 | ema_rsi | **IMPROVE** | 609 | ₹247201.47 | 1.38 | 72.1% | 47.89% |
+| 1 | ema_rsi | **KEEP** | 528 | ₹202040.5 | 1.37 | 72.7% | 20.84% |
+| 2 | institutional_momentum | **KEEP** | 319 | ₹78397.06 | 1.22 | 72.7% | 16.74% |
+| 3 | buy_the_dip | **KEEP** | 306 | ₹74101.73 | 1.25 | 73.2% | 22.05% |
+| 4 | ultra_meta_dip_swarm | **KEEP** | 246 | ₹58035.97 | 1.24 | 74.4% | 24.99% |
+| 5 | advanced_ai | **IMPROVE** | 912 | ₹331195.07 | 1.32 | 72.0% | 46.03% |
 | 6 | MARL_Ultra | **IMPROVE** | 976 | ₹130399.24 | 1.1 | 70.4% | 41.26% |
 | 7 | marl_strategy | **IMPROVE** | 976 | ₹130399.24 | 1.1 | 70.4% | 41.26% |
 | 8 | meta_agent_swarm | **IMPROVE** | 242 | ₹36290.38 | 1.13 | 70.2% | 42.72% |
@@ -26,13 +26,29 @@
 ## Summary
 
 - Total strategies evaluated: 12
-- KEEP (production-ready): 3
-- IMPROVE (potential, needs work): 7
+- KEEP (production-ready): 4
+- IMPROVE (potential, needs work): 6
 - REMOVE (no sustainable edge): 2
 
 ---
 
 ## Per-strategy detail
+
+### ema_rsi — KEEP
+
+**Reasons:** Passes all necessary and quality gates: PF=1.37, expectancy=382.65, net=202040, drawdown=20.8%, recovery=9.70, profitable in 3/5 regimes.
+
+**Overall:** trades=528, net_profit=₹202040.5 (202.04%), profit_factor=1.37, win_rate=72.7%, expectancy=₹382.65, max_drawdown=20.84%, recovery_factor=9.7, max_consecutive_losses=4, avg_trade=₹382.65, avg_holding=29.4min, realized_R:R=0.51
+
+**Diagnostics:** candidate_signals=483, rejected_untradeable_sl=0, rejected_risk_gate=67, rejected_market_hours=19, elapsed=10.1s
+
+| Regime | Trades | Net Profit | Profit Factor | Win Rate | Expectancy |
+|---|---|---|---|---|---|
+| trending | 174 | ₹23482.15 | 1.13 | 73.0% | ₹134.95 |
+| sideways | 278 | ₹178555.68 | 1.65 | 72.3% | ₹642.29 |
+| high_volatility | 13 | ₹-4615.8 | 0.77 | 84.6% | ₹-355.06 |
+| low_volatility | 13 | ₹-20023.69 | 0.25 | 53.8% | ₹-1540.28 |
+| gap_day | 50 | ₹24642.15 | 1.58 | 76.0% | ₹492.84 |
 
 ### institutional_momentum — KEEP
 
@@ -97,22 +113,6 @@
 | high_volatility | 5 | ₹-30154.16 | 0.0 | 0.0% | ₹-6030.83 |
 | low_volatility | 28 | ₹-8153.28 | 0.7 | 71.4% | ₹-291.19 |
 | gap_day | 95 | ₹29185.76 | 1.23 | 71.6% | ₹307.22 |
-
-### ema_rsi — IMPROVE
-
-**Reasons:** N4 survivability: 47.9% drawdown exceeds 30% (recovering it requires +92%) Q2 drawdown unexplained by risk model: 47.9% is 2.74x the 17.5% that 5 consecutive losses at 3.5%/trade would produce
-
-**Overall:** trades=609, net_profit=₹247201.47 (247.2%), profit_factor=1.38, win_rate=72.1%, expectancy=₹405.91, max_drawdown=47.89%, recovery_factor=5.16, max_consecutive_losses=5, avg_trade=₹405.91, avg_holding=28.3min, realized_R:R=0.53
-
-**Diagnostics:** candidate_signals=936, rejected_untradeable_sl=0, rejected_risk_gate=297, rejected_market_hours=177, elapsed=24.1s
-
-| Regime | Trades | Net Profit | Profit Factor | Win Rate | Expectancy |
-|---|---|---|---|---|---|
-| trending | 191 | ₹30264.12 | 1.14 | 72.3% | ₹158.45 |
-| sideways | 329 | ₹230107.84 | 1.71 | 72.3% | ₹699.42 |
-| high_volatility | 20 | ₹10907.49 | 1.55 | 90.0% | ₹545.37 |
-| low_volatility | 15 | ₹-18292.5 | 0.31 | 60.0% | ₹-1219.5 |
-| gap_day | 54 | ₹-5785.48 | 0.92 | 66.7% | ₹-107.14 |
 
 ### MARL_Ultra — IMPROVE
 

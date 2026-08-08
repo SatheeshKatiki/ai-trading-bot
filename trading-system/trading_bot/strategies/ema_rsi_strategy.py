@@ -124,4 +124,26 @@ def generate_signals(
         index=df.index,
         dtype=int,
     )
+
+    # ── Edge-trigger the signal (root-cause fix, 2026-08-08) ───────────
+    # The EMA/RSI/Supertrend condition stays true for long stretches —
+    # measured 21% of all bars, in runs reaching 29 bars. Both main.py's
+    # live entry path and the validation harness are LEVEL-triggered
+    # ("if flat and signal != 0, enter"), so a stop-out inside a run was
+    # followed by immediate re-entry into the same losing direction.
+    # Measured directly over the 123-day window: median gap between one
+    # trade's exit and the next entry was 5 MINUTES (one bar), with 63%
+    # of re-entries in the SAME direction as the trade that had just
+    # closed. Reference points from the same measurement:
+    # institutional_momentum (lowest drawdown in the suite) re-enters
+    # after a 20-minute median, 49% same-direction.
+    #
+    # A sustained run of the entry condition is ONE setup, not one per
+    # bar. Emitting only on the transition preserves every setup the
+    # strategy detects and removes only the churn. Same fix and same
+    # rationale as advanced_ai; the legacy backtest engine already
+    # edge-triggers internally (`sig_vals[i-1] != 1`), so this aligns the
+    # strategy's own output with that semantics for the live path.
+    signals[(signals == signals.shift(1)) & (signals != 0)] = 0
+
     return signals
