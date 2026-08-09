@@ -288,6 +288,7 @@ def select_option(
     direction: Literal["CE", "PE"],
     itm_strikes: int = 0,
     from_date: date | None = None,
+    as_of: "datetime | None" = None,
 ) -> OptionContract:
     """
     Select the best option contract for the given direction.
@@ -300,6 +301,28 @@ def select_option(
     itm_strikes : 0 = ATM (preferred), 1 = 1 strike ITM (liquidity fallback).
                   Clamped to [MIN_ITM_STRIKES, MAX_ITM_STRIKES] — see below.
     from_date   : override today's date (for backtesting)
+    as_of       : the moment this selection is being made. Defaults to
+                  `datetime.now()`, which is correct live and is the
+                  historical behaviour.
+
+                  It exists because the Greeks Guard below reads a
+                  *clock*, not just a date, and a backtest has no
+                  business consulting the machine's. Measured 2026-08-10:
+                  replaying 2025-06-10 — a genuine 0 DTE session — the
+                  guard computed `days_to_expiry = -426` from the wall
+                  clock and could never fire, so the 0DTE-after-14:00
+                  deep-ITM protection has never once been exercised in
+                  any backtest in this repository. Worse, had only the
+                  date been corrected, the guard would then have keyed
+                  off the real-world HOUR, making backtest output depend
+                  on what time of day the backtest was run.
+
+                  Passing a simulated timestamp fixes both. The default
+                  is left as the wall clock deliberately: switching it on
+                  unconditionally would start firing the guard inside
+                  historical replays and silently change published
+                  results. The validation harness opts in via
+                  `RealismConfig.simulated_clock`.
 
     Returns
     -------
@@ -334,7 +357,7 @@ def select_option(
 
     # ── GREEKS GUARD (Delta/Theta Filter) ──
     from datetime import datetime
-    now = datetime.now()
+    now = as_of if as_of is not None else datetime.now()
     days_to_expiry = (expiry - now.date()).days
     if days_to_expiry == 0 and now.hour >= 14:
         # Expiry day after 2 PM -> Theta is extreme, Delta drops

@@ -30,6 +30,7 @@ import pandas as pd
 from shared.risk import RiskConfig
 
 from .harness import BacktestResult, SimTrade, run_strategy_backtest
+from .market_realism import RealismConfig
 from .metrics import compute_metrics
 from .production_settings import load_production_settings, resolve_max_trades_per_day
 from .regimes import REGIME_NAMES, classify_daily_regimes
@@ -53,6 +54,7 @@ def run_strategy_day_isolated(
     settings: Optional[dict] = None,
     dates: Optional[set] = None,
     risk_config: Optional[RiskConfig] = None,
+    realism: Optional[RealismConfig] = None,
 ) -> tuple[list[SimTrade], dict]:
     """Run `strategy_name` one calendar day at a time (fresh RiskManager
     each day — matching how a real trading day starts with no carried
@@ -65,7 +67,8 @@ def run_strategy_day_isolated(
     per-regime slicing) — otherwise every date present in `df`."""
     all_trades: list[SimTrade] = []
     diagnostics = {"days_run": 0, "candidate_signals": 0, "rejected_untradeable_sl": 0,
-                    "rejected_risk_gate": 0, "rejected_market_hours": 0}
+                    "rejected_risk_gate": 0, "rejected_market_hours": 0,
+                    "friction_charges": 0.0, "friction_spread": 0.0}
 
     all_dates = sorted(set(df.index.date))
     for day in all_dates:
@@ -80,7 +83,7 @@ def run_strategy_day_isolated(
         result = run_strategy_backtest(
             strategy_name, window_df, instrument=instrument,
             initial_capital=initial_capital, settings=settings,
-            tradeable_dates={day}, risk_config=risk_config,
+            tradeable_dates={day}, risk_config=risk_config, realism=realism,
         )
         all_trades.extend(result.trades)
         diagnostics["days_run"] += 1
@@ -88,6 +91,8 @@ def run_strategy_day_isolated(
         diagnostics["rejected_untradeable_sl"] += result.rejected_untradeable_sl
         diagnostics["rejected_risk_gate"] += result.rejected_risk_gate
         diagnostics["rejected_market_hours"] += result.rejected_market_hours
+        diagnostics["friction_charges"] += result.friction_charges
+        diagnostics["friction_spread"] += result.friction_spread
 
     return all_trades, diagnostics
 

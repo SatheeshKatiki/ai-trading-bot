@@ -44,6 +44,7 @@ from trading_bot.strategies.momentum_strategy.exit_manager import TieredExitMana
 from trading_bot.strategies.premium_selection.signal_engine import PremiumSignalEngine
 from trading_bot.strategies.registry import registry
 
+from .market_realism import RealismConfig, fractional_dte
 from .premium_simulator import DEFAULT_IV
 from .production_settings import resolve_max_trades_per_day
 
@@ -97,6 +98,11 @@ class BacktestResult:
     rejected_untradeable_sl: int = 0
     rejected_risk_gate: int = 0
     rejected_market_hours: int = 0
+    #: Friction actually charged, in rupees. Both stay 0.0 unless a
+    #: `FrictionModel` was supplied, so the default result object is
+    #: unchanged in value as well as in shape.
+    friction_charges: float = 0.0   # brokerage + statutory
+    friction_spread: float = 0.0    # give-up to the spread on the exit leg
 
 
 def _entry_gate_ok(ts: pd.Timestamp, settings: dict) -> bool:
@@ -121,6 +127,7 @@ def run_strategy_backtest(
     min_bars_for_premium_engine: int = 200,
     tradeable_dates: Optional[set] = None,
     risk_config: Optional[RiskConfig] = None,
+    realism: Optional[RealismConfig] = None,
 ) -> BacktestResult:
     """Replay `underlying_df` (a DatetimeIndex-ed OHLCV frame) through the
     real production pipeline for `strategy_name`, returning every
@@ -171,6 +178,23 @@ def run_strategy_backtest(
     # the same class of defect as #10's entry-path divergence, on the exit
     # side. See `_evaluate_tiered_exit` for exactly what is mirrored.
     tiered = TieredExitManager() if strategy_name == "institutional_momentum" else None
+
+    # Opt-in execution realism. `None` short-circuits every branch below to
+    # the exact arithmetic this harness has always used, so the default
+    # path is unchanged and every published result reproduces.
+    friction = realism.friction if realism else None
+    if friction is not None and not friction.is_active:
+        friction = None
+    model_theta = bool(realism and realism.intraday_theta)
+    sim_clock = bool(realism and realism.simulated_clock)
+    friction_charges_total = 0.0
+
+    def _dte(expiry, ts, bar_date):
+        """Days to expiry for the PRICER. Integer-per-day by default —
+        the legacy behaviour — or continuous when intraday theta is on."""
+        if model_theta:
+            return fractional_dte(expiry, ts)
+        return max((expiry - bar_date).days, 0)
     result = BacktestResult(strategy_name=strategy_name, initial_capital=initial_capital)
 
     is_premium = strategy_name == "premium"
@@ -198,12 +222,13 @@ def run_strategy_backtest(
             days_to_expiry = (position["expiry"] - bar_date).days
             if days_to_expiry < 0:
                 premium = position["premium_candles"][-1]["close"]  # last known, contract has expired
-                _close_position(result, risk_manager, position, premium, ts, "EXPIRED", strategy_name=strategy_name)
+                _close_position(result, risk_manager, position, premium, ts, "EXPIRED", strategy_name=strategy_name, friction=friction)
                 position = None
                 continue
 
             premium = calculate_option_price(
-                spot=spot, strike=float(position["strike"]), days_to_expiry=max(days_to_expiry, 0),
+                spot=spot, strike=float(position["strike"]),
+                days_to_expiry=_dte(position["expiry"], ts, bar_date),
                 vol=vol, option_type=position["option_type"],
             )
             position["premium_candles"].append(
@@ -225,7 +250,7 @@ def run_strategy_backtest(
                 )
             if should_exit:
                 qty = exit_qty or pos_obj.quantity
-                _close_position(result, risk_manager, position, premium, ts, reason, qty=qty, strategy_name=strategy_name)
+                _close_position(result, risk_manager, position, premium, ts, reason, qty=qty, strategy_name=strategy_name, friction=friction)
                 if qty >= pos_obj.quantity:
                     position = None
                     if tiered is not None:
@@ -261,11 +286,20 @@ def run_strategy_backtest(
                 instrument, spot, direction,
                 itm_strikes=settings.get("option_strike_itm_offset", 1),
                 from_date=(ts.date() if hasattr(ts, "date") else ts),
+                # Only supplied when asked for: passing the simulated
+                # moment makes the Greeks Guard evaluate the replayed
+                # session instead of the machine clock, which changes
+                # contract selection on expiry days after 14:00.
+                as_of=(pd.Timestamp(ts).to_pydatetime() if sim_clock else None),
             )
 
         bar_date = ts.date() if hasattr(ts, "date") else ts
-        entry_dte = max((contract.expiry - bar_date).days, 0)
-        entry_premium = calculate_option_price(spot, float(contract.strike), entry_dte, vol, contract.option_type)
+        entry_dte = _dte(contract.expiry, ts, bar_date)
+        entry_mid = calculate_option_price(spot, float(contract.strike), entry_dte, vol, contract.option_type)
+        # The observed mid is what a strategy sees; the fill is what it
+        # pays. Sizing and the stop are both derived from the FILL, so the
+        # risk actually taken is the risk actually reported.
+        entry_premium = friction.buy_fill(entry_mid) if friction else entry_mid
 
         sl_decision = resolve_initial_stop(entry_premium, settings)
         if not sl_decision.is_tradeable:
@@ -321,7 +355,7 @@ def run_strategy_backtest(
     # Force-close anything still open at the end of the data.
     if position is not None:
         last_premium = position["premium_candles"][-1]["close"]
-        _close_position(result, risk_manager, position, last_premium, underlying_df.index[-1], "END_OF_DATA", strategy_name=strategy_name)
+        _close_position(result, risk_manager, position, last_premium, underlying_df.index[-1], "END_OF_DATA", strategy_name=strategy_name, friction=friction)
 
     result.final_equity = risk_manager.current_equity
     return result
@@ -391,11 +425,20 @@ def _evaluate_tiered_exit(
 def _close_position(
     result: BacktestResult, risk_manager: RiskManager, position: dict,
     exit_premium: float, exit_time: Any, reason: str, qty: Optional[int] = None,
-    strategy_name: str = "",
+    strategy_name: str = "", friction=None,
 ) -> None:
     pos_obj: Position = position["pos_obj"]
     quantity = qty if qty is not None else pos_obj.quantity
-    pnl = (exit_premium - pos_obj.entry_price) * quantity  # option buying: always this direction, see exit_engine.py's effective_side convention
+    # `exit_premium` is the observed mid the exit engine decided on; the
+    # sell fills below it. Charges are then levied on the real fills.
+    # With `friction=None` both lines collapse to the original arithmetic.
+    exit_fill = friction.sell_fill(exit_premium) if friction else exit_premium
+    pnl = (exit_fill - pos_obj.entry_price) * quantity  # option buying: always this direction, see exit_engine.py's effective_side convention
+    if friction is not None:
+        charges = friction.charges(pos_obj.entry_price, exit_fill, quantity)
+        pnl -= charges
+        result.friction_charges += charges
+        result.friction_spread += (exit_premium - exit_fill) * quantity
     entry_time = pos_obj.entry_time
     holding_minutes = (
         (pd.Timestamp(exit_time) - pd.Timestamp(entry_time)).total_seconds() / 60.0
