@@ -28,8 +28,41 @@ logger = logging.getLogger(__name__)
 
 STRATEGY_NAME = "institutional_momentum"
 
+#: Institutional filters this strategy applies ITSELF, inside
+#: `generate_signals`, and which `StrategyRegistry.run_strategy` must
+#: therefore not apply a second time on top of its output.
+#:
+#: For `squeeze` this is a correctness requirement, not tidiness. The two
+#: layers read the same `enable_squeeze_filter` flag and compute a
+#: byte-identical mask, but with OPPOSITE sign:
+#:
+#:   * here (a breakout strategy) a squeeze is REQUIRED — `generate_signals`
+#:     rejects any bar with no recent squeeze ("Not a fresh breakout"),
+#:     which is the standard TTM Squeeze reading: trade the expansion out
+#:     of a volatility contraction.
+#:   * `shared.filters.institutional` VETOES a squeeze — it removes bars
+#:     that are in one, the correct reading for a non-breakout strategy
+#:     that wants to avoid chop (and measured to be worth keeping for
+#:     `ema_rsi`, which is why the global filter's own behaviour is left
+#:     exactly as it is).
+#:
+#: Both readings are individually defensible; applying both to the same
+#: signal is not. The intersection is `A & ~A` — provably empty for any
+#: input — so with `enable_squeeze_filter` on, this strategy emitted zero
+#: signals on every bar of every day. Measured 2026-08-09 over the 123-day
+#: validation window: 179 signals generated, 179 removed, 0 trades taken.
+#: See docs/STRATEGY_IMPROVEMENT_BACKLOG.md item #12.
+#:
+#: `extension`, `cpr` and `aggression` are the SAME sign in both layers, so
+#: the second application was merely redundant (measured: it rejected 0
+#: additional signals). They are declared here because the strategy does
+#: genuinely own them, so ownership is stated once and completely rather
+#: than only for the flag that happened to be contradictory.
+OWNS_INSTITUTIONAL_FILTERS = frozenset({"squeeze", "extension", "cpr", "aggression"})
+
 __all__ = [
     "STRATEGY_NAME",
+    "OWNS_INSTITUTIONAL_FILTERS",
     "MomentumStrategy",
     "generate_signals",
 ]

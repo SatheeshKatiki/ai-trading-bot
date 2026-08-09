@@ -1254,6 +1254,204 @@ dashboard paths cannot diverge. Suite: **455 passed, 2 xfailed.**
 
 ---
 
+### ✅ #12 — `institutional_momentum` took ZERO trades in production — FIXED 2026-08-09 · verdict **REMOVE** on the production configuration
+
+The first strategy audited on the production entry path after #10 exposed
+that every earlier verdict was measured on the legacy path. The audit did
+not find a weak strategy. It found that this strategy **cannot trade at
+all** as production is configured, and had never been able to.
+
+**Method.** `validation_harness/run_strategy_audit.py` — a strategy-
+agnostic version of the #9/#10 batteries (first-touch ±1R, MFE/MAE,
+entry timing, exit mix, premature exits, trailing behaviour, rally
+capture, missed-opportunity causes, sizing/stop bands, risk-gate reasons,
+regime split, duty cycle and churn), run over both entry paths.
+
+**The finding: 0 trades, 0 candidate signals, across all 123 days.**
+Not a crash, not an exception — the engine evaluates every bar, logs
+nothing unusual, and takes no position, ever.
+
+**Root cause — one flag with two opposite meanings, proven by identity
+rather than by statistics:**
+
+| Layer | Reads | Semantics |
+|---|---|---|
+| `momentum_strategy.generate_signals:449,515` | `enable_squeeze_filter` | **REQUIRES** a recent squeeze — rejects bars without one ("Not a fresh breakout") |
+| `shared/filters/institutional.py:155-158`, applied on top by `registry.run_strategy` | `enable_squeeze_filter` | **VETOES** a recent squeeze — `bullish & ~squeeze_mask` |
+
+Both compute the same mask from the same formula — verified **0
+disagreeing bars out of 9,220**. So the surviving set is `A & ~A`:
+**provably empty for any input whatsoever**, not merely empty on this
+sample. `config/settings.json` has the flag on.
+
+Measured, isolating each filter over the window:
+
+| Filter enabled alone | signals surviving (of 179) |
+|---|---|
+| **squeeze** | **0** |
+| extension | 179 |
+| cpr | 179 |
+| aggression | 179 |
+
+The other three are the **same** sign in both layers, so the second
+application rejected nothing — which is exactly why only squeeze
+annihilated the strategy, and is itself corroborating evidence for the
+mechanism.
+
+**Why this is severe beyond one strategy:** `institutional_momentum` is
+`main.py`'s **default** `active_strategy` (`main.py:318`, plus three
+`.get(..., "institutional_momentum")` fallbacks at 949, 1158, 1371). A
+missing or key-less `settings.json` runs a strategy that structurally
+cannot take a trade, while reporting healthy at every level. That is the
+fifth occurrence of this project's recurring "looks alive, does nothing"
+failure class (2026-08-06 tick staleness, EOD-entry-cutoff artifact,
+`active_strategy` typo silent-retry, MARL Capital-Protection deadlock,
+and this).
+
+**Fix (smallest that addresses the mechanism):** a strategy may declare
+`OWNS_INSTITUTIONAL_FILTERS`; `registry.run_strategy` then skips those
+filters for that strategy only. The global filter's own behaviour is
+**deliberately unchanged** — #11 proved the squeeze veto is the one entry
+filter with a statistically defensible effect for `ema_rsi` (99%+ across
+every threshold), so flipping its sign globally would destroy a proven
+control to fix an unrelated strategy. Neither reading is wrong; applying
+both to one signal is.
+
+**Blast radius, measured not asserted** — every registered strategy run
+on the production settings, pre-fix vs post-fix signals:
+
+| | pre | post |
+|---|---|---|
+| institutional_momentum | 0 | **179** |
+| ema_rsi | 212 | 212 (bit-identical) |
+| advanced_ai, buy_the_dip, drl_strategy, ema_crossover, enhanced_ai, marl_strategy, meta_agent_swarm, ultra_meta_dip_swarm, premium | — | **all bit-identical** |
+
+10 of 11 strategies unchanged to the bar. The legacy path for
+`institutional_momentum` is also unchanged (317 legs, ₹88,511, PF 1.25,
+DD 15.12%, recovery 5.85 — identical before and after), so every earlier
+number in this document still stands.
+
+**Before/after, 123-day production path:**
+
+| Metric | BEFORE (as shipped) | AFTER (fix) |
+|---|---|---|
+| **Trades / positions** | **0 / 0** | **149 / 116** |
+| Candidate signals | 0 | 133 |
+| Net profit | ₹0 | −₹8,867 |
+| Profit factor | — | 0.95 |
+| Max drawdown | — | 42.34% |
+| Q2 | — | 2.42 |
+| Recovery factor | — | −0.21 |
+| Win rate | — | 67.8% |
+| Realised R:R | — | 0.45 |
+| Max consecutive losses | 0 | 5 |
+| False-signal rate | — | 40.5% |
+| First-touch edge | — | +5.2pp |
+| Rally capture | — | 20.7% |
+| **Verdict** | IMPROVE (0 trades — unmeasurable) | **REMOVE** |
+
+**⚠️ Read this correctly — the fix did not make the strategy lose money.**
+The fix made an always-latent configuration *visible*. Before it, the
+production numbers did not exist to be measured; the strategy was not
+safe, it was silent. The losing performance is a property of the
+production filter configuration, not of the change.
+
+**Material risk change to flag explicitly:** with `active_strategy` still
+`ema_rsi`, live behaviour today is unaffected. But if anyone switches to
+`institutional_momentum` — or `settings.json` goes missing and the
+default applies — the engine will now **trade** a configuration measured
+at PF 0.95 / 42.3% drawdown / REMOVE, where previously it would have
+traded nothing. Enabling this strategy is an operator decision and the
+evidence says: do not, in its current configuration.
+
+**Production-vs-legacy is a configuration inversion.** The legacy path is
+the strategy's *designed* defaults (EMA/VWAP/RSI trend confirmations ON,
+the four institutional filters OFF). Production is the exact inverse:
+
+| | legacy = designed | production = as configured |
+|---|---|---|
+| enable_ema/vwap/rsi_filter | True (defaults) | **False** |
+| squeeze/extension/cpr/aggression | False (defaults) | **True** |
+| net / PF / DD | ₹88,511 / 1.25 / 15.12% | −₹8,867 / 0.95 / 42.34% |
+| first-touch edge | +17.8pp | **+5.2pp** |
+| false-signal rate | 34.0% | **40.5%** |
+| verdict | **KEEP** | **REMOVE** |
+
+The first-touch edge collapse is exit-independent, so this is genuinely
+an entry-quality difference and not an artifact of exits or sizing.
+
+**Audit detail worth carrying forward** (full report:
+`validation_harness/results/audit_institutional_momentum.md`; the
+zero-trade baseline is preserved as `..._BEFORE.md`):
+
+- **Churn: hypothesis DISPROVEN.** The `ema_rsi`/`advanced_ai` level-
+  trigger mechanism does **not** exist here. Median exit→next entry is
+  **100 minutes** (vs `ema_rsi`'s pre-fix 5), duty cycle 1.9%, and only
+  13.4% of signals repeat the previous bar. Donchian breakout is an
+  *event*, not a level. **No anti-churn work is warranted.**
+- **Misses are not a defect:** of 302 uncovered rallies, **98.7% had no
+  setup at all**; 3 were signalled-but-blocked and 1 was blocked by an
+  opposite position. Nothing addressable.
+- **Losses concentrate in `trending`** — 43 trades, −₹50,343, PF 0.43,
+  DD 50.3% — which is mechanistically backwards for a momentum-breakout
+  system and is the strongest single pointer to the missing EMA/VWAP
+  trend-structure confirmations.
+- **Entry timing:** 12:30-14:00 is −₹43,600 on 31 trades at −35.5pp
+  first-touch edge, against +₹30,830 for 11:00-12:30. Suggestive only —
+  31 trades cannot carry a session gate, and the strategy already ships
+  a `session_filter` for this that is off.
+- **Exits:** 81.9% premature, median trend capture 13.4%, `stop` legs
+  −₹136,163 against `trail_offset` +₹117,669. The same exit-architecture
+  signature #9 documented for `ema_rsi`; not specific to this strategy.
+- **Risk controls intact:** daily-loss circuit breaker fired on 6 days,
+  `Max trades per day reached (3)` on 5 — both working as designed. Mean
+  0.94 trades/day, max 3.
+
+**Next experiment, measured but NOT shipped.** Restoring the strategy's
+three designed trend filters on top of the production flags:
+
+| | production as-configured | + EMA/VWAP/RSI restored |
+|---|---|---|
+| legs | 149 | 75 |
+| net | −₹8,867 | **+₹3,043** |
+| PF | 0.95 | 1.03 |
+| max drawdown | 42.34% | **18.90%** |
+| Q2 | 2.42 | 2.70 (worse) |
+| verdict | REMOVE | **IMPROVE** |
+
+Directionally strong on drawdown, but it does **not** reach KEEP, halves
+an already-small sample, and worsens Q2. Per this project's own rules
+that is suggestive, not defensible — settling it needs the #11
+significance methodology (day-level bootstrap, leave-one-month-out) and
+it is a `settings.json` change, i.e. an operator decision, not a code
+one. **Not implemented.**
+
+**Tests:** 7 new regression tests
+(`test_registry_owned_filter_skip.py`) — the `A & ~A` annihilation on a
+squeeze-requiring strategy, the real strategy end-to-end under the real
+production flags (with explicit guards so it cannot pass vacuously on a
+fixture that produces no signals), ownership matching what the strategy
+actually consumes, and three pinning what must **not** change:
+undeclared strategies still get every global filter, undeclared filters
+still apply, and ownership is inert when the flag is off. Verified to
+fail with the fix reverted (4 of 7 fail; the other 3 pin unchanged
+behaviour and correctly stay green).
+**Suite: 422 passed, 2 xfailed.** (7 test files — all `api_bridge`-
+importing — cannot be collected in this local env: setuptools 83 dropped
+`pkg_resources`, which `fyers_apiv3` still imports. Confirmed
+pre-existing by reproducing it with the change stashed; unrelated to
+strategy code, and CI installs from `requirements.txt` on Python 3.11
+where it resolves.)
+
+**Verdict: REMOVE on the production configuration, KEEP on the designed
+configuration** — and the gap between those two is a settings decision,
+not a strategy defect. Removal is **not** executed: as with #5a, that is
+a destructive production-affecting change awaiting confirmation, and here
+there is a cheaper first move (correct the configuration inversion, then
+re-audit).
+
+---
+
 ### #3 — Cross-cutting: drawdown is the single biggest blocker to any KEEP verdict
 - **Strategies:** advanced_ai (61.9%), enhanced_ai (61.6%), ema_rsi
   (47.9%), marl_strategy (41.3%), meta_agent_swarm (40.2%), drl (39.2%)

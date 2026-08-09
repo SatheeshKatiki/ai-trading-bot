@@ -247,6 +247,71 @@ def annotate_entries(trades, sig: pd.DataFrame, underlying: pd.DataFrame,
     return pd.DataFrame(rows).sort_values("entry_time").reset_index(drop=True)
 
 
+def position_frame(trades, underlying: pd.DataFrame, settings: Optional[dict] = None,
+                   instrument: str = "NIFTY", itm_strikes: int = 1,
+                   vol: float = DEFAULT_IV) -> pd.DataFrame:
+    """Strategy-AGNOSTIC per-position frame: entry/exit, the position's real
+    initial risk R, first-touch of ±1R, MFE/MAE in R, and the underlying's
+    forward move.
+
+    `annotate_entries` above additionally reports `ema_rsi`'s own indicator
+    state at the entry bar, which requires that strategy's signal frame.
+    Everything that does NOT depend on which strategy produced the trade
+    lives here, so the same exit-independent entry-quality measures can be
+    applied to any strategy in the suite.
+    """
+    settings = dict(settings or {})
+    grouped: dict[tuple, list] = {}
+    for t in trades:
+        grouped.setdefault((t.symbol, str(t.entry_time)), []).append(t)
+
+    idx = underlying.index
+    rows = []
+    for (symbol, _k), legs in grouped.items():
+        legs = sorted(legs, key=lambda t: pd.Timestamp(t.exit_time))
+        head = legs[0]
+        contract = reconstruct_contract(head, underlying, instrument, itm_strikes)
+        if contract is None:
+            continue
+        ts = pd.Timestamp(head.entry_time)
+        entry_prem = head.entry_premium
+        sl = resolve_initial_stop(entry_prem, settings)
+        risk = entry_prem - sl.sl_price
+
+        day_bars = underlying.loc[(idx > ts) & (idx.date == ts.date())]
+        if day_bars.empty:
+            continue
+        prem = _premium_series(contract, day_bars, vol)
+        sign = 1.0 if head.direction == "CE" else -1.0
+        spot0 = float(underlying.at[ts, "close"]) if ts in idx else float("nan")
+
+        row = {
+            "symbol": symbol, "entry_time": ts,
+            "exit_time": pd.Timestamp(legs[-1].exit_time),
+            "direction": head.direction, "date": ts.date(),
+            "minute_of_day": ts.hour * 60 + ts.minute,
+            "legs": len(legs),
+            "entry_premium": entry_prem, "risk": risk,
+            "risk_pct": risk / entry_prem * 100.0 if entry_prem else float("nan"),
+            "sl_band_label": head.sl_band_label,
+            "pnl": sum(l.pnl for l in legs),
+            "final_exit_reason": legs[-1].exit_reason,
+            "holding_minutes": (pd.Timestamp(legs[-1].exit_time) - ts).total_seconds() / 60.0,
+            "spot_at_entry": spot0,
+        }
+        row.update(first_touch_outcomes(prem, entry_prem, risk))
+        best = day_bars["close"].max() if head.direction == "CE" else day_bars["close"].min()
+        row["und_best_rest_of_day_pct"] = (
+            (float(best) - spot0) / spot0 * 100.0 * sign if spot0 == spot0 else float("nan")
+        )
+        rows.append(row)
+
+    if not rows:  # a configuration that takes no trades is a finding, not a crash
+        return pd.DataFrame(columns=["symbol", "entry_time", "exit_time", "direction",
+                                     "date", "first_touch", "mfe_r", "mae_r", "pnl"])
+    return pd.DataFrame(rows).sort_values("entry_time").reset_index(drop=True)
+
+
 def first_touch_outcomes(prem: pd.Series, entry_premium: float, risk: float) -> dict:
     """Which came first from this entry — +1R or -1R?
 

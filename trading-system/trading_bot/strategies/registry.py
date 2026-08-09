@@ -4,12 +4,30 @@ Allows dynamic registration and execution of multiple trading strategies.
 """
 
 import logging
+import sys
 from typing import Any, Callable, Dict, List
 
 import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+
+def _owned_filters(strategy_func: Callable) -> frozenset:
+    """Institutional filters the strategy applies itself, declared as an
+    `OWNS_INSTITUTIONAL_FILTERS` constant on its module (the same
+    module-constant pattern as `STRATEGY_NAME`).
+
+    A strategy that reads the `enable_*_filter` kwargs inside its own
+    `generate_signals` has already acted on them by the time its signals
+    reach the global filter layer below; running them again is at best
+    redundant and at worst contradictory, when the two layers give the same
+    flag opposite meanings. Strategies that declare nothing — the default —
+    are unaffected and keep the global filters exactly as before.
+    """
+    module = sys.modules.get(getattr(strategy_func, "__module__", "") or "")
+    owned = getattr(module, "OWNS_INSTITUTIONAL_FILTERS", None)
+    return frozenset(owned) if owned else frozenset()
 
 
 class StrategyRegistry:
@@ -45,8 +63,15 @@ class StrategyRegistry:
             from shared.filters.institutional import apply_institutional_filters
             bullish = (signals == 1)
             bearish = (signals == -1)
-            
-            f_bull, f_bear = apply_institutional_filters(df, bullish, bearish, **kwargs)
+
+            # Don't re-apply a filter the strategy already applied itself.
+            filter_kwargs = kwargs
+            owned = _owned_filters(self._strategies[name])
+            if owned:
+                skip = {f"enable_{f}_filter" for f in owned}
+                filter_kwargs = {k: v for k, v in kwargs.items() if k not in skip}
+
+            f_bull, f_bear = apply_institutional_filters(df, bullish, bearish, **filter_kwargs)
 
             # Built via np.select rather than incremental boolean-mask
             # Series.__setitem__ calls (`filtered_signals[f_bull] = 1`,
