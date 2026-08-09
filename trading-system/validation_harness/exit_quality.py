@@ -323,7 +323,13 @@ def _classify_reason(reason: str) -> str:
     """Collapse an exit reason to its mechanism. Deliberately keeps the
     ATR trailing stop and the percentage ("Offset") trailing stop APART —
     they are two independent mechanisms inside `SmartExitEngine` and the
-    whole question here is which one is actually doing the exiting."""
+    whole question here is which one is actually doing the exiting.
+
+    Also covers `TieredExitManager`'s reasons, since `institutional_momentum`
+    is managed by that engine in production and its strings embed live
+    numbers ("EXHAUSTION: Dropped 12.1 from 15.8 pt peak") — grouping on the
+    raw text would produce one bucket per trade.
+    """
     if reason.startswith("Trailing Stop-Loss Hit (Offset)"):
         return "trail_offset"
     if reason.startswith("Trailing Stop-Loss Hit"):
@@ -336,6 +342,21 @@ def _classify_reason(reason: str) -> str:
         return "target"
     if reason.startswith("Time-based EOD"):
         return "eod"
+    # ── TieredExitManager (institutional_momentum's production engine) ──
+    if reason.startswith("EXHAUSTION"):
+        return "tiered_exhaustion"
+    if reason.startswith("Phase 1"):
+        return "tiered_partial"
+    if reason.startswith("Phase 3"):
+        return "tiered_runner_trail"
+    if reason.startswith("STOP-LOSS HIT"):
+        return "tiered_stop"
+    if reason.startswith("AI EARLY EXIT"):
+        return "tiered_ai_exit"
+    if reason.startswith("Hard SL Hit"):
+        return "hard_stop"
+    if reason.startswith("Hard TP Reached"):
+        return "hard_target"
     return reason.lower()
 
 

@@ -53,7 +53,7 @@ from shared.risk import RiskManager
 
 from .classify import DEFAULT_RISK_PER_TRADE, classify_strategy
 from .entry_quality import find_missed_runs, position_frame
-from .exit_quality import analyse_exit_quality
+from .exit_quality import _classify_reason, analyse_exit_quality
 from .metrics import compute_metrics
 from .production_settings import load_production_settings, resolve_max_trades_per_day
 from .regimes import REGIME_NAMES, classify_daily_regimes
@@ -365,9 +365,12 @@ def main() -> None:
     A("")
 
     A("## 4. Exit behaviour (production path)\n")
-    A("| Exit reason | n | % | net P&L | mean | median hold (min) |")
+    A("Grouped by exit MECHANISM — `TieredExitManager`'s reason strings embed "
+      "live numbers, so the raw text would give one bucket per trade.\n")
+    A("| Exit mechanism | n | % | net P&L | mean | median hold (min) |")
     A("|---|---|---|---|---|---|")
-    for reason, g in pos.groupby("final_exit_reason"):
+    pos = pos.assign(exit_class=pos.final_exit_reason.map(_classify_reason))
+    for reason, g in pos.groupby("exit_class"):
         A(f"| `{reason}` | {len(g)} | {len(g)/len(pos)*100:.1f}% | {g.pnl.sum():,.0f} | "
           f"{g.pnl.mean():,.0f} | {g.holding_minutes.median():.0f} |")
     A("")

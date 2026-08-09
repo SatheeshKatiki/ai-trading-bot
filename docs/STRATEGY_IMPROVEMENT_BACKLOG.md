@@ -1452,6 +1452,207 @@ re-audit).
 
 ---
 
+### ✅ #13 — `institutional_momentum` deep audit: its production exit path had never once executed — FIXED 2026-08-09 · verdict **IMPROVE**
+
+A full trace of the production execution path (market data → signal →
+filters → risk → entry → position management → exit → state) rather than
+another statistical pass. It found that this strategy's exit architecture
+was **both broken and unvalidated**, and that neither fact was visible in
+any number this project has ever produced for it.
+
+**Production routes this strategy — and only this strategy — away from
+`SmartExitEngine`.** `main.py`'s exit block is
+`if strategy_name == "institutional_momentum" ... else: exit_engine...`.
+The momentum branch calls `MomentumStrategy.manage_active_trades` →
+`TieredExitManager`. The validation harness used `SmartExitEngine` for
+every strategy, so **every exit metric ever reported for this strategy
+described an engine production does not run for it** — the exit-side twin
+of #10's entry-path divergence.
+
+**Three defects, one root cause: that branch was never exercised.**
+
+**(1) `UnboundLocalError` on every single exit evaluation — CRITICAL.**
+`df` was bound only inside the non-option branch
+(`else: df = aggregator.get_latest_dataframe(sym)`), while the momentum
+branch reads `df` unconditionally to resample 5-min candles and build AI
+features. Python makes `df` local to the *whole* of `on_tick` the moment
+it is assigned anywhere in it, so on an **option** position — which is
+every position this strategy takes — the read hit an unbound local.
+Proven at the symbol-table level (`symtable`: `df.is_local() is True`,
+`is_global()`/`is_free()` both False) with only two binding sites in the
+entire 1,065-line function, neither reachable before the read.
+
+The broad `except Exception` at the end of `on_tick` logged it and moved
+on. Consequence: **`TieredExitManager` was never consulted, once** — no
+partial booking, no runner trail, no exhaustion lock, no AI early exit —
+and the rest of that tick (including the entry section) was aborted too.
+Only the hard-SL/target interceptors, which run *earlier* in the
+function, and the sentiment breaker could ever close a position. Same
+scoping class as the 2026-08-02 `datetime` shadowing bug **in this very
+function**.
+
+**(2) No EOD square-off — HIGH.** The 15:15 IST intraday square-off lives
+inside `SmartExitEngine.evaluate_exit`, which this branch never calls.
+`TieredExitManager` has no time rule of its own — by design, its Phase 2
+runner is explicitly uncapped. So nothing existed to close an
+`institutional_momentum` position at session end: overnight gap risk and
+a full night of theta on a possibly next-day-expiry contract, for an
+explicitly intraday system.
+
+**(3) The engine was fed a candle that had not closed — MEDIUM.**
+`df.resample('5min', label='right', closed='right')` leaves the
+still-forming bar last. `TieredExitManager`'s Phase 3 rule is "exit when a
+candle **CLOSES** on the wrong side of the runner EMA", and its own code
+comment states it reads the last *completed* candle. With ticks at ~1/s
+that silently became "exit the instant price **touches** the wrong side" —
+a close-confirmation rule degraded into an intrabar-noise trigger.
+
+**Fixes (all in the production path, one root cause):**
+1. bind `df` unconditionally before the option/non-option split;
+2. apply the EOD square-off in the momentum branch, reusing
+   `exit_engine.eod_exit_time` so both paths keep one definition;
+3. drop the forming bar before handing `df_5min` to the engine.
+
+**Harness fidelity (the prerequisite for measuring any of it):**
+`harness.py` now drives `TieredExitManager` for this strategy via
+`_evaluate_tiered_exit`, mirroring main.py's exact ordering — hard target
+(inert, `target=0.0`), hard SL, EOD, then the engine — and arming it on
+entry exactly as `main.py` does. Deliberately **not** modelled, and
+documented as such: the sentiment circuit breaker and the AI early exit
+(`ai_confidence=None`). Both can only *add* exits, so every exit measured
+is one production would also take.
+
+**123-day production-path BEFORE vs AFTER.** BEFORE models the defect
+faithfully — engine never consulted, no EOD, hard-SL only:
+
+| Metric | BEFORE (defective) | AFTER (repaired) |
+|---|---|---|
+| trades / positions | 95 / 95 | 120 / 113 |
+| net profit | −₹5,557 | −₹20,088 |
+| expectancy | −₹58.50 | −₹167.40 |
+| profit factor | 0.98 | 0.91 |
+| **max drawdown** | **91.10%** | **55.34%** |
+| Q2 | 3.25 | 3.16 |
+| recovery factor | −0.06 | −0.36 |
+| win rate | 35.8% | **50.8%** |
+| realised R:R | 1.76 | 0.88 |
+| **max consecutive losses** | **8** | **5** |
+| avg holding | 102.7 min | **44.4 min** |
+| false-signal rate | 44.2% | **39.8%** |
+| first-touch edge | **−1.1pp** | **+5.3pp** |
+| MFE / MAE median (R) | 1.37 / −1.38 | 1.37 / **−1.10** |
+| rally capture | 22.3% | 21.3% |
+| premature exits | 83.6% | 81.4% |
+| median trend capture | **−44.6%** | **+5.0%** |
+| days below −₹5,000 | 16 | **11** |
+| worst day | −₹15,504 | −₹13,824 |
+| verdict | REMOVE | REMOVE |
+
+Exit mechanism mix (legs) — the clearest picture of what changed:
+
+| Mechanism | BEFORE | AFTER |
+|---|---|---|
+| `end_of_data` (harness backstop) | **39** | 0 |
+| `eod` | 0 | **21** |
+| `hard_stop` | 56 | 41 |
+| `tiered_exhaustion` | 0 | **51** |
+| `tiered_partial` | 0 | **7** |
+
+**⚠️ Read the P&L movement correctly.** BEFORE looks "less unprofitable"
+only because 39 of its 95 positions were closed by `end_of_data` — the
+*harness's* force-close at the end of each day's data. **Production has no
+such backstop**: those positions would simply have stayed open. The BEFORE
+column is therefore a generous lower bound on the real harm, and its
+91.10% drawdown, 8 consecutive losses and 1.76 realised R:R are the
+signature of unmanaged positions running, not of a better exit policy.
+Every risk measure that is comparable improved: drawdown −36pp,
+consecutive losses 8→5, daily-limit breaches 16→11, holding time halved,
+and trend capture moved from **negative** to positive.
+
+**Regime-wise:**
+
+| Regime | BEFORE net / PF | AFTER net / PF |
+|---|---|---|
+| trending | −₹80,045 / 0.25 | −₹56,073 / 0.46 |
+| sideways | +₹75,803 / 1.62 | +₹38,876 / 1.47 |
+| low_volatility | −₹3,732 / 0.63 | −₹6,284 / 0.40 |
+| gap_day | +₹2,418 / 1.11 | +₹3,392 / 1.17 |
+| high_volatility | 0 trades (3 days) | 0 trades |
+
+**Architectural findings — measured, NOT changed:**
+
+- **Phases 2 and 3 of the "3-phase" engine are unreachable in practice.**
+  Over 123 days the runner trail fired **0 times**. `config.py` sets
+  `PARTIAL_BOOK_RR = 3.0` ("Trigger at 1:3"), so Phase 1 rarely arms
+  (7 legs), and the exhaustion lock pre-empts it anyway (51 legs). The
+  engine behaves as "exhaustion lock + hard SL + EOD", not as the
+  uncapped-runner design it documents.
+- **`config.py` and `exit_manager.py` contradict each other.** The
+  docstring says "At **1:1** R:R → book 35%" and "Trail runners using
+  5-minute **9 EMA**"; the constants it actually loads are
+  `PARTIAL_BOOK_RR = 3.0` and `RUNNER_EMA_PERIOD = 50`. Each file is
+  internally consistent, so **code alone cannot say which is intended** —
+  changing either number would be arbitrary tuning, so neither was
+  touched. This is the highest-value open question for this strategy.
+- **`MomentumStrategy.check_signals` is dead in production.** The
+  environment filter, signal engine, ITM selector, trade scorer,
+  execution sizer and MTM trailing engine have **no caller outside the
+  package** — entries come from `generate_signals` via the registry.
+  Confirms audit §3.1. Wiring them in would be a redesign, not a repair.
+- **Exhaustion-lock unit mismatch: DISPROVEN.** `profit_points` is in
+  premium units and `main.py` passes the **option's own** premium ATR
+  (`resolve_option_atr`), fixed by the 2026-08-07 audit. Correctly scaled.
+- **Churn: DISPROVEN again**, now on the correct engine — median
+  exit→next entry 77.5 min, duty cycle 1.9%, 6.2% within one bar. The
+  `ema_rsi`/`advanced_ai` level-trigger mechanism does not exist here.
+- **Missed opportunities are not a defect:** of 300 uncovered rallies,
+  **98.3% had no setup at all**; 5 were signalled-but-blocked.
+- **Losses remain concentrated in `trending`** (−₹56,073, PF 0.46), which
+  is still mechanically backwards for a breakout system and remains the
+  strongest pointer to the production configuration inversion (#12).
+- **Restart exposure, flagged not fixed:** `TieredExitManager` state
+  (phase, booked lots, breakeven stop) is in-memory only. A restart with
+  an open position rebuilds `momentum_strategies[sym]` with `phase = 0`,
+  so `has_position` is False and the position is managed by the hard SL
+  alone until it closes. Fixing it means persisting engine state
+  alongside `_save_positions` — a separate, larger change.
+
+**No-regression checks:** `ema_rsi` reproduces its documented production
+baseline to the rupee (194 legs, ₹81,922, PF 1.42, DD 15.24%), and
+`buy_the_dip`/`ultra_meta_dip_swarm` are unaffected — the harness only
+routes `institutional_momentum` to the tiered engine. Risk controls
+behave: daily-loss breaker fired on 5 days, `Max trades per day reached
+(3)` still binds, mean 0.92 trades/day. No anti-churn or
+state-consistency fix was touched.
+
+**Tests:** 11 new (`test_momentum_production_exit_path.py`). Defects 1 and
+3 are pinned structurally against `main.py`'s AST/source — defect 1 by a
+real **dominance** check (every read of `df` must be dominated by a
+binding whose enclosing-branch chain is a prefix of the read's), which is
+what makes it catch a cross-branch binding rather than merely an earlier
+line. Exit semantics are pinned behaviourally against the harness mirror:
+EOD fires while the engine still wants to hold, hard SL takes precedence,
+a `target=0.0` never triggers, partial books round to whole lots, and an
+unarmed engine cannot exit. Verified to fail with each defect
+reintroduced. **Suite: 433 passed, 2 xfailed.**
+
+**Verdict: IMPROVE.** The strategy is not unsafe and is not broken by
+design — under its own designed configuration it still passes every gate
+(legacy path, correct engine: 234 legs, ₹80,048, PF 1.21, DD 20.58%,
+recovery 3.89 → **KEEP**). Its production *configuration* remains REMOVE
+(PF 0.91, DD 55.3%), which is #12's unresolved configuration inversion,
+not a defect of the strategy. Separating those two is the point: the code
+is now correct and, for the first time, actually measured.
+
+**Next highest-value experiment:** reconcile `PARTIAL_BOOK_RR` /
+`RUNNER_EMA_PERIOD` against the engine's documented intent. At 3.0 the
+strategy's entire Phase-2/3 runner design is dead code, so this is not a
+tuning question but a "which of two contradicting specifications is the
+product" question — and it needs an explicit decision before any number
+is changed.
+
+---
+
 ### #3 — Cross-cutting: drawdown is the single biggest blocker to any KEEP verdict
 - **Strategies:** advanced_ai (61.9%), enhanced_ai (61.6%), ema_rsi
   (47.9%), marl_strategy (41.3%), meta_agent_swarm (40.2%), drl (39.2%)

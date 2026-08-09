@@ -34,6 +34,7 @@ from trading_bot.strategies.premium_selection.options_selector import (
     calculate_option_price,
     select_option,
 )
+from trading_bot.strategies.momentum_strategy.exit_manager import TieredExitManager
 from trading_bot.strategies.premium_selection.signal_engine import PremiumSignalEngine
 from trading_bot.strategies.registry import registry
 
@@ -144,6 +145,16 @@ def run_strategy_backtest(
     if max_trades > 0:
         risk_manager.config.max_trades_per_day = max_trades
     exit_engine = SmartExitEngine(atr_multiplier=1.5, partial_booking_pct=50.0)
+
+    # `institutional_momentum` is the one strategy main.py does NOT manage
+    # with SmartExitEngine: its exit branch calls
+    # MomentumStrategy.manage_active_trades -> TieredExitManager and never
+    # touches the generic engine (main.py's `if strategy_name ==
+    # "institutional_momentum" ... else:`). Validating it with
+    # SmartExitEngine measured an engine production does not run for it —
+    # the same class of defect as #10's entry-path divergence, on the exit
+    # side. See `_evaluate_tiered_exit` for exactly what is mirrored.
+    tiered = TieredExitManager() if strategy_name == "institutional_momentum" else None
     result = BacktestResult(strategy_name=strategy_name, initial_capital=initial_capital)
 
     is_premium = strategy_name == "premium"
@@ -187,14 +198,22 @@ def run_strategy_backtest(
 
             pos_obj: Position = position["pos_obj"]
             current_time_str = ts.strftime("%H:%M:%S")
-            should_exit, reason, exit_qty = exit_engine.evaluate_exit(
-                pos_obj, premium, current_time_str, atr_decision.atr_value
-            )
+            if tiered is not None:
+                should_exit, reason, exit_qty = _evaluate_tiered_exit(
+                    tiered, pos_obj, premium, underlying_df.iloc[: i + 1],
+                    current_time_str, atr_decision.atr_value, exit_engine.eod_exit_time,
+                )
+            else:
+                should_exit, reason, exit_qty = exit_engine.evaluate_exit(
+                    pos_obj, premium, current_time_str, atr_decision.atr_value
+                )
             if should_exit:
                 qty = exit_qty or pos_obj.quantity
                 _close_position(result, risk_manager, position, premium, ts, reason, qty=qty, strategy_name=strategy_name)
                 if qty >= pos_obj.quantity:
                     position = None
+                    if tiered is not None:
+                        tiered.close_position()
                 else:
                     pos_obj.quantity -= qty
             continue
@@ -268,6 +287,20 @@ def run_strategy_backtest(
                  "low": entry_premium, "close": entry_premium, "volume": 0}
             ],
         }
+        if tiered is not None:
+            # Mirrors main.py's own `momentum_strategies[s].open_trade(...)`
+            # on the entry path, including its passing of the raw QUANTITY
+            # as `total_lots` — reproduced deliberately rather than
+            # corrected, because the harness's job is to model what
+            # production does. It only affects the engine's internal
+            # booked/remaining bookkeeping and its log lines; the executed
+            # quantity is derived from the position, exactly as in main.py.
+            tiered.open_position(
+                entry_price=entry_premium,
+                stop_loss=sl_decision.sl_price,
+                total_lots=quantity,
+                direction=(1 if direction == "CE" else -1),
+            )
 
     # Force-close anything still open at the end of the data.
     if position is not None:
@@ -276,6 +309,67 @@ def run_strategy_backtest(
 
     result.final_equity = risk_manager.current_equity
     return result
+
+
+def _evaluate_tiered_exit(
+    tiered: TieredExitManager,
+    pos_obj: Position,
+    premium: float,
+    underlying_so_far: pd.DataFrame,
+    current_time_str: str,
+    current_atr: float,
+    eod_exit_time: str,
+) -> tuple[bool, str, Optional[int]]:
+    """Mirror of `main.py`'s `institutional_momentum` exit branch.
+
+    Reproduces main.py's ordering exactly, because order decides outcomes:
+
+      1. hard profit target  (inert — option entries are written
+         `target=0.0`, "no fixed target", and main.py guards `> 0`)
+      2. hard stop-loss interceptor — full exit, and it runs BEFORE the
+         strategy engine is consulted
+      3. EOD square-off at `eod_exit_time`
+      4. `TieredExitManager.evaluate` — exhaustion lock, its own SL check,
+         Phase 1 partial booking at the configured R:R, Phase 2/3 runner
+         trail on the underlying's runner EMA
+
+    Deliberately NOT modelled, matching this module's existing scope
+    (see the module docstring): the sentiment circuit breaker, and the AI
+    early-exit — `ai_confidence=None` disables that branch rather than
+    inventing a confidence series the harness has no source for. Both can
+    only ADD exits, so every exit measured here is one production would
+    also take.
+
+    The candle window is `underlying_so_far`, i.e. bars up to and including
+    the current one. In a backtest every bar is closed, so this is the
+    "last COMPLETED candle" semantics main.py now feeds the engine after
+    dropping its still-forming bar.
+    """
+    if pos_obj.target and pos_obj.target > 0 and premium >= pos_obj.target:
+        return True, f"Hard TP Reached ({premium:.2f} >= {pos_obj.target:.2f})", None
+
+    if pos_obj.stop_loss and pos_obj.stop_loss > 0 and premium <= pos_obj.stop_loss:
+        return True, f"Hard SL Hit ({premium:.2f} <= {pos_obj.stop_loss:.2f})", None
+
+    time_only = current_time_str.split(" ")[-1] if " " in current_time_str else current_time_str
+    if time_only >= eod_exit_time:
+        return True, "Time-based EOD Exit", None
+
+    decision = tiered.evaluate(
+        premium, underlying_so_far, ai_confidence=None, current_atr=current_atr
+    )
+    if not decision.should_exit:
+        return False, "", None
+
+    qty_pct = decision.quantity_pct
+    if qty_pct < 1.0:
+        # main.py's own lot rounding for a partial book.
+        raw_qty = int(pos_obj.quantity * qty_pct)
+        lots = max(1, raw_qty // pos_obj.lot_size)
+        exit_qty = min(lots * pos_obj.lot_size, pos_obj.quantity)
+    else:
+        exit_qty = pos_obj.quantity
+    return True, decision.reason, exit_qty
 
 
 def _close_position(

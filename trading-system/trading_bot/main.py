@@ -1064,6 +1064,28 @@ async def run_live_bot(symbols: List[str]) -> None:
                             logger.warning("Exit check failed to fetch premium for %s: %s", open_position.symbol, exc)
                             return
 
+            # The UNDERLYING index's own candles. Bound on EVERY path, not
+            # just the non-option one below.
+            #
+            # Root-cause fix (found 2026-08-09 institutional_momentum deep
+            # audit): this assignment used to live only inside the `else`
+            # (non-option) branch, while the institutional_momentum exit
+            # branch further down reads `df` unconditionally (to resample
+            # 5-min candles for TieredExitManager and to build AI-confidence
+            # features). Python makes `df` local to the WHOLE of on_tick the
+            # moment it is assigned anywhere in it, so on an OPTION position
+            # — which is every position this strategy ever takes — that read
+            # hit an unbound local and raised UnboundLocalError. The broad
+            # `except Exception` at the end of on_tick logged it and moved
+            # on, so the engine looked healthy while TieredExitManager was
+            # never once consulted: no partial booking, no runner trail, no
+            # exhaustion lock, no AI early exit. Only the hard-SL/target
+            # interceptors above (which run BEFORE this point) and the
+            # sentiment breaker ever closed a position. Same scoping defect
+            # class as the 2026-08-02 `datetime` shadowing bug in this very
+            # function. See docs/STRATEGY_IMPROVEMENT_BACKLOG.md #13.
+            df = aggregator.get_latest_dataframe(sym)
+
             if is_opt_pos:
                 # Root-cause fix (found 2026-08-07 audit,
                 # docs/STRATEGY_AUDIT_2026-08-07.md §2.1): this used to
@@ -1087,7 +1109,6 @@ async def run_live_bot(symbols: List[str]) -> None:
                 atr_decision = resolve_option_atr(option_df, exit_check_price, settings)
                 current_atr = atr_decision.atr_value
             else:
-                df = aggregator.get_latest_dataframe(sym)
                 # Proper 14-bar rolling ATR (not single-candle range which is too noisy)
                 if not df.empty and len(df) >= 2:
                     tr_series = (df["high"] - df["low"]).abs()
@@ -1159,16 +1180,55 @@ async def run_live_bot(symbols: List[str]) -> None:
             
                 if strategy_name == "institutional_momentum" and sym in momentum_strategies:
                     m_strategy = momentum_strategies[sym]
-                    # Requires 5min dataframe for TieredExitManager
+
+                    # ── EOD square-off (this branch bypasses SmartExitEngine) ──
+                    # Root-cause fix (2026-08-09 deep audit): the 15:15 IST
+                    # intraday square-off is implemented inside
+                    # SmartExitEngine.evaluate_exit, and this strategy takes
+                    # the branch that never calls it. TieredExitManager has
+                    # no time-based rule of its own — by design, its Phase 2
+                    # runner is explicitly uncapped — so an
+                    # institutional_momentum position had nothing at all to
+                    # close it at the end of the session. For an intraday
+                    # system buying near-expiry options that means carrying
+                    # overnight gap risk and a full night of theta on a
+                    # contract that may expire the next day. Reuses
+                    # `exit_engine.eod_exit_time` rather than re-declaring
+                    # the cutoff so both paths keep one definition.
+                    _t_only = current_time.split(" ")[-1] if " " in current_time else current_time
+                    _eod_reached = _t_only >= exit_engine.eod_exit_time
+                    if _eod_reached:
+                        should_exit = True
+                        reason = "Time-based EOD Exit"
+                        exit_qty = open_position.quantity
+
+                    # Requires 5min dataframe for TieredExitManager.
+                    #
+                    # The final resampled bar is the one still FORMING (with
+                    # label='right'/closed='right' a bar stamped 09:20 covers
+                    # 09:15-09:20, so at 09:17 it exists but is incomplete).
+                    # TieredExitManager's Phase 3 rule is "exit when a candle
+                    # CLOSES on the wrong side of the runner EMA" and its own
+                    # code comment states it evaluates the last COMPLETED
+                    # candle. Passing the forming bar silently degraded that
+                    # into "exit the instant price TOUCHES the wrong side",
+                    # since ticks arrive ~1/s — turning a close-confirmation
+                    # rule into an intrabar-noise trigger and cutting runners
+                    # early. Dropping the incomplete bar restores the
+                    # documented semantics and makes `iloc[-1]` inside the
+                    # engine mean the same thing live as it does on the
+                    # complete-bar history a backtest replays.
                     df_5min = df.resample('5min', label='right', closed='right').agg({
                         'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'
                     }).dropna() if not df.empty else df
-                    
+                    if len(df_5min) > 1:
+                        df_5min = df_5min.iloc[:-1]
+
                     # Fetch AI Confidence for early exit
                     features = compute_features(df.tail(60)).tail(1)
                     confidence = ai_filter.predict(features)["confidence"].iloc[-1] if (ai_filter.is_trained and not features.empty) else 1.0
-                    
-                    decision = m_strategy.manage_active_trades(
+
+                    decision = None if _eod_reached else m_strategy.manage_active_trades(
                         exit_check_price,
                         df_5min,
                         ai_confidence=confidence * 100,
