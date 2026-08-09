@@ -208,11 +208,13 @@ def _duty_cycle(sig: pd.Series) -> dict:
     }
 
 
-def _evaluate(strategy, df, settings, capital, runs, regimes):
+def _evaluate(strategy, df, settings, capital, runs, regimes, risk_config=None):
     _reset_cross_strategy_singletons()
     reasons: Counter = Counter()
     with _record_risk_reasons(reasons):
-        trades, diag = run_strategy_day_isolated(strategy, df, "NIFTY", capital, settings=settings)
+        trades, diag = run_strategy_day_isolated(
+            strategy, df, "NIFTY", capital, settings=settings, risk_config=risk_config
+        )
     m = compute_metrics(trades, capital)
     by_regime = {r: compute_metrics(
         [t for t in trades if pd.Timestamp(t.entry_time).date() in set(regimes[regimes == r].index)],
@@ -248,11 +250,28 @@ def main() -> None:
     ap.add_argument("--end", default="2026-07-31")
     ap.add_argument("--initial-capital", type=float, default=100_000.0)
     ap.add_argument("--out", default=None)
+    # Research options for the clean-sheet programme. Both default to the
+    # established behaviour, so every existing invocation is unchanged.
+    ap.add_argument("--window", choices=["dev", "oos"], default=None,
+                    help="research split from research_config; overrides --start/--end")
+    ap.add_argument("--risk-tier", choices=["default", "base"], default="default",
+                    help="'base' pins sizing to the 1%% base tier (research only)")
     args = ap.parse_args()
+
+    risk_config = None
+    if args.risk_tier == "base":
+        from .research_config import BASE_RISK_TIER
+        risk_config = BASE_RISK_TIER
+
+    if args.window:
+        from .research_config import DEV_END, DEV_START, OOS_END, OOS_START
+        args.start, args.end = (
+            (DEV_START, DEV_END) if args.window == "dev" else (OOS_START, OOS_END)
+        )
 
     df = pd.read_csv(args.data_path)
     df["datetime"] = pd.to_datetime(df["datetime"])
-    df = df.set_index("datetime").loc[args.start:args.end]
+    df = df.set_index("datetime").sort_index().loc[args.start:args.end]
     regimes = classify_daily_regimes(df)
     prod = load_production_settings()
     runs = find_missed_runs(df, pd.DataFrame(columns=["direction", "date", "entry_time", "exit_time"]))
@@ -261,14 +280,18 @@ def main() -> None:
     out = {}
     for label, st in paths:
         print(f"running {label}...", file=sys.stderr)
-        out[label] = _evaluate(args.strategy, df, st, args.initial_capital, runs, regimes)
+        out[label] = _evaluate(args.strategy, df, st, args.initial_capital, runs,
+                               regimes, risk_config=risk_config)
 
     P = out[paths[0][0]]
     L: list[str] = []
     A = L.append
     A(f"# Strategy audit — `{args.strategy}`\n")
     A(f"Window: {df.index.min()} → {df.index.max()} "
-      f"({df.index.normalize().nunique()} trading days)  ")
+      f"({df.index.normalize().nunique()} trading days)"
+      + (f" — **{args.window.upper()}** split" if args.window else "") + "  ")
+    A(f"Risk tier: **{args.risk_tier}**"
+      + (" (1% base, research)" if args.risk_tier == "base" else " (production defaults)") + "  ")
     A(f"Rally set: **{len(runs)}** sustained underlying moves (≥0.30% within 90 min).  ")
     flags = {k: v for k, v in prod.items() if k.startswith("enable_") and "filter" in k}
     A(f"Production entry flags: `{flags}`, daily cap "

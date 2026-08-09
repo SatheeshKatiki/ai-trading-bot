@@ -27,6 +27,8 @@ from typing import Optional
 
 import pandas as pd
 
+from shared.risk import RiskConfig
+
 from .harness import BacktestResult, SimTrade, run_strategy_backtest
 from .metrics import compute_metrics
 from .production_settings import load_production_settings, resolve_max_trades_per_day
@@ -50,6 +52,7 @@ def run_strategy_day_isolated(
     initial_capital: float = 100_000.0,
     settings: Optional[dict] = None,
     dates: Optional[set] = None,
+    risk_config: Optional[RiskConfig] = None,
 ) -> tuple[list[SimTrade], dict]:
     """Run `strategy_name` one calendar day at a time (fresh RiskManager
     each day — matching how a real trading day starts with no carried
@@ -77,7 +80,7 @@ def run_strategy_day_isolated(
         result = run_strategy_backtest(
             strategy_name, window_df, instrument=instrument,
             initial_capital=initial_capital, settings=settings,
-            tradeable_dates={day},
+            tradeable_dates={day}, risk_config=risk_config,
         )
         all_trades.extend(result.trades)
         diagnostics["days_run"] += 1

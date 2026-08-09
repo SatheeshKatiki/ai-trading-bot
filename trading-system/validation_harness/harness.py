@@ -28,7 +28,13 @@ import pandas as pd
 
 from shared.exits.exit_engine import Position, SmartExitEngine
 from shared.market_hours import is_before_eod_cutoff, is_market_open
-from shared.risk import RiskManager, TradeRecord, resolve_initial_stop, resolve_option_atr
+from shared.risk import (
+    RiskConfig,
+    RiskManager,
+    TradeRecord,
+    resolve_initial_stop,
+    resolve_option_atr,
+)
 from trading_bot.strategies.premium_selection.options_selector import (
     OptionContract,
     calculate_option_price,
@@ -114,6 +120,7 @@ def run_strategy_backtest(
     vol: float = DEFAULT_IV,
     min_bars_for_premium_engine: int = 200,
     tradeable_dates: Optional[set] = None,
+    risk_config: Optional[RiskConfig] = None,
 ) -> BacktestResult:
     """Replay `underlying_df` (a DatetimeIndex-ed OHLCV frame) through the
     real production pipeline for `strategy_name`, returning every
@@ -133,7 +140,16 @@ def run_strategy_backtest(
         (the default, single-continuous-run behavior).
     """
     settings = dict(settings or {})
-    risk_manager = RiskManager(initial_capital=initial_capital)
+    # `risk_config=None` keeps RiskManager's own defaults — the exact
+    # behaviour every previously-published result was produced with, so
+    # passing nothing changes nothing. It exists so a NEW strategy can be
+    # validated at the 1% base risk tier without editing
+    # `config/settings.json`: live sizing currently lands on the 3.5%
+    # high-confidence tier because `enable_ai_filter` is unset, which pins
+    # confidence to 1.0 and clears `high_confidence_threshold` (0.85), and
+    # this harness passes that same 1.0. Research risk tiers belong here,
+    # in an explicit argument, not in production configuration.
+    risk_manager = RiskManager(initial_capital=initial_capital, config=risk_config)
 
     # Daily trade cap, wired the way main.py wires it (same key precedence,
     # same target attribute). Without this the harness left the cap at
