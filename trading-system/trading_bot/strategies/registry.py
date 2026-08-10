@@ -14,20 +14,37 @@ logger = logging.getLogger(__name__)
 
 
 def _owned_filters(strategy_func: Callable) -> frozenset:
-    """Institutional filters the strategy applies itself, declared as an
-    `OWNS_INSTITUTIONAL_FILTERS` constant on its module (the same
-    module-constant pattern as `STRATEGY_NAME`).
+    """Institutional filters the global layer must NOT apply to this
+    strategy, declared as a module constant (the same module-constant
+    pattern as `STRATEGY_NAME`). Two constants are recognised, because
+    there are two genuinely different reasons to opt out:
 
-    A strategy that reads the `enable_*_filter` kwargs inside its own
-    `generate_signals` has already acted on them by the time its signals
-    reach the global filter layer below; running them again is at best
-    redundant and at worst contradictory, when the two layers give the same
-    flag opposite meanings. Strategies that declare nothing — the default —
-    are unaffected and keep the global filters exactly as before.
+    `OWNS_INSTITUTIONAL_FILTERS`
+        The strategy reads the `enable_*_filter` kwargs and applies those
+        filters *itself*, so by the time its signals reach the global
+        layer they have already been acted on. Running them twice is at
+        best redundant and at worst contradictory — `institutional_momentum`
+        and the global layer read `enable_squeeze_filter` with opposite
+        signs, which made the surviving set `A & ~A` and produced zero
+        trades for that strategy's entire life.
+
+    `SKIP_INSTITUTIONAL_FILTERS`
+        The strategy does not implement them at all and is declaring them
+        inapplicable to its design. Kept separate from the above rather
+        than overloading one name, because "I already did this" and "this
+        should not be done to me" are different claims and a reader has to
+        be able to tell which is being made.
+
+    Strategies declaring neither — the default — are unaffected and keep
+    the global filters exactly as before.
     """
     module = sys.modules.get(getattr(strategy_func, "__module__", "") or "")
-    owned = getattr(module, "OWNS_INSTITUTIONAL_FILTERS", None)
-    return frozenset(owned) if owned else frozenset()
+    declared: set = set()
+    for attr in ("OWNS_INSTITUTIONAL_FILTERS", "SKIP_INSTITUTIONAL_FILTERS"):
+        value = getattr(module, attr, None)
+        if value:
+            declared |= set(value)
+    return frozenset(declared)
 
 
 class StrategyRegistry:

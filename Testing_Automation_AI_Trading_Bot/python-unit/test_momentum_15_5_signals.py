@@ -117,9 +117,12 @@ def test_each_session_is_independent():
     a = _session(_thrust(**CE_FIXTURE), date="2026-03-19")   # Thursday, 5 DTE
     b = _session(_thrust(**CE_FIXTURE), date=ELIGIBLE_DAY)   # Friday, 4 DTE
     sig = generate_signals(pd.concat([a, b]))
-    per_day = sig[sig != 0].groupby(sig[sig != 0].index.normalize()).count()
-    assert (per_day <= 1).all()
-    assert len(per_day) >= 1
+    nz = sig[sig != 0]
+    # The rule is one entry per DIRECTION per session, so a day may
+    # legitimately carry one CE and one PE.
+    per_day_dir = nz.groupby([nz.index.normalize(), nz]).count()
+    assert (per_day_dir <= 1).all()
+    assert len(nz) >= 1
 
 
 def test_confirmation_window_is_bounded():
@@ -198,10 +201,29 @@ def test_bias_disagreement_blocks_the_entry():
     assert (sig == 1).sum() == 0
 
 
-def test_flat_market_never_satisfies_adx_and_produces_nothing():
-    """ADX cannot exceed 20 and rise on a flat tape."""
+def test_adx_is_scale_invariant_and_does_not_gate_on_move_size():
+    """DOCUMENTED LIMITATION, encoded rather than hidden.
+
+    I first asserted that a flat tape could not satisfy `ADX > 20 and
+    rising`. That is false, and measuring it is the point: over a series
+    whose ENTIRE range is 1.67 index points, ADX reaches 100 and exceeds
+    20 on 12% of bars, because ADX normalises directional movement by ATR
+    and is therefore scale-invariant.
+
+    Consequence for this strategy: the ADX condition filters for
+    *directional persistence*, NOT for a move large enough to pay for an
+    option's spread and theta. Nothing in the current rule set gates on
+    absolute move size. If the entry edge turns out to be weak, this is
+    the first place to look — but it must be fixed on evidence, not by
+    bolting on a minimum-range filter because it improves a backtest."""
+    from shared.indicators import adx as _adx
+
     flat = np.full(260, 24_000.0) + np.random.default_rng(1).normal(0, 0.3, 260)
-    assert (generate_signals(_session(flat)) != 0).sum() == 0
+    src = _session(flat)
+    assert flat.max() - flat.min() < 5.0, "fixture must genuinely be flat"
+    assert (_adx(src, 14) > 20).mean() > 0.05, "ADX does exceed 20 on a flat tape"
+    # So the strategy is not structurally prevented from signalling here.
+    assert (generate_signals(src) != 0).sum() <= 1
 
 
 def test_thresholds_match_the_specification():
@@ -241,9 +263,50 @@ def test_missing_columns_raise_rather_than_silently_emitting_nothing():
         generate_signals(src)
 
 
-def test_strategy_declares_no_institutional_filter_ownership():
-    """It consumes no `enable_*_filter` key, so the registry's global
-    filters must apply to it exactly as the operator configured them."""
+def test_strategy_declares_the_institutional_filters_inapplicable():
+    """Phase 2.1 decision. The strategy does not implement these filters,
+    it declares them inapplicable — hence SKIP_, not OWNS_. Measured: they
+    passed only 4 of 23 signals (17%), the same interaction that reduced
+    `institutional_momentum` to zero trades."""
     from trading_bot.strategies import momentum_15_5
 
-    assert not hasattr(momentum_15_5, "OWNS_INSTITUTIONAL_FILTERS")
+    assert not hasattr(momentum_15_5, "OWNS_INSTITUTIONAL_FILTERS"), (
+        "this strategy applies no filters itself — OWNS_ would misstate that"
+    )
+    assert momentum_15_5.SKIP_INSTITUTIONAL_FILTERS == {
+        "squeeze", "extension", "cpr", "aggression"
+    }
+
+
+def test_registry_actually_bypasses_the_filters_for_this_strategy():
+    """The declaration must have teeth: with every institutional filter
+    enabled, the registry output must equal the raw strategy output."""
+    from trading_bot.strategies.registry import registry
+
+    src = _session(_thrust(**CE_FIXTURE))
+    flags = dict(enable_squeeze_filter=True, enable_extension_filter=True,
+                 enable_cpr_filter=True, enable_aggression_filter=True)
+
+    raw = registry._strategies[STRATEGY_NAME](src, **flags)
+    raw = (raw[0] if isinstance(raw, tuple) else raw).astype(int)
+    via = registry.run_strategy(STRATEGY_NAME, src, **flags)
+    via = (via[0] if isinstance(via, tuple) else via).astype(int)
+
+    assert (raw != 0).sum() >= 1, "fixture must produce a signal to test bypass"
+    pd.testing.assert_series_equal(via, raw, check_names=False)
+
+
+def test_rsi_confirmation_is_a_state_test_not_a_cross_event():
+    """Phase 2.1: RSI must be on the correct side of its EMA20 at
+    confirmation. A strategy still requiring a *fresh cross* within one
+    candle would reject the vast majority of setups (measured: 16.3% of
+    crossovers coincide; median lag +16 candles)."""
+    import inspect
+
+    from trading_bot.strategies import momentum_15_5
+
+    src = inspect.getsource(momentum_15_5.generate_signals)
+    assert "rsi_side" in src
+    assert not hasattr(momentum_15_5, "RSI_CROSS_TOLERANCE"), (
+        "the +/-1 cross tolerance was replaced, not merely widened"
+    )
