@@ -25,6 +25,7 @@ import {
   Frown
 } from "lucide-react";
 import { toast } from "sonner";
+import { extractApiError } from "@/lib/api-error";
 import Image from "next/image";
 
 interface AuthStatus {
@@ -191,7 +192,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setPassword("");
         setConfirmPassword("");
       } else {
-        const errMsg = data.detail || data.error || "Failed to create account";
+        const errMsg = extractApiError(data, "Failed to create account");
         if (errMsg.toLowerCase().includes("already used") || errMsg.toLowerCase().includes("registered")) {
           const customMsg = "Sorry already used this email address";
           setEmailError(customMsg);
@@ -237,8 +238,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setIsAuthenticated(true);
         setLoginPassword("");
       } else {
-        toast.error(data.detail || data.error || "Invalid login credentials");
-        if (data.detail && data.detail.includes("Locked out")) {
+        const loginErr = extractApiError(data, "Invalid login credentials");
+        toast.error(loginErr);
+        if (loginErr.includes("Locked out")) {
           setStatus(prev => prev ? { ...prev, lockedOut: true, lockoutSeconds: 300 } : null);
         }
       }
@@ -274,7 +276,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setPassword("");
         setClientId("");
       } else {
-        toast.error(data.detail || data.error || "Password reset failed");
+        toast.error(extractApiError(data, "Password reset failed"));
       }
     } catch (e) {
       toast.error("Network error. Make sure API bridge is running.");

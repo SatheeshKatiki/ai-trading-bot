@@ -3,6 +3,7 @@ import { useState } from "react";
 import { useLiveMarketStore, type Trade } from "@/store/useLiveMarketStore";
 import { XCircle, Clock, CheckCircle2, AlertTriangle, X, Zap } from "lucide-react";
 import { toast } from "sonner";
+import { extractApiError } from "@/lib/api-error";
 import { ExecutionFeed } from "./execution-feed";
 import { parseBackendDatetimeToEpochSeconds, getISTDateStringFromEpoch, getTodayISTDateString } from "@/lib/ist-time";
 
@@ -123,7 +124,7 @@ export function LivePositions({ urlSymbol }: { urlSymbol: string }) {
             if (res.ok) {
                 toast.success(`Exited: ${data.order_id || 'Success'}`, { id: "exit" });
             } else {
-                toast.error(data.error || "Execution failed", { id: "exit" });
+                toast.error(extractApiError(data, "Execution failed"), { id: "exit" });
             }
         } catch (e) {
             toast.error(e instanceof Error ? e.message : "Error", { id: "exit" });

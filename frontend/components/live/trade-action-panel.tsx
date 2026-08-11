@@ -4,6 +4,7 @@ import { NumberInput } from "@/components/number-input";
 import { useLiveSettingsStore } from '@/store/useLiveSettingsStore';
 import { useLiveMarketStore } from '@/store/useLiveMarketStore';
 import { toast } from 'sonner';
+import { extractApiError } from '@/lib/api-error';
 
 type FilterKey =
     | "enable_ema_filter" | "enable_volume_filter" | "enable_adx_filter"
@@ -325,7 +326,7 @@ export function TradeActionPanel({ urlSymbol, defaultBaseQty }: TradeActionPanel
             if (res.ok) {
                 toast.success(`Order Placed: ${data.order_id || 'Success'}`, { id: 'manual-exec' });
             } else {
-                toast.error(data.error || data.detail || 'Execution failed', { id: 'manual-exec' });
+                toast.error(extractApiError(data, 'Execution failed'), { id: 'manual-exec' });
             }
         } catch (err) {
             toast.error(err instanceof Error ? err.message : 'Execution failed', { id: 'manual-exec' });
