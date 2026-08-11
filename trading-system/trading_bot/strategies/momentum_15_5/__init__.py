@@ -121,7 +121,28 @@ MIN_DTE = 2
 #: strategy, not a research-only override.
 SKIP_INSTITUTIONAL_FILTERS = frozenset({"squeeze", "extension", "cpr", "aggression"})
 
-__all__ = ["STRATEGY_NAME", "MIN_DTE", "SKIP_INSTITUTIONAL_FILTERS", "generate_signals"]
+#: Opt into `SmartExitEngine`'s dynamic Fibonacci trail.
+#:
+#: Measured 2026-08-10: this entry wins 73% of the time but realises only
+#: 0.39 R:R, giving a gross edge of ~Rs 25/leg against ~Rs 95/leg of
+#: friction. It is directionally right and gets paid too little — the
+#: signature of winners being cut short, not of a bad signal. The fib
+#: trail exists to test exactly that hypothesis: hold the runner to a
+#: measured extension of the pre-entry swing instead of to a
+#: premium-percentage giveback.
+#:
+#: Declared here rather than configured, so the live engine and the
+#: harness resolve it the same way.
+USE_DYNAMIC_FIB_TRAIL = True
+
+#: Candles before the entry signal used to define the swing the
+#: extensions are projected from. Specification value, not swept.
+FIB_SWING_LOOKBACK = 15
+
+__all__ = [
+    "STRATEGY_NAME", "MIN_DTE", "SKIP_INSTITUTIONAL_FILTERS",
+    "USE_DYNAMIC_FIB_TRAIL", "FIB_SWING_LOOKBACK", "generate_signals",
+]
 
 
 def _bias_series(df: pd.DataFrame) -> np.ndarray:

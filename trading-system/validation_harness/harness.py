@@ -21,12 +21,13 @@ real market data (see `premium_simulator.py`).
 """
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
 import pandas as pd
 
-from shared.exits.exit_engine import Position, SmartExitEngine
+from shared.exits.exit_engine import Position, SmartExitEngine, plan_fib_levels
 from shared.market_hours import is_before_eod_cutoff, is_market_open
 from shared.risk import (
     RiskConfig,
@@ -167,7 +168,20 @@ def run_strategy_backtest(
     max_trades = resolve_max_trades_per_day(settings)
     if max_trades > 0:
         risk_manager.config.max_trades_per_day = max_trades
-    exit_engine = SmartExitEngine(atr_multiplier=1.5, partial_booking_pct=50.0)
+    # A strategy may opt into the engine's dynamic Fibonacci trail by
+    # declaring it on its module (the same module-constant pattern as
+    # STRATEGY_NAME). Strategies declaring nothing get `False`, which is
+    # the engine's default and leaves their execution bit-identical.
+    _strategy_mod = sys.modules.get(
+        getattr(registry._strategies.get(strategy_name), "__module__", "") or ""
+    )
+    use_fib = bool(getattr(_strategy_mod, "USE_DYNAMIC_FIB_TRAIL", False))
+    fib_lookback = int(getattr(_strategy_mod, "FIB_SWING_LOOKBACK", 15))
+
+    exit_engine = SmartExitEngine(
+        atr_multiplier=1.5, partial_booking_pct=50.0,
+        use_dynamic_fib_trail=use_fib,
+    )
 
     # `institutional_momentum` is the one strategy main.py does NOT manage
     # with SmartExitEngine: its exit branch calls
@@ -245,9 +259,28 @@ def run_strategy_backtest(
                     current_time_str, atr_decision.atr_value, exit_engine.eod_exit_time,
                 )
             else:
+                # Underlying context for the opt-in fib trail. `favourable`
+                # is the intrabar extreme in the trade's direction, so a
+                # target touched inside the candle is detected instead of
+                # being lost to the close. Both are None-safe: with the
+                # trail off the engine never reads them.
+                bar = underlying_df.iloc[i]
+                favourable = float(bar["high"]) if position["direction"] == "CE" else float(bar["low"])
                 should_exit, reason, exit_qty = exit_engine.evaluate_exit(
-                    pos_obj, premium, current_time_str, atr_decision.atr_value
+                    pos_obj, premium, current_time_str, atr_decision.atr_value,
+                    underlying_price=spot,
+                    underlying_favourable=favourable if use_fib else None,
                 )
+                if should_exit and reason == "Fib 1.0 Target Hit" and pos_obj.fib_levels:
+                    # Filled AT the target, not at the candle close — the
+                    # engine detected the touch intrabar, so pricing the
+                    # exit at the close would hand back profit the rule
+                    # says was taken.
+                    premium = calculate_option_price(
+                        spot=float(pos_obj.fib_levels[2]), strike=float(position["strike"]),
+                        days_to_expiry=_dte(position["expiry"], ts, bar_date),
+                        vol=vol, option_type=position["option_type"],
+                    )
             if should_exit:
                 qty = exit_qty or pos_obj.quantity
                 _close_position(result, risk_manager, position, premium, ts, reason, qty=qty, strategy_name=strategy_name, friction=friction)
@@ -337,6 +370,18 @@ def run_strategy_backtest(
                  "low": entry_premium, "close": entry_premium, "volume": 0}
             ],
         }
+        if use_fib and i >= fib_lookback:
+            # Swing over the candles PRIOR to the signal bar — the entry
+            # bar itself must not help define the level it is measured
+            # against.
+            window = underlying_df.iloc[i - fib_lookback:i]
+            levels = plan_fib_levels(
+                float(window["high"].max()), float(window["low"].min()),
+                1 if direction == "CE" else -1,
+            )
+            if levels is not None:
+                pos_obj.fib_levels = levels
+                pos_obj.fib_direction = 1 if direction == "CE" else -1
         if tiered is not None:
             # Mirrors main.py's own `momentum_strategies[s].open_trade(...)`
             # on the entry path, including its passing of the raw QUANTITY

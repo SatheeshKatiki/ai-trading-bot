@@ -38,6 +38,40 @@ class Position:
     sl_order_id: str = None  # Exchange ID for the active Hard SL order
     max_pnl_pct: float = 0.0 # Peak profit % reached since entry, for the percentage-based trailing stop
 
+    # ── Dynamic Fibonacci trail (opt-in; see SmartExitEngine) ─────────
+    # All default to "no plan", so a Position constructed anywhere else in
+    # the codebase behaves exactly as before and the fib block is skipped.
+    #: (0.5, 0.618, 1.0) extension levels expressed in UNDERLYING price.
+    fib_levels: Optional[tuple] = None
+    #: +1 = extensions project upward (CE), -1 = downward (PE).
+    fib_direction: int = 0
+    #: 0 = nothing reached, 1 = 0.5 reached, 2 = 0.618 reached.
+    fib_stage: int = 0
+    #: Option premium observed at the moment 0.5 was reached — this is the
+    #: level the 0.618 trail locks in, so it has to be remembered.
+    fib_premium_at_half: float = 0.0
+
+
+def plan_fib_levels(swing_high: float, swing_low: float, direction: int):
+    """Fibonacci EXTENSION levels for a breakout, in underlying price.
+
+    The swing range is projected beyond the swing in the trade's
+    direction: upward from the swing high for a CE, downward from the
+    swing low for a PE. Anchoring each side to the extreme it is breaking
+    makes the two directions exact mirrors — a CE at 0.618 and a PE at
+    0.618 are the same distance travelled, measured the same way.
+
+    Returns `(level_0_5, level_0_618, level_1_0)`, or None when the swing
+    is degenerate (zero or inverted range), which a caller must treat as
+    "no fib plan" rather than as levels sitting on top of each other.
+    """
+    span = float(swing_high) - float(swing_low)
+    if not span > 0:
+        return None
+    if direction >= 0:
+        return (swing_high + 0.5 * span, swing_high + 0.618 * span, swing_high + span)
+    return (swing_low - 0.5 * span, swing_low - 0.618 * span, swing_low - span)
+
 
 class SmartExitEngine:
     """Engine for determining when to exit a position.
@@ -57,6 +91,7 @@ class SmartExitEngine:
         eod_exit_time: str = "15:15:00",
         partial_booking_pct: float = 50.0,
         partial_target_reward: float = 1.0,
+        use_dynamic_fib_trail: bool = False,
     ):
         """
         Parameters
@@ -88,6 +123,10 @@ class SmartExitEngine:
         self.eod_exit_time = eod_exit_time
         self.partial_booking_pct = partial_booking_pct
         self.partial_target_reward = partial_target_reward
+        # OFF by default. When False, `evaluate_exit` never reads the two
+        # new underlying arguments and never touches the fib state, so
+        # every existing strategy takes byte-identical decisions.
+        self.use_dynamic_fib_trail = use_dynamic_fib_trail
 
     def evaluate_exit(
         self,
@@ -95,6 +134,8 @@ class SmartExitEngine:
         current_price: float,
         current_time: str,  # HH:MM:SS format expected for intraday
         current_atr: float,
+        underlying_price: Optional[float] = None,
+        underlying_favourable: Optional[float] = None,
     ) -> tuple[bool, str, Optional[int]]:
         """Evaluate if the position should be exited or partially booked.
 
@@ -144,6 +185,65 @@ class SmartExitEngine:
         if time_only >= self.eod_exit_time:
             logger.info("EOD Exit triggered for %s at %s", position.symbol, current_time)
             return True, "Time-based EOD Exit", None
+
+        # 2b. Dynamic Fibonacci trail — OPT-IN, anchored to the UNDERLYING.
+        #
+        # Deliberately placed after the EOD square-off (a time stop must
+        # still win) and BEFORE the hard stop-loss check below, so that a
+        # stop this block ratchets upward is honoured by the existing
+        # check on the very same evaluation rather than a bar later.
+        #
+        # Why the underlying and not the premium: the option's premium is
+        # a function of spot, time and vol, so a premium-anchored "target"
+        # silently moves with theta and IV. The trade thesis is about
+        # where the INDEX goes, so the levels are expressed there and only
+        # the resulting stop is expressed in premium.
+        #
+        # `underlying_favourable` is the intrabar extreme in the trade's
+        # direction (bar high for CE, low for PE). Using it means a target
+        # touched inside a candle is detected rather than missed because
+        # the candle happened to close back below it — the "candle-close
+        # only" behaviour that would erase realised option profits. Live,
+        # where this is evaluated per tick, the two arguments are simply
+        # the same current price.
+        if (
+            self.use_dynamic_fib_trail
+            and position.fib_levels
+            and underlying_price is not None
+        ):
+            probe = underlying_favourable if underlying_favourable is not None else underlying_price
+            l50, l618, l100 = position.fib_levels
+            up = position.fib_direction >= 0
+
+            def _reached(level: float) -> bool:
+                return probe >= level if up else probe <= level
+
+            if _reached(l100):
+                return True, "Fib 1.0 Target Hit", None
+
+            # At most ONE stage advances per evaluation. Without this, a
+            # single large bar that clears both 0.5 and 0.618 would record
+            # the 0.5 premium and immediately trail the stop up to it —
+            # i.e. to the current price — stopping the position out on the
+            # spot for no reason.
+            if position.fib_stage < 1 and _reached(l50):
+                position.fib_stage = 1
+                position.fib_premium_at_half = current_price
+                # Cost-to-cost. Ratchet only: an option stop never loosens.
+                position.stop_loss = max(position.stop_loss, position.entry_price)
+                logger.info(
+                    "FIB 0.5 reached for %s (underlying %.2f) — SL to breakeven %.2f",
+                    position.symbol, probe, position.stop_loss,
+                )
+            elif position.fib_stage < 2 and _reached(l618):
+                position.fib_stage = 2
+                if position.fib_premium_at_half > 0:
+                    position.stop_loss = max(position.stop_loss, position.fib_premium_at_half)
+                    logger.info(
+                        "FIB 0.618 reached for %s (underlying %.2f) — SL trailed to the "
+                        "premium held at 0.5 (%.2f)",
+                        position.symbol, probe, position.stop_loss,
+                    )
 
         # 3. Hard Stop-Loss and Profit Target
         #
@@ -260,8 +360,23 @@ class SmartExitEngine:
             # whichever fires first wins. Tracks the peak profit % reached
             # since activation and exits once profit has given back more
             # than trailing_offset_pct from that peak.
-            position.max_pnl_pct = max(position.max_pnl_pct, profit_pct)
-            if profit_pct <= position.max_pnl_pct - self.trailing_offset_pct:
-                return True, "Trailing Stop-Loss Hit (Offset)", None
+            #
+            # Suppressed when the dynamic fib trail is active, because the
+            # two are competing trailing mechanisms and this one always
+            # wins: `trailing_offset_pct` is a give-back in percentage
+            # POINTS of P&L, and measured on real option paths 92.4% of
+            # individual 5-minute bars move the premium by more than the
+            # entire 0.35pp allowance on their own (see
+            # validation_harness/results/exit_quality_ema_rsi.md). It is
+            # therefore "exit on the first close below the peak", which is
+            # precisely the behaviour the fib trail exists to replace —
+            # leaving it on would let it cut every runner long before any
+            # extension level could be reached. The ATR trail above stays
+            # active: it is scaled in the option's own premium units and
+            # acts as a genuine safety net rather than a hair trigger.
+            if not self.use_dynamic_fib_trail:
+                position.max_pnl_pct = max(position.max_pnl_pct, profit_pct)
+                if profit_pct <= position.max_pnl_pct - self.trailing_offset_pct:
+                    return True, "Trailing Stop-Loss Hit (Offset)", None
 
         return False, "", None
