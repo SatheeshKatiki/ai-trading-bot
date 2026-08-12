@@ -206,6 +206,40 @@ class FyersBroker(BaseBroker):
         from .token_cache import load_token
         return load_token("fyers")
 
+    def _refresh_fyers_model(self) -> bool:
+        """Rebuild `_fyers_model` from whatever token is currently cached
+        on disk. Returns whether a token was found to rebuild from.
+
+        Root cause (found live, 2026-08-12): `_fyers_model` is built once
+        in `authenticate()` and never touched again for the rest of this
+        process's life. If ANYTHING else re-authenticates Fyers afterward
+        -- e.g. api_bridge.py's own auto-login running again on its own
+        restart, a completely separate process -- Fyers invalidates the
+        old session token server-side. This long-running process's model
+        then silently fails every call using it, with nothing to detect
+        or recover from that short of a full process restart. Live
+        incident: a real PE entry signal held for 54 minutes straight
+        (12:05-13:00 IST), `get_market_data` returning an empty dict on
+        every single tick because of exactly this, blocking the trade
+        the entire time with zero visible cause beyond a generic
+        "skipping this entry" warning -- confirmed by hand that the
+        *current* cached token worked fine when used fresh, proving the
+        problem was this object's own staleness, not a real outage.
+        """
+        token = self._load_cached_token()
+        if not token:
+            return False
+        try:
+            from fyers_apiv3 import fyersModel
+        except ImportError:
+            from fyers_api import fyersModel  # type: ignore[import]
+        self._fyers_model = fyersModel.FyersModel(  # type: ignore
+            client_id=self.credentials.get("client_id", ""),
+            token=token,
+            log_path="",
+        )
+        return True
+
     def _save_cached_token(self, token: str) -> None:
         from .token_cache import save_token
         save_token(token, "fyers")
@@ -415,7 +449,20 @@ class FyersBroker(BaseBroker):
         if not self._fyers_model:
             return {}
         try:
-            resp   = self._fyers_model.quotes({"symbols": ",".join(symbols)})
+            resp = self._fyers_model.quotes({"symbols": ",".join(symbols)})
+            # fyers_apiv3's get_call() never raises on a stale/invalid
+            # session -- it always returns a dict, just one shaped
+            # {"s": "error", ...} instead of the usual {"d": [...]}. See
+            # _refresh_fyers_model()'s docstring for why this happens and
+            # why a plain retry with the SAME model would fail identically.
+            if resp.get("s") == "error":
+                logger.warning(
+                    "Fyers /quotes returned an error (%s) -- refreshing "
+                    "the session from the current cached token and "
+                    "retrying once.", resp.get("message"),
+                )
+                if self._refresh_fyers_model():
+                    resp = self._fyers_model.quotes({"symbols": ",".join(symbols)})
             quotes = {}
             for q in resp.get("d", []):
                 v = q.get("v", {})

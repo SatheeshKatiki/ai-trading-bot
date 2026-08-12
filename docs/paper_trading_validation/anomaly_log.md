@@ -6,6 +6,79 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-08-12 (afternoon) — CRITICAL: a real PE entry signal held for 54 minutes, silently blocked by main.py's own Fyers session going stale as a side effect of this morning's api_bridge.py restarts
+
+**Symptom:** from 12:05:47 to 12:59:59 IST, `engine.log` shows a NIFTY PE
+signal continuously mapped to `NSE:NIFTY2681824350PE` on nearly every
+tick (1,028 "Auto-mapped" lines), with 581 "Could not fetch live option
+premium for ... — skipping this entry" warnings over the same window —
+the entry was never taken. No open position, so nothing went
+unmanaged, but a real, otherwise-valid signal was blocked for the entire
+window and simply vanished with no trade recorded.
+
+**Verification before concluding it was a bug:** cross-checked
+`fyersApi.log` — exactly 581 matching entries in the same window,
+confirming the warning traced to real API responses, not a local logic
+error. First ~10 were `{"code": -15, "message": "Please provide valid
+token"}`; the rest were a generic `"Expecting value: line 1 column 1"`
+JSON-decode failure from the vendored SDK's own error handling (see the
+fix below for why both are the same underlying condition). Directly
+tested the *current* cached token by hand, fresh, outside the running
+process — it worked immediately and returned a valid NIFTY quote. That
+ruled out "Fyers is down" or "the token is genuinely expired" and pointed
+squarely at the long-running `main.py` process holding something stale.
+
+**Root cause:** self-inflicted, by this morning's own incident response.
+`brokers/fyers_broker.py`'s `FyersBroker._fyers_model` (the object used
+for all REST calls — quotes, history, funds, orders) is built once inside
+`authenticate()`, at process startup, and never rebuilt afterward.
+`.fyers_tokens.json`'s mtime (11:32 IST) lines up with the `api_bridge.py`
+restarts done to fix the morning's feed-stall incident — its `lifespan()`
+runs a full Fyers auto-login (`scripts/auth/auto_login_fyers.py`) on
+every startup, a completely separate process from `main.py`. Fyers
+invalidates the previous session token when a new login for the same
+app/user completes. `main.py`, running continuously since 09:38 IST, had
+no idea its own `_fyers_model`'s token had just been invalidated by a
+totally unrelated process — and the vendored `fyers_apiv3` SDK's
+`get_call()` never raises on this; it always returns a dict, just shaped
+`{"s": "error", ...}` instead of `{"d": [...]}`, so `get_market_data()`
+silently read it as "no quotes for this symbol" forever, with nothing
+to detect or recover from short of restarting `main.py` itself — which
+is exactly what fixing it required, live, at 13:35 IST.
+
+**Fix:** `FyersBroker._refresh_fyers_model()` rebuilds `_fyers_model` from
+whatever token is currently cached on disk. `get_market_data()` now
+checks `resp.get("s") == "error"` after every `.quotes()` call and, on a
+hit, refreshes and retries exactly once before giving up (still returns
+`{}` on a genuine outage — no crash, matches the pre-fix "skip this
+entry" behavior when there's truly nothing to recover from). Scoped
+deliberately to `get_market_data()` only, not `place_order`/`funds`/
+`orderbook`/`history` — those share the same structural risk but sit
+closer to live-order and risk-management paths, flagged here rather than
+changed unilaterally.
+
+**Tests:** new `test_fyers_broker_stale_session_recovery.py`, 6 cases —
+transparent self-heal on a stale-then-fresh token, no-op on a healthy
+session (doesn't double-call), still-empty-not-a-crash when there's truly
+no fresh token anywhere, no-cached-token edge case, and the real
+`_refresh_fyers_model()` implementation exercised end to end (not just
+stubbed). Full suite: 579 passed, 2 xfailed (was 573). Restarted `main.py`
+at 13:35 IST (no open position, confirmed via `active_positions.json`
+before touching it) — live-verified via a fresh historical-candle fetch
+and `state.db`'s heartbeat matching wall clock immediately after.
+
+**Process note, not a code fix:** this is the second incident today
+caused by iterating on a fix while the *other* long-running process kept
+running unrestarted. Restarting one Fyers-authenticated process while
+another stays up is not really safe in this architecture yet — worth
+remembering next time either process needs a live restart mid-session.
+
+**Validation clock:** resets again — a second new, previously-undiscovered
+gap found live today. See `docs/GO_NO_GO_CHECKLIST.md`'s 2026-08-12
+entries.
+
+---
+
 ## 2026-08-12 — CRITICAL: upstream Fyers feed silently dead for 46 minutes during market hours; auto-recovery watchdog added; a bug in the fix itself caught and fixed before it could ship broken
 
 **Timeline**

@@ -223,6 +223,27 @@ continuously since). **Status remains NO-GO** — this is a new,
 previously-undiscovered feed-reliability gap found live, so the validation
 clock resets again; monitoring continues into the afternoon session.
 
+**2026-08-12 afternoon update:** a second, self-inflicted finding — the
+morning's `api_bridge.py` restarts (above) each re-ran Fyers auto-login, a
+separate process from `main.py`, which invalidated the session token
+`main.py`'s own long-lived `FyersBroker._fyers_model` was still using.
+`main.py` had no way to detect or recover from that, and the vendored SDK
+never raises on it — it silently returned "no quotes" forever. Net effect:
+a real NIFTY PE entry signal held continuously from 12:05:47 to 12:59:59
+IST (54 minutes), never taken, no trade recorded, no open position at
+risk. Fixed with `FyersBroker._refresh_fyers_model()` — detects an
+error-shaped quote response and rebuilds the session from the current
+cached token, retrying once — scoped to `get_market_data()` only (not the
+order-placement/funds/history call sites, which share the same
+structural risk but are closer to live-order paths and are flagged here
+rather than changed unilaterally). 6 new tests, full suite 579 passed, 2
+xfailed. Restarted `main.py` at 13:35 IST (no open position) and
+live-verified. Full detail: `anomaly_log.md`'s 2026-08-12 (afternoon)
+entry. **Status remains NO-GO** — validation clock resets again, second
+new gap found the same day. Worth noting for future incident response:
+restarting one Fyers-authenticated process while the other stays running
+is not safe in this architecture yet.
+
 This is a living document — check items off with a date and evidence
 reference as they're actually completed, don't mark something done because
 it's expected to pass.
