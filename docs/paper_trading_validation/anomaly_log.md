@@ -6,6 +6,95 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-08-12 — CRITICAL: upstream Fyers feed silently dead for 46 minutes during market hours; auto-recovery watchdog added; a bug in the fix itself caught and fixed before it could ship broken
+
+**Timeline**
+
+- **09:38** — session started clean, `main.py` (PID 6328) and `api_bridge.py`
+  (PID 16276) both up, WebSocket connected, first hour traded flat/healthy.
+- **10:33:53–10:34:26** — six DNS resolution failures for `api-t1.fyers.in`
+  in `fyersApi.log` (`NameResolutionError`), a transient local network
+  blip. No further log activity of any kind from either process after
+  this.
+- **11:16:30** — `main.py`'s own stall detector fired: `ENGINE STALL: no
+  tick received for ANY watched symbol in 2516s during market hours`
+  (2516s ≈ since 10:34:34, i.e. immediately after the DNS blip). Caught on
+  the very next scheduled monitoring check.
+- **11:19** — verified against ground truth before acting: no open
+  positions (`active_positions.json` empty, last real trade was
+  2026-08-07), so no risk-managed position was silently unmonitored this
+  time — but the mechanism is identical to the 2026-08-06 7h49m incident
+  and would have been just as dangerous with a position open.
+- **11:19:37** — killed and restarted `api_bridge.py` (PID 16276 → 23160).
+  `main.py` immediately detected the now-actually-closed socket ("no close
+  frame received or sent") and reconnected cleanly by 11:20:18. Ticks
+  resumed instantly — confirmed the fault was entirely upstream of
+  `main.py`'s own connection.
+
+**Root cause**
+
+The vendored `fyers_apiv3` client's own `reconnect=True`
+(`api_bridge.py`'s `start_fyers_socket()`) never fires for this failure
+mode. Read directly from `venv/Lib/site-packages/fyers_apiv3/
+FyersWebsocket/data_ws.py`: its keepalive (`__ping`) sends a ping frame
+every 10s as long as the OS socket merely reports itself `connected` —
+it never waits for or checks a pong. A network blip that leaves the OS
+socket in a false-`connected` zombie state (exactly what the DNS-failure
+burst above looks like) is therefore completely invisible to it —
+`on_close`/`on_error` never fire, so the library's own reconnect logic
+never runs. Nothing on the receiving side tracked "have I actually heard
+from Fyers lately" independently, so nothing could catch what the library
+missed — the same class of gap fixed for `main.py` itself on 2026-08-06
+(`ENGINE STALL`), just one layer further upstream, and worse: that
+detector could only warn, never recover, because *its own* local socket
+to `api_bridge.py` stayed perfectly healthy (ping/pong fine) throughout —
+the dead zombie was entirely on api_bridge's side, invisible to main.py.
+
+**Fix**
+
+- `shared/risk/tick_staleness.py`: added `should_rebuild_stale_feed()` (+
+  `DEFAULT_FEED_REBUILD_THRESHOLD_S = 90.0`, matching
+  `DEFAULT_ENGINE_STALL_WARNING_S`) — pure function, same style as
+  `seconds_since_any_tick`/`find_stale_positions` already in this module.
+- `api_bridge.py`: `on_message` now stamps `_last_fyers_message_at =
+  time.time()` on every message (not just priced ticks — any message
+  proves the socket is alive). A new `fyers_feed_watchdog()` background
+  task polls `should_rebuild_stale_feed()` every 15s during market hours
+  and, on a stall, force-closes (`close_connection()`) and rebuilds the
+  Fyers socket from scratch — the same recovery my manual process restart
+  achieved, now automatic. `/health` now also reports `fyers_feed_age_s`
+  for external monitoring.
+- **Caught before it shipped broken:** deploying the above immediately
+  broke `on_message` on the very first real message —
+  `NameError: cannot access free variable 'time'`. Root cause: a stray
+  `import time` inside this same function's dead yfinance-fallback branch
+  (only reached when there's no cached Fyers token) made `time` a LOCAL
+  name of the *entire* enclosing `start_fyers_socket()` — Python decides a
+  name is local to a function from any assignment/import anywhere in its
+  body, regardless of which branch actually runs at call time. Every
+  nested closure below it (`on_message`, `on_error`, ...) inherited `time`
+  as an unbound free variable, raised only when one of them actually tried
+  to use it — invisible until a real message arrived, exactly like the
+  bug it was fixing. Fixed by deleting the redundant local import (`time`
+  is already imported at module level); root-caused rather than worked
+  around locally, so no other closure in this function can hit the same
+  trap later. Live-verified this time: `/health` held `fyers_feed_age_s`
+  under ~2s continuously after redeploy.
+
+**Tests:** `test_tick_staleness.py` (`should_rebuild_stale_feed`, 7 new
+cases) + new `test_api_bridge_fyers_feed_watchdog.py`, which exercises the
+*real* `on_message` closure (not a reimplementation) via a stub
+`FyersDataSocket`, so a regression of the shadowing bug fails it directly.
+Full suite: 573 passed, 2 xfailed (up from 571 passed pre-session, no
+regressions).
+
+**Validation clock:** per `GO_NO_GO_CHECKLIST.md` §2, this resets the
+clean-session count — a genuine, previously-undiscovered feed-reliability
+gap surfaced live during real market hours, not flakiness. No trading-day
+report for today; monitoring continues into the afternoon session.
+
+---
+
 ## 2026-08-07 (late evening) — Fix #2: real option-premium-candle ATR architecture; Fix #4/#5 re-verified
 
 Continuation of the same evening's remediation sprint (see the entry immediately

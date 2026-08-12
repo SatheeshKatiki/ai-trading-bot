@@ -25,10 +25,12 @@ import pytest
 
 from shared.risk.tick_staleness import (
     DEFAULT_ENGINE_STALL_WARNING_S,
+    DEFAULT_FEED_REBUILD_THRESHOLD_S,
     DEFAULT_STALENESS_WARNING_S,
     StalePosition,
     find_stale_positions,
     seconds_since_any_tick,
+    should_rebuild_stale_feed,
 )
 
 
@@ -190,3 +192,63 @@ def test_default_engine_stall_threshold_matches_the_position_threshold():
     both default to the same value even though they're independently
     configurable — see the module docstring."""
     assert DEFAULT_ENGINE_STALL_WARNING_S == DEFAULT_STALENESS_WARNING_S
+
+
+# ---------------------------------------------------------------------------
+# should_rebuild_stale_feed — api_bridge.py's upstream Fyers socket watchdog
+# ---------------------------------------------------------------------------
+#
+# Root cause (found live, 2026-08-12): the vendored fyers_apiv3 client's own
+# `reconnect=True` never fires for a zombie TCP connection — its keepalive
+# ping is fire-and-forget with no pong check, so a network blip that leaves
+# the OS socket falsely reporting `connected` is invisible to it. A real
+# incident left the upstream feed silently dead for 46 minutes during market
+# hours; only a manual process restart recovered it. This is the
+# independent, receiving-side check that api_bridge.py's watchdog task
+# polls instead of trusting the library.
+
+def test_never_connected_this_process_is_not_rebuilt():
+    """0.0 means startup/yfinance-fallback, not a dead feed — must not
+    trigger a rebuild loop before the first message has even arrived."""
+    assert should_rebuild_stale_feed(0.0, now=100_000.0, market_open=True) is False
+
+
+def test_silence_outside_market_hours_is_not_rebuilt():
+    """Same reasoning as the engine-wide stall check: no ticks overnight is
+    expected, not a fault."""
+    assert should_rebuild_stale_feed(
+        1_000.0, now=1_000.0 + DEFAULT_FEED_REBUILD_THRESHOLD_S + 1, market_open=False,
+    ) is False
+
+
+def test_recent_message_during_market_hours_is_not_rebuilt():
+    assert should_rebuild_stale_feed(995.0, now=1_000.0, market_open=True) is False
+
+
+def test_stale_past_threshold_during_market_hours_is_rebuilt():
+    assert should_rebuild_stale_feed(
+        1_000.0, now=1_000.0 + DEFAULT_FEED_REBUILD_THRESHOLD_S, market_open=True,
+    ) is True
+
+
+def test_exactly_at_the_threshold_counts_as_stale_for_the_feed_watchdog_too():
+    assert should_rebuild_stale_feed(
+        1_000.0,
+        now=1_000.0 + DEFAULT_FEED_REBUILD_THRESHOLD_S,
+        market_open=True,
+        threshold_s=DEFAULT_FEED_REBUILD_THRESHOLD_S,
+    ) is True
+
+
+def test_custom_threshold_is_honoured_for_the_feed_watchdog():
+    # 5s gap: stale under a 2s threshold, fine under a 10s threshold.
+    assert should_rebuild_stale_feed(1_000.0, now=1_005.0, market_open=True, threshold_s=2.0)
+    assert not should_rebuild_stale_feed(1_000.0, now=1_005.0, market_open=True, threshold_s=10.0)
+
+
+def test_the_live_incident_is_reproduced_for_the_feed_watchdog():
+    """The exact live scenario this function was built from: 46 minutes
+    (2760s) of silence from the upstream Fyers socket during real market
+    hours."""
+    forty_six_minutes = 46 * 60
+    assert should_rebuild_stale_feed(10_000.0, now=10_000.0 + forty_six_minutes, market_open=True) is True

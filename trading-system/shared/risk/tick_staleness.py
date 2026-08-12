@@ -81,6 +81,54 @@ DEFAULT_STALENESS_WARNING_S: float = 90.0
 DEFAULT_ENGINE_STALL_WARNING_S: float = 90.0
 
 
+#: Same threshold as DEFAULT_ENGINE_STALL_WARNING_S, for the same reason
+#: given there — kept as its own name/constant since it answers a
+#: different question (should the upstream feed connection itself be
+#: rebuilt) at a different layer (api_bridge.py's Fyers socket, not
+#: main.py's tick consumption).
+DEFAULT_FEED_REBUILD_THRESHOLD_S: float = 90.0
+
+
+def should_rebuild_stale_feed(
+    last_message_at: float,
+    now: float,
+    market_open: bool,
+    threshold_s: float = DEFAULT_FEED_REBUILD_THRESHOLD_S,
+) -> bool:
+    """Should api_bridge.py force-rebuild its upstream Fyers WebSocket?
+
+    Root cause (found live, 2026-08-12): the vendored fyers_apiv3 client's
+    own `reconnect=True` never fires for a zombie TCP connection — its
+    keepalive ping (`data_ws.py`'s `__ping`) is fire-and-forget, sent as
+    long as the OS socket merely reports itself `connected`, with no pong
+    check. A network blip left the socket in exactly that false-connected
+    state for 46 minutes during real market hours, silently starving
+    `trading_bot/main.py` of every tick, before a manual process restart
+    fixed it. This is the independent, receiving-side check that catches
+    what the library itself cannot.
+
+    Parameters
+    ----------
+    last_message_at
+        `time.time()` reading from the last message actually received
+        from Fyers (any message — not just a priced tick — proves the
+        socket is alive; see api_bridge.py's `on_message`). `0.0` means
+        never connected yet this process lifetime.
+    now
+        Caller-supplied `time.time()` reading — not read internally, so
+        this stays trivially testable without mocking the clock.
+    market_open
+        Caller-supplied result of `shared.market_hours.is_market_open()`.
+        Silence outside real trading hours is expected, not a fault —
+        same reasoning as the engine-wide stall check above.
+    """
+    if last_message_at == 0.0:
+        return False
+    if not market_open:
+        return False
+    return (now - last_message_at) >= threshold_s
+
+
 def seconds_since_any_tick(last_tick_at: Mapping[str, float], now: float) -> float:
     """How long since ANY watched symbol last ticked, regardless of whether
     a position is open in it.

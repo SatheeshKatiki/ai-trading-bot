@@ -242,6 +242,27 @@ current_market_data = {
     "BSE:SENSEX-INDEX": {"lp": 76015.28, "chp": -1.70},
     "NSE:NIFTYBANK-INDEX": {"lp": 51000.00, "chp": 0.0}
 }
+
+# Root-cause fix (found live, 2026-08-12): the upstream Fyers WebSocket
+# (fyers_apiv3's data_ws.FyersDataSocket, `reconnect=True`) went silently
+# zombie for 46 minutes during real market hours -- current_market_data
+# stopped updating, /ws/live kept broadcasting the last known (stale)
+# prices with no signal that anything was wrong, and main.py's own
+# tick-staleness detector could only log a warning, not recover, because
+# its LOCAL socket to this server stayed healthy throughout (ping/pong
+# fine) -- the failure was entirely upstream. Root cause, read directly
+# from the vendored library (venv/Lib/site-packages/fyers_apiv3/
+# FyersWebsocket/data_ws.py's `__ping`): its keepalive is fire-and-forget
+# -- it sends a ping frame every 10s as long as the OS socket reports
+# `connected`, but never waits for or checks a pong, so a network blip
+# that leaves the OS socket in a false-`connected` zombie state (observed
+# here immediately after a burst of DNS resolution failures for
+# api-t1.fyers.in) is invisible to it -- `on_close`/`reconnect` never
+# fire. `_last_fyers_message_at` plus `fyers_feed_watchdog()` below
+# detect that condition independently (from the receiving side, which
+# the library itself never checks) and force a clean teardown + fresh
+# connection.
+_last_fyers_message_at: float = 0.0
 fyers_socket_instance = None # Global instance for dynamic subscription
 
 # Global Engine State
@@ -358,8 +379,19 @@ def start_fyers_socket():
             # unreliable — this path is normally dormant, since it only
             # triggers when there is no cached broker token.
             logger.warning("Token not found for WebSocket. Falling back to yfinance polling for Paper Mode.")
+            # Root-cause fix (found live, 2026-08-12): `time` is already
+            # imported at module level (line 13). Re-importing it here,
+            # even though this branch only runs when there's no cached
+            # Fyers token, made `time` a LOCAL name of the whole enclosing
+            # start_fyers_socket() function -- Python decides a name is
+            # local to a function based on any assignment/import anywhere
+            # in its body, regardless of which branch actually runs. Every
+            # nested closure defined below (on_message, on_error, ...)
+            # inherited that as an unbound free variable whenever this
+            # branch didn't execute, raising a NameError the instant any
+            # of them tried to use the module-level `time` (e.g.
+            # `on_message`'s `_last_fyers_message_at = time.time()`).
             import yfinance as yf
-            import time
             while True:
                 try:
                     data = yf.download("^NSEI ^BSESN ^NSEBANK", period="1d", interval="1m", progress=False)
@@ -382,7 +414,11 @@ def start_fyers_socket():
         client_id = _get_fyers_client_id()
         
         def on_message(message):
-            global current_market_data
+            global current_market_data, _last_fyers_message_at
+            # Any message at all proves the upstream socket is actually
+            # receiving data, not just reporting itself connected -- see
+            # fyers_feed_watchdog() for why that distinction matters.
+            _last_fyers_message_at = time.time()
             if isinstance(message, dict):
                 symbol = message.get('symbol')
                 lp = message.get('ltp')
@@ -447,6 +483,45 @@ def start_fyers_socket():
     except Exception as e:
         logger.error("Error starting Fyers socket: %s", e)
 
+async def fyers_feed_watchdog():
+    """Force-rebuilds the upstream Fyers socket if it goes silent during
+    market hours. See `should_rebuild_stale_feed`'s docstring for the
+    root cause — the vendored client's own `reconnect=True` can't be
+    trusted to do this on its own.
+    """
+    global fyers_socket_instance, _last_fyers_message_at
+    from shared.market_hours import is_market_open
+    from shared.risk.tick_staleness import should_rebuild_stale_feed
+    while True:
+        await asyncio.sleep(15)
+        try:
+            if not should_rebuild_stale_feed(
+                _last_fyers_message_at, time.time(), is_market_open(),
+            ):
+                continue
+            stale_for = time.time() - _last_fyers_message_at
+            logger.error(
+                "FYERS FEED STALL: no message from the upstream Fyers "
+                "WebSocket in %.0fs during market hours -- forcing a "
+                "fresh connection.",
+                stale_for,
+            )
+            # Reset before rebuilding so a slow reconnect can't cause this
+            # loop to fire again mid-rebuild.
+            _last_fyers_message_at = time.time()
+            stale_socket = fyers_socket_instance
+            if stale_socket is not None:
+                try:
+                    await asyncio.to_thread(stale_socket.close_connection)
+                except Exception as e:
+                    logger.warning(
+                        "Error closing the stale Fyers socket (rebuilding "
+                        "anyway): %s", e,
+                    )
+            threading.Thread(target=start_fyers_socket, daemon=True).start()
+        except Exception as e:
+            logger.error("fyers_feed_watchdog error: %s", e)
+
 from contextlib import asynccontextmanager
 
 @asynccontextmanager
@@ -475,9 +550,13 @@ async def lifespan(app: FastAPI):
             
     # Start the Fyers socket in background thread
     threading.Thread(target=start_fyers_socket, daemon=True).start()
-    
+
     # Start the WebSocket Broadcaster task
     asyncio.create_task(websocket_broadcaster())
+
+    # Watches for the upstream Fyers feed going silent during market hours
+    # and force-rebuilds it — see fyers_feed_watchdog()'s docstring.
+    asyncio.create_task(fyers_feed_watchdog())
     
     yield
 
@@ -704,7 +783,11 @@ async def websocket_endpoint(websocket: WebSocket):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    feed_age_s = (
+        round(time.time() - _last_fyers_message_at, 1)
+        if _last_fyers_message_at else None
+    )
+    return {"status": "ok", "fyers_feed_age_s": feed_age_s}
 
 from pydantic import BaseModel
 class ExecuteOrderRequest(BaseModel):

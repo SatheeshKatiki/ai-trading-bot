@@ -200,6 +200,29 @@ remain completely untested, unchanged. Multi-instrument re-enablement
 remains an open decision, unchanged. §0's outstanding items remain
 undone, independent of §2.
 
+**2026-08-12 update:** unattended monitoring session (10:34–11:20 IST) found
+the upstream Fyers WebSocket silently dead for 46 minutes during real market
+hours — `api_bridge.py`'s vendored `fyers_apiv3` client never noticed
+because its keepalive ping never checks for a pong, so a zombie TCP
+connection (immediately following a burst of DNS resolution failures) was
+invisible to it. No position was open, so nothing went unmonitored this
+time, but it is the identical mechanism to 2026-08-06's 7h49m incident one
+layer further upstream — `main.py`'s own `ENGINE STALL` detector caught the
+symptom but had no way to recover from it, since its own local socket to
+`api_bridge.py` stayed healthy throughout. Fixed with an independent
+staleness watchdog (`fyers_feed_watchdog()` in `api_bridge.py`, backed by a
+new pure function in `shared/risk/tick_staleness.py`) that force-rebuilds
+the upstream socket after 90s of silence during market hours, plus
+`/health` now reporting feed age for external monitoring. A bug in the fix
+itself (a `time`-name-shadowing `NameError` from an unrelated dead code
+branch) broke real tick delivery entirely for ~15 minutes before being
+caught and root-caused — full timeline in `anomaly_log.md`'s 2026-08-12
+entry. Both the original stall and the self-inflicted regression are
+live-verified fixed as of 11:47 IST (`fyers_feed_age_s` holding under ~2s
+continuously since). **Status remains NO-GO** — this is a new,
+previously-undiscovered feed-reliability gap found live, so the validation
+clock resets again; monitoring continues into the afternoon session.
+
 This is a living document — check items off with a date and evidence
 reference as they're actually completed, don't mark something done because
 it's expected to pass.
