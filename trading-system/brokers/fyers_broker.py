@@ -19,6 +19,9 @@ import logging
 import time
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
+import requests
+from requests.adapters import HTTPAdapter
+
 from .base_broker import BaseBroker, _BROKER_EXECUTOR
 from .exceptions import (
     AuthenticationError, BrokerConnectionError,
@@ -32,6 +35,52 @@ from .models import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: Default ceiling (seconds) on any single HTTP request made through a
+#: FyersModel's session -- see _TimeoutHTTPAdapter's docstring.
+_DEFAULT_REQUEST_TIMEOUT_S = 10
+
+
+class _TimeoutHTTPAdapter(HTTPAdapter):
+    """Injects a default request timeout when the caller doesn't specify one.
+
+    Root cause (found live, 2026-08-13): the vendored fyers_apiv3 SDK's
+    FyersModel.get_call() (and its GET/POST/DELETE/PATCH/PUT siblings) call
+    self.session.get(...)/.post(...) etc. with no `timeout=` anywhere. A DNS
+    resolution failure fails fast, but a hung TCP connect -- a plausible
+    state mid-network-recovery -- could block that call indefinitely.
+    trading_bot/main.py calls broker.get_market_data() synchronously and
+    unwrapped directly on its asyncio event loop; a single hung call there
+    is the confirmed root cause of a ~39-minute total engine freeze
+    (14:18-14:57 IST), correlated with an 11-entry DNS failure burst for
+    api-t1.fyers.in in the same window. This mounts a hard ceiling on every
+    request made through the model's session -- without editing the
+    vendored SDK -- so a slow network can no longer hang forever; Phase 2's
+    asyncio.to_thread wrapping in main.py is the second, independent layer
+    that keeps even a still-slow (but now bounded) call from blocking the
+    event loop itself.
+    """
+
+    def __init__(self, *args: Any, timeout: float = _DEFAULT_REQUEST_TIMEOUT_S, **kwargs: Any) -> None:
+        self._timeout = timeout
+        super().__init__(*args, **kwargs)
+
+    def send(self, request, **kwargs):  # type: ignore[override]
+        if kwargs.get("timeout") is None:
+            kwargs["timeout"] = self._timeout
+        return super().send(request, **kwargs)
+
+
+def _mount_default_timeout(fyers_model: Any, timeout: float = _DEFAULT_REQUEST_TIMEOUT_S) -> None:
+    """Mount `_TimeoutHTTPAdapter` onto a freshly-built FyersModel's
+    `requests.Session`, for both schemes. Safe no-op if the model doesn't
+    expose a `.session` (e.g. a stub/mock in tests)."""
+    session = getattr(fyers_model, "session", None)
+    if not isinstance(session, requests.Session):
+        return
+    adapter = _TimeoutHTTPAdapter(timeout=timeout)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
 
 
 class FyersBroker(BaseBroker):
@@ -87,6 +136,7 @@ class FyersBroker(BaseBroker):
                     "log_path": "",
                 }
                 self._fyers_model = fyersModel.FyersModel(**kwargs)  # type: ignore
+                _mount_default_timeout(self._fyers_model)
                 logger.info("Fyers: Initialized model in paper mode for data fetching.")
             return True
 
@@ -114,6 +164,7 @@ class FyersBroker(BaseBroker):
                 "log_path": "",
             }
             self._fyers_model = fyersModel.FyersModel(**kwargs)  # type: ignore
+            _mount_default_timeout(self._fyers_model)
             self._authenticated = True
             logger.info("Fyers: authenticated successfully.")
             return True
@@ -238,6 +289,7 @@ class FyersBroker(BaseBroker):
             token=token,
             log_path="",
         )
+        _mount_default_timeout(self._fyers_model)
         return True
 
     def _save_cached_token(self, token: str) -> None:

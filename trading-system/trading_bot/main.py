@@ -109,7 +109,7 @@ from trading_bot.iceberg_manager import IcebergManager
 # Security layer
 from shared.security import install_log_sanitizer, audit, validator
 from shared.security.audit_log import AuditEvent
-from shared.security.rate_limiter import ORDER_LIMITER
+from shared.security.rate_limiter import ORDER_LIMITER, DATA_LIMITER
 from shared.security.validator import ValidationError
 
 # Install log sanitizer first — ensures API keys never appear in any log output
@@ -1022,7 +1022,27 @@ async def run_live_bot(symbols: List[str]) -> None:
                     _tick_option_premiums[open_position.symbol] = exit_check_price
                 else:
                     try:
-                        opt_quotes = broker.get_market_data([open_position.symbol])
+                        # Root-cause fix (found live, 2026-08-13): this call
+                        # used to run synchronously, unwrapped, directly on
+                        # the event loop -- the vendored SDK makes it with
+                        # no request timeout, so a hung connection (not just
+                        # a fast-failing DNS error) could block every tick,
+                        # every position, and the watchdogs themselves for
+                        # as long as it hung. Confirmed root cause of a
+                        # ~39-minute total engine freeze correlated with a
+                        # DNS failure burst. asyncio.to_thread keeps a still-
+                        # slow call (now bounded by fyers_broker.py's
+                        # request timeout) from blocking anything else;
+                        # DATA_LIMITER.allow() is the throttle flagged but
+                        # never wired since the 2026-08-03 audit -- both are
+                        # defense in depth on top of this call's own
+                        # existing per-symbol cache above.
+                        if not DATA_LIMITER.allow("fyers"):
+                            opt_quotes = {}
+                        else:
+                            opt_quotes = await asyncio.to_thread(
+                                broker.get_market_data, [open_position.symbol]
+                            )
                         opt_quote = opt_quotes.get(open_position.symbol)
                         if opt_quote and opt_quote.ltp > 0:
                             exit_check_price = opt_quote.ltp
@@ -1697,7 +1717,19 @@ async def run_live_bot(symbols: List[str]) -> None:
                                 throttled_recent_failure = True
                             else:
                                 try:
-                                    live_quotes = broker.get_market_data([entry_symbol])
+                                    # See the exit-check path above (~line
+                                    # 1024) for the full 2026-08-13
+                                    # root-cause note: to_thread keeps a
+                                    # still-slow call from blocking the
+                                    # event loop, DATA_LIMITER.allow() is
+                                    # the throttle flagged since 2026-08-03
+                                    # and never wired until now.
+                                    if not DATA_LIMITER.allow("fyers"):
+                                        live_quotes = {}
+                                    else:
+                                        live_quotes = await asyncio.to_thread(
+                                            broker.get_market_data, [entry_symbol]
+                                        )
                                     if entry_symbol in live_quotes and live_quotes[entry_symbol].ltp > 0:
                                         live_premium = live_quotes[entry_symbol].ltp
                                         _option_premium_cache[entry_symbol] = (now_mono, live_premium)
@@ -1999,7 +2031,13 @@ async def run_live_bot(symbols: List[str]) -> None:
                     # every open option position display as flat $0 no matter
                     # how far the real premium had moved. Fetch it directly.
                     try:
-                        quotes = broker.get_market_data([position.symbol])
+                        # See ~line 1024's 2026-08-13 root-cause note:
+                        # to_thread + DATA_LIMITER close the engine-freeze
+                        # gap for this call site too.
+                        if not DATA_LIMITER.allow("fyers"):
+                            quotes = {}
+                        else:
+                            quotes = await asyncio.to_thread(broker.get_market_data, [position.symbol])
                         quote = quotes.get(position.symbol)
                         current_premium = quote.ltp if (quote and quote.ltp > 0) else entry_premium
                     except Exception:
@@ -2131,7 +2169,11 @@ async def run_live_bot(symbols: List[str]) -> None:
         live_prices: Dict[str, float] = {}
         for pos in active_positions.values():
             try:
-                quotes = broker.get_market_data([pos.symbol])
+                # to_thread only (see ~line 1024's 2026-08-13 root-cause
+                # note) -- deliberately NOT gated by DATA_LIMITER: this is
+                # the kill-switch/emergency-flatten path, and throttling a
+                # forced close of real risk would be exactly backwards.
+                quotes = await asyncio.to_thread(broker.get_market_data, [pos.symbol])
                 quote = quotes.get(pos.symbol)
                 if quote and quote.ltp > 0:
                     live_prices[pos.symbol] = quote.ltp
