@@ -533,6 +533,227 @@ async def fyers_feed_watchdog():
         except Exception as e:
             logger.error("fyers_feed_watchdog error: %s", e)
 
+
+# ---------------------------------------------------------------------------
+# main.py freeze detection + safe auto-recovery
+# ---------------------------------------------------------------------------
+#
+# Root cause (found live, 2026-08-13): main.py went completely unresponsive
+# for ~39 minutes (all threads, not just the tick-consuming path -- a wholly
+# separate background thread went silent too) with nothing in the system
+# able to detect it in real time; only a manual after-the-fact log review
+# found it. main.py now writes an independent heartbeat (see
+# trading_bot.main's heartbeat_writer / shared.risk.tick_staleness's
+# heartbeat_is_stale) specifically so this watchdog can tell "no ticks
+# arriving" (a feed/market issue -- main.py's own tick_staleness_watchdog
+# already covers that) apart from "the process itself is unresponsive"
+# (needs a restart).
+#
+# Policy (explicitly confirmed, 2026-08-13): auto-restart immediately on a
+# confirmed freeze, whether or not a position is open, always alerting
+# either way -- a working engine (even after a brief restart) beats a
+# frozen one, and active_positions.json's already-correct reload-on-startup
+# (trading_bot.main._load_positions) means a clean restart does not orphan
+# an open position's stop-loss.
+from pathlib import Path
+
+_MAIN_WATCHDOG_RUN_DIR = Path(__file__).resolve().parent / "run"
+_MAIN_PID_PATH = _MAIN_WATCHDOG_RUN_DIR / "main.pid"
+_MAIN_HEARTBEAT_PATH = _MAIN_WATCHDOG_RUN_DIR / "main_heartbeat.txt"
+_MAIN_POSITIONS_PATH = Path(__file__).resolve().parent / "config" / "active_positions.json"
+
+_last_main_restart_attempt_at: float = 0.0
+_main_consecutive_restart_failures: int = 0
+
+
+def _should_attempt_main_restart(
+    pid_alive: bool,
+    heartbeat_stale: bool,
+    now: float,
+    last_restart_attempt_at: float,
+    consecutive_restart_failures: int,
+) -> bool:
+    """Pure decision logic for main_process_watchdog: should it attempt a
+    restart on this check? Extracted to module scope so it's directly
+    testable without running the real infinite watchdog loop -- same
+    reasoning as trading_bot/main.py's own _compute_retry_delay /
+    _should_reset_failure_count, which this function reuses for the
+    backoff math itself (so a fundamentally broken condition can't
+    trigger a tight restart-loop storm).
+    """
+    if not pid_alive or not heartbeat_stale:
+        return False
+    from trading_bot.main import _compute_retry_delay
+    cooldown = _compute_retry_delay(consecutive_restart_failures)
+    return (now - last_restart_attempt_at) >= cooldown
+
+
+def _describe_open_positions_for_alert() -> str:
+    """Best-effort human-readable summary of config/active_positions.json
+    for the freeze alert. Informational only -- never gates the restart
+    decision (see this module's auto-restart-always policy above)."""
+    try:
+        if not _MAIN_POSITIONS_PATH.is_file():
+            return "none"
+        with open(_MAIN_POSITIONS_PATH, "r", encoding="utf-8") as f:
+            positions = json.load(f)
+        if not positions:
+            return "none"
+        return ", ".join(
+            f"{data.get('symbol', key)} ({'SHORT' if data.get('side') == -1 else 'LONG'})"
+            for key, data in positions.items()
+        )
+    except Exception:
+        return "unknown (failed to read active_positions.json)"
+
+
+_MAIN_RESTART_TERMINATE_TIMEOUT_S = 10
+_MAIN_RESTART_HEARTBEAT_POLL_INTERVAL_S = 5
+_MAIN_RESTART_HEARTBEAT_POLL_ATTEMPTS = 18  # ~90s total at the interval above
+
+
+async def _check_and_recover_main_process() -> None:
+    """One check-and-act cycle: is main.py frozen, and if so, alert +
+    safely restart it. Pulled out of main_process_watchdog's infinite
+    loop so it's directly callable/testable one iteration at a time,
+    same reasoning as trading_bot/main.py's _write_heartbeat extraction.
+    """
+    global _last_main_restart_attempt_at, _main_consecutive_restart_failures
+    import subprocess
+    import psutil
+    from shared.market_hours import is_market_open
+    from shared.risk.tick_staleness import heartbeat_is_stale
+    from shared.alerts import alerter
+
+    if not is_market_open():
+        return
+
+    if not _MAIN_PID_PATH.is_file():
+        return  # main.py hasn't been started yet this boot
+    try:
+        main_pid = int(_MAIN_PID_PATH.read_text(encoding="utf-8").strip())
+    except (ValueError, OSError):
+        return
+
+    if not psutil.pid_exists(main_pid):
+        # A crash, not a freeze -- main.py's own internal auto-restart
+        # loop (the while-loop at the bottom of trading_bot/main.py,
+        # wrapping asyncio.run) handles this case when the process is
+        # alive to run it. A fully-dead process is a separate,
+        # not-yet-covered gap here -- flagged, not silently assumed
+        # handled.
+        return
+
+    last_heartbeat_at = 0.0
+    if _MAIN_HEARTBEAT_PATH.is_file():
+        try:
+            last_heartbeat_at = float(_MAIN_HEARTBEAT_PATH.read_text(encoding="utf-8").strip())
+        except (ValueError, OSError):
+            pass
+
+    now = time.time()
+    stale = heartbeat_is_stale(last_heartbeat_at, now)
+    if not _should_attempt_main_restart(
+        True, stale, now,
+        _last_main_restart_attempt_at, _main_consecutive_restart_failures,
+    ):
+        return
+
+    stale_for = (now - last_heartbeat_at) if last_heartbeat_at else float("inf")
+    positions_desc = _describe_open_positions_for_alert()
+    logger.error(
+        "MAIN.PY FROZEN: heartbeat stale for %.0fs (PID %d still alive). "
+        "Open positions: %s. Attempting automatic restart.",
+        stale_for, main_pid, positions_desc,
+    )
+    alerter.send_alert(
+        f"🚨 **main.py appears frozen** (heartbeat stale {stale_for:.0f}s, "
+        f"PID {main_pid} still running).\nOpen positions: {positions_desc}\n"
+        f"Attempting automatic restart..."
+    )
+    _last_main_restart_attempt_at = now
+
+    # Terminate the frozen process and confirm it's actually dead before
+    # respawning -- so the new instance's singleton lock
+    # (shared/singleton_lock.py) can never collide with a not-yet-dead
+    # old one.
+    try:
+        proc = psutil.Process(main_pid)
+        proc.terminate()
+        try:
+            await asyncio.to_thread(proc.wait, _MAIN_RESTART_TERMINATE_TIMEOUT_S)
+        except psutil.TimeoutExpired:
+            proc.kill()
+            await asyncio.to_thread(proc.wait, _MAIN_RESTART_TERMINATE_TIMEOUT_S)
+    except psutil.NoSuchProcess:
+        pass  # already gone -- fine
+    except Exception as e:
+        logger.error("Failed to terminate frozen main.py (PID %d): %s", main_pid, e)
+        alerter.send_alert(
+            f"🚨 **Failed to terminate frozen main.py** (PID {main_pid}): {e}. "
+            f"Manual intervention needed."
+        )
+        return
+
+    # Respawn, matching how Start_AI_Bot.bat launches it.
+    try:
+        subprocess.Popen(
+            [sys.executable, "trading_bot/main.py"],
+            cwd=str(Path(__file__).resolve().parent),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception as e:
+        logger.error("Failed to respawn main.py: %s", e)
+        _main_consecutive_restart_failures += 1
+        alerter.send_alert(f"🚨 **Failed to respawn main.py**: {e}. Manual intervention needed.")
+        return
+
+    # Poll for the new process's own first heartbeat within a startup
+    # grace window before declaring success.
+    recovered = False
+    for _ in range(_MAIN_RESTART_HEARTBEAT_POLL_ATTEMPTS):
+        await asyncio.sleep(_MAIN_RESTART_HEARTBEAT_POLL_INTERVAL_S)
+        if _MAIN_HEARTBEAT_PATH.is_file():
+            try:
+                hb = float(_MAIN_HEARTBEAT_PATH.read_text(encoding="utf-8").strip())
+                if hb > now:  # a fresh write since the restart began
+                    recovered = True
+                    break
+            except (ValueError, OSError):
+                pass
+
+    if recovered:
+        _main_consecutive_restart_failures = 0
+        logger.info("main.py restart succeeded -- fresh heartbeat confirmed.")
+        alerter.send_alert("✅ **main.py restart succeeded** -- fresh heartbeat confirmed.")
+    else:
+        _main_consecutive_restart_failures += 1
+        logger.error(
+            "main.py restart did not produce a fresh heartbeat within "
+            "the grace window -- manual intervention needed."
+        )
+        alerter.send_alert(
+            "🚨 **main.py restart did not come up healthy** within the "
+            "grace window. Manual intervention needed."
+        )
+
+
+async def main_process_watchdog():
+    """Detects a frozen (not crashed) main.py -- alive per its PID in
+    run/main.pid, but its heartbeat in run/main_heartbeat.txt has gone
+    stale -- and automatically restarts it. See the module-level comment
+    block above for the full root cause and policy; see
+    _check_and_recover_main_process for the actual per-check logic.
+    """
+    while True:
+        await asyncio.sleep(30)
+        try:
+            await _check_and_recover_main_process()
+        except Exception as e:
+            logger.error("main_process_watchdog error: %s", e)
+
+
 from contextlib import asynccontextmanager
 
 @asynccontextmanager
@@ -568,7 +789,11 @@ async def lifespan(app: FastAPI):
     # Watches for the upstream Fyers feed going silent during market hours
     # and force-rebuilds it — see fyers_feed_watchdog()'s docstring.
     asyncio.create_task(fyers_feed_watchdog())
-    
+
+    # Watches for main.py itself going unresponsive (frozen, not crashed)
+    # and safely auto-restarts it — see main_process_watchdog()'s docstring.
+    asyncio.create_task(main_process_watchdog())
+
     yield
 
 app.router.lifespan_context = lifespan
