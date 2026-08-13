@@ -6,6 +6,59 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-08-13 (morning) — Process hygiene: duplicate `api_bridge.py`/`main.py` instances from two `Start_AI_Bot.bat` launches; both pairs died mid-startup, leaving the system fully offline for ~9 minutes during market hours
+
+**Symptom:** at session start, process inspection found **two** copies each
+of `api_bridge.py` (PIDs 17616, 17920) and `trading_bot/main.py` (PIDs
+17584, 12892), all four with identical start timestamps (09:27:08–09
+IST) — `Start_AI_Bot.bat` had been launched twice in quick succession.
+Confirmed via `Win32_Process` that only one `Start_AI_Bot.bat`/cmd-tree
+was still traceable at inspection time; the other launch's parent
+console had already exited, leaving its two child processes as orphans
+indistinguishable from the "current" pair without timestamps.
+
+**Verified before acting:** `state.db` showed 0 trades today and
+`config/active_positions.json` was `{}` — safe to kill a pair before
+either engine could act on a live signal.
+
+**What happened next:** killed one `api_bridge.py` + one `main.py`
+(the pair that looked like the accidental duplicate). Within the next
+process check, **all four** processes were gone, not just the two
+targeted — the untouched pair had also died. `engine.log` showed only
+one `main.py` startup sequence had ever completed (09:28:45–54), and it
+hit `Fyers history API chunk failed ... Could not authenticate the user`
+on every retry (falling back to cache) — consistent with two processes
+racing for the same Fyers paper-mode token/session state during
+concurrent startup, though the exact mechanism (log file lock, token
+file race, or the second `api_bridge.py` failing to bind :8000 and the
+first `main.py` losing its WebSocket peer mid-handshake) wasn't fully
+isolated since neither dying process's own console output was captured.
+Net effect: **zero engine processes running from ~09:31 to ~09:40 IST**,
+9 minutes of the market open with no monitoring or risk management —
+though with 0 open positions throughout, nothing was left unmanaged.
+
+**Fix (this session):** restarted one clean instance each of
+`api_bridge.py` and `main.py` directly (bridge first, confirmed
+listening on :8000, then the engine). Verified single logical instance
+of each (the two-PIDs-per-process appearance for background-launched
+Windows executables is Git Bash's normal parent/child wrapper, not a
+duplicate — confirmed via `ParentProcessId`: the second PID's parent is
+the first). This time startup completed cleanly: real Fyers history
+fetch succeeded (no auth failures), `Resuming session with previous
+PNL: 0.0`, WebSocket connected. No code change — this is the same
+known gap noted in `production_readiness_phase.md`: **the system does
+not guard against multiple concurrent engine instances**; still nothing
+in code detects or prevents a second launch. Worth a real fix (e.g. a
+PID-file/lock on startup) rather than relying on external process
+hygiene every time, given this is the second time in the validation
+window a double-launch has caused a real gap.
+
+**Validation clock:** resets again — a ~9-minute total-outage window
+during market hours is a fresh gap, independent of 2026-08-12's two
+resets. See `docs/GO_NO_GO_CHECKLIST.md` for the current status note.
+
+---
+
 ## 2026-08-12 (afternoon) — CRITICAL: a real PE entry signal held for 54 minutes, silently blocked by main.py's own Fyers session going stale as a side effect of this morning's api_bridge.py restarts
 
 **Symptom:** from 12:05:47 to 12:59:59 IST, `engine.log` shows a NIFTY PE

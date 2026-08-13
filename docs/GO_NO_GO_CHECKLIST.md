@@ -244,6 +244,20 @@ new gap found the same day. Worth noting for future incident response:
 restarting one Fyers-authenticated process while the other stays running
 is not safe in this architecture yet.
 
+**2026-08-13 update:** session start found `Start_AI_Bot.bat` had been
+launched twice, producing two live copies each of `api_bridge.py` and
+`main.py`; both pairs died mid-startup (root cause not fully isolated —
+likely a resource race between the two instances), leaving **zero engine
+processes running for ~9 minutes (~09:31–09:40 IST)** during market hours.
+No open position throughout, so nothing went unmanaged, but this is a real
+gap and a new failure mode (total outage, not a degraded-but-running
+state). Restarted one clean instance of each process; startup completed
+normally on the retry. No code fix yet — the system still has no
+safeguard against a second concurrent launch, a known gap called out
+after a similar incident on 2026-08-03. **Status remains NO-GO** —
+validation clock resets again. Full detail: `anomaly_log.md`'s 2026-08-13
+(morning) entry.
+
 This is a living document — check items off with a date and evidence
 reference as they're actually completed, don't mark something done because
 it's expected to pass.
