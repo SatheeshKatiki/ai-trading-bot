@@ -6,6 +6,72 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-08-13 (afternoon) — HIGH PRIORITY, unresolved: a ~39-minute total engine freeze (all threads, not just the tick feed) — the same unfixed 2026-08-06 class of bug, recurring worse
+
+**Symptom:** `ENGINE STALL` fired at 14:18:45 (551s stale) and again at
+14:57:25 reporting **2320s (~39 minutes)** — a huge jump given the
+300s re-alert cooldown should have produced roughly 7-8 intermediate
+alerts if the process were merely idle-but-running. It did not log a
+single one. More tellingly, `engine.log` has **zero lines of any kind**
+— not just tick-driven ones — between 14:18:45 and 14:57:25, including
+the sentiment background fetcher, which runs on its own separate OS
+thread on a fixed ~5min cadence and had been firing like clockwork all
+day. A genuinely separate thread going silent too, not just the asyncio
+tick path, points at the whole process being starved, not merely an
+upstream feed gap. No position was open during this window (the day's
+one loss had already closed at 13:54:39), so nothing went unmanaged
+this time — but that was incidental timing, not a property of the fix.
+
+**Working hypothesis, not confirmed (no `py-spy` dump was captured
+during the freeze — it had already passed by the time this was
+noticed):** this is very plausibly the same unresolved mechanism as the
+**2026-08-06** incident already documented in
+`shared/risk/tick_staleness.py`'s module docstring — `main.py` going
+CPU-bound on synchronous pandas/indicator work for 22+ minutes with zero
+log output, "root cause not fully pinned down." Today's window
+coincides with an 11-entry burst of DNS resolution failures in
+`fyersApi.log` (`api-t1.fyers.in` unreachable). `trading_bot/main.py`
+calls `broker.get_market_data(...)` **synchronously, directly on the
+event loop, with no `asyncio.to_thread` wrapping and no throttle** —
+this is an already-known, already-flagged gap (see the comment above
+line ~1001 in `main.py`: *"there's nothing else in this codebase
+throttling get_market_data calls... a position sat completely
+unmanaged for the better part of a session because of this... DATA_LIMITER
+exists but was never wired to anything — a gap flagged but deliberately
+not acted on during the 2026-08-03 audit"*). A synchronous call blocking
+on repeated DNS-failure retries, fired once per tick with no cooldown,
+would starve the entire single-threaded asyncio loop for its duration —
+and, via the GIL, could plausibly also starve the separate sentiment
+thread, matching what was actually observed. Not confirmed as *the*
+mechanism, only as the most consistent explanation available from the
+evidence in hand.
+
+**Why not fixed now:** market closed within minutes of this being
+found; wiring up the existing (unused) `DATA_LIMITER` touches a call
+site explicitly marked as "deliberately not acted on" by a prior,
+apparently intentional decision whose full reasoning isn't in this
+session's context — reversing that unilaterally, at close, without
+being able to live-verify a fix, isn't the right call. Flagging
+prominently instead.
+
+**Recommended for the next session, in priority order:** (1) if this
+recurs, capture a `py-spy dump` *during* the freeze, not after — that's
+the one piece of evidence that would actually confirm or rule out the
+CPU-bound hypothesis; (2) revisit whether `DATA_LIMITER` should finally
+be wired to `get_market_data` call sites, or at minimum whether those
+calls should move off the event loop via `asyncio.to_thread` regardless
+of throttling; (3) this is the second occurrence of an unexplained
+total-process stall (2026-08-06: 22min: today: 39min) — worth treating
+as a live pattern, not two unrelated one-offs.
+
+**Validation clock impact:** this is a new, real gap — even though no
+position was open this time, a process that can go fully unresponsive
+for 39 minutes during market hours with no diagnosis is squarely a
+reason `§2`'s "pattern tapering off" bar hasn't been met yet. Validation
+clock resets again.
+
+---
+
 ## 2026-08-13 (afternoon) — Not a bug: first real trade activity of the day, and the first live exercise of the 2026-08-12 quote-refresh fix with a genuine position on the line
 
 **Trade activity (all normal, no findings):** first signal of the day at

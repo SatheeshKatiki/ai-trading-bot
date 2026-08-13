@@ -271,6 +271,32 @@ own. No open position throughout. Full detail: `anomaly_log.md`'s
 2026-08-13 (mid-morning) entry. **Status remains NO-GO** — third
 validation-clock reset today.
 
+**2026-08-13 (afternoon) update — HIGH PRIORITY, unresolved:** first
+real trade activity of the day (two full cycles, +178.20 then -3,679.00,
+portfolio correctly self-halted new entries after hitting its 3.46% max
+daily drawdown) was otherwise clean. The significant finding: a
+**~39-minute total engine freeze** (14:18–14:57 IST) where not just the
+tick feed but `engine.log` itself went completely silent, including a
+separate background thread (sentiment fetch) that had been running like
+clockwork all day — pointing at the whole process being starved, not a
+simple feed gap. No `py-spy` dump was captured during the freeze, so
+root cause isn't confirmed, but it's very plausibly the same unresolved
+mechanism as the **2026-08-06** incident already documented in
+`shared/risk/tick_staleness.py` (CPU-bound, "root cause not fully
+pinned down") — this time worse (39min vs 22min) and correlated with an
+11-entry burst of Fyers DNS resolution failures plus a known, already-
+flagged-but-unfixed gap: `main.py` calls `broker.get_market_data()`
+synchronously on the event loop with no throttle on entry-signal
+evaluation. No open position during the window this time (incidental
+timing, not a property of any fix). Not fixed — market closed within
+minutes of this being found, and the underlying gap was explicitly
+marked "deliberately not acted on" in a prior audit; reversing that
+unilaterally at close without being able to live-verify isn't the right
+call. Full detail and recommended next steps: `anomaly_log.md`'s
+2026-08-13 (afternoon) entry. **Status remains NO-GO** — this is the
+most significant open item from today, worth prioritizing next session
+over new feature work.
+
 This is a living document — check items off with a date and evidence
 reference as they're actually completed, don't mark something done because
 it's expected to pass.
