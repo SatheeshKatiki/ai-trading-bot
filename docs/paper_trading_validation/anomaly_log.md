@@ -6,6 +6,64 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-08-13 (mid-morning) — CRITICAL: the 2026-08-12 feed-stall watchdog's own reconnect handler had a callback signature bug, silently breaking recovery the first time it hit a real socket close
+
+**Symptom:** at 10:23:01 IST, `fyers_feed_watchdog()` (added 2026-08-12,
+`api_bridge.py`) correctly detected the upstream Fyers WebSocket gone
+silent and forced a rebuild — but the very next log line was `Fyers WS
+Error: start_fyers_socket.<locals>.on_close() takes 0 positional
+arguments but 1 was given`. No further connection activity followed:
+no "Fyers WS Connected!", no ticks. `/health`'s `fyers_feed_age_s`
+climbed in exact lockstep with wall-clock time since the watchdog's
+reset (verified by sampling it twice with precise timestamps — the
+delta matched to within measurement noise), proving zero ticks arrived
+for the several minutes it was checked, not just a slow reconnect.
+`main.py`'s own independent `ENGINE STALL` detector fired at the same
+moment (799s), confirming the gap was real, not a monitoring artifact.
+No open position throughout.
+
+**Root cause:** `on_close()` was defined with zero parameters, but the
+vendored `fyers_apiv3` client invokes it as `self.OnClose(message)`
+(passing the close reason) — see `data_ws.py`'s `on_close` method. Every
+real socket close raised `TypeError` inside the vendored library's own
+close-handling path, one layer beneath `fyers_feed_watchdog()`'s manual
+rebuild logic (which itself is structured so this crash, being caught
+by `on_close`'s caller inside the vendored library rather than our own
+try/except, doesn't stop the watchdog's `threading.Thread(target=
+start_fyers_socket, ...)` from firing — but the *new* socket registers
+the identical broken `on_close`, so the instant Fyers's server closed
+that connection too, the same crash repeated). This is exactly the kind
+of previously-unexercised path the validation phase keeps finding: the
+2026-08-12 fix's happy path (successful reconnect) was live-verified,
+but a close event serious enough to reach `on_close` with a real message
+never happened in that session — `sibling on_error(message)` already
+had the correct one-argument signature; `on_close` was the one closure
+that didn't match.
+
+**Fix:** `on_close(message=None)`, logging the message. One-line, mirrors
+`on_error`'s existing signature. Not independently unit-testable without
+extracting these closures to module scope (same as `on_error`/`on_open`,
+which also have no direct test coverage) — verified live instead:
+restarted `api_bridge.py` only (not `main.py`, which talks to Fyers only
+via this process's local `/ws/live`, not directly — no cross-process
+token-invalidation risk this time), confirmed `fyers_feed_age_s` dropped
+to ~0.1s and stayed there across repeated checks, and confirmed
+`main.py`'s own broker WebSocket client (which had itself been
+retrying every 5s since the stall) reconnected cleanly at 10:27:51
+without needing its own restart.
+
+**Minor, unrelated observation (not fixed):** `on_open`'s "Fyers WS
+Connected!" info-level log line doesn't actually appear in `fyersApi.log`
+even on a known-successful connect (confirmed via `/health`) — an
+existing logging-level/handler gap, not a functional issue, not touched
+here to stay in scope.
+
+**Validation clock:** resets again — this is a second, independent gap
+today. Full timeline above; see `GO_NO_GO_CHECKLIST.md` for the current
+status note.
+
+---
+
 ## 2026-08-13 (morning) — Process hygiene: duplicate `api_bridge.py`/`main.py` instances from two `Start_AI_Bot.bat` launches; both pairs died mid-startup, leaving the system fully offline for ~9 minutes during market hours
 
 **Symptom:** at session start, process inspection found **two** copies each

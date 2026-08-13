@@ -461,8 +461,19 @@ def start_fyers_socket():
             if fyers_socket_instance:
                 fyers_socket_instance.subscribe(symbols=list(_subscribed_symbols), data_type="symbolData")
             
-        def on_close():
-            logger.info("Fyers WS Closed")
+        def on_close(message=None):
+            # The vendored client calls this as `self.OnClose(message)` (see
+            # fyers_apiv3/FyersWebsocket/data_ws.py's on_close), passing the
+            # close reason -- a 0-arg signature here raises TypeError on
+            # every real socket close, which was silently breaking recovery:
+            # fyers_feed_watchdog's rebuild thread still started, but a
+            # crash inside the *old* socket's own on_close (invoked as part
+            # of its internal `reconnect=True` handling) meant the closure
+            # sequence never completed cleanly. Found live 2026-08-13 when
+            # a real WinError 10054 close left the feed dead with the
+            # watchdog's forced reconnect never producing a new "Fyers WS
+            # Connected!" log line or any further ticks.
+            logger.info("Fyers WS Closed: %s", message)
 
         access_token_full = f"{client_id}:{token}"
         

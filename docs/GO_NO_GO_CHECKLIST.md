@@ -254,9 +254,22 @@ gap and a new failure mode (total outage, not a degraded-but-running
 state). Restarted one clean instance of each process; startup completed
 normally on the retry. No code fix yet — the system still has no
 safeguard against a second concurrent launch, a known gap called out
-after a similar incident on 2026-08-03. **Status remains NO-GO** —
-validation clock resets again. Full detail: `anomaly_log.md`'s 2026-08-13
-(morning) entry.
+after a similar incident on 2026-08-03.
+
+**2026-08-13 (mid-morning) update:** the 2026-08-12 feed-stall watchdog
+fired for the first time against a real socket close and immediately hit
+a bug in its own reconnect path — `api_bridge.py`'s `on_close` callback
+had the wrong signature for the vendored Fyers client's calling
+convention, crashing every time a close actually happened and silently
+leaving the feed dead (verified via `/health`'s `fyers_feed_age_s`
+climbing 1:1 with wall-clock time, i.e. zero ticks, for several minutes;
+`main.py`'s own `ENGINE STALL` detector corroborated it). One-line fix
+(`on_close(message=None)`, matching the already-correct `on_error`
+sibling); restarted only `api_bridge.py`, live-verified feed age back to
+~0.1s and `main.py`'s broker WebSocket client reconnecting cleanly on its
+own. No open position throughout. Full detail: `anomaly_log.md`'s
+2026-08-13 (mid-morning) entry. **Status remains NO-GO** — third
+validation-clock reset today.
 
 This is a living document — check items off with a date and evidence
 reference as they're actually completed, don't mark something done because
