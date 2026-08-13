@@ -510,6 +510,83 @@ class CandleAggregator:
         return self.candles[symbol]
 
 
+async def _reconcile_broker_state(broker, active_positions, risk_manager, portfolio_risk) -> None:
+    """Re-syncs locally tracked positions against the broker's own record
+    after a WebSocket reconnect. Pulled out of run_live_bot's
+    `sync_broker_state` closure (which is now a thin wrapper calling this
+    with its own captured `broker`/`active_positions`/`risk_manager`/
+    `portfolio_risk`) so it's directly testable without running the real
+    live engine -- closing docs/GO_NO_GO_CHECKLIST.md's §2.6, which had
+    zero test coverage for the reconnect-while-holding-a-position path
+    even after 5 real WebSocket disconnects in a single session
+    (2026-08-13) -- none of which happened to coincide with an open
+    position, so it stayed live-untested too.
+
+    Root-cause fix (found live, 2026-08-05): in paper mode there is no
+    real broker account to reconcile against -- FyersBroker.get_positions()
+    unconditionally returns [] in paper mode (it has no persistent state
+    of its own across restarts), so this reconciliation would see EVERY
+    locally tracked position as "the broker reports it flat" on every
+    single WebSocket (re)connect, including the very first connect right
+    after a fresh process start. Live result: a real open position was
+    force-closed at its stop-loss price as an ESTIMATE within seconds of
+    a routine restart, even though nothing had actually happened to it.
+    In paper mode active_positions.json IS the authoritative position
+    state -- there is nothing to reconcile it against, so skip entirely.
+    """
+    if not hasattr(broker, 'get_positions'):
+        return
+    if getattr(broker, 'paper_mode', False):
+        logger.info("Skipping broker-state reconciliation — paper mode has no real broker account to reconcile against.")
+        return
+    logger.info("Re-syncing with broker state after WebSocket reconnect...")
+    try:
+        broker_positions = broker.get_positions()
+
+        # Fetch the order book once so any position found flat below can be
+        # reconciled against what the broker actually filled, instead of
+        # guessing. A position that closed while we were disconnected may
+        # have hit its target, been closed manually, or gapped through the
+        # stop-loss to a worse price — assuming it always hit the SL price
+        # can under- or over-state PNL and mis-trigger (or mask) the
+        # drawdown circuit breaker.
+        try:
+            order_book = broker.get_order_book()
+        except Exception as ob_exc:
+            logger.error("Could not fetch order book during reconciliation: %s", ob_exc)
+            order_book = []
+
+        # Pure decision logic lives in trading_bot.reconciliation so it's
+        # unit-testable without a live broker or this function's state —
+        # see test_reconciliation.py.
+        for result in compute_reconciliation(active_positions, broker_positions, order_book):
+            logger.warning("STATE MISMATCH: Local position %s exists but broker is flat. Resolving locally.", result.symbol)
+            if result.is_estimate:
+                logger.error(
+                    "RECONCILIATION: could not find %s's actual closing fill in the broker "
+                    "order book — falling back to the stop-loss price (%.2f) as an ESTIMATE. "
+                    "Recorded PNL for this trade may be inaccurate; verify manually.",
+                    result.symbol, result.exit_price,
+                )
+            else:
+                logger.info(
+                    "RECONCILIATION: resolved actual exit price for %s to %.2f from the broker order book.",
+                    result.symbol, result.exit_price,
+                )
+
+            portfolio_risk.update_pnl(result.pnl, risk_manager.current_equity)
+            risk_manager.record_trade(TradeRecord(
+                result.symbol, result.trade_side,
+                result.entry_price, result.exit_price, result.pnl, datetime.now(_IST).isoformat()
+            ))
+            record_trade(result.symbol, result.state_action, result.exit_price, datetime.now(_IST).isoformat(), qty=result.quantity)
+
+            del active_positions[result.local_key]
+            _save_positions(active_positions)
+    except Exception as e:
+        logger.error("Failed to sync broker state: %s", e)
+
+
 async def run_live_bot(symbols: List[str]) -> None:
     # Get the single active broker — selected from dashboard settings.
     # BrokerFactory handles credentials, authentication, and paper-mode fallback.
@@ -2096,69 +2173,7 @@ async def run_live_bot(symbols: List[str]) -> None:
             _m2m_last_update = time.time()
 
     async def sync_broker_state():
-        if not hasattr(broker, 'get_positions'):
-            return
-        # Root-cause fix (found live, 2026-08-05): in paper mode there is no
-        # real broker account to reconcile against -- FyersBroker.get_positions()
-        # unconditionally returns [] in paper mode (it has no persistent
-        # state of its own across restarts), so this reconciliation would
-        # see EVERY locally tracked position as "the broker reports it
-        # flat" on every single WebSocket (re)connect, including the very
-        # first connect right after a fresh process start. Live result: a
-        # real open position was force-closed at its stop-loss price as an
-        # ESTIMATE within seconds of a routine restart, even though nothing
-        # had actually happened to it. In paper mode active_positions.json
-        # IS the authoritative position state -- there is nothing to
-        # reconcile it against, so skip entirely.
-        if getattr(broker, 'paper_mode', False):
-            logger.info("Skipping broker-state reconciliation — paper mode has no real broker account to reconcile against.")
-            return
-        logger.info("Re-syncing with broker state after WebSocket reconnect...")
-        try:
-            broker_positions = broker.get_positions()
-
-            # Fetch the order book once so any position found flat below can be
-            # reconciled against what the broker actually filled, instead of
-            # guessing. A position that closed while we were disconnected may
-            # have hit its target, been closed manually, or gapped through the
-            # stop-loss to a worse price — assuming it always hit the SL price
-            # can under- or over-state PNL and mis-trigger (or mask) the
-            # drawdown circuit breaker.
-            try:
-                order_book = broker.get_order_book()
-            except Exception as ob_exc:
-                logger.error("Could not fetch order book during reconciliation: %s", ob_exc)
-                order_book = []
-
-            # Pure decision logic lives in trading_bot.reconciliation so it's
-            # unit-testable without a live broker or this closure's state —
-            # see tests/test_reconciliation.py.
-            for result in compute_reconciliation(active_positions, broker_positions, order_book):
-                logger.warning("STATE MISMATCH: Local position %s exists but broker is flat. Resolving locally.", result.symbol)
-                if result.is_estimate:
-                    logger.error(
-                        "RECONCILIATION: could not find %s's actual closing fill in the broker "
-                        "order book — falling back to the stop-loss price (%.2f) as an ESTIMATE. "
-                        "Recorded PNL for this trade may be inaccurate; verify manually.",
-                        result.symbol, result.exit_price,
-                    )
-                else:
-                    logger.info(
-                        "RECONCILIATION: resolved actual exit price for %s to %.2f from the broker order book.",
-                        result.symbol, result.exit_price,
-                    )
-
-                portfolio_risk.update_pnl(result.pnl, risk_manager.current_equity)
-                risk_manager.record_trade(TradeRecord(
-                    result.symbol, result.trade_side,
-                    result.entry_price, result.exit_price, result.pnl, datetime.now(_IST).isoformat()
-                ))
-                record_trade(result.symbol, result.state_action, result.exit_price, datetime.now(_IST).isoformat(), qty=result.quantity)
-
-                del active_positions[result.local_key]
-                _save_positions(active_positions)
-        except Exception as e:
-            logger.error("Failed to sync broker state: %s", e)
+        await _reconcile_broker_state(broker, active_positions, risk_manager, portfolio_risk)
 
     async def emergency_flatten_all_positions(reason: str) -> None:
         """Force-close every open position right now, at a real market
