@@ -6,6 +6,28 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-08-13 (early afternoon) — Third WS disconnect today (12:25 IST); clean, fast, forced rebuild — the best confirmation yet of the morning's `on_close` fix, plus a pattern worth watching
+
+A third `[WinError 10054]` upstream close, this time genuinely exercising
+the full forced-rebuild path (`FYERS FEED STALL: ... in 166s`, `main.py`'s
+matching `ENGINE STALL: ... in 166s`). No `on_close` crash, no lingering
+staleness — `/health` was back to sub-second `fyers_feed_age_s` well
+within the same minute. This is the cleanest recovery of the three
+today, and the first one to actually exercise the watchdog's forced
+rebuild without a crash getting in the way, end to end. No open position,
+no code change.
+
+**Pattern worth watching, not yet acted on:** three separate upstream WS
+closes today (10:23, 11:30, 12:25 IST), roughly a little under an hour
+apart, all the same `WinError 10054` signature, at least one (11:30)
+correlated with a burst of DNS resolution failures for `api-t1.fyers.in`.
+Could be this machine's local network/DNS, could be upstream Fyers-side
+behavior — not enough samples yet to tell, and the existing watchdog+fix
+is handling each one correctly. Flagging in case the cadence continues
+or shortens; not a code change to make on the current evidence.
+
+---
+
 ## 2026-08-13 (late morning) — A second, brief real WS disconnect self-healed via this morning's `on_close` fix; a ~15min engine-wide tick gap on `main.py`'s side is a known, by-design observability-only limitation, not a new bug
 
 **Symptom:** at 11:30:37 IST, a burst of DNS resolution failures for
