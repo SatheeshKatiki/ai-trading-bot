@@ -6,6 +6,30 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-08-13 (early afternoon) — Fourth WS disconnect today (12:50 IST), only 25min after the third; self-healed instantly via the vendored client's own reconnect, ruled out a thread-leak theory
+
+Fourth `[WinError 10054]` close. Interval since the third dropped to
+~25min (vs ~67min and ~55min before that) — checked whether this was a
+resource leak from repeated forced rebuilds (`api_bridge.py`'s `python.exe`
+worker showed 42 threads / 512 handles / 432MB after running since 10:27
+through 3 of the day's 4 disconnects). Ruled out on the evidence
+available: (1) this disconnect didn't even need a forced rebuild — no
+`FYERS FEED STALL` log, self-healed via the vendored client's own
+`reconnect=True` on the *same* socket object, same as incident #2, so no
+new thread spawn happened here at all; (2) neither of the two forced
+rebuilds today (#1, #3) ever logged `Error closing the stale Fyers
+socket`, meaning `close_connection()` completed cleanly each time —
+and reading the vendored library directly, a clean `close_connection()`
+does `.join()` both its message and ping threads before returning, so a
+clean close shouldn't leak. 42 threads is plausibly just this app's
+normal baseline (asyncio's default thread-pool executor plus a couple of
+persistent library threads), not accumulation — no prior-restart baseline
+was captured to compare against, so this isn't fully ruled out, just not
+supported by the evidence in hand. No open position, no code change.
+Watching whether the interval keeps shortening.
+
+---
+
 ## 2026-08-13 (early afternoon) — Third WS disconnect today (12:25 IST); clean, fast, forced rebuild — the best confirmation yet of the morning's `on_close` fix, plus a pattern worth watching
 
 A third `[WinError 10054]` upstream close, this time genuinely exercising
