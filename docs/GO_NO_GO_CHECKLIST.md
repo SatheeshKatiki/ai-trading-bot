@@ -252,9 +252,16 @@ processes running for ~9 minutes (~09:31–09:40 IST)** during market hours.
 No open position throughout, so nothing went unmanaged, but this is a real
 gap and a new failure mode (total outage, not a degraded-but-running
 state). Restarted one clean instance of each process; startup completed
-normally on the retry. No code fix yet — the system still has no
-safeguard against a second concurrent launch, a known gap called out
-after a similar incident on 2026-08-03.
+normally on the retry.
+
+**Correction (found during the same-day deep audit, see below):** the
+claim above — "no safeguard against a second concurrent launch" — was
+wrong. `shared/singleton_lock.py` already existed and was already wired
+into both processes since 2026-08-05, specifically to prevent this exact
+scenario. It has a TOCTOU race (check-then-write, not atomic) that let
+today's near-simultaneous launch slip through both copies' checks before
+either PID was written — the guard exists, it just has a bug. Root cause
+and fix in the audit below.
 
 **2026-08-13 (mid-morning) update:** the 2026-08-12 feed-stall watchdog
 fired for the first time against a real socket close and immediately hit
