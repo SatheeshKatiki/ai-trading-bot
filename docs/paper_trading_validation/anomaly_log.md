@@ -6,6 +6,51 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-08-13 (late morning) — A second, brief real WS disconnect self-healed via this morning's `on_close` fix; a ~15min engine-wide tick gap on `main.py`'s side is a known, by-design observability-only limitation, not a new bug
+
+**Symptom:** at 11:30:37 IST, a burst of DNS resolution failures for
+`api-t1.fyers.in` (both `/history` and `/quotes` REST calls, plus the
+live WebSocket itself: `Fyers WS Error: [WinError 10054] An existing
+connection was forcibly closed by the remote host`) — a real, brief
+upstream network blip, not an application bug. `main.py`'s own `ENGINE
+STALL` detector fired at 11:45:27 reporting 889s (~14.8min) with no tick
+for any watched symbol. No open position throughout.
+
+**What happened differently this time (confirms this morning's fix):**
+unlike the 10:23 incident, `on_close` did **not** crash — no
+`TypeError`, no repeat of the earlier bug. No `FYERS FEED STALL` forced-
+rebuild was even needed: the vendored client's own `reconnect=True`
+evidently succeeded on its own well under the watchdog's 800s trigger
+threshold, something it couldn't reliably do before today's fix since a
+crashing `on_close` was interfering with its internal close-handling.
+Verified recovery directly: `/health`'s `fyers_feed_age_s` sampled four
+times over ~20s stayed pinned near 0 (0.3/0.2/0.3/0.0s, not climbing
+with wall-clock), and `data/NSE_NIFTY50-INDEX_5Min.csv` picked up a
+fresh 11:45:00 candle with an 11:47 file mtime.
+
+**Why `main.py` still saw an ~889s gap despite `api_bridge`'s upstream
+recovering faster:** this is the exact, already-documented mechanism
+in `api_bridge.py` (comment above `_last_fyers_message_at`, written
+after the 2026-08-06 7h49m incident): `main.py`'s *local* socket to
+`api_bridge`'s `/ws/live` stays healthy throughout an upstream-only
+outage (ping/pong fine) — the gap is entirely about `current_market_data`
+not being fresh upstream, not a local disconnect, so `main.py`'s own
+stall detector can only warn, not itself recover. That's by design; the
+recovery mechanism lives entirely on `api_bridge`'s side (this morning's
+fix). Not re-verified with byte-for-byte certainty that `main.py`'s own
+`_last_tick_at` had caught back up by the time of writing (no direct
+introspection endpoint for it) — inferred from `api_bridge`'s sustained
+health plus the fresh candle append, and treated as resolved pending the
+next monitoring pass (no further `ENGINE STALL` within its 300s re-alert
+window would confirm; one recurring beyond that would not).
+
+**No code change this entry** — this is a live validation of this
+morning's fix plus a documentation cross-reference, not a new finding.
+The ~15min gap length (vs. instant historically) is noted as worth
+watching if it recurs; a single sample isn't enough to call it a pattern.
+
+---
+
 ## 2026-08-13 (mid-morning) — CRITICAL: the 2026-08-12 feed-stall watchdog's own reconnect handler had a callback signature bug, silently breaking recovery the first time it hit a real socket close
 
 **Symptom:** at 10:23:01 IST, `fyers_feed_watchdog()` (added 2026-08-12,
