@@ -6,6 +6,31 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-08-13 (afternoon) — Not a bug: first real trade activity of the day, and the first live exercise of the 2026-08-12 quote-refresh fix with a genuine position on the line
+
+**Trade activity (all normal, no findings):** first signal of the day at
+13:35:00 — entered `NSE:NIFTY2681824400PE` (BUY PUT, qty 260 @ 90.35, SL
+76.30). Pyramided twice (13:35:01, 13:35:02) as price moved favorably,
+then hit its trailing stop-loss at 13:35:14 for **+₹178.20**, immediately
+followed by a fresh entry on a new signal (same option, qty 260 @ 90.90,
+SL 76.80). That second position ran until 13:54:39, when it hit its hard
+stop-loss (LTP 76.75 ≤ SL 76.80) for **-₹3,679.00** — PnL math verified
+exact: (90.90 − 76.75) × 260 = 3,679.00. Net day so far: -₹3,500.80,
+1 consecutive loss. Equity now 102,560.40. No position open as of this
+entry.
+
+**Notable:** at 13:52:45, with the second position still open, `Fyers
+/quotes returned an error (Bad request)` — the exact condition
+`FyersBroker._refresh_fyers_model()` (added 2026-08-12, see that date's
+afternoon entry) exists to catch. This is the first time it's fired
+live with real capital-equivalent risk on the line rather than a flat
+book. It refreshed the session and retried once, quotes resumed cleanly
+(no repeated errors), and the hard-SL exit ~2 minutes later fired
+correctly and on time. Positive live validation of that fix under the
+condition it was actually built for; no code change here.
+
+---
+
 ## 2026-08-13 (early afternoon) — Fourth WS disconnect today (12:50 IST), only 25min after the third; self-healed instantly via the vendored client's own reconnect, ruled out a thread-leak theory
 
 Fourth `[WinError 10054]` close. Interval since the third dropped to
