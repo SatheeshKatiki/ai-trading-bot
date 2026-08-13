@@ -40,10 +40,10 @@ class Alerter:
 
     def send_exit_alert(
         self,
-        symbol: str, 
-        side: int | str, 
-        qty: int, 
-        price: float, 
+        symbol: str,
+        side: int | str,
+        qty: int,
+        price: float,
         pnl: float,
         reason: str
     ) -> None:
@@ -52,10 +52,36 @@ class Alerter:
         """
         if not DISCORD_WEBHOOK_URL:
             return
-            
+
         threading.Thread(
             target=_post_discord_exit_alert,
             args=(symbol, side, qty, price, pnl, reason),
+            daemon=True
+        ).start()
+
+    def send_alert(self, message: str) -> None:
+        """
+        Dispatch a generic, freeform text alert in the background.
+
+        Root-cause fix (found live, 2026-08-13): `trading_bot/main.py`
+        already called `alerter.send_alert(...)` in 3 places (a
+        preload-failure notice, two sentiment-blocked-trade notices) --
+        this method simply didn't exist on this class, only on the
+        sibling `shared/alerts/telegram.py` Alerter. Those call sites
+        would have raised `AttributeError` the first time any of them
+        actually fired; they hadn't yet, matching the exact "previously
+        unexercised code path" pattern the rest of this validation phase
+        keeps finding. Found while wiring api_bridge.py's
+        `main_process_watchdog` to use this same method for freeze
+        alerts -- fixed here rather than building new code on top of a
+        broken one.
+        """
+        if not DISCORD_WEBHOOK_URL:
+            return
+
+        threading.Thread(
+            target=_post_discord_generic_alert,
+            args=(message,),
             daemon=True
         ).start()
 
@@ -166,6 +192,29 @@ def _post_discord_exit_alert(
         with urllib.request.urlopen(req, timeout=5) as response:
             if response.getcode() not in [200, 204]:
                 logger.warning(f"[Alerts] Discord webhook returned {response.getcode()}")
-                
+
     except Exception as e:
         logger.error(f"[Alerts] Failed to send Discord exit alert: {e}")
+
+def _post_discord_generic_alert(message: str) -> None:
+    """Synchronous POST request to Discord Webhook for a freeform text
+    alert -- no trade-specific fields, just a message."""
+    try:
+        payload = {
+            "username": "QuantAI Swarm Bot",
+            "content": message,
+        }
+
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            DISCORD_WEBHOOK_URL,
+            data=data,
+            headers={'Content-Type': 'application/json', 'User-Agent': 'QuantAI/1.0'}
+        )
+
+        with urllib.request.urlopen(req, timeout=5) as response:
+            if response.getcode() not in [200, 204]:
+                logger.warning(f"[Alerts] Discord webhook returned {response.getcode()}")
+
+    except Exception as e:
+        logger.error(f"[Alerts] Failed to send Discord alert: {e}")
