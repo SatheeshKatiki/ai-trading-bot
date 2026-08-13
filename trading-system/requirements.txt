@@ -45,3 +45,4 @@ loguru>=0.7.0
 
 # Process management — singleton-instance guard for main.py/api_bridge.py
 psutil>=5.9.0
+filelock>=3.32.0           # atomic cross-process lock backing the guard above
