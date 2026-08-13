@@ -26,9 +26,11 @@ import pytest
 from shared.risk.tick_staleness import (
     DEFAULT_ENGINE_STALL_WARNING_S,
     DEFAULT_FEED_REBUILD_THRESHOLD_S,
+    DEFAULT_HEARTBEAT_STALE_THRESHOLD_S,
     DEFAULT_STALENESS_WARNING_S,
     StalePosition,
     find_stale_positions,
+    heartbeat_is_stale,
     seconds_since_any_tick,
     should_rebuild_stale_feed,
 )
@@ -252,3 +254,63 @@ def test_the_live_incident_is_reproduced_for_the_feed_watchdog():
     hours."""
     forty_six_minutes = 46 * 60
     assert should_rebuild_stale_feed(10_000.0, now=10_000.0 + forty_six_minutes, market_open=True) is True
+
+
+# ---------------------------------------------------------------------------
+# heartbeat_is_stale — api_bridge.py's main_process_watchdog
+# ---------------------------------------------------------------------------
+#
+# Root cause (found live, 2026-08-13): main.py had no signal at all for "is
+# the event loop itself still scheduling tasks" independent of ticks
+# arriving. A ~39-minute total freeze -- not just the tick path, a separate
+# background thread too -- was only found by manually reviewing logs hours
+# later. main.py now writes a heartbeat on a fixed cadence with no
+# dependency on ticks/broker calls/anything blockable; this is the
+# independent, receiving-side check api_bridge.py's watchdog polls instead
+# of trusting the process to report its own health.
+
+def test_no_heartbeat_read_yet_is_not_stale():
+    """0.0 means the watchdog hasn't successfully read the heartbeat file
+    yet (e.g. it doesn't exist) -- must not look identical to a process
+    that ran fine for a while and then went silent."""
+    assert heartbeat_is_stale(0.0, now=100_000.0) is False
+
+
+def test_recent_heartbeat_is_not_stale():
+    assert heartbeat_is_stale(995.0, now=1_000.0) is False
+
+
+def test_stale_past_threshold_is_stale():
+    assert heartbeat_is_stale(1_000.0, now=1_000.0 + DEFAULT_HEARTBEAT_STALE_THRESHOLD_S) is True
+
+
+def test_exactly_at_the_threshold_counts_as_stale_for_the_heartbeat_too():
+    assert heartbeat_is_stale(
+        1_000.0,
+        now=1_000.0 + DEFAULT_HEARTBEAT_STALE_THRESHOLD_S,
+        threshold_s=DEFAULT_HEARTBEAT_STALE_THRESHOLD_S,
+    ) is True
+
+
+def test_custom_threshold_is_honoured_for_the_heartbeat():
+    # 5s gap: stale under a 2s threshold, fine under a 10s threshold.
+    assert heartbeat_is_stale(1_000.0, now=1_005.0, threshold_s=2.0)
+    assert not heartbeat_is_stale(1_000.0, now=1_005.0, threshold_s=10.0)
+
+
+def test_no_market_hours_parameter_the_staleness_math_is_unconditional():
+    """Unlike should_rebuild_stale_feed, this function takes no
+    market_open flag -- the staleness math itself is unconditional;
+    api_bridge.py's watchdog is the one that decides whether to *act* on
+    a stale heartbeat only during market hours, layered on top of this
+    (see main_process_watchdog)."""
+    import inspect
+    params = inspect.signature(heartbeat_is_stale).parameters
+    assert "market_open" not in params
+
+
+def test_the_2026_08_13_freeze_incident_is_reproduced():
+    """The exact live scenario this function was built from: a ~39-minute
+    total engine freeze during real market hours."""
+    thirty_nine_minutes = 39 * 60
+    assert heartbeat_is_stale(10_000.0, now=10_000.0 + thirty_nine_minutes) is True

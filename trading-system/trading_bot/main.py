@@ -132,6 +132,13 @@ registry.register("MARL_Ultra", marl_signals)
 _SETTINGS_PATH = Path(__file__).resolve().parents[1] / "config" / "settings.json"
 _POSITIONS_PATH = Path(__file__).resolve().parents[1] / "config" / "active_positions.json"
 
+# Same directory shared/singleton_lock.py already uses for process-lifecycle
+# artifacts (run/{name}.pid, run/{name}.lock) -- the heartbeat file lives
+# alongside them for the same reason: not application config, a fact about
+# this running process. Read by api_bridge.py's main_process_watchdog.
+_HEARTBEAT_PATH = Path(__file__).resolve().parents[1] / "run" / "main_heartbeat.txt"
+_HEARTBEAT_WRITE_INTERVAL_S = 15.0
+
 # ------------------------------------------------------------------
 # Settings cache: avoids disk I/O on every tick (checks mtime instead)
 # ------------------------------------------------------------------
@@ -204,6 +211,30 @@ def _save_positions(positions: Dict[str, Position]) -> None:
 
     except Exception as e:
         logger.error("Failed to save active positions: %s", e)
+
+
+def _write_heartbeat(path: Path) -> None:
+    """Atomically write the current `time.time()` to `path`. Pulled out of
+    `heartbeat_writer`'s loop (run_live_bot) so the actual write behavior
+    is directly testable without spinning up the real event loop -- same
+    reasoning as `_compute_retry_delay`/`_should_reset_failure_count`
+    below. Same tempfile+os.replace pattern as `_save_positions` above,
+    without its 5-attempt retry: a heartbeat write losing a single race
+    against a reader is fine (the next write is <=
+    `_HEARTBEAT_WRITE_INTERVAL_S` away), unlike position data.
+    """
+    import tempfile
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_fd, temp_path = tempfile.mkstemp(dir=path.parent, prefix="heartbeat_tmp_", suffix=".txt")
+    try:
+        with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
+            f.write(str(time.time()))
+        os.replace(temp_path, path)
+    except Exception:
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
+        raise
+
 
 def _load_positions() -> Dict[str, Position]:
     if _POSITIONS_PATH.exists():
@@ -2319,6 +2350,32 @@ async def run_live_bot(symbols: List[str]) -> None:
                 logger.error("Tick staleness watchdog error: %s", e)
 
     asyncio.create_task(tick_staleness_watchdog())
+
+    async def heartbeat_writer() -> None:
+        """Writes `time.time()` to `_HEARTBEAT_PATH` on a fixed cadence,
+        independent of ticks, broker calls, or anything else that could
+        block. This is the "is the event loop itself still scheduling
+        tasks at all" signal main.py never had before 2026-08-13 -- see
+        `shared.risk.tick_staleness.heartbeat_is_stale`'s docstring for
+        the full root-cause history. Deliberately does nothing else: the
+        whole point is that this task must keep running even when other
+        tasks (entry/exit evaluation, the tick-staleness watchdog itself)
+        are slow or wedged, so api_bridge.py's watchdog can tell "no
+        ticks are arriving" (feed/market issue) apart from "the process
+        itself is unresponsive" (needs a restart).
+        """
+        while True:
+            try:
+                _write_heartbeat(_HEARTBEAT_PATH)
+            except Exception as e:
+                # Never let a heartbeat-write hiccup take down the engine --
+                # log and keep going; a missed write or two just makes the
+                # next stale-check slightly more conservative, matching
+                # heartbeat_is_stale's own tolerance for jitter.
+                logger.error("Heartbeat write failed: %s", e)
+            await asyncio.sleep(_HEARTBEAT_WRITE_INTERVAL_S)
+
+    asyncio.create_task(heartbeat_writer())
 
     logger.info("Starting live stream for symbols: %s", ", ".join(symbols))
     await broker.stream_quotes(symbols, on_tick, on_reconnect=sync_broker_state)

@@ -61,9 +61,13 @@ from typing import Any, Mapping, Optional
 __all__ = [
     "DEFAULT_STALENESS_WARNING_S",
     "DEFAULT_ENGINE_STALL_WARNING_S",
+    "DEFAULT_FEED_REBUILD_THRESHOLD_S",
+    "DEFAULT_HEARTBEAT_STALE_THRESHOLD_S",
     "StalePosition",
     "find_stale_positions",
     "seconds_since_any_tick",
+    "should_rebuild_stale_feed",
+    "heartbeat_is_stale",
 ]
 
 #: Seconds without a tick before an open position's underlying is reported
@@ -127,6 +131,56 @@ def should_rebuild_stale_feed(
     if not market_open:
         return False
     return (now - last_message_at) >= threshold_s
+
+
+#: Seconds without a fresh heartbeat write before main.py's event loop is
+#: considered frozen (not just its tick feed). Deliberately larger than
+#: main.py's own ~15s heartbeat-write interval to tolerate normal jitter
+#: without false-positiving on a process that's merely busy.
+DEFAULT_HEARTBEAT_STALE_THRESHOLD_S: float = 120.0
+
+
+def heartbeat_is_stale(
+    last_heartbeat_at: float,
+    now: float,
+    threshold_s: float = DEFAULT_HEARTBEAT_STALE_THRESHOLD_S,
+) -> bool:
+    """Has main.py's own heartbeat gone stale for long enough that its
+    event loop should be considered frozen, not just its tick feed?
+
+    Root cause (found live, 2026-08-13): main.py had no signal at all for
+    "is the event loop itself still scheduling tasks" independent of
+    ticks arriving — a ~39-minute total freeze (not just the tick path,
+    but a separate background thread too) was only found by manually
+    reviewing logs hours later. main.py now writes `time.time()` to
+    `run/main_heartbeat.txt` on a fixed ~15s cadence from a task with no
+    dependency on ticks, broker calls, or anything else that could block
+    it (see run_live_bot's `heartbeat_writer`). api_bridge.py's
+    `main_process_watchdog` reads that file and calls this function —
+    the independent, receiving-side check, mirroring
+    `should_rebuild_stale_feed`'s relationship to the Fyers feed above,
+    but one layer further out (main.py's whole process, not just its
+    upstream connection).
+
+    Parameters
+    ----------
+    last_heartbeat_at
+        `time.time()` reading parsed from the heartbeat file. `0.0` means
+        no heartbeat has been read yet (e.g. the file doesn't exist) —
+        treated as "not stale" here for the same reason
+        `should_rebuild_stale_feed` treats a never-connected feed as not
+        stale: a process that hasn't had a chance to write its first
+        heartbeat yet (just starting up) shouldn't look identical to one
+        that has gone silent after running fine for a while. Callers that
+        also track how long the process's PID has been alive can layer
+        that distinction on top of this function's result.
+    now
+        Caller-supplied `time.time()` reading — not read internally, so
+        this stays trivially testable without mocking the clock.
+    """
+    if last_heartbeat_at == 0.0:
+        return False
+    return (now - last_heartbeat_at) >= threshold_s
 
 
 def seconds_since_any_tick(last_tick_at: Mapping[str, float], now: float) -> float:
