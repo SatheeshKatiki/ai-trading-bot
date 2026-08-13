@@ -304,6 +304,35 @@ call. Full detail and recommended next steps: `anomaly_log.md`'s
 most significant open item from today, worth prioritizing next session
 over new feature work.
 
+**2026-08-13/14 update — dedicated reliability audit, requested
+separately from routine monitoring:** root-caused and fixed both of
+today's major incidents (the duplicate-launch race and the 39-minute
+freeze) at the code level, added a heartbeat + auto-recovery watchdog
+that had never existed, and closed several real test-coverage gaps.
+Full detail, live-validation evidence, and the audit's own verdict:
+`docs/paper_trading_validation/reliability_audit_2026-08-13.md`. Two
+items directly relevant to this checklist:
+- **§2.6 test coverage gap closed** (the previously-untestable
+  `sync_broker_state` closure now has 5 dedicated tests covering both
+  paper-mode and live-mode reconnect-while-holding-a-position
+  pipelines) — **but this is unit/pipeline test coverage, not the §5
+  evidence package's still-outstanding requirement**: "the specific log
+  lines for the §2.6 **real** reconnect-during-market-hours event, plus
+  manual verification against the broker's order book." That real event
+  (against a real, non-paper broker connection) has not happened yet;
+  §2.6 is more soundly *tested* now, not yet *live-closed*.
+- The engine-freeze fix was live-validated for its detection/alert/
+  restart mechanism (a real freeze was simulated safely off-hours with
+  no open position, and the real watchdog correctly detected, alerted,
+  terminated, and recovered a real `main.py` process end to end) but
+  **not** against a real recurrence of the actual triggering condition
+  (a live DNS/network failure burst during market hours) — that
+  confirmation is still pending the next time it naturally occurs.
+
+**Status remains NO-GO** — this audit closes real gaps but does not
+itself start or otherwise change §2's validation clock; a session with
+real trade activity and zero new findings is still the bar.
+
 This is a living document — check items off with a date and evidence
 reference as they're actually completed, don't mark something done because
 it's expected to pass.
