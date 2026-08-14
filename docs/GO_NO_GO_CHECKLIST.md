@@ -376,17 +376,36 @@ count.
   during the validation window, but the old seed data would have misled
   anyone treating the Journal UI page as evidence. **This reset is Day 1 of
   the validation window; nothing counted before this timestamp.**
+- [x] **Migrate `trading-system/settings.json`'s plaintext Fyers
+  credentials** (`client_id`, `secret_key`, `totp_secret`, `pin`). Done
+  2026-08-15. Confirmed first — grepped every `settings.json` consumer in
+  the codebase; all of them (broker_factory.py, base_broker.py, main.py,
+  options_selector.py, etc.) read `config/settings.json`, none read the
+  root `settings.json`, and `api_bridge.py`'s one credential fallback
+  (`_get_fyers_client_id()`) also points at `config/settings.json`, not
+  this file — confirmed genuinely dead, not just documented as such.
+  Stripped the 4 fields from the root file (kept `redirect_uri`, not
+  sensitive). The real encrypted store (`broker_credentials.json` via
+  `brokers/credentials.py`) already held all of these and is what the
+  live automated login (`scripts/auth/auto_login_fyers.py`) actually
+  reads — this item was cleanup of a stale duplicate, not a migration of
+  the live credential path. Also found and fixed a real bug in
+  `scripts/auth/save_broker_creds.py` along the way: it replaced rather
+  than merged a broker's stored credentials, so using it to rotate just
+  `client_id`/`secret_key` would have silently deleted the saved
+  `fyers_pin`/`fyers_totp_key`/`fyers_user_id` — now merges, masks
+  secret input, tests-then-rolls-back on a failed login, and offers to
+  keep `.env`'s `FYERS_CLIENT_ID`/`FYERS_SECRET_KEY` in sync (used
+  independently by the dashboard's password-reset identity check and the
+  separate manual `trading_bot.login` flow).
 - [ ] **Rotate the Fyers API secret/client ID** via the Fyers developer
   portal. The `.env` values sat in git history before being untracked
   earlier in this remediation — untracking doesn't invalidate a key that
-  already leaked into history. *(Outstanding since the original audit;
-  still not done as of this writing.)*
-- [ ] **Migrate or delete `trading-system/settings.json`'s plaintext Fyers
-  credentials** (`client_id`, `secret_key`, `totp_secret`, `pin`). Vestigial
-  and unread by any code path, but still sitting in plaintext on disk.
-  `brokers/credentials.py`'s `save_credentials()` + the new
-  `rotate_encryption_key()` give you a real encrypted store to move them
-  into. *(Outstanding since the original audit; still not done.)*
+  already leaked into history. *(Outstanding since the original audit.
+  2026-08-15: the secure tooling to do this safely is now in place —
+  `scripts/auth/save_broker_creds.py` — but the actual portal rotation
+  is a user action against the live Fyers account and hasn't happened
+  yet as of this writing.)*
 - [ ] Confirm `config/settings.json`'s `live_trading_mode` stays `false` for
   the entire duration of §2 below — check this explicitly if the machine is
   ever restarted mid-window.
