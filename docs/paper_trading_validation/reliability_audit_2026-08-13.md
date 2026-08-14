@@ -187,3 +187,22 @@ pre-existing `xfail`s unchanged throughout.
    monitoring cadence like any other session — the overarching
    validation clock and its own criteria are unaffected by this audit
    and continue on their own terms.
+
+## Addendum, 2026-08-14
+
+Item 1 above ("let the fixed engine-freeze mechanism get its first
+real-world confirmation naturally") happened faster and closer to home
+than expected: this audit's own heartbeat write turned out to share the
+exact synchronous-call-on-the-event-loop anti-pattern it was built to
+detect, and froze `main.py` for ~12 hours overnight (worse than the
+original 39-minute incident). `api_bridge.py`'s `main_process_watchdog`
+detected and auto-recovered it correctly, unattended — the first real,
+naturally-occurring confirmation that the detection/recovery mechanism
+this audit built actually works, as opposed to the safe, simulated,
+off-hours test it was validated against the night before. Root-caused
+and fixed the same way (`asyncio.to_thread`); full detail in
+`anomaly_log.md`'s 2026-08-14 entry. The verdict above stands — the
+mechanism being exercised for real and working is exactly the kind of
+evidence a "GO" for this audit's scope should rest on — but it's worth
+recording that "GO" did not mean "no further freezes will ever be
+found," only that the system can now find and recover from them.

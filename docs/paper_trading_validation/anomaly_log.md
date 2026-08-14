@@ -6,6 +6,77 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-08-14 — CRITICAL, ironic: last night's own heartbeat fix froze the engine for ~12 hours; the watchdog it shipped alongside caught and recovered it correctly
+
+**Symptom:** a large gap opened up in overnight monitoring cadence
+(wakeups didn't fire as scheduled for an extended stretch). On resuming
+active monitoring at 21:50 IST, `main.py` (PID 15892 — the exact
+process the 2026-08-13/14 reliability audit's live watchdog-recovery
+test had respawned around 00:37 IST) was found completely silent in
+`engine.log` from `00:37:01` through `12:34:54` — **~12 hours**, worse
+than the original 2026-08-13 39-minute freeze this same audit had just
+fixed. The only log line anywhere in that window: `[2026-08-14
+12:34:54] ERROR __main__: Heartbeat write failed: [WinError 5] Access
+is denied: ...heartbeat_tmp_... -> ...main_heartbeat.txt`, logged the
+instant `api_bridge.py`'s new `main_process_watchdog` detected the
+stale heartbeat and force-terminated the frozen process.
+
+**Verified before concluding anything:** `config/active_positions.json`
+was `{}` and `state.db` showed zero trades for 2026-08-14 — no capital
+was at risk during the freeze, and the watchdog's own restart (also
+logged: `main.py restart succeeded -- fresh heartbeat confirmed`) had
+already produced a healthy replacement process (PID 7920→child 26552)
+that ran normally for the rest of the day with no further incident.
+
+**Root cause:** the previous night's heartbeat fix
+(`heartbeat_writer`'s loop) called `_write_heartbeat()` — a synchronous
+`tempfile.mkstemp` + `os.replace` — directly, unwrapped, on the event
+loop. This is the *exact* anti-pattern the 2026-08-13 `get_market_data()`
+freeze fix existed to eliminate, freshly reintroduced by the very fix
+built to detect freezes. The single `WinError 5` logged at the moment
+of forced termination is strong circumstantial evidence this write hung
+on a Windows-level file lock (antivirus real-time scan, indexer, or
+similar) for the whole window and took the entire event loop down with
+it — ironically freezing the freeze-detector itself. No `py-spy` dump
+exists from during the freeze (same limitation noted in the original
+39-minute incident's writeup), so the exact lock-holder isn't
+confirmed, only the mechanism.
+
+**What worked correctly, worth stating plainly:** this is the first
+real, naturally-occurring confirmation that the heartbeat +
+`main_process_watchdog` mechanism built the previous night actually
+works end-to-end against a genuine freeze, not just the simulated
+off-hours test run during that same session. Detection, alerting,
+termination, and recovery all fired correctly and automatically, with
+zero manual intervention, entirely unattended, exactly as designed.
+
+**Fix:** wrapped `_write_heartbeat` in `asyncio.to_thread` inside
+`heartbeat_writer`'s loop — identical pattern to the `get_market_data()`
+fix. New freeze-injection test (`test_a_hanging_write_does_not_stall_a_
+concurrent_task`, mirroring `test_engine_freeze_prevention.py`'s for
+`get_market_data`) proves a hanging write no longer stalls a concurrent
+task. Full suite: 628 passed (up from 627), zero regressions. Deployed
+live at 22:01 IST — no open position, restarted cleanly, resumed with
+correct prior PnL (0.0), heartbeat confirmed genuinely updating on the
+15s cadence post-fix.
+
+**Not yet addressed, flagged:** `_save_positions()` has the identical
+synchronous `tempfile`+`os.replace` shape (already defended with a
+5-attempt retry for *fast-failing* `OSError`, but not for a genuine
+*hang*) and is called directly, unwrapped, from multiple places in
+`on_tick`. Given tonight's evidence that Windows file I/O in this
+environment can apparently hang outright (not just fail fast), the same
+`asyncio.to_thread` treatment may be worth applying there too — flagged
+for the next session rather than changed unilaterally at this hour,
+since it's a higher-traffic call site (every entry/exit) and deserves
+its own careful pass rather than a rushed late-night change.
+
+**Validation clock:** resets again — a ~12-hour total freeze is a new,
+worse instance of the same failure class, even though the recovery
+mechanism itself is now proven live-working.
+
+---
+
 ## 2026-08-13 (afternoon) — HIGH PRIORITY, unresolved: a ~39-minute total engine freeze (all threads, not just the tick feed) — the same unfixed 2026-08-06 class of bug, recurring worse
 
 **Symptom:** `ENGINE STALL` fired at 14:18:45 (551s stale) and again at

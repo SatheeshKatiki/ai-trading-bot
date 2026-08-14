@@ -333,6 +333,21 @@ items directly relevant to this checklist:
 itself start or otherwise change §2's validation clock; a session with
 real trade activity and zero new findings is still the bar.
 
+**2026-08-14 update — the reliability audit's own heartbeat fix froze
+the engine for ~12 hours, ironically, and its watchdog caught it
+correctly:** the previous night's heartbeat write was itself a
+synchronous, unwrapped call on the event loop — the exact anti-pattern
+its own sibling fix (`get_market_data()`) had just eliminated elsewhere.
+`main.py` went silent from ~00:37 to 12:34 IST; `api_bridge.py`'s new
+`main_process_watchdog` detected and auto-recovered it correctly and
+unattended, the first real (not simulated) confirmation that mechanism
+works. No open position, zero trades during the window. Fixed
+(`asyncio.to_thread`, same pattern), live-deployed, tested. Full detail:
+`anomaly_log.md`'s 2026-08-14 entry. **Status remains NO-GO** —
+another reset, though this one doubles as further live proof the new
+detection/recovery layer itself holds up under a real, unplanned
+failure.
+
 This is a living document — check items off with a date and evidence
 reference as they're actually completed, don't mark something done because
 it's expected to pass.
