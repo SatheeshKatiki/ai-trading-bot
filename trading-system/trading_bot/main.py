@@ -2381,7 +2381,25 @@ async def run_live_bot(symbols: List[str]) -> None:
         """
         while True:
             try:
-                _write_heartbeat(_HEARTBEAT_PATH)
+                # Root-cause fix (found live, 2026-08-14): this used to call
+                # _write_heartbeat directly, unwrapped, on the event loop --
+                # exactly the same anti-pattern as the 2026-08-13
+                # get_market_data() freeze this whole mechanism was built to
+                # catch, just freshly reintroduced here. A real ~12-hour
+                # total freeze (main.py silent from ~00:37 to 12:34 IST,
+                # only main_process_watchdog's forced termination finally
+                # surfacing one last "Heartbeat write failed: [WinError 5]
+                # Access is denied" as the process was killed) is strong
+                # circumstantial evidence this exact write -- a synchronous
+                # tempfile+os.replace, unprotected -- hung on a Windows-level
+                # file lock and took the whole loop down with it, ironically
+                # freezing the freeze-detector itself. No open position and
+                # zero trades during the affected window, but confirmed via
+                # main_process_watchdog actually firing and recovering it --
+                # see docs/paper_trading_validation/anomaly_log.md's
+                # 2026-08-14 entry. asyncio.to_thread keeps a still-slow or
+                # hung write from blocking anything else on this loop again.
+                await asyncio.to_thread(_write_heartbeat, _HEARTBEAT_PATH)
             except Exception as e:
                 # Never let a heartbeat-write hiccup take down the engine --
                 # log and keep going; a missed write or two just makes the

@@ -16,7 +16,23 @@ test_crash_retry_backoff.py.
 api_bridge.py's main_process_watchdog reads this file and calls
 shared.risk.tick_staleness.heartbeat_is_stale on its contents -- see
 test_tick_staleness.py for that side.
+
+Root-cause fix #2 (found live, 2026-08-14): heartbeat_writer's loop
+called _write_heartbeat directly, unwrapped, on the event loop -- the
+exact same anti-pattern as the 2026-08-13 get_market_data() freeze this
+whole mechanism exists to catch, freshly reintroduced here. Strong
+circumstantial evidence (a real ~12-hour total freeze, main.py silent
+from ~00:37 to 12:34 IST, with a "Heartbeat write failed: [WinError 5]
+Access is denied" logged at the exact moment main_process_watchdog's
+forced termination finally broke whatever had it stuck) points at this
+exact write hanging on a Windows-level file lock and freezing the whole
+loop with it -- ironically, the freeze-detector froze itself. Now
+wrapped in asyncio.to_thread; see
+test_a_hanging_write_does_not_stall_a_concurrent_task below for the
+same freeze-injection proof used for get_market_data in
+test_engine_freeze_prevention.py, applied to this call site.
 """
+import asyncio
 import time
 from pathlib import Path
 
@@ -83,3 +99,49 @@ def test_write_interval_is_comfortably_under_the_staleness_threshold():
     could trigger false-positive freeze detection."""
     from shared.risk.tick_staleness import DEFAULT_HEARTBEAT_STALE_THRESHOLD_S
     assert _HEARTBEAT_WRITE_INTERVAL_S * 3 <= DEFAULT_HEARTBEAT_STALE_THRESHOLD_S
+
+
+def _hanging_write(path):
+    """Stands in for _write_heartbeat hanging on a real Windows-level
+    file lock -- live evidence (a real ~12-hour freeze, a "Heartbeat
+    write failed: [WinError 5]" logged the instant
+    main_process_watchdog's forced termination finally broke whatever
+    had it stuck) points at this exact call as the 2026-08-14 freeze
+    mechanism."""
+    time.sleep(1.5)
+
+
+async def _ticking_task(ticks: list, n: int = 6, interval: float = 0.2):
+    """Stands in for everything else the event loop needs to keep doing
+    while a heartbeat write is in flight -- same role as
+    test_engine_freeze_prevention.py's _ticking_task."""
+    for _ in range(n):
+        await asyncio.sleep(interval)
+        ticks.append(time.monotonic())
+
+
+def test_a_hanging_write_does_not_stall_a_concurrent_task():
+    """The actual 2026-08-14 fix, proven the same way
+    test_engine_freeze_prevention.py proves it for get_market_data(): a
+    synchronous call that genuinely blocks for real wall-clock time must
+    not stall a concurrent coroutine on the same event loop, once
+    wrapped in asyncio.to_thread -- this is the exact pattern
+    heartbeat_writer's loop now uses for _write_heartbeat."""
+
+    async def _run():
+        ticks: list = []
+        start = time.monotonic()
+        await asyncio.gather(
+            asyncio.to_thread(_hanging_write, _HEARTBEAT_PATH),
+            _ticking_task(ticks),
+        )
+        return ticks, start
+
+    ticks, start = asyncio.run(_run())
+
+    assert len(ticks) == 6
+    assert ticks[-1] - start < 1.4, (
+        f"ticking_task's ticks were delayed by the hanging heartbeat "
+        f"write -- the event loop was stalled (last tick at "
+        f"{ticks[-1] - start:.2f}s, expected ~1.2s)"
+    )
