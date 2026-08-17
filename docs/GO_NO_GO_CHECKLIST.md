@@ -348,6 +348,22 @@ another reset, though this one doubles as further live proof the new
 detection/recovery layer itself holds up under a real, unplanned
 failure.
 
+**2026-08-17 update:** asked to start paper trading and monitor today's
+session; found `api_bridge.py` had been uncollectable (`NameError:
+name 'BaseModel' is not defined` at import time) since before market
+open, due to an uncommitted, never-live-tested WIP diff left in the
+working tree from a prior session. `main.py` made three of its own
+restart attempts this morning (09:41, 09:43, 09:56 IST) and never
+connected — zero real trades logged for the entire 09:15–15:30 IST
+session. Fixed (moved the missing import to the top-level import
+block), full suite 628 passed/2 xfailed, both processes restarted and
+confirmed connected at 22:24 IST — market was already closed by then.
+Full detail: `anomaly_log.md`'s 2026-08-17 entry. **Status remains
+NO-GO** — today produced zero usable §2 evidence either way; the clock
+has not started for today's fix, and the rest of that same uncommitted
+diff (journal API, sentiment endpoint, execution-agent/backtest
+changes) is still sitting uncommitted and unreviewed.
+
 This is a living document — check items off with a date and evidence
 reference as they're actually completed, don't mark something done because
 it's expected to pass.

@@ -155,3 +155,74 @@ async def update_lot_sizes_in_settings():
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     asyncio.run(update_lot_sizes_in_settings())
+
+
+# ---------------------------------------------------------------------------
+# Fix 6 helpers: runtime lot size lookup without global CONFIG dependency
+# ---------------------------------------------------------------------------
+
+_SETTINGS_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "config", "settings.json"
+)
+
+# Known safe defaults — used when settings.json doesn't have a value yet.
+_DEFAULT_LOT_SIZES: dict[str, int] = {
+    "NSE:NIFTY50-INDEX":   75,
+    "NSE:NIFTY-I":         75,
+    "NSE:BANKNIFTY-INDEX": 35,
+    "NSE:BANKNIFTY-I":     35,
+    "NSE:FINNIFTY-INDEX":  40,
+    "BSE:SENSEX-INDEX":    10,
+}
+
+
+def _read_settings() -> dict:
+    """Read config/settings.json and return it as a dict (empty dict on failure)."""
+    try:
+        if os.path.exists(_SETTINGS_PATH):
+            with open(_SETTINGS_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception as e:
+        logger.warning(f"[get_lot_size] Could not read settings.json: {e}")
+    return {}
+
+
+def get_lot_size(symbol: str, default: int = 1) -> int:
+    """Return the current lot size for the given symbol.
+
+    Lookup order:
+      1. config/settings.json → lot_sizes → {symbol}
+      2. Hard-coded _DEFAULT_LOT_SIZES dict
+      3. `default` argument (1 — ultra-safe fallback)
+
+    This function is intentionally cheap and synchronous: it reads from a
+    local JSON file that is already cached by the OS page cache and is
+    never more than a few KB.  Call it freely from strategies without
+    worrying about latency.
+    """
+    settings = _read_settings()
+    lot_sizes = settings.get("lot_sizes", {})
+
+    # Exact match first
+    if symbol in lot_sizes:
+        try:
+            return int(lot_sizes[symbol])
+        except (ValueError, TypeError):
+            pass
+
+    # Prefix/fuzzy match (e.g. "NSE:NIFTY50-INDEX" → "NIFTY" prefix in stored keys)
+    symbol_upper = symbol.upper()
+    for stored_sym, size in lot_sizes.items():
+        if symbol_upper in stored_sym.upper() or stored_sym.upper() in symbol_upper:
+            try:
+                return int(size)
+            except (ValueError, TypeError):
+                pass
+
+    # Known defaults
+    if symbol in _DEFAULT_LOT_SIZES:
+        return _DEFAULT_LOT_SIZES[symbol]
+
+    logger.warning(f"[get_lot_size] Unknown symbol {symbol!r} — using default {default}")
+    return max(1, default)

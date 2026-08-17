@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import FastAPI, Query, HTTPException, BackgroundTasks, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from datetime import datetime, timedelta, timezone
 import logging
 import logging.handlers
@@ -222,18 +223,59 @@ async def daily_retrain_scheduler():
         except Exception as e:
             logger.error(f"Daily retrain failed: {e}")
 
+
+async def lot_size_refresh_scheduler():
+    """Periodically refreshes lot sizes from the Fyers symbol master during
+    market hours. NSE can update lot sizes on contract rollover without notice —
+    this ensures the live engine never trades stale sizes without a full restart.
+    Runs every 4 hours. Only calls the updater during (or just before) market hours
+    so we don't hit the Fyers symbol master unnecessarily overnight.
+    """
+    from shared.lot_size_updater import update_lot_sizes_in_settings
+    while True:
+        await asyncio.sleep(4 * 60 * 60)  # 4 hours
+        try:
+            now_ist = datetime.now(_IST)
+            # Only refresh between 08:00 and 16:00 IST (covers pre-market + full session)
+            if 8 <= now_ist.hour < 16 and now_ist.weekday() < 5:
+                logger.info("[LotSize] Scheduled refresh — fetching updated lot sizes from Fyers symbol master.")
+                await update_lot_sizes_in_settings()
+            else:
+                logger.debug("[LotSize] Outside market window, skipping scheduled lot size refresh.")
+        except Exception as e:
+            logger.error(f"[LotSize] Scheduled refresh failed: {e}")
+
 @app.on_event("startup")
 async def startup_event():
     logger.info("Initializing API Bridge and restoring application state...")
-    
-    # 0. Fetch latest lot sizes dynamically in background
+
+    # 0. Auto-initialize the trade_journal table in state.db on every startup
+    try:
+        from scripts.init_journal import init_journal_db
+        import concurrent.futures
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, init_journal_db)
+        logger.info("[Journal] trade_journal table ready.")
+    except Exception as e:
+        logger.error(f"[Journal] Failed to init journal table: {e}")
+
+    # 1. Fetch latest lot sizes dynamically in background
     try:
         from shared.lot_size_updater import update_lot_sizes_in_settings
         asyncio.create_task(update_lot_sizes_in_settings())
     except Exception as e:
         logger.error(f"Failed to start lot size updater: {e}")
 
+    # 2. Start the sentiment background thread (non-blocking)
+    try:
+        from shared.sentiment import _ensure_background_thread as _start_sentiment
+        _start_sentiment()
+        logger.info("[Sentiment] Background sentiment thread started.")
+    except Exception as e:
+        logger.error(f"[Sentiment] Failed to start sentiment thread: {e}")
+
     asyncio.create_task(daily_retrain_scheduler())
+    asyncio.create_task(lot_size_refresh_scheduler())
 
 # Global state for live market data (Institutional Streaming)
 market_data_lock = threading.Lock()
@@ -979,6 +1021,25 @@ async def websocket_broadcaster():
             except Exception as e:
                 logger.error("[WS] Dynamic subscription failed: %s", e)
                     
+            # Fix 6: Inject trading_mode (paper vs live) into every WS frame
+            try:
+                _settings_now = _load_config_settings()
+                websocket_data["trading_mode"] = "live" if _settings_now.get("live_trading_mode", False) else "paper"
+            except Exception:
+                websocket_data["trading_mode"] = "paper"
+
+            # Fix 2: Inject cached sentiment score (never blocks — always returns last cached value)
+            try:
+                from shared.sentiment import get_current_sentiment
+                _sent = get_current_sentiment()
+                websocket_data["sentiment"] = {
+                    "score": _sent.get("score", 0.0),
+                    "label": _sent.get("label", "Neutral"),
+                    "top_headlines": _sent.get("top_headlines", [])[:3],  # top 3 only to keep payload small
+                }
+            except Exception:
+                websocket_data["sentiment"] = {"score": 0.0, "label": "Neutral", "top_headlines": []}
+
             # Broadcast to all connected clients
             disconnected = set()
             for ws in list(active_connections):
@@ -1024,6 +1085,165 @@ async def health():
         if _last_fyers_message_at else None
     )
     return {"status": "ok", "fyers_feed_age_s": feed_age_s}
+
+
+# ---------------------------------------------------------------------------
+# Fix 1 — Trade Journal: Full CRUD API backed by state.db SQLite
+# ---------------------------------------------------------------------------
+
+def _get_journal_db_path() -> str:
+    return str(Path(__file__).resolve().parent / "state.db")
+
+
+class JournalEntryCreate(BaseModel):
+    trade_date: str
+    symbol: str
+    strategy_name: str
+    direction: str
+    entry_price: float
+    exit_price: float
+    qty: int
+    pnl: float
+    ai_feedback: Optional[str] = None
+    tags: Optional[str] = None
+
+
+class JournalEntryUpdate(BaseModel):
+    ai_feedback: Optional[str] = None
+    tags: Optional[str] = None
+    exit_price: Optional[float] = None
+    pnl: Optional[float] = None
+
+
+@app.get("/api/journal")
+async def get_journal():
+    """Fetch all trade journal entries from state.db, newest first."""
+    import sqlite3, contextlib
+    try:
+        db_path = _get_journal_db_path()
+        with contextlib.closing(sqlite3.connect(db_path, timeout=10.0)) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM trade_journal ORDER BY trade_date DESC"
+            ).fetchall()
+        return {"trades": [dict(r) for r in rows], "count": len(rows)}
+    except Exception as e:
+        logger.error(f"[Journal] GET failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Journal read failed: {e}")
+
+
+@app.post("/api/journal")
+async def create_journal_entry(entry: JournalEntryCreate):
+    """Create a new manual trade journal entry."""
+    import sqlite3, contextlib
+    try:
+        db_path = _get_journal_db_path()
+        with contextlib.closing(sqlite3.connect(db_path, timeout=10.0)) as conn:
+            cursor = conn.execute(
+                """INSERT INTO trade_journal
+                   (trade_date, symbol, strategy_name, direction, entry_price,
+                    exit_price, qty, pnl, ai_feedback, tags)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (entry.trade_date, entry.symbol, entry.strategy_name,
+                 entry.direction, entry.entry_price, entry.exit_price,
+                 entry.qty, entry.pnl, entry.ai_feedback, entry.tags)
+            )
+            conn.commit()
+            new_id = cursor.lastrowid
+        logger.info(f"[Journal] Created entry id={new_id} symbol={entry.symbol} pnl={entry.pnl}")
+        return {"status": "created", "id": new_id}
+    except Exception as e:
+        logger.error(f"[Journal] POST failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Journal write failed: {e}")
+
+
+@app.put("/api/journal/{entry_id}")
+async def update_journal_entry(entry_id: int, update: JournalEntryUpdate):
+    """Update ai_feedback, tags, exit_price, or pnl for an existing journal entry."""
+    import sqlite3, contextlib
+    try:
+        db_path = _get_journal_db_path()
+        fields, values = [], []
+        if update.ai_feedback is not None:
+            fields.append("ai_feedback = ?"); values.append(update.ai_feedback)
+        if update.tags is not None:
+            fields.append("tags = ?"); values.append(update.tags)
+        if update.exit_price is not None:
+            fields.append("exit_price = ?"); values.append(update.exit_price)
+        if update.pnl is not None:
+            fields.append("pnl = ?"); values.append(update.pnl)
+        if not fields:
+            raise HTTPException(status_code=400, detail="No fields to update.")
+        values.append(entry_id)
+        with contextlib.closing(sqlite3.connect(db_path, timeout=10.0)) as conn:
+            conn.execute(f"UPDATE trade_journal SET {', '.join(fields)} WHERE id = ?", values)
+            conn.commit()
+        return {"status": "updated", "id": entry_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[Journal] PUT id={entry_id} failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Journal update failed: {e}")
+
+
+@app.delete("/api/journal/{entry_id}")
+async def delete_journal_entry(entry_id: int):
+    """Delete a journal entry by ID."""
+    import sqlite3, contextlib
+    try:
+        db_path = _get_journal_db_path()
+        with contextlib.closing(sqlite3.connect(db_path, timeout=10.0)) as conn:
+            conn.execute("DELETE FROM trade_journal WHERE id = ?", (entry_id,))
+            conn.commit()
+        logger.info(f"[Journal] Deleted entry id={entry_id}")
+        return {"status": "deleted", "id": entry_id}
+    except Exception as e:
+        logger.error(f"[Journal] DELETE id={entry_id} failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Journal delete failed: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Fix 2 — Sentiment: Dedicated REST endpoint
+# ---------------------------------------------------------------------------
+
+@app.get("/api/sentiment")
+async def get_sentiment():
+    """Returns the latest cached market sentiment score and top headlines.
+    The background thread in shared/sentiment.py refreshes this every 5 minutes.
+    This endpoint NEVER blocks — it always returns the last cached value instantly.
+    """
+    try:
+        from shared.sentiment import get_current_sentiment
+        data = get_current_sentiment()
+        return {"status": "ok", **data}
+    except Exception as e:
+        logger.error(f"[Sentiment] GET failed: {e}")
+        return {"status": "error", "score": 0.0, "label": "Neutral", "top_headlines": []}
+
+
+# ---------------------------------------------------------------------------
+# Fix 7 — Paper vs Live Trading Mode: Dedicated REST endpoint
+# ---------------------------------------------------------------------------
+
+@app.get("/api/trading-mode")
+async def get_trading_mode():
+    """Returns the current trading mode (paper or live) and the live_trading_mode flag.
+    The frontend metrics bar uses this to render the persistent PAPER/LIVE badge.
+    """
+    try:
+        settings = _load_config_settings()
+        is_live = settings.get("live_trading_mode", False)
+        return {
+            "mode": "live" if is_live else "paper",
+            "live_trading_mode": is_live,
+            "description": "Real orders sent to broker" if is_live
+                           else "Simulated trades — no real orders",
+        }
+    except Exception as e:
+        logger.error(f"[TradingMode] GET failed: {e}")
+        return {"mode": "paper", "live_trading_mode": False,
+                "description": "Paper mode (default fallback)"}
+
 
 from pydantic import BaseModel
 class ExecuteOrderRequest(BaseModel):

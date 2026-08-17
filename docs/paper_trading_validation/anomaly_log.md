@@ -6,6 +6,63 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-08-17 — CRITICAL, uncommitted WIP left `api_bridge.py` uncollectable, silently killing the entire trading day
+
+**Symptom:** asked to start paper trading and monitor today's session at what
+was believed to be market open. `engine.log` showed three separate
+`main.py` startup attempts already this morning (09:41:07, 09:43:20,
+09:56:17 IST, none by this session — the user's own attempts) followed by
+a continuous stream of `API Bridge WebSocket disconnected or failed:
+[WinError 1225] The remote computer refused the network connection` —
+`api_bridge.py` was never actually up to connect to. `state.db`'s `trades`
+table confirms zero real trades for all of 2026-08-17 — the entire NSE
+session (09:15–15:30 IST) passed with the engine unable to place a single
+trade.
+
+**Root cause:** working-tree-only (uncommitted, never live-tested)
+feature work — a trade-journal CRUD API, a `/api/sentiment` endpoint, and
+a `/api/trading-mode` endpoint — added `class JournalEntryCreate(BaseModel)`
+at module level (`api_bridge.py:1097`) with no `BaseModel` import in
+scope; the only `from pydantic import BaseModel` in the file was a stray
+inline import ~150 lines further down, after the point of use. Python
+raised `NameError: name 'BaseModel' is not defined` at import time,
+meaning `api_bridge.py` could not even be collected — not a runtime bug,
+a startup-time crash. It has apparently been in this broken state since
+before market open today; nothing in this validation window's tooling
+caught it because it was never committed or run through CI, and nobody
+had restarted `api_bridge.py` since 2026-08-14's heartbeat fix until this
+morning's (failed) attempts.
+
+**Fix:** moved `from pydantic import BaseModel` to the top-level import
+block (alongside the other FastAPI imports), so it's in scope for every
+class that uses it regardless of where in the file they're defined. Pure
+ordering fix, no logic touched. Full backend suite (migrated location,
+`Testing_Automation_AI_Trading_Bot/python-unit/`) went from 8 collection
+errors to **628 passed, 2 xfailed** (the 2 xfails are the pre-existing,
+documented `drl_strategy` market-blindness ones). Restarted both
+`api_bridge.py` and `trading_bot.main` — `/health` responds, feed age
+~2.6s, `main.py`'s WebSocket connected to the bridge successfully at
+22:24:20 IST.
+
+**Not fixed / flagged, not mine to decide unilaterally:** the rest of
+that same uncommitted diff (journal CRUD, sentiment endpoint,
+trading-mode badge, a 4-hourly lot-size refresh scheduler, plus separate
+uncommitted changes to `drl/marl/execution_agent.py`,
+`backtesting_engine/run.py`, and an untracked `trading-system/tests/`
+directory with 5 new test files) is still sitting in the working tree,
+unreviewed and uncommitted, from a prior session. It's live-deployed now
+(restarting the process picked it up) and the full suite passes with it
+in place, but I did not write it, wasn't asked to commit it, and haven't
+independently reviewed the journal/sentiment/execution-agent logic for
+correctness the way this window's process expects — flagging as backlog,
+not silently committing on someone else's behalf.
+
+**Validation clock:** resets again. Zero real trades today means no §2
+evidence either way for 2026-08-17 — today is a wash, not a session with
+findings, not a clean session. **Status remains NO-GO.**
+
+---
+
 ## 2026-08-14 — CRITICAL, ironic: last night's own heartbeat fix froze the engine for ~12 hours; the watchdog it shipped alongside caught and recovered it correctly
 
 **Symptom:** a large gap opened up in overnight monitoring cadence
