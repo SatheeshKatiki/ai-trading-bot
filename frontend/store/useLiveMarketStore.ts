@@ -48,6 +48,8 @@ export interface LiveMarketState {
     isWsConnected: boolean;
     aiCommentary: string;
     lastPingTime: number;
+    tradingMode: 'paper' | 'live';   // Fix 7: injected from WS trading_mode field
+    sentiment: { score: number; label: string; top_headlines: string[] }; // Fix 2
 
     // Actions
     setTickerData: (data: Record<string, TickerData> | ((prev: Record<string, TickerData>) => Record<string, TickerData>)) => void;
@@ -65,6 +67,7 @@ export interface LiveMarketState {
     setIsWsConnected: (connected: boolean | ((prev: boolean) => boolean)) => void;
     setAiCommentary: (commentary: string | ((prev: string) => string)) => void;
     setLastPingTime: (time: number | ((prev: number) => number)) => void;
+    setTradingMode: (mode: 'paper' | 'live') => void;  // Fix 7
 
     // WebSocket
     ws: WebSocket | null;
@@ -92,6 +95,8 @@ export const useLiveMarketStore = create<LiveMarketState>((set, get) => ({
     isWsConnected: false,
     aiCommentary: "System armed. Analyzing market structure...",
     lastPingTime: Date.now(),
+    tradingMode: 'paper',   // default safe: paper until backend confirms live
+    sentiment: { score: 0.0, label: 'Neutral', top_headlines: [] },
 
     setTickerData: (data) => set((state) => ({ tickerData: { ...state.tickerData, ...(typeof data === 'function' ? data(state.tickerData) : data) } })),
     setCurrentPrice: (price) => set((state) => ({ currentPrice: typeof price === 'function' ? price(state.currentPrice) : price })),
@@ -108,6 +113,7 @@ export const useLiveMarketStore = create<LiveMarketState>((set, get) => ({
     setIsWsConnected: (connected) => set((state) => ({ isWsConnected: typeof connected === 'function' ? connected(state.isWsConnected) : connected })),
     setAiCommentary: (commentary) => set((state) => ({ aiCommentary: typeof commentary === 'function' ? commentary(state.aiCommentary) : commentary })),
     setLastPingTime: (time) => set((state) => ({ lastPingTime: typeof time === 'function' ? time(state.lastPingTime) : time })),
+    setTradingMode: (mode) => set({ tradingMode: mode }),  // Fix 7
 
     ws: null,
     connectWs: (urlSymbol: string) => {
@@ -191,6 +197,16 @@ export const useLiveMarketStore = create<LiveMarketState>((set, get) => ({
 
                     if (data.signalsData && data.signalsData.confidence !== undefined) {
                         pendingUpdates.aiConfidence = data.signalsData.confidence;
+                    }
+
+                    // Fix 7: trading mode from WS payload
+                    if (data.trading_mode !== undefined) {
+                        pendingUpdates.tradingMode = data.trading_mode === 'live' ? 'live' : 'paper';
+                    }
+
+                    // Fix 2: sentiment from WS payload
+                    if (data.sentiment !== undefined) {
+                        pendingUpdates.sentiment = data.sentiment;
                     }
 
                     // Throttle React state updates to 1 animation frame (~16ms)

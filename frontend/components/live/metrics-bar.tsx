@@ -16,8 +16,11 @@ function MetricsBarComponent({ isLoading, isMarketOpen }: MetricsBarProps) {
     const aiConfidence = useLiveMarketStore(state => state.aiConfidence);
     const riskStatus = useLiveMarketStore(state => state.riskStatus);
     const trades = useLiveMarketStore(state => state.trades);
+    const tradingMode = useLiveMarketStore(state => state.tradingMode);
     const strategy = useLiveSettingsStore(state => state.strategy);
     const stoploss = useLiveSettingsStore(state => state.stoploss);
+
+    const isLive = tradingMode === "live";
 
     // Determine risk engine colour based on actual riskStatus
     const isRiskOk = !riskStatus || riskStatus === "ACTIVE" || riskStatus === "OK" || riskStatus === "IDLE";
@@ -43,7 +46,7 @@ function MetricsBarComponent({ isLoading, isMarketOpen }: MetricsBarProps) {
 
     return (
         <motion.div
-            className="grid grid-cols-2 md:grid-cols-5 gap-4"
+            className="grid grid-cols-2 md:grid-cols-6 gap-4"
             initial="hidden"
             animate="show"
             variants={{
@@ -152,6 +155,56 @@ function MetricsBarComponent({ isLoading, isMarketOpen }: MetricsBarProps) {
                             of {trades.length} total
                         </div>
                     </div>
+                </div>
+            </motion.div>
+
+            {/* Card 6: Paper / Live Mode Badge — always visible, unmissable */}
+            <motion.div
+                variants={{ hidden: { opacity: 0, y: 20 }, show: { opacity: 1, y: 0 } }}
+                className="stat-card px-3 py-2 flex flex-col justify-center relative overflow-hidden group col-span-2 md:col-span-1"
+                title={isLive ? "Live mode: real orders are being sent to the broker" : "Paper mode: simulated trades, no real orders"}
+            >
+                {/* Accent bar — blue for paper, red for live */}
+                <div className={`absolute left-0 top-0 w-1 h-full rounded-l-lg transition-all duration-500 ${
+                    isLive
+                        ? 'bg-gradient-to-b from-rose-500 to-red-700'
+                        : 'bg-gradient-to-b from-sky-400 to-blue-600'
+                }`} />
+
+                <div className="flex items-center gap-2 mb-1 pl-2">
+                    <span className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider">🏦 Trading Mode</span>
+                </div>
+
+                {/* The badge itself */}
+                <div className="pl-2 flex items-center gap-2">
+                    {isLive ? (
+                        // Red pulsing badge — must be impossible to miss
+                        <span
+                            id="trading-mode-live-badge"
+                            className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-rose-500/20 border border-rose-500/50 text-rose-400 text-xs font-black uppercase tracking-widest animate-pulse"
+                        >
+                            <span className="relative flex h-2 w-2">
+                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75" />
+                                <span className="relative inline-flex rounded-full h-2 w-2 bg-rose-500" />
+                            </span>
+                            LIVE
+                        </span>
+                    ) : (
+                        // Calm blue badge — paper mode is safe
+                        <span
+                            id="trading-mode-paper-badge"
+                            className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-sky-500/15 border border-sky-500/40 text-sky-400 text-xs font-black uppercase tracking-widest"
+                        >
+                            <span className="relative flex h-2 w-2">
+                                <span className="relative inline-flex rounded-full h-2 w-2 bg-sky-400" />
+                            </span>
+                            PAPER
+                        </span>
+                    )}
+                </div>
+
+                <div className="text-[8px] text-muted-foreground font-mono mt-1 pl-2 truncate">
+                    {isLive ? 'Real orders → Broker' : 'Simulated — no risk'}
                 </div>
             </motion.div>
         </motion.div>
