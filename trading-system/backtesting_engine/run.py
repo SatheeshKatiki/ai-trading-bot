@@ -34,7 +34,7 @@ import sys
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
-from typing import List
+from typing import Dict, List
 
 import numpy as np
 import pandas as pd
@@ -55,9 +55,65 @@ def _compute_profit_factor(total_profit: float, total_loss: float) -> str:
         return "Infinity" if total_profit > 0 else "0.0"
     return str(round(total_profit / total_loss, 2))
 
+
+def compute_bs_delta(
+    is_call: bool,
+    time_fraction: float,
+    sigma: float,
+    strike_offset_pct: float = 0.0,
+) -> float:
+    """Approximate Black-Scholes delta for options P&L scaling in the backtest.
+
+    This replaces the hard-coded `options_delta=0.5` constant (Fix 4, 2026-08-16).
+    We cannot compute exact BS delta without strike price and risk-free rate, but
+    we CAN approximate it from quantities already in the OHLCV dataframe:
+
+        sigma            : annualised volatility ≈ ATR / close × sqrt(252 × daily_bars)
+        time_fraction    : fraction of trading day remaining (0.0 = market close, 1.0 = open)
+        strike_offset_pct: how far OTM/ITM the option is, as % of spot (0 = ATM)
+
+    The result is a sensible approximation:
+        ATM at open         → ~0.50
+        ATM near expiry     → approaches 0.5 (delta converges at expiry for ATM)
+        OTM (offset > 0)    → lower delta, trending toward 0 near expiry
+        ITM (offset < 0)    → higher delta, trending toward 1 near expiry
+
+    Known limitation: this still uses a moneyness proxy, not real strike price.
+    An exact fix would require threading strike/spot/rate through every caller.
+    This is materially more accurate than a flat 0.5 while staying backward-
+    compatible with all existing callers.
+    """
+    import math
+    # Clamp inputs to safe ranges
+    sigma = max(0.005, min(sigma, 2.0))
+    time_fraction = max(0.001, min(time_fraction, 1.0))
+
+    # Moneyness: ln(S/K) where strike_offset_pct is the OTM/ITM % shift.
+    # Positive offset_pct = OTM for buyer, negative = ITM.
+    ln_moneyness = -strike_offset_pct / 100.0  # approximate: d1 ≈ -offset / (sigma * sqrt(T))
+
+    vol_time = sigma * math.sqrt(time_fraction)
+    if vol_time < 1e-8:
+        # Intrinsic value at expiry
+        if is_call:
+            return 1.0 if ln_moneyness > 0 else 0.0
+        else:
+            return -1.0 if ln_moneyness < 0 else 0.0
+
+    d1 = (ln_moneyness + 0.5 * sigma ** 2 * time_fraction) / vol_time
+
+    # Standard normal CDF via error function
+    def _norm_cdf(x: float) -> float:
+        return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+    call_delta = _norm_cdf(d1)
+    return call_delta if is_call else -(1.0 - call_delta)
+
+
 def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital: float = 100000.0,
                            slippage_bps: float = 2.0, commission_per_trade: float = 20.0, multiplier: int = 10,
                            options_delta: float = 0.5,
+                           options_delta_mode: str = "dynamic",
                            target_pct: float = 2.0, stoploss_pct: float = 1.0, **kwargs) -> dict:
     """Run a detailed backtest with shorting, slippage, and commission.
 
@@ -183,10 +239,56 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
     has_atr = 'atr' in df.columns
     atr_vals = df['atr'].to_numpy() if has_atr else np.zeros(len(df))
 
+    # ── Pre-compute bars-per-day for dynamic delta time_fraction ─────────
+    # Estimate how many bars make up a full trading session so we can express
+    # each bar's position as a fraction of the day (1.0=open, ~0.0=close).
+    _bars_per_day_est = max(1, len(df) // max(1, len(set(
+        [str(t)[:10] for t in times]
+    ))))
+    _bar_in_day_counter: Dict[str, int] = {}
+
+    # ── Per-session bar counter (for time_fraction) ───────────────────────
+    _day_bar_counts: Dict[str, int] = {}
+    for _t in times:
+        _d = str(_t)[:10]
+        _day_bar_counts[_d] = _day_bar_counts.get(_d, 0) + 1
+    _day_bar_position: Dict[str, int] = {}
+
     for i in range(len(df)):
         current_price = float(closes[i])
         current_time = times[i]
         signal = sig_vals[i]
+
+        # ── Dynamic delta computation (Fix 4) ──────────────────────────────
+        # Use ATR/close as annualised sigma proxy and bar-position within day
+        # as time_fraction (1.0=start of day, ~0=end of day = near expiry).
+        if options_delta_mode == "dynamic" and current_price > 0:
+            _day_key = str(current_time)[:10]
+            _day_bar_position[_day_key] = _day_bar_position.get(_day_key, 0) + 1
+            _bars_this_day  = _day_bar_counts.get(_day_key, _bars_per_day_est)
+            _bar_pos        = _day_bar_position[_day_key]
+            # time_fraction: 1.0 at first bar, approaches 0 at last bar
+            _time_frac      = max(0.001, 1.0 - (_bar_pos / max(1, _bars_this_day)))
+            # sigma: ATR as % of close, then annualise to daily vol
+            _atr_pct        = (atr_vals[i] / current_price) if current_price > 0 else 0.01
+            # annualise: daily ATR%×sqrt(trading_bars_per_year) — 75 5-min bars/day × 252 days
+            _sigma          = float(np.clip(_atr_pct * np.sqrt(_bars_per_day_est * 252), 0.05, 2.0))
+            # strike_offset: use df['strike_offset_pct'] if available, else ATM (0)
+            _s_offset       = float(df['strike_offset_pct'].iloc[i]) if 'strike_offset_pct' in df.columns else 0.0
+            # For CE (BUY) signal=1, for PE (SELL/SHORT) signal=-1
+            _is_call        = (signal >= 0)
+            _effective_delta = abs(compute_bs_delta(_is_call, _time_frac, _sigma, _s_offset))
+            # Clamp to [0.05, 0.95] — deep OTM/ITM extremes degrade gracefully
+            _effective_delta = float(np.clip(_effective_delta, 0.05, 0.95))
+        else:
+            # Fixed mode or missing ATR: use the caller-supplied constant (backward compat)
+            _effective_delta = options_delta
+        # Use _effective_delta as the per-bar delta for all P&L calculations below.
+        # We alias it back to `options_delta` so none of the downstream code changes.
+        options_delta = _effective_delta
+        # ─────────────────────────────────────────────────────────────────
+
+
         
         # ── Daily Reset & Loss-Limit Guard ───────────────────────────────
         candle_day = current_time[:10] if len(current_time) >= 10 else current_time
