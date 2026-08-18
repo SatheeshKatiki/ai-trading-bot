@@ -364,6 +364,18 @@ has not started for today's fix, and the rest of that same uncommitted
 diff (journal API, sentiment endpoint, execution-agent/backtest
 changes) is still sitting uncommitted and unreviewed.
 
+**2026-08-18 update:** session start (09:26 IST) found both engine
+processes dead since ~08:44 IST (`main.py`) / ~09:22 IST (`api_bridge.py`)
+— a ~49-minute total outage during market hours, root cause inconclusive
+(no crash traceback captured, see `anomaly_log.md`). No open position
+throughout. Verified safe, restarted both cleanly at 09:33 IST plus the
+frontend. Along the way, hardened `auto_login_fyers.py`'s 4 HTTP calls
+and the `subprocess.run` that invokes it (`api_bridge.py`'s `on_error`
+callback) with timeouts — previously unbounded, a real (if unconfirmed)
+contributor risk for a hang in that path. Full detail: `anomaly_log.md`'s
+2026-08-18 entry. **Status remains NO-GO** — validation clock resets
+again, 2026-08-18 09:33 IST is the new earliest possible session 1.
+
 This is a living document — check items off with a date and evidence
 reference as they're actually completed, don't mark something done because
 it's expected to pass.

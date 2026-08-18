@@ -479,7 +479,17 @@ def start_fyers_socket():
                 import subprocess
                 import sys
                 try:
-                    subprocess.run([sys.executable, "scripts/auth/auto_login_fyers.py"], check=False)
+                    # Bounded: this runs synchronously on the WS client's own
+                    # callback thread (see start_fyers_socket) -- an unbounded
+                    # subprocess.run here would block all further reconnect
+                    # handling on that thread if any Fyers auth endpoint hangs.
+                    subprocess.run(
+                        [sys.executable, "scripts/auth/auto_login_fyers.py"],
+                        check=False,
+                        timeout=60,
+                    )
+                except subprocess.TimeoutExpired:
+                    logger.error("Emergency auto-login timed out after 60s -- giving up this attempt.")
                 except Exception as e:
                     logger.error("Emergency auto-login failed: %s", e)
         def on_open():

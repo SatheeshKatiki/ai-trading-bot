@@ -17,7 +17,7 @@ def get_auth_code_automated(client_id, secret_key, redirect_uri, user_id, pin, t
     print("Sending login OTP...")
     send_otp_url = "https://api-t2.fyers.in/vagator/v2/send_login_otp_v2"
     payload = {"fy_id": base64.b64encode(user_id.encode()).decode(), "app_id": "2"}
-    res = requests.post(send_otp_url, json=payload).json()
+    res = requests.post(send_otp_url, json=payload, timeout=15).json()
     if res.get("s") != "ok":
         raise Exception(f"Failed to send OTP: {res}")
     request_key = res["request_key"]
@@ -27,7 +27,7 @@ def get_auth_code_automated(client_id, secret_key, redirect_uri, user_id, pin, t
     totp = pyotp.TOTP(totp_secret).now()
     verify_otp_url = "https://api-t2.fyers.in/vagator/v2/verify_otp"
     payload = {"request_key": request_key, "otp": totp}
-    res = requests.post(verify_otp_url, json=payload).json()
+    res = requests.post(verify_otp_url, json=payload, timeout=15).json()
     if res.get("s") != "ok":
         raise Exception(f"Failed to verify TOTP: {res}")
     request_key = res["request_key"]
@@ -36,7 +36,7 @@ def get_auth_code_automated(client_id, secret_key, redirect_uri, user_id, pin, t
     print("Verifying PIN...")
     verify_pin_url = "https://api-t2.fyers.in/vagator/v2/verify_pin_v2"
     payload = {"request_key": request_key, "identity_type": "pin", "identifier": base64.b64encode(pin.encode()).decode()}
-    res = requests.post(verify_pin_url, json=payload).json()
+    res = requests.post(verify_pin_url, json=payload, timeout=15).json()
     if res.get("s") != "ok":
         raise Exception(f"Failed to verify PIN: {res}")
     access_token = res["data"]["access_token"]
@@ -57,11 +57,11 @@ def get_auth_code_automated(client_id, secret_key, redirect_uri, user_id, pin, t
         "create_cookie": True
     }
     headers = {"Authorization": f"Bearer {access_token}"}
-    res = requests.post(token_url, json=payload, headers=headers).json()
+    res = requests.post(token_url, json=payload, headers=headers, timeout=15).json()
     if res.get("s") != "ok":
         # Let's try client_id without -100
         payload["app_id"] = client_id[:-4]
-        res = requests.post(token_url, json=payload, headers=headers).json()
+        res = requests.post(token_url, json=payload, headers=headers, timeout=15).json()
         if res.get("s") != "ok":
             raise Exception(f"Failed to get auth code: {res}")
     

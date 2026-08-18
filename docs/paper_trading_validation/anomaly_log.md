@@ -6,6 +6,71 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-08-18 — Both engine processes found dead at session start; ~49min gap, no position at risk; root cause inconclusive (no captured traceback)
+
+**Symptom:** session start (09:26 IST) found zero `python.exe` processes
+running at all — `api_bridge.py` and `main.py` both dead, no ports
+listening on 8000/3000. Log evidence:
+- `main.py`'s heartbeat file (`run/main_heartbeat.txt`) last wrote at
+  **08:44:13 IST** — `engine.log` itself went silent at the same point
+  (last line: "Connected to API Bridge WebSocket!" at 08:38:56), no
+  traceback, no shutdown message. Consistent in shape with the prior
+  unresolved silent-freeze pattern (2026-08-06, 2026-08-13 afternoon)
+  but this time the process is fully gone, not just frozen.
+- `api_bridge.py` kept running until **09:22:40 IST**, when the feed-stall
+  watchdog fired (`FYERS FEED STALL: no message ... in 39498s` — note:
+  39498s ≈ 11h, suggesting the watchdog's staleness reference wasn't
+  reset on a prior reconnect; not yet root-caused, flagged for a future
+  session), got a `Token is expired` error, and triggered
+  `scripts/auth/auto_login_fyers.py` via a blocking `subprocess.run(...,
+  check=False)` inside the WS client's `on_error` callback
+  (`api_bridge.py:478-484`). No log line after "Triggering auto-login..."
+  — the process was gone by the time this session started (09:26).
+
+**Verified safe before acting:** `config/active_positions.json` == `{}`
+and `state.db`'s last trade was 2026-08-13 — no open position during the
+outage, so nothing went unmanaged.
+
+**Root cause: inconclusive.** Neither process's stdout was captured to a
+durable file — `Start_AI_Bot.bat` launches both via `cmd /k` with no
+output redirection, and by 09:26 both cmd windows were already gone (not
+found in the process list), so any crash traceback is unrecoverable.
+Genuine unknown whether this was the same freeze mechanism as
+2026-08-06/08-13, an external kill, or something in the auto-login path.
+
+**Real bug found and fixed along the way (regardless of whether it
+caused today's outage):** `auto_login_fyers.py`'s 4 `requests.post(...)`
+calls (OTP send, TOTP verify, PIN verify, token exchange) had no
+`timeout=`, and the `subprocess.run(...)` that invokes it from
+`api_bridge.py`'s `on_error` callback also had no timeout. A hang on any
+of Fyers's auth endpoints would block that callback indefinitely with no
+way to recover short of killing the process. Added `timeout=15` to all
+four requests and `timeout=60` to the `subprocess.run` call (generous —
+covers OTP+TOTP+PIN+token-exchange round trip — with a caught
+`TimeoutExpired` that logs and returns instead of hanging the WS
+client's error-handling thread forever).
+
+**Action taken:** confirmed no open position, cleared stale `run/*.pid`
+files, restarted `api_bridge.py` and `main.py` individually (not via the
+`.bat`, to get durable stdout capture this time —
+`logs/api_bridge_manual_20260818_093112.out.log`,
+`logs/main_manual_*.out.log`) plus the frontend dev server. Verified
+single-instance (no duplicate-launch race), `/health` returned
+`fyers_feed_age_s` near 0, heartbeat fresh. Full outage window:
+**08:44:13–09:33:00 IST (~49 minutes)**, entirely within market hours,
+zero trades placed or missed-and-logged during the gap (none were open
+going in; whether a real entry signal was missed and never taken isn't
+knowable from the available logs).
+
+**Status: validation clock resets again** — 2026-08-18 09:33 IST is the
+new earliest possible session 1. Recommended follow-up, not done yet:
+redirect `Start_AI_Bot.bat`'s two `python.exe` invocations to durable
+log files so a future silent death is actually diagnosable, and consider
+the same feed-stall-watchdog staleness-reference bug (39498s reading)
+worth a dedicated look next session.
+
+---
+
 ## 2026-08-17 — CRITICAL, uncommitted WIP left `api_bridge.py` uncollectable, silently killing the entire trading day
 
 **Symptom:** asked to start paper trading and monitor today's session at what
