@@ -392,6 +392,26 @@ INFO-level logging visibility gap, not confirmed. Full detail:
 `anomaly_log.md`. **Status remains NO-GO** — zero trades all session
 (`ema_rsi` never signaled), two freezes, nothing to evidence toward §2.
 
+**2026-08-19 update — HIGH PRIORITY, not fully resolved:** a ~2-hour
+live-feed outage ran through this morning's market open (09:15–11:16
+IST) with **both** freeze/stall auto-recovery watchdogs completely
+silent — no detection, no alert, no auto-recovery attempt. Root cause:
+Fyers auth failures (`Could not authenticate the user`) on every
+`/history` retry; a real, separate, now-fixed contributor found along
+the way (`api_bridge.py`'s startup auto-login `subprocess.run` had no
+timeout, unlike the identical call site fixed yesterday — could delay or
+block the watchdog tasks from ever being scheduled on a given process
+restart), but *why the watchdogs specifically never logged anything at
+all* for those 2 hours is not confirmed. No open position throughout;
+manually caught, restarted, fixed the timeout gap, redeployed. System
+then traded normally the rest of the day: 3 clean round-trips, **+₹803**
+net, flat at close. Full detail: `anomaly_log.md`. **Status remains
+NO-GO** — validation clock resets again to the 11:2x IST restart; the
+watchdog blind-spot itself needs a dedicated investigation next session,
+flagged as the top-priority open item (this is now the second
+consecutive session where the reliability-audit watchdogs themselves,
+not the trading logic, were the thing that failed).
+
 This is a living document — check items off with a date and evidence
 reference as they're actually completed, don't mark something done because
 it's expected to pass.

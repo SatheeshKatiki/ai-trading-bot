@@ -6,6 +6,76 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-08-19 — HIGH PRIORITY: ~2-hour undetected live-feed outage through market open, missed entirely by both auto-recovery watchdogs; manual catch and fix
+
+**Symptom:** session check at 11:16 IST (market open since 09:15, ~2h1m
+in) found `fyers_feed_age_s: 80171.7` (22+ hours stale) despite
+`main.py`'s heartbeat being fresh (9.4s) — the process was alive and
+looping, just receiving zero real ticks, and had been since the last
+confirmed message at 2026-08-18 13:46:07 IST. `fyersApi.log` showed
+*only* a tight, repeating loop of `Could not authenticate the user`
+(Fyers error code -16) against the `/history` REST endpoint every ~30s
+from at least 11:14 IST onward — no `FYERS FEED STALL`, no `MAIN.PY
+FROZEN`, no auto-login trigger, nothing else, for the entire overnight
+window and into market hours. **Both of the auto-recovery watchdogs that
+exist specifically to catch this class of failure never fired.**
+
+**Verified safe:** `active_positions.json` was empty and `trades` stayed
+at 40 (unchanged since 2026-08-18) for the whole gap — no position was
+ever unmanaged. But this is nonetheless a genuine, real live-trading
+blind spot: for ~2 hours during actual market hours, the system could not
+have received an entry signal even if one existed, and nothing detected
+or alerted on it. Only found because this session happened to check.
+
+**Action taken:** confirmed safe, restarted `api_bridge.py` then
+`trading_bot/main.py` (both had to be started — killing api_bridge alone
+left main.py down too). Feed came back immediately (`fyers_feed_age_s:
+0.4`→`0.0`), `/history` auth errors stopped as soon as api_bridge got a
+fresh login. The system then traded normally the rest of the session:
+3 clean round-trips on `NSE:NIFTY26AUG24100PE` (trades #41–46), ending
+flat with **+₹802.90** on the day, no open position at close.
+
+**Root cause: partially identified, one real gap fixed, full mechanism
+not confirmed.** Investigated `fyers_feed_watchdog`'s
+`should_rebuild_stale_feed()` (`shared/risk/tick_staleness.py`) — its
+logic is correct on inspection (non-zero `last_message_at` + market open
++ over-threshold ⇒ rebuild) and `_last_fyers_message_at` is never reset
+to `0.0` anywhere except at process start, so this alone doesn't explain
+a watchdog that fires normally (as it did repeatedly the day before) and
+then goes completely silent for hours. What *is* confirmed as a real,
+separate bug: `api_bridge.py`'s `lifespan()` startup handler
+(api_bridge.py:~824-836) runs
+`subprocess.run(["...", "scripts/auth/auto_login_fyers.py"], check=True,
+capture_output=True, text=True)` with **no timeout**, awaited before the
+app finishes starting *and* before `fyers_feed_watchdog()` /
+`main_process_watchdog()` ever get scheduled via `asyncio.create_task()`.
+`auto_login_fyers.py`'s own HTTP calls got timeouts in yesterday's fix,
+but the vendored `fyers_apiv3` SDK's `session.generate_token()` call
+inside it did not — if that hangs, this specific `subprocess.run` would
+block the entire startup sequence indefinitely, delaying or preventing
+the watchdogs from ever being scheduled on a given process (re)start.
+Whether this exact mechanism explains last night's specific process
+history couldn't be confirmed retroactively (no PID/creation-time
+history was captured before the processes were replaced) — flagging
+honestly rather than claiming certainty.
+
+**Fixed regardless:** added `timeout=60` (+ a caught `TimeoutExpired`)
+to that `subprocess.run` call, matching the same pattern already applied
+to the `on_error` callback's identical call site yesterday. Full suite
+(628 tracked) green after the change; redeployed live, verified `main.py`
+reconnects on its own as expected.
+
+**Still open for next session:** why did *neither* watchdog log anything
+at all (not even a `fyers_feed_watchdog error:` from the except-and-log
+wrapper) for ~2 hours of genuine, market-hours staleness that should have
+tripped `should_rebuild_stale_feed` well within its first 15s check?
+The lifespan-timeout fix above closes one plausible contributor but
+doesn't prove it was *the* cause. Worth a dedicated look with better
+process-lifetime logging (e.g. log the watchdog tasks' own scheduling at
+startup) rather than inferring from `fyersApi.log` after the fact.
+
+---
+
 ## 2026-08-18 (afternoon) — Recurring DNS-resolution outage caused two more `main.py` freezes; auto-recovery watchdog caught both, no position at risk, but recovery took far longer than its own code should allow
 
 **Symptom, part 1 (environmental):** starting ~10:36 IST and recurring in a

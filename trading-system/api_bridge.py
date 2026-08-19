@@ -825,8 +825,19 @@ async def lifespan(app: FastAPI):
     import subprocess
     import sys
     try:
-        res = subprocess.run([sys.executable, "scripts/auth/auto_login_fyers.py"], check=True, capture_output=True, text=True)
+        # Bounded (2026-08-19): this runs synchronously inside the FastAPI
+        # lifespan startup, awaited before the app starts serving AND before
+        # the watchdog tasks below get scheduled -- a hang here (e.g. the
+        # vendored fyers_apiv3 SDK's generate_token() call, which isn't
+        # covered by auto_login_fyers.py's own requests.post timeouts) would
+        # silently delay or block startup with no visible error.
+        res = subprocess.run(
+            [sys.executable, "scripts/auth/auto_login_fyers.py"],
+            check=True, capture_output=True, text=True, timeout=60,
+        )
         logger.info(f"Auto-login completed successfully: {res.stdout.splitlines()[-1] if res.stdout else ''}")
+    except subprocess.TimeoutExpired:
+        logger.error("Auto-login timed out after 60s during startup -- continuing with whatever cached token exists.")
     except Exception as e:
         logger.error(f"Auto-login failed: {e}")
         if hasattr(e, 'stderr') and e.stderr:
