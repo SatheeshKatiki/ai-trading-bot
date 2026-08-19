@@ -6,6 +6,67 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-08-20 — Root-caused yesterday's silent watchdogs: `logging.info()` has been a no-op in `api_bridge.py` since the beginning, on every process run
+
+**Follow-up to 2026-08-19's ~2hr undetected feed outage.** That entry left
+one thing unconfirmed: why did neither watchdog log *anything at all* —
+not even the except-and-log wrapper's own error line — for two hours of
+genuine staleness? Added periodic INFO-level liveness logging to both
+watchdogs to get a direct answer next time, and in doing so found the
+real, structural bug immediately: **`root_logger.getEffectiveLevel()` in
+the live `api_bridge.py` process is `WARNING`, not `INFO` — confirmed by
+importing the module and checking directly.** Every `logger.info(...)`
+call anywhere in this file has been silently dropped before reaching any
+handler (including `fyersApi.log`) since this codebase's logging was set
+up, not just recently. This retroactively explains a lot: the freeze
+watchdog's own "restart succeeded" / "restart did not come up healthy"
+confirmation lines that were never seen in the 2026-08-18 entries below,
+and quite plausibly other "why didn't this log anything" mysteries from
+earlier in this validation window that got written off as inconclusive.
+
+**Mechanism:** `trading_bot/main.py` — transitively imported by
+`api_bridge.py` for its strategy registrations — calls
+`logging.basicConfig(level=CONFIG.LOG_LEVEL, ...)` unconditionally at
+module import time (not inside `if __name__`). `logging.basicConfig()`
+is a documented no-op if the root logger already has a handler attached
+by the time it runs (from some even-earlier import) — leaving the root
+logger at Python's own built-in default level, `WARNING`, which was
+never actually `NOTSET`/unconfigured. `api_bridge.py`'s own
+`_setup_log_rotation()` had a guard — `if not root_logger.level:
+setLevel(INFO)` — intended to only act if nothing had configured a level
+yet, but `WARNING` (30) is truthy, so the guard always skipped, and
+`INFO` was never actually forced.
+
+**Fixed:** changed the guard to explicitly check for `NOTSET` *or*
+anything less verbose than `INFO` (`root_logger.level == logging.NOTSET
+or root_logger.level > logging.INFO`), so it now correctly overrides an
+accidental `WARNING` default rather than trusting an ambiguous truthy
+check. Verified directly: root logger effective level is `INFO` after
+the fix, and live redeploy immediately showed `logger.info()` lines that
+had never appeared before — `"Auto-login completed successfully..."`,
+`"fyers_feed_watchdog: task scheduled and running."`,
+`"main_process_watchdog: task scheduled and running."`.
+
+**Also added:** a periodic ~5-minute liveness log in both watchdog loops
+(`fyers_feed_watchdog`, `main_process_watchdog`) — previously they only
+ever logged on trigger, so a dead/never-scheduled task and a healthy idle
+one were indistinguishable after the fact. If either watchdog ever goes
+silent again, its liveness trail stopping is now direct, unambiguous
+evidence, not something to infer from the absence of other log lines.
+
+Full suite (628 tracked) green before and after. Redeployed live,
+verified: `/health` healthy, `main.py` reconnected on its own, no open
+position, trades unchanged.
+
+**Not fully closed:** this explains why yesterday's outage was
+*undetectable after the fact*, but doesn't by itself prove it explains
+why the watchdogs didn't *act* — that still traces to whatever the
+2026-08-19 entry's lifespan-timeout fix addressed (or didn't). The new
+liveness logging is what will actually confirm or rule that out if this
+recurs.
+
+---
+
 ## 2026-08-19 — HIGH PRIORITY: ~2-hour undetected live-feed outage through market open, missed entirely by both auto-recovery watchdogs; manual catch and fix
 
 **Symptom:** session check at 11:16 IST (market open since 09:15, ~2h1m

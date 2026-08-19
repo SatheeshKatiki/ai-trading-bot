@@ -412,6 +412,23 @@ flagged as the top-priority open item (this is now the second
 consecutive session where the reliability-audit watchdogs themselves,
 not the trading logic, were the thing that failed).
 
+**2026-08-20 update — root cause of the watchdog silence found and
+fixed:** `api_bridge.py`'s root logger has been effectively at `WARNING`
+level since this codebase's logging was set up — a `logging.basicConfig()`
+no-op (root logger already had a handler by the time it ran) plus a
+guard in `_setup_log_rotation()` that trusted an ambiguous truthy check
+instead of explicitly forcing `INFO`. Every `logger.info()` call in the
+file, including both watchdogs' own confirmation/liveness lines, was
+silently dropped before reaching `fyersApi.log` — this is why
+2026-08-19's outage left no trace either way. Fixed the guard, verified
+`INFO` now actually reaches the log, and added a periodic ~5-minute
+liveness line to both watchdogs so a repeat is directly provable instead
+of inferred. Full suite green, redeployed live, verified healthy. **This
+closes the "can we tell if it happens again" gap but does not by itself
+prove what stopped the watchdogs from *acting* on 2026-08-19** — that
+still rests on the lifespan-timeout fix from that same day, unconfirmed
+as the actual mechanism. **Status remains NO-GO.**
+
 This is a living document — check items off with a date and evidence
 reference as they're actually completed, don't mark something done because
 it's expected to pass.

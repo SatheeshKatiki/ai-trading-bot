@@ -49,8 +49,24 @@ def _setup_log_rotation() -> None:
             datefmt="%Y-%m-%d %H:%M:%S"
         ))
         root_logger.addHandler(rotating)
-        if not root_logger.level:
-            root_logger.setLevel(logging.INFO)
+    # Root-cause fix (found live, 2026-08-20): this used to be `if not
+    # root_logger.level: setLevel(INFO)`, intended to only set a level if
+    # none had been configured yet. But logging.basicConfig() -- called at
+    # import time by trading_bot/main.py, which api_bridge.py transitively
+    # imports for its strategy registrations -- is a silent no-op if the
+    # root logger already has ANY handler attached (by something imported
+    # even earlier), which left the root logger at Python's own built-in
+    # default level, WARNING (30) -- never actually "unset" (0/NOTSET), so
+    # the old guard always skipped. Every logger.info() call in this whole
+    # file -- including main_process_watchdog's own restart-succeeded/
+    # -failed confirmations -- was silently dropped before it ever reached
+    # a handler, for this process's entire lifetime. Found while
+    # investigating why a real freeze-recovery never logged its outcome.
+    # Now unconditional and explicit about what "already configured
+    # verbosely enough" means, rather than trusting an ambiguous truthy
+    # check on a level that may never have been genuinely set at all.
+    if root_logger.level == logging.NOTSET or root_logger.level > logging.INFO:
+        root_logger.setLevel(logging.INFO)
 
 # Root-cause fix (found live, 2026-08-05): this used to run unconditionally
 # at import time, attaching a RotatingFileHandler for fyersApi.log onto the
@@ -555,9 +571,27 @@ async def fyers_feed_watchdog():
     global fyers_socket_instance, _last_fyers_message_at
     from shared.market_hours import is_market_open
     from shared.risk.tick_staleness import should_rebuild_stale_feed
+    logger.info("fyers_feed_watchdog: task scheduled and running.")
+    # Diagnostic (2026-08-20): after a real ~2hr feed outage went through
+    # market open with this watchdog completely silent -- no trigger, no
+    # error, nothing -- there was no way to tell after the fact whether the
+    # task had simply never been scheduled (see the lifespan() startup
+    # timeout fix from the same investigation) or was running the whole
+    # time but just never satisfied its own trigger condition. This loop
+    # only ever logged on trigger; a dead/never-started task and a healthy
+    # idle one were indistinguishable in the log. A periodic liveness line
+    # closes that gap for next time.
+    _iterations = 0
     while True:
         await asyncio.sleep(15)
+        _iterations += 1
         try:
+            if _iterations % 20 == 0:  # ~every 5 minutes
+                logger.info(
+                    "fyers_feed_watchdog: alive, last_message_age=%.0fs, market_open=%s.",
+                    (time.time() - _last_fyers_message_at) if _last_fyers_message_at else -1.0,
+                    is_market_open(),
+                )
             if not should_rebuild_stale_feed(
                 _last_fyers_message_at, time.time(), is_market_open(),
             ):
@@ -798,9 +832,14 @@ async def main_process_watchdog():
     block above for the full root cause and policy; see
     _check_and_recover_main_process for the actual per-check logic.
     """
+    logger.info("main_process_watchdog: task scheduled and running.")
+    _iterations = 0
     while True:
         await asyncio.sleep(30)
+        _iterations += 1
         try:
+            if _iterations % 10 == 0:  # ~every 5 minutes
+                logger.info("main_process_watchdog: alive.")
             await _check_and_recover_main_process()
         except Exception as e:
             logger.error("main_process_watchdog error: %s", e)
