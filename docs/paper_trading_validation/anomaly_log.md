@@ -6,6 +6,79 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-08-18 (afternoon) — Recurring DNS-resolution outage caused two more `main.py` freezes; auto-recovery watchdog caught both, no position at risk, but recovery took far longer than its own code should allow
+
+**Symptom, part 1 (environmental):** starting ~10:36 IST and recurring in a
+dense cluster from ~13:00–13:14 IST, `getaddrinfo failed` (Windows error
+11001, DNS resolution failure) started appearing against
+`api-t1.fyers.in` for both the REST history endpoint and the raw Fyers
+WebSocket, roughly every 30s during the worst cluster (matching
+`main.py`'s history-fetch retry cadence). At 13:14:21 the **same error
+also broke the Discord alert webhook**
+(`shared.alerts.discord_alerter: [Alerts] Failed to send Discord alert:
+<urlopen error [Errno 11001] getaddrinfo failed>`) — since that call goes
+to `discord.com`, not Fyers, this confirms the failure is this machine's
+DNS resolution broadly misbehaving, not anything Fyers-side or specific
+to this codebase. Nothing in `trading-system/` can fix a host-level DNS
+problem; flagging for the user to check locally (router/ISP/VPN/security
+software) if it recurs.
+
+**Symptom, part 2 (consequence):** this DNS instability correlates with
+two `main.py` freezes today, each caught by the freeze-auto-recovery
+watchdog added in the 2026-08-13/14 reliability audit
+(`api_bridge.py::main_process_watchdog`):
+- **12:44:25 IST** — `MAIN.PY FROZEN: heartbeat stale for 122s (PID 1540
+  still alive). Open positions: none.` New process confirmed up at
+  **12:53:26** (`engine.log`: fresh "Starting live bot..." from a new
+  PID) — **~9 minutes** between detection and confirmed recovery.
+- **13:14:21 IST** — `MAIN.PY FROZEN: heartbeat stale for 653s (PID 5800
+  still alive). Open positions: none.` New process confirmed up at
+  **13:46:06** — **~32 minutes** between detection and confirmed
+  recovery.
+
+**Verified safe both times:** `active_positions.json` was empty at each
+freeze (logged directly in the alert line) and stayed empty throughout —
+confirmed independently via `state.db`/`active_positions.json` after the
+fact. `trades` count never changed from 40 all day; `ema_rsi` (the active
+strategy) simply never signaled, so there's no way to know whether a real
+entry was missed during either gap.
+
+**Not fully root-caused — two things worth flagging even though the
+system did recover both times:**
+1. `_check_and_recover_main_process()`'s own code (terminate w/ 10s
+   timeout → kill fallback → respawn → poll heartbeat for up to 90s)
+   has a worst-case of roughly 2 minutes from detection to giving up, not
+   9 or 32 minutes. The actual respawn clearly did eventually happen (new
+   PIDs, fresh heartbeats), so the function didn't error out — but
+   something stretched the terminate/respawn/first-heartbeat sequence far
+   past what the code's own timeouts should allow. Most likely
+   explanation, not confirmed: the new process's own startup (which
+   synchronously fetches historical data from the same DNS-failing Fyers
+   REST endpoint before it can log "Starting live bot" or write its
+   first heartbeat) was itself retrying against the same broken DNS,
+   which isn't bounded by any of the watchdog's own timeouts.
+2. Neither `main.py restart succeeded` nor `main.py restart did not come
+   up healthy` (the function's own unconditional end-of-run log lines)
+   ever appeared in `fyersApi.log` for either recovery, despite recovery
+   clearly happening. Suspected cause: the success line is `logger.info`
+   and the root logger's effective level may have been raised above INFO
+   by something else in the import chain before `_setup_log_rotation()`
+   runs its `if not root_logger.level: setLevel(INFO)` guard (a no-op if
+   the level was already non-zero) — unconfirmed, would need to check the
+   live process's actual effective log level to be sure. Low priority
+   (doesn't affect trading correctness), but worth fixing since it means
+   this watchdog's own success/failure signal is currently invisible in
+   the log operators actually watch.
+
+**End of day:** market closed at 15:30 IST; system confirmed healthy and
+still running as of 21:14 IST (heartbeat 11s old, `state.db` updating).
+`trades`=40 (unchanged all session), no open position. **Status remains
+NO-GO** — validation clock stays reset from this morning's 09:33 IST
+restart; today produced no clean session (two freezes) and zero trades to
+evidence against anyway.
+
+---
+
 ## 2026-08-18 — Both engine processes found dead at session start; ~49min gap, no position at risk; root cause inconclusive (no captured traceback)
 
 **Symptom:** session start (09:26 IST) found zero `python.exe` processes

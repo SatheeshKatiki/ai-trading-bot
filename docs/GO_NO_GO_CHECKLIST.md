@@ -376,6 +376,22 @@ contributor risk for a hang in that path. Full detail: `anomaly_log.md`'s
 2026-08-18 entry. **Status remains NO-GO** — validation clock resets
 again, 2026-08-18 09:33 IST is the new earliest possible session 1.
 
+**2026-08-18 afternoon update:** a recurring host-level DNS-resolution
+failure (`getaddrinfo failed`, hit Fyers REST/WS *and* the unrelated
+Discord alert webhook — confirmed environmental, not Fyers- or
+code-specific) coincided with two more `main.py` freezes (12:44:25 and
+13:14:21 IST). The 2026-08-13/14 auto-recovery watchdog caught and
+eventually recovered both — no open position either time — but took
+~9 and ~32 minutes respectively to confirm the new process healthy,
+well past what the watchdog's own code-level timeouts should allow;
+not fully root-caused (plausibly the new process's own startup retrying
+against the same broken DNS before it could heartbeat). Also found: the
+watchdog's own success/failure confirmation log line never appears in
+`fyersApi.log` despite recovery clearly working — suspected an
+INFO-level logging visibility gap, not confirmed. Full detail:
+`anomaly_log.md`. **Status remains NO-GO** — zero trades all session
+(`ema_rsi` never signaled), two freezes, nothing to evidence toward §2.
+
 This is a living document — check items off with a date and evidence
 reference as they're actually completed, don't mark something done because
 it's expected to pass.
