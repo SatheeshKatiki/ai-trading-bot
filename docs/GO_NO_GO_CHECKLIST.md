@@ -429,6 +429,35 @@ prove what stopped the watchdogs from *acting* on 2026-08-19** — that
 still rests on the lifespan-timeout fix from that same day, unconfirmed
 as the actual mechanism. **Status remains NO-GO.**
 
+**2026-08-21 update — likely resolves the recurring "watchdogs silent for
+hours" open item, root cause was never the code:** the new liveness
+logging from yesterday's fix proved it directly this time — both
+watchdog loops went completely dark 01:10–10:20 IST (~9h10m), not just
+"failed to detect," and `main.py`'s independent staleness check fired an
+`ENGINE STALL` one second after `api_bridge.py` finally forced a fresh
+connection at 10:17:59. Root cause: this machine only supports Windows
+Modern Standby (`powercfg /a`), its DC (battery) sleep-after timeout was
+600s while AC was already 0/never, and it was running on battery
+overnight — ~10 minutes after the last interaction it suspended the
+entire machine, freezing every process (watchdogs included) until
+something woke it ~9 hours later. This plausibly explains the *duration*
+of both 2026-08-19's and 2026-08-18's unresolved-mechanism gaps too — no
+code bug, the machine was asleep. Fixed: `powercfg /change
+standby-timeout-dc 0`. No open position throughout (verified), zero
+trades possible before the 10:18 restart anyway. Auto-restart worked
+correctly (new `main.py` PID, healthy since). Also still recurring and
+still not root-caused: **73** separate `getaddrinfo failed` DNS
+resolution errors against the Fyers hosts during today's session alone
+(first flagged 2026-08-18) — every one self-healed within seconds via
+the existing 90s forced-reconnect watchdog, no missed ticks accumulated
+beyond that window, but the underlying host/network-level DNS flakiness
+itself remains unexplained. Zero trades executed all session (`ema_rsi`
+never signaled after the restart). Full detail: `anomaly_log.md`.
+**Status remains NO-GO — validation clock resets again to the 10:18 IST
+restart** (today doesn't count as a clean session either, given the
+morning outage), and this session, like the last several, still isn't
+the "zero new findings" session the pattern needs to taper toward.
+
 This is a living document — check items off with a date and evidence
 reference as they're actually completed, don't mark something done because
 it's expected to pass.
