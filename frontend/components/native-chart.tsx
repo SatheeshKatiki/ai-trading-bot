@@ -590,15 +590,30 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
 
     const fetchHistory = async () => {
       if (disableFetch && initialData) {
-        const ema1Data = calculateEMA(initialData, ema1Length);
-        const ema2Data = calculateSMA(initialData, ema2Length);
-        candleSeries.setData(initialData);
+        // Root-cause fix: callers (e.g. the backtest page) pass through
+        // whatever the backend sent verbatim, which for `/api/backtest` is
+        // a raw "yyyy-mm-dd HH:MM:SS" string (`str(row['datetime'])`
+        // server-side), not the Unix-epoch-seconds every other `time` value
+        // in this component is. Passing that string straight to
+        // `setData()` crashes lightweight-charts' business-day parser. Every
+        // other data path here funnels through `parseBackendDatetimeToEpochSeconds`
+        // first -- do the same here instead of trusting the caller's shape.
+        const normalizedInitialData = initialData
+          .map((item: any) => ({
+            ...item,
+            time: typeof item.time === 'number' ? item.time : parseBackendDatetimeToEpochSeconds(String(item.time)),
+          }))
+          .filter((b: any) => b.time !== null && isFinite(b.time));
+
+        const ema1Data = calculateEMA(normalizedInitialData, ema1Length);
+        const ema2Data = calculateSMA(normalizedInitialData, ema2Length);
+        candleSeries.setData(normalizedInitialData);
         emaSeries.setData(ema1Data);
         smaSeries.setData(ema2Data);
-        seedIncrementalState(initialData, ema1Data, ema2Data);
-        if (initialData.length > 0) {
-          lastCandleRef.current = initialData[initialData.length - 1];
-          chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, initialData.length - 150), to: initialData.length });
+        seedIncrementalState(normalizedInitialData, ema1Data, ema2Data);
+        if (normalizedInitialData.length > 0) {
+          lastCandleRef.current = normalizedInitialData[normalizedInitialData.length - 1];
+          chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, normalizedInitialData.length - 150), to: normalizedInitialData.length });
         } else {
           chart.timeScale().fitContent();
         }
