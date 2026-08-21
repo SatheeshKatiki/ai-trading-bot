@@ -6,6 +6,60 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-08-21 — ROOT CAUSE FOUND (operational, not code): overnight machine sleep on battery caused a ~9.5hr feed/engine stall through market open; fixed by disabling DC sleep
+
+**Symptom:** `api_bridge.py`'s `fyers_feed_watchdog` and `main_process_watchdog`
+liveness logs (added 2026-08-20) both ran normally every ~5 min from
+00:49:48 through 01:10:14, then went **completely silent until 10:20:18** —
+a genuine ~9h10m gap in the watchdog loops themselves, not just a missed
+detection. `api_bridge.py` finally logged `FYERS FEED STALL: no message ...
+in 34087s` at 10:17:59, forced a fresh WS connection, and one second later
+`main.py`'s own independent staleness check fired `ENGINE STALL: no tick
+received for ANY watched symbol in 28641s during market hours`, plus a
+one-off `Heartbeat write failed: [WinError 5] Access is denied` in the same
+second (transient, self-resolved — subsequent heartbeat writes succeeded).
+`main_process_watchdog` restarted `main.py` at 10:18:41 (new PID); both
+processes have run cleanly since. **No open position existed at any point**
+(`active_positions.json` was `{}` throughout) and zero trades were possible
+before 10:18 anyway (pre-open + stall), so no risk was actually taken — but
+this is a real ~1hr blind spot into the 09:15 open, and the third time this
+validation window has hit an "hours of silence, self-healed on manual/
+lucky check" pattern (2026-08-19's ~2hr feed outage, 2026-08-20's silently-
+dropped INFO logs, now this).
+
+**Root cause, actually found this time:** this machine only supports
+Modern Standby (`powercfg /a`: "Standby (S0 Low Power Idle) Network
+Connected", no legacy S1-S3). Its **DC (battery) "sleep after" timeout was
+600s (10 min)** while AC was already `0` (never). The machine was running
+on battery (confirmed: `Win32_Battery` showed `Discharging`, 26% charge) —
+so ~10 minutes after whoever was working at 01:10 AM stepped away, Windows
+put the whole machine into Modern Standby, freezing every process
+(including both watchdog asyncio loops, mid-loop) until something woke it
+around 10:17 AM. This retroactively explains why the 2026-08-19 and
+2026-08-20 investigations could each fix a real, independently-legitimate
+bug (a no-timeout subprocess call; a silently-dropped log level) without
+ever fully closing out *why* the silence lasted so specifically long each
+time — they were chasing software explanations for what was actually the
+machine going to sleep on battery. The watchdogs themselves were doing
+their job correctly (self-healing on wake); the machine just shouldn't
+have been asleep while a live session needs to keep running.
+
+**Fix:** `powercfg /change standby-timeout-dc 0` — DC sleep-after now
+`0` (never), matching AC. This is a machine-wide Windows power setting,
+not a code or config-file change, so there's nothing to commit; noting it
+here since it's the actual fix. **Does not prevent a real power loss**
+(dead battery, unplugged charger with 0% left) — only Modern Standby's
+idle-timeout suspend. The battery was at 26% and discharging at the time
+of this fix; flagged to the user directly, not something to act on
+unilaterally.
+
+**Not yet done:** hasn't been observed running a full uninterrupted
+overnight+market-open cycle since the fix — today's session should confirm
+whether this fully closes the pattern or whether another contributing
+cause still exists.
+
+---
+
 ## 2026-08-20 — Root-caused yesterday's silent watchdogs: `logging.info()` has been a no-op in `api_bridge.py` since the beginning, on every process run
 
 **Follow-up to 2026-08-19's ~2hr undetected feed outage.** That entry left
