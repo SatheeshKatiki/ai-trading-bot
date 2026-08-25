@@ -765,13 +765,11 @@ class FyersBroker(BaseBroker):
         # re-created every retry) via the same file-backed session store
         # api_bridge.py's validate_session() reads.
         from shared.security.sessions import create_session
-        # Longer TTL than the human-login default (7 days) since this
-        # process is meant to run unattended for extended stretches
-        # (e.g. a multi-week paper-trading validation window) — a token
-        # expiring mid-run would silently drop back into the same
-        # never-receiving-ticks failure mode this fix addresses.
         internal_token = create_session("trading_engine_internal", ttl_seconds=90 * 24 * 60 * 60)
         ws_url = f"ws://127.0.0.1:8000/ws/live?token={internal_token}"
+
+        retry_count = 0
+        last_log_time = 0.0
 
         while True:
             try:
@@ -783,6 +781,7 @@ class FyersBroker(BaseBroker):
                     ping_timeout=20
                 ) as ws:
                     logger.info("Connected to API Bridge WebSocket!")
+                    retry_count = 0  # reset on successful connect
                     while True:
                         data = await ws.recv()
                         msg = json.loads(data)
@@ -795,8 +794,19 @@ class FyersBroker(BaseBroker):
                             # Emit ALL raw ticks so both base indices and options reach the aggregator!
                             await on_tick({"symbol": sym, "ltp": val["lp"], "timestamp": int(time.time()), "volume": 0})
             except Exception as e:
-                logger.error("API Bridge WebSocket disconnected or failed: %s. Retrying in 5 seconds...", e)
-                await asyncio.sleep(5)
+                retry_count += 1
+                now = time.time()
+                # Exponential backoff capped at 25 seconds
+                backoff = min(25, 3 + (retry_count * 2))
+                
+                # Log once at start or every 60 seconds to prevent slamming log file
+                if now - last_log_time >= 60.0 or retry_count <= 2:
+                    logger.warning("API Bridge WebSocket disconnected (%s). Retrying in %ds (attempt #%d)...", e, backoff, retry_count)
+                    last_log_time = now
+                else:
+                    logger.debug("API Bridge WebSocket reconnecting in %ds (attempt #%d)...", backoff, retry_count)
+                    
+                await asyncio.sleep(backoff)
 
     # ------------------------------------------------------------------
     # Cleanup

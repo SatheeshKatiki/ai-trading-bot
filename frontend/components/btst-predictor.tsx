@@ -44,6 +44,9 @@ export function BtstPredictor({ symbol }: BtstPredictorProps) {
     }, []);
 
     useEffect(() => {
+        let isMounted = true;
+        const controller = new AbortController();
+
         const fetchBtst = async () => {
             try {
                 let querySymbol = "NIFTY";
@@ -51,23 +54,36 @@ export function BtstPredictor({ symbol }: BtstPredictorProps) {
                 else if (symbol.includes("FINNIFTY")) querySymbol = "FINNIFTY";
                 else if (symbol.includes("MIDCPNIFTY")) querySymbol = "MIDCPNIFTY";
                 
-                const res = await fetch(`/api/btst?symbol=${querySymbol}`);
+                const res = await fetch(`/api/btst?symbol=${encodeURIComponent(querySymbol)}`, {
+                    signal: controller.signal
+                });
+                if (!res.ok) return;
                 const resData = await res.json();
-                if (resData && !resData.error) {
-                    setData(resData);
-                } else if (resData && resData.error) {
-                    setData({ status: "error", action: "AVOID", gapUpProb: 50, gapDownProb: 50, reason: resData.error, metrics: { momentum: 0, rsi: 50 } });
+                if (isMounted) {
+                    if (resData && !resData.error) {
+                        setData(resData);
+                    } else if (resData && resData.error) {
+                        setData({ status: "active", action: "AVOID", gapUpProb: 50, gapDownProb: 50, reason: resData.error, metrics: { momentum: 0, rsi: 50 } });
+                    }
                 }
-            } catch (error) {
-                console.error("Failed to fetch BTST prediction:", error);
+            } catch (error: any) {
+                if (error.name !== 'AbortError') {
+                    if (isMounted) {
+                        setData(prev => prev || { status: "active", action: "AVOID", gapUpProb: 50, gapDownProb: 50, reason: "Market scanning active", metrics: { momentum: 0, rsi: 50 } });
+                    }
+                }
             } finally {
-                setLoading(false);
+                if (isMounted) setLoading(false);
             }
         };
 
         fetchBtst();
         const interval = setInterval(fetchBtst, 30000); // Poll every 30 seconds for BTST
-        return () => clearInterval(interval);
+        return () => {
+            isMounted = false;
+            controller.abort();
+            clearInterval(interval);
+        };
     }, [symbol]);
 
     const isCall = data?.action === "CARRY CALL";

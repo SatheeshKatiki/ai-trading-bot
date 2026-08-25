@@ -84,6 +84,7 @@ import dynamic from "next/dynamic";
 
 // Dynamic imports for charts to prevent SSR hydration errors
 const NativeChart = dynamic(() => import("@/components/native-chart"), { ssr: false });
+const AdvancedOptionChart = dynamic(() => import("@/components/live/advanced-option-chart"), { ssr: false });
 
 function formatTradeDisplay(symbol: string, price: number, side: string, qty?: number) {
     // Parse options symbol like "NSE:NIFTY26DEC2424000CE"
@@ -486,11 +487,13 @@ function LiveMarketChartContainer({
 
             {isDualChart && (
                 <ErrorBoundary title="Option Chart Module Error">
-                    <NativeChart
+                    <AdvancedOptionChart
                         symbol={optionSymbol}
                         livePrice={optionLivePrice}
+                        spotPrice={mainLivePrice}
                         timeframe={timeframe}
                         showDynamicTrend={showDynamicTrend}
+                        baseSymbol={urlSymbol}
                     />
                 </ErrorBoundary>
             )}
@@ -882,7 +885,7 @@ function LiveTradingContent() {
 
                         {/* 100% Full Widescreen Dual Chart Desk */}
                         <div className="w-full">
-                            <div className={`transition-all duration-300 flex flex-col ${isChartFullScreen ? 'fixed inset-0 z-[200] bg-background p-6 flex flex-col overflow-hidden shadow-2xl' : 'w-full glass-card rounded-xl p-6 border border-border/20 h-[620px]'}`}>
+                            <div className={`transition-all duration-300 flex flex-col ${isChartFullScreen ? 'fixed inset-0 z-[200] bg-background p-6 flex flex-col overflow-hidden shadow-2xl' : 'w-full glass-card rounded-xl p-6 border border-border/20 h-[760px]'}`}>
                                 <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-2">
                                     <div>
                                         <h3 className="font-display font-bold text-lg text-foreground flex items-center gap-2">

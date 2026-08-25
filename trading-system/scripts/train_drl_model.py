@@ -38,6 +38,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+# ── Windows console encoding safety ───────────────────────────────────────────
+if sys.platform == "win32":
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 # ── logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
@@ -109,21 +116,58 @@ def _fetch_training_data(symbol: str, days: int = 90):
     return df
 
 
-def _prepare_env(df, split_idx: int, start_idx: int = 0):
-    """Build a TradingEnv from a slice of the dataframe."""
-    # Normalise column names (broker may return 'Open', 'High', etc.)
+def compute_drl_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Compute the 4 technical features expected by DRLStrategy (6-wide obs)."""
+    import numpy as np
     import pandas as pd
     df = df.copy()
     df.columns = [c.lower() for c in df.columns]
-    # Rename common aliases
     df = df.rename(columns={"o": "open", "h": "high", "l": "low", "c": "close", "v": "volume"})
+
     for col in ["open", "high", "low", "close", "volume"]:
         if col not in df.columns:
             df[col] = df.get("close", 0)
-    df = df.dropna(subset=["close"]).reset_index(drop=True)
-    slice_df = df.iloc[start_idx:split_idx].reset_index(drop=True)
-    from drl.trading_env import TradingEnv
-    return TradingEnv(slice_df)
+
+    # 1. RSI (14)
+    delta = df['close'].diff()
+    up = delta.clip(lower=0)
+    down = -delta.clip(upper=0)
+    roll_up = up.ewm(span=14, min_periods=14).mean()
+    roll_down = down.ewm(span=14, min_periods=14).mean()
+    rs = roll_up / (roll_down + 1e-9)
+    df['rsi'] = (100.0 - (100.0 / (1.0 + rs))).fillna(50.0)
+
+    # 2. MACD Histogram (12, 26, 9)
+    ema12 = df['close'].ewm(span=12, adjust=False).mean()
+    ema26 = df['close'].ewm(span=26, adjust=False).mean()
+    macd_line = ema12 - ema26
+    signal_line = macd_line.ewm(span=9, adjust=False).mean()
+    df['macd_hist'] = (macd_line - signal_line).fillna(0.0)
+    df['macd'] = df['macd_hist']
+
+    # 3. ATR (14)
+    high_low = df['high'] - df['low']
+    high_close = (df['high'] - df['close'].shift()).abs()
+    low_close = (df['low'] - df['close'].shift()).abs()
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    df['atr'] = tr.rolling(14, min_periods=1).mean().fillna(1.0)
+
+    # 4. Volume change
+    if 'volume' not in df.columns or df['volume'].sum() == 0:
+        df['volume'] = (df['high'] - df['low']).abs()
+    df['vol_change'] = df['volume'].pct_change().fillna(0.0).replace([np.inf, -np.inf], 0.0)
+    df['vol_delta'] = df['vol_change']
+
+    return df
+
+
+def _prepare_env(df, split_idx: int, start_idx: int = 0):
+    """Build a QuantAITradingEnv from a slice of the dataframe with indicators."""
+    df_feat = compute_drl_features(df)
+    df_feat = df_feat.dropna(subset=["close"]).reset_index(drop=True)
+    slice_df = df_feat.iloc[start_idx:split_idx].reset_index(drop=True)
+    from drl.trading_env import QuantAITradingEnv
+    return QuantAITradingEnv(slice_df, mode="options")
 
 
 def _evaluate_model(model, val_env) -> dict:
@@ -134,7 +178,8 @@ def _evaluate_model(model, val_env) -> dict:
     total_pnl  = 0.0
     n_trades   = 0
     n_wins     = 0
-    equity     = [val_env.initial_capital]
+    init_cap   = getattr(val_env, "initial_balance", getattr(val_env, "initial_capital", 100000.0))
+    equity     = [init_cap]
     done       = False
 
     while not done:
@@ -145,15 +190,16 @@ def _evaluate_model(model, val_env) -> dict:
             deterministic=True,
         )
         episode_starts = False
-        obs, reward, done, truncated, info = val_env.step(action)
-        done = done or truncated
+        obs, reward, terminated, truncated, info = val_env.step(int(action))
+        done = terminated or truncated
         pnl = info.get("trade_pnl", 0.0)
         if pnl != 0.0:
             n_trades += 1
             if pnl > 0:
                 n_wins += 1
             total_pnl += pnl
-        equity.append(val_env.current_capital if hasattr(val_env, "current_capital") else equity[-1] + reward)
+        curr_cap = getattr(val_env, "balance", getattr(val_env, "current_capital", equity[-1] + reward))
+        equity.append(curr_cap)
 
     win_rate = (n_wins / n_trades * 100) if n_trades > 0 else 0.0
 

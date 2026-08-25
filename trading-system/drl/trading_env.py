@@ -41,8 +41,16 @@ class QuantAITradingEnv(gym.Env):
         self.options_delta = options_delta if mode == "options" else 1.0
 
         # Determine number of features from dataframe
-        # Features should be pre-calculated indicators (e.g. ['rsi', 'macd', 'atr', 'vol_delta', ...])
-        self.feature_cols = [c for c in df.columns if c not in ['timestamp', 'close', 'open', 'high', 'low', 'volume']]
+        # Features should be pre-calculated indicators (e.g. ['rsi', 'macd_hist', 'atr', 'vol_change'])
+        known_drl_cols = [c for c in ['rsi', 'macd_hist', 'atr', 'vol_change'] if c in df.columns]
+        if len(known_drl_cols) == 4:
+            self.feature_cols = known_drl_cols
+        else:
+            excluded = {'timestamp', 'time', 'date', 'datetime', 'symbol', 'close', 'open', 'high', 'low', 'volume'}
+            self.feature_cols = [
+                c for c in df.columns
+                if c.lower() not in excluded and np.issubdtype(df[c].dtype, np.number)
+            ]
         
         # Action Space: 0 (Hold), 1 (Buy Call), 2 (Buy Put), 3 (Close)
         self.action_space = spaces.Discrete(4)
@@ -100,9 +108,18 @@ class QuantAITradingEnv(gym.Env):
         obs = np.append(features, [self.position, profit_pct])
         return obs.astype(np.float32)
 
+    @property
+    def initial_capital(self) -> float:
+        return self.initial_balance
+
+    @property
+    def current_capital(self) -> float:
+        return self.balance
+
     def step(self, action):
         current_price = self.df.iloc[self.current_step]['close']
         reward = 0.0
+        trade_pnl = 0.0
         done = False
 
         # Execute Action
@@ -127,6 +144,7 @@ class QuantAITradingEnv(gym.Env):
             profit_value = self.balance * profit_pct
             self.balance += profit_value
             self.balance -= self.commission_per_trade
+            trade_pnl = profit_value - self.commission_per_trade
             
             # Scalping Reward: heavily reward quick small profits (0.5% to 1%), penalize losses
             if profit_pct > 0:
@@ -162,7 +180,8 @@ class QuantAITradingEnv(gym.Env):
             
         info = {
             'balance': self.balance,
-            'position': self.position
+            'position': self.position,
+            'trade_pnl': trade_pnl,
         }
         
         # In gymnasium, return is (obs, reward, terminated, truncated, info)
@@ -170,3 +189,8 @@ class QuantAITradingEnv(gym.Env):
 
     def render(self):
         print(f"Step: {self.current_step}, Balance: {self.balance:.2f}, Pos: {self.position}")
+
+
+# Alias for backward and forward compatibility across training scripts
+TradingEnv = QuantAITradingEnv
+__all__ = ["QuantAITradingEnv", "TradingEnv"]

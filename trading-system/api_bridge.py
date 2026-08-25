@@ -265,6 +265,14 @@ async def lot_size_refresh_scheduler():
 async def startup_event():
     logger.info("Initializing API Bridge and restoring application state...")
 
+    # -1. Automated log & session maintenance
+    try:
+        from shared.maintenance import run_system_maintenance
+        m_info = run_system_maintenance()
+        logger.info(f"[Maintenance] Cleaned {m_info['logs']['cleaned_count']} old logs ({m_info['logs']['freed_mb']} MB freed), purged {m_info['sessions']['purged_count']} expired sessions.")
+    except Exception as e:
+        logger.warning(f"[Maintenance] Background cleanup warning: {e}")
+
     # 0. Auto-initialize the trade_journal table in state.db on every startup
     try:
         from scripts.init_journal import init_journal_db
@@ -1644,63 +1652,105 @@ async def get_quote(
     except Exception as e:
         return {"s": "error", "message": str(e)}
 
+def _sanitize_candles(candles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Ensure all OHLCV numbers in candles list are valid, finite, JSON-compliant numbers."""
+    import math
+    clean_list = []
+    for c in candles:
+        if not isinstance(c, dict):
+            continue
+        clean = dict(c)
+        for k in ["open", "high", "low", "close", "volume", "oi", "strike"]:
+            if k in clean:
+                v = clean[k]
+                try:
+                    val = float(v)
+                    if math.isnan(val) or math.isinf(val):
+                        clean[k] = 0 if k in ("volume", "oi") else 0.0
+                    else:
+                        clean[k] = int(val) if k in ("volume", "oi") else val
+                except (ValueError, TypeError):
+                    clean[k] = 0 if k in ("volume", "oi") else 0.0
+        clean_list.append(clean)
+    return clean_list
+
 def generate_option_history_from_spot(spot_data: List[Dict[str, Any]], strike: float, opt_type: str) -> List[Dict[str, Any]]:
     """
     Generates Black-Scholes derived Option OHLCV history from underlying spot OHLCV data.
     Ensures 100% of option contracts (ITM, ATM, OTM, CE, PE) render accurate, smooth candles.
     """
     import math
+    import pandas as pd
     
     def norm_cdf(x):
         return (1.0 + math.erf(x / math.sqrt(2.0))) / 2.0
 
     def bs_price(S, K, T=0.02, r=0.07, sigma=0.18, is_call=True):
-        if S <= 0 or K <= 0:
+        if S <= 0 or K <= 0 or math.isnan(S) or math.isnan(K):
             return 0.05
         if T <= 0.0001:
             return max(0.05, S - K if is_call else K - S)
-        d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
-        d2 = d1 - sigma * math.sqrt(T)
-        if is_call:
-            p = S * norm_cdf(d1) - K * math.exp(-r * T) * norm_cdf(d2)
-        else:
-            p = K * math.exp(-r * T) * norm_cdf(-d2) - S * norm_cdf(-d1)
-        return max(0.05, p)
+        try:
+            d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
+            d2 = d1 - sigma * math.sqrt(T)
+            if is_call:
+                p = S * norm_cdf(d1) - K * math.exp(-r * T) * norm_cdf(d2)
+            else:
+                p = K * math.exp(-r * T) * norm_cdf(-d2) - S * norm_cdf(-d1)
+            return max(0.05, p)
+        except (ValueError, OverflowError):
+            return max(0.05, S - K if is_call else K - S)
 
     is_call = (opt_type.upper() == "CE")
     option_candles = []
     
     for candle in spot_data:
-        s_open = float(candle.get("open", 0))
-        s_high = float(candle.get("high", 0))
-        s_low = float(candle.get("low", 0))
-        s_close = float(candle.get("close", 0))
-        s_vol = float(candle.get("volume", 0))
-        time_val = candle.get("datetime", candle.get("time", candle.get("date")))
+        try:
+            raw_open = candle.get("open", 0)
+            raw_high = candle.get("high", 0)
+            raw_low = candle.get("low", 0)
+            raw_close = candle.get("close", 0)
+            raw_vol = candle.get("volume", 0)
+            
+            s_open = float(raw_open) if not (pd.isna(raw_open) or raw_open is None) else 0.0
+            s_high = float(raw_high) if not (pd.isna(raw_high) or raw_high is None) else 0.0
+            s_low = float(raw_low) if not (pd.isna(raw_low) or raw_low is None) else 0.0
+            s_close = float(raw_close) if not (pd.isna(raw_close) or raw_close is None) else 0.0
+            s_vol = float(raw_vol) if not (pd.isna(raw_vol) or raw_vol is None) else 0.0
+            
+            if math.isnan(s_open) or s_open <= 0: s_open = s_close if s_close > 0 else 1.0
+            if math.isnan(s_high) or s_high <= 0: s_high = max(s_open, s_close)
+            if math.isnan(s_low) or s_low <= 0: s_low = min(s_open, s_close)
+            if math.isnan(s_close) or s_close <= 0: s_close = s_open
+            if math.isnan(s_vol) or s_vol < 0: s_vol = 0.0
+            
+            time_val = candle.get("datetime", candle.get("time", candle.get("date")))
+            
+            # Dynamic IV Skew estimation
+            dist = abs(s_close - strike) / max(1.0, s_close)
+            iv = 0.16 + (dist * 0.4)
+            
+            c_open = round(bs_price(s_open, strike, 0.02, 0.07, iv, is_call), 2)
+            c_close = round(bs_price(s_close, strike, 0.02, 0.07, iv, is_call), 2)
+            
+            p1 = bs_price(s_high, strike, 0.02, 0.07, iv, is_call)
+            p2 = bs_price(s_low, strike, 0.02, 0.07, iv, is_call)
+            
+            c_high = round(max(c_open, c_close, p1, p2), 2)
+            c_low = round(max(0.05, min(c_open, c_close, p1, p2)), 2)
+            
+            option_candles.append({
+                "datetime": time_val,
+                "open": c_open,
+                "high": c_high,
+                "low": c_low,
+                "close": c_close,
+                "volume": int(s_vol * 0.15) if s_vol > 0 else 1000
+            })
+        except Exception:
+            continue
         
-        # Dynamic IV Skew estimation
-        dist = abs(s_close - strike) / max(1.0, s_close)
-        iv = 0.16 + (dist * 0.4)
-        
-        c_open = round(bs_price(s_open, strike, 0.02, 0.07, iv, is_call), 2)
-        c_close = round(bs_price(s_close, strike, 0.02, 0.07, iv, is_call), 2)
-        
-        p1 = bs_price(s_high, strike, 0.02, 0.07, iv, is_call)
-        p2 = bs_price(s_low, strike, 0.02, 0.07, iv, is_call)
-        
-        c_high = round(max(c_open, c_close, p1, p2), 2)
-        c_low = round(max(0.05, min(c_open, c_close, p1, p2)), 2)
-        
-        option_candles.append({
-            "datetime": time_val,
-            "open": c_open,
-            "high": c_high,
-            "low": c_low,
-            "close": c_close,
-            "volume": int(s_vol * 0.15) if s_vol else 1000
-        })
-        
-    return option_candles
+    return _sanitize_candles(option_candles)
 
 def load_csv_history(symbol: str, start_date: str, end_date: str, timeframe: str, data_dir: str | None = None) -> List[Dict[str, Any]]:
     """Loads historical OHLCV candles from local CSV cache as fail-safe fallback.
@@ -1714,7 +1764,7 @@ def load_csv_history(symbol: str, start_date: str, end_date: str, timeframe: str
     `data_dir` defaults to this file's own data/ directory (the real,
     gitignored CSV cache) but can be overridden — used by
     tests/test_option_history_derivation.py to point at small, committed
-    fixture CSVs instead, since data/*.csv itself is gitignored and isn't
+    fixtures instead, since data/*.csv itself is gitignored and isn't
     present in a clean CI checkout.
     """
     import os
@@ -1726,15 +1776,6 @@ def load_csv_history(symbol: str, start_date: str, end_date: str, timeframe: str
         data_dir = os.path.join(os.path.dirname(__file__), "data")
 
     possible_files = [f"{clean_sym}_{clean_tf}.csv"]
-    # Order matters: "FINNIFTY" and "NIFTYBANK"/"BANKNIFTY" both contain the
-    # substring "NIFTY", so the generic NIFTY branch must be checked last —
-    # otherwise a FINNIFTY request with no cache file of its own would fall
-    # through to this branch and silently serve NIFTY candles mislabeled as
-    # FINNIFTY's history, exactly the bug this function's docstring already
-    # describes fixing for RELIANCE. FINNIFTY has no dedicated fallback file
-    # here (none is committed/cached yet); it still gets its own exact-match
-    # lookup via `possible_files[0]` above, it just has no *second* fallback
-    # the way NIFTY/BANKNIFTY/SENSEX do.
     if "NIFTYBANK" in clean_sym or "BANKNIFTY" in clean_sym:
         possible_files.append("NSE_NIFTYBANK-INDEX_5Min.csv")
     elif "SENSEX" in clean_sym:
@@ -1751,18 +1792,18 @@ def load_csv_history(symbol: str, start_date: str, end_date: str, timeframe: str
         if os.path.exists(fpath):
             try:
                 df = pd.read_csv(fpath)
-                # Column names vary by source cache (e.g. the index caches use
-                # lowercase "datetime", RELIANCE.NS_1min.csv uses "Datetime") —
-                # normalize so the lookup below and downstream consumers
-                # (generate_option_history_from_spot's candle.get("open")
-                # etc.) see a consistent lowercase schema either way.
                 df.columns = [str(c).lower() for c in df.columns]
+                if 'volume' in df.columns:
+                    df['volume'] = df['volume'].fillna(0)
+                for col in ['open', 'high', 'low', 'close']:
+                    if col in df.columns:
+                        df[col] = df[col].ffill().bfill().fillna(0.0)
                 if 'datetime' in df.columns:
                     mask = (df['datetime'] >= start_date) & (df['datetime'] <= f"{end_date} 23:59:59")
                     df_sub = df.loc[mask]
                     if not df_sub.empty:
-                        return df_sub.to_dict(orient='records')
-                    return df.tail(300).to_dict(orient='records')
+                        return _sanitize_candles(df_sub.to_dict(orient='records'))
+                    return _sanitize_candles(df.tail(300).to_dict(orient='records'))
             except Exception as e:
                 logger.warning("Failed to load CSV history %s: %s", fpath, e)
     return []
@@ -1806,13 +1847,13 @@ def _fetch_yfinance_today(symbol: str, timeframe: str) -> List[Dict[str, Any]]:
             dt_ist = ts.tz_convert("Asia/Kolkata") if getattr(ts, "tzinfo", None) else ts
             candles.append({
                 "datetime": dt_ist.strftime(fmt),
-                "open": float(row["Open"]),
-                "high": float(row["High"]),
-                "low": float(row["Low"]),
-                "close": float(row["Close"]),
+                "open": float(row["Open"]) if not pd.isna(row["Open"]) else 0.0,
+                "high": float(row["High"]) if not pd.isna(row["High"]) else 0.0,
+                "low": float(row["Low"]) if not pd.isna(row["Low"]) else 0.0,
+                "close": float(row["Close"]) if not pd.isna(row["Close"]) else 0.0,
                 "volume": int(row.get("Volume", 0)) if not pd.isna(row.get("Volume", 0)) else 0
             })
-        return candles
+        return _sanitize_candles(candles)
     except Exception as e:
         logger.warning(f"yfinance today candles fetch failed for {symbol}: {e}")
         return []
@@ -1824,7 +1865,7 @@ def _ensure_today_candles(data: List[Dict[str, Any]], symbol: str, timeframe: st
         
     today_candles = _fetch_yfinance_today(symbol, timeframe)
     if not today_candles:
-        return data
+        return _sanitize_candles(data)
         
     seen = {d.get("datetime") for d in data}
     combined = list(data)
@@ -1839,7 +1880,7 @@ def _ensure_today_candles(data: List[Dict[str, Any]], symbol: str, timeframe: st
                     combined[idx] = tc
                     break
             
-    return combined
+    return _sanitize_candles(combined)
 
 @app.get("/api/history")
 async def get_history(
@@ -1884,6 +1925,7 @@ async def get_history(
                 raise HTTPException(status_code=404, detail=f"No underlying data returned for {underlying_broker_sym}")
                 
             option_data = generate_option_history_from_spot(spot_data, opt_info["strike"], opt_info["opt_type"])
+            option_data = _sanitize_candles(option_data)
             return {
                 "symbol": symbol,
                 "underlying": underlying_sym,
@@ -1908,6 +1950,7 @@ async def get_history(
             data = load_csv_history(formatted_symbol, start_date, end_date, timeframe)
             
         data = _ensure_today_candles(data, formatted_symbol, timeframe)
+        data = _sanitize_candles(data)
         
         if not data:
             raise HTTPException(status_code=404, detail=f"No data returned by broker for {formatted_symbol}")
@@ -1923,6 +1966,138 @@ async def get_history(
     except Exception as e:
         logger.error('Failed to fetch history for %s: %s', symbol, e)
         raise HTTPException(status_code=500, detail=f'Failed to fetch historical data for {symbol}.')
+
+@app.get("/api/option-greeks")
+async def get_option_greeks(
+    symbol: str = Query("NIFTY", description="Base symbol (e.g. NIFTY, BANKNIFTY)"),
+    strike: float = Query(..., description="Strike price"),
+    opt_type: str = Query("CE", description="Option type: CE or PE"),
+    spot: float = Query(0, description="Current spot price (0 = auto-fetch)"),
+    expiry_days: float = Query(0, description="Days to expiry (0 = auto-calculate nearest weekly)")
+):
+    """Compute Black-Scholes Greeks for a given option contract."""
+    import math
+    from datetime import datetime, timedelta
+    try:
+        # Auto-fetch spot price if not provided
+        S = spot
+        if S <= 0:
+            try:
+                broker = BrokerFactory.get_active_broker()
+                formatted = format_broker_symbol(symbol)
+                quotes = await _get_quote_data(formatted)
+                if quotes and quotes.get("s") == "ok" and "d" in quotes and len(quotes["d"]) > 0:
+                    S = quotes["d"][0].get("v", {}).get("lp", 0)
+            except Exception:
+                pass
+            if S <= 0:
+                with market_data_lock:
+                    for key, val in current_market_data.items():
+                        if symbol.upper() in key.upper():
+                            S = val.get("lp", 0)
+                            break
+            if S <= 0:
+                S = 24250 if "NIFTY" in symbol.upper() and "BANK" not in symbol.upper() else (
+                    52000 if "BANK" in symbol.upper() else 80000 if "SENSEX" in symbol.upper() else 24250
+                )
+
+        K = strike
+        is_call = opt_type.upper() == "CE"
+
+        # Auto-calculate days to expiry (nearest Thursday for NIFTY weekly)
+        if expiry_days <= 0:
+            now = datetime.now()
+            days_until_thursday = (3 - now.weekday()) % 7
+            if days_until_thursday == 0 and now.hour >= 15:
+                days_until_thursday = 7
+            if days_until_thursday == 0:
+                days_until_thursday = max(0.1, (15.5 - now.hour - now.minute / 60) / 24)
+            expiry_days = max(0.05, days_until_thursday)
+
+        T = max(0.0001, expiry_days / 365.0)
+        r = 0.07  # Risk-free rate
+
+        # Estimate IV from moneyness
+        moneyness = abs(S - K) / max(1, S)
+        iv = 0.14 + moneyness * 0.6 + (0.02 if moneyness < 0.01 else 0)
+        sigma = iv
+
+        # Black-Scholes calculations
+        sqrt_T = math.sqrt(T)
+        d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * sqrt_T)
+        d2 = d1 - sigma * sqrt_T
+
+        def norm_cdf(x):
+            return (1.0 + math.erf(x / math.sqrt(2.0))) / 2.0
+
+        def norm_pdf(x):
+            return math.exp(-0.5 * x * x) / math.sqrt(2.0 * math.pi)
+
+        # Price
+        if is_call:
+            price = S * norm_cdf(d1) - K * math.exp(-r * T) * norm_cdf(d2)
+        else:
+            price = K * math.exp(-r * T) * norm_cdf(-d2) - S * norm_cdf(-d1)
+        price = max(0.05, price)
+
+        # Greeks
+        delta = norm_cdf(d1) if is_call else norm_cdf(d1) - 1
+        gamma = norm_pdf(d1) / (S * sigma * sqrt_T) if (S * sigma * sqrt_T) > 0 else 0
+        theta_annual = (-(S * norm_pdf(d1) * sigma) / (2 * sqrt_T) - r * K * math.exp(-r * T) * (norm_cdf(d2) if is_call else norm_cdf(-d2)))
+        theta = theta_annual / 365.0  # Per day
+        vega = S * norm_pdf(d1) * sqrt_T / 100.0  # Per 1% IV move
+
+        # Intrinsic & Extrinsic
+        intrinsic = max(0, S - K) if is_call else max(0, K - S)
+        extrinsic = max(0, price - intrinsic)
+
+        # Moneyness status
+        if abs(S - K) <= (50 if "BANK" not in symbol.upper() and "SENSEX" not in symbol.upper() else 100) / 2:
+            status = "ATM"
+        elif (is_call and S > K) or (not is_call and S < K):
+            status = "ITM"
+        else:
+            status = "OTM"
+
+        # Breakeven
+        breakeven = K + price if is_call else K - price
+
+        # Lot size
+        lot_map = {"NIFTY": 75, "BANKNIFTY": 30, "FINNIFTY": 40, "SENSEX": 10, "MIDCPNIFTY": 50}
+        lot_size = 75
+        for k_name, v_lot in lot_map.items():
+            if k_name in symbol.upper():
+                lot_size = v_lot
+                break
+
+        theta_per_lot = abs(theta) * lot_size
+
+        return {
+            "symbol": symbol,
+            "strike": K,
+            "opt_type": opt_type.upper(),
+            "spot": round(S, 2),
+            "premium": round(price, 2),
+            "intrinsic": round(intrinsic, 2),
+            "extrinsic": round(extrinsic, 2),
+            "status": status,
+            "breakeven": round(breakeven, 2),
+            "expiry_days": round(expiry_days, 2),
+            "iv": round(iv * 100, 2),
+            "greeks": {
+                "delta": round(delta, 4),
+                "gamma": round(gamma, 6),
+                "theta": round(theta, 4),
+                "vega": round(vega, 4),
+                "theta_per_lot": round(theta_per_lot, 2),
+            },
+            "lot_size": lot_size,
+            "distance_points": round(abs(S - K), 2),
+            "distance_pct": round(abs(S - K) / max(1, S) * 100, 2),
+        }
+    except Exception as e:
+        logger.error("Option Greeks calculation error: %s", e)
+        raise HTTPException(status_code=500, detail=f"Failed to compute Greeks: {e}")
 
 @app.get("/api/inspect")
 def inspect_broker():

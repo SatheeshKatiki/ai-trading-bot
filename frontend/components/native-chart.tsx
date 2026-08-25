@@ -2,7 +2,7 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { createChart, ColorType, IChartApi, ISeriesApi, Time, TickMarkType, CandlestickSeries, LineSeries, HistogramSeries, CrosshairMode, createSeriesMarkers } from "lightweight-charts";
-import { RefreshCw, Settings2, X, ChevronDown, Maximize2 as ResetZoomIcon, Download, Tag } from "lucide-react";
+import { RefreshCw, Settings2, X, ChevronDown, Maximize2 as ResetZoomIcon, Download, Tag, Bot } from "lucide-react";
 import { useTheme } from "@/components/theme-provider";
 import { useChartSettingsStore } from "@/store/useChartSettingsStore";
 import { parseBackendDatetimeToEpochSeconds, getISTNowParts, istWallTimeToEpochSeconds, isMarketOpenIST, formatEpochISTParts } from "@/lib/ist-time";
@@ -153,6 +153,100 @@ function isMarketOpen() {
   return isMarketOpenIST();
 }
 
+// Algorithmic Strategy Signal Generator for Clean Automated Buy / Sell / StopLoss / Target Markers
+function computeAutoSignalMarkers(candles: any[]): { markers: any[]; activeSignal: any } {
+  if (!candles || candles.length < 20) return { markers: [], activeSignal: null };
+  
+  const markers: any[] = [];
+  const ema9 = calculateEMA(candles, 9);
+  const ema21 = calculateEMA(candles, 21);
+  
+  let inPosition = false;
+  let entryPrice = 0;
+  let slPrice = 0;
+  let targetPrice = 0;
+  let activeSignal: any = null;
+  
+  for (let i = 20; i < candles.length; i++) {
+    const prev9 = ema9[i - 1]?.value;
+    const prev21 = ema21[i - 1]?.value;
+    const curr9 = ema9[i]?.value;
+    const curr21 = ema21[i]?.value;
+    const c = candles[i];
+    const time = c.time;
+    
+    if (!c || c.close <= 0) continue;
+    
+    // Golden Cross / Momentum Surge -> BUY Signal
+    if (!inPosition && prev9 !== undefined && prev21 !== undefined && prev9 <= prev21 && curr9 > curr21) {
+      inPosition = true;
+      entryPrice = c.close;
+      slPrice = Math.round(Math.max(0.05, c.low * 0.93) * 100) / 100;
+      const risk = Math.max(1, entryPrice - slPrice);
+      targetPrice = Math.round((entryPrice + risk * 2.2) * 100) / 100;
+      
+      markers.push({
+        time,
+        position: 'belowBar',
+        color: '#10B981',
+        shape: 'arrowUp',
+        text: `BUY @ ₹${entryPrice.toFixed(1)}`,
+      });
+      
+      activeSignal = {
+        type: 'BUY',
+        entry: entryPrice,
+        sl: slPrice,
+        target: targetPrice,
+        time: c.time,
+      };
+    } 
+    // In Position -> Check Target or SL Hit or Bearish Reversal
+    else if (inPosition) {
+      if (c.high >= targetPrice) {
+        markers.push({
+          time,
+          position: 'aboveBar',
+          color: '#8B5CF6',
+          shape: 'circle',
+          text: `TARGET @ ₹${targetPrice.toFixed(1)} 🎯`,
+        });
+        inPosition = false;
+        activeSignal = null;
+      } else if (c.low <= slPrice) {
+        markers.push({
+          time,
+          position: 'belowBar',
+          color: '#F59E0B',
+          shape: 'square',
+          text: `SL HIT @ ₹${slPrice.toFixed(1)} 🛡️`,
+        });
+        inPosition = false;
+        activeSignal = null;
+      } else if (prev9 !== undefined && prev21 !== undefined && prev9 >= prev21 && curr9 < curr21) {
+        markers.push({
+          time,
+          position: 'aboveBar',
+          color: '#EF4444',
+          shape: 'arrowDown',
+          text: `SELL @ ₹${c.close.toFixed(1)}`,
+        });
+        inPosition = false;
+        activeSignal = null;
+      }
+    }
+  }
+  
+  return { markers, activeSignal: inPosition ? activeSignal : null };
+}
+
+export interface SignalLevels {
+  entry?: number;
+  sl?: number;
+  target?: number;
+  title?: string;
+}
+
 interface NativeChartProps {
   symbol: string;
   livePrice?: number;
@@ -162,6 +256,8 @@ interface NativeChartProps {
   showDynamicTrend?: boolean;
   lastTick?: number;
   markers?: any[];
+  showAutoSignals?: boolean;
+  signalLevels?: SignalLevels | null;
 }
 
 const Toggle = ({ checked, onChange, label }: { checked: boolean, onChange: (c: boolean) => void, label: string }) => (
@@ -185,7 +281,7 @@ const ColorSwatch = ({ color, onChange, label }: { color: string, onChange: (c: 
 // Global cache outside component to persist across unmounts
 const chartDataCache: Record<string, any> = {};
 
-export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", initialData, disableFetch, lastTick = 0, markers }: NativeChartProps) {
+export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", initialData, disableFetch, lastTick = 0, markers, showAutoSignals = true, signalLevels }: NativeChartProps) {
   const { theme } = useTheme();
   
   const {
@@ -215,6 +311,9 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
   const rsiObLineRef = useRef<any>(null);
   const rsiOsLineRef = useRef<any>(null);
   const vwapSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const entryPriceLineRef = useRef<any>(null);
+  const slPriceLineRef = useRef<any>(null);
+  const targetPriceLineRef = useRef<any>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
   const countdownRef = useRef<HTMLDivElement>(null);
 
@@ -223,6 +322,11 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
   const [countdown, setCountdown] = useState<string>("");
   const [lastCandleOpen, setLastCandleOpen] = useState<number | null>(null);
   const [showMarkers, setShowMarkers] = useState(true);
+  const [showAutoSignalsState, setShowAutoSignalsState] = useState(showAutoSignals ?? false);
+
+  useEffect(() => {
+    setShowAutoSignalsState(showAutoSignals ?? false);
+  }, [showAutoSignals]);
 
   const lastCandleRef = useRef<any>(null);
   const markersRef = useRef<any[]>([]);
@@ -547,44 +651,70 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
 
     const fetchMarkersAndLines = async (chartData: any[], cSeries: ISeriesApi<"Candlestick">) => {
       try {
-        // Use Next.js proxy
-        const stateRes = await fetch(`/api/state`);
-        if (!isMounted) return;
-        if (stateRes.ok) {
-          const stateData = await stateRes.json();
-          if (stateData.trades && stateData.trades.length > 0) {
-            const markers: any[] = [];
-            const symClean = symbol.split(':')[1] || symbol;
-            const symbolTrades = stateData.trades.filter((t: any) => t.symbol && t.symbol.toUpperCase().includes(symClean.toUpperCase()));
+        let finalMarkers: any[] = [];
 
-            symbolTrades.forEach((trade: any) => {
-              const dateStr = String(trade.entry_time || trade.time);
-              if (!dateStr || dateStr === "undefined" || dateStr === "null") return;
-              const adjustedTime = parseBackendDatetimeToEpochSeconds(dateStr);
-              if (adjustedTime === null) return;
+        if (markers && markers.length > 0) {
+          finalMarkers = [...markers];
+        } else {
+          // 1. Fetch real executed trade markers from backend
+          try {
+            const stateRes = await fetch(`/api/state`);
+            if (stateRes.ok) {
+              const stateData = await stateRes.json();
+              if (stateData.trades && stateData.trades.length > 0) {
+                const symClean = symbol.split(':')[1] || symbol;
+                const symbolTrades = stateData.trades.filter((t: any) => t.symbol && t.symbol.toUpperCase().includes(symClean.toUpperCase()));
 
-              let closestTime = adjustedTime as Time;
-              let minDiff = Infinity;
-              for (const candle of chartData) {
-                const diff = Math.abs((candle.time as number) - (adjustedTime as number));
-                if (diff < minDiff) { minDiff = diff; closestTime = candle.time; }
+                symbolTrades.forEach((trade: any) => {
+                  const dateStr = String(trade.entry_time || trade.time);
+                  if (!dateStr || dateStr === "undefined" || dateStr === "null") return;
+                  const adjustedTime = parseBackendDatetimeToEpochSeconds(dateStr);
+                  if (adjustedTime === null) return;
+
+                  let closestTime = adjustedTime as Time;
+                  let minDiff = Infinity;
+                  for (const candle of chartData) {
+                    const diff = Math.abs((candle.time as number) - (adjustedTime as number));
+                    if (diff < minDiff) { minDiff = diff; closestTime = candle.time; }
+                  }
+                  const p = trade.price ? ` @ ₹${Number(trade.price).toFixed(1)}` : '';
+                  if (trade.type === 'CALL BUY' || trade.type === 'BUY' || trade.side === 'BUY') {
+                    finalMarkers.push({ time: closestTime, position: 'belowBar', color: '#10B981', shape: 'arrowUp', text: `BUY${p}` });
+                  } else if (trade.type === 'PUT BUY' || trade.type === 'SELL' || trade.side === 'SELL') {
+                    finalMarkers.push({ time: closestTime, position: 'aboveBar', color: '#EF4444', shape: 'arrowDown', text: `SELL${p}` });
+                  } else if (trade.status === 'Target') {
+                    finalMarkers.push({ time: closestTime, position: 'aboveBar', color: '#8B5CF6', shape: 'circle', text: `TGT${p}` });
+                  } else if (trade.status === 'SL') {
+                    finalMarkers.push({ time: closestTime, position: 'belowBar', color: '#F59E0B', shape: 'square', text: `SL${p}` });
+                  }
+                });
               }
-              if (trade.type === 'CALL BUY' || trade.type === 'BUY') {
-                markers.push({ time: closestTime, position: 'belowBar', color: '#10B981', shape: 'arrowUp', text: 'Buy' });
-              } else if (trade.type === 'PUT BUY' || trade.type === 'SELL') {
-                markers.push({ time: closestTime, position: 'aboveBar', color: '#EF4444', shape: 'arrowDown', text: 'Sell' });
-              }
-            });
-            markers.sort((a, b) => (a.time as number) - (b.time as number));
-            if (!isMounted) return;
-            markersRef.current = markers;
-            if (showMarkers && seriesMarkersPluginRef.current) {
-              seriesMarkersPluginRef.current.setMarkers(markers);
             }
+          } catch {}
+
+          // 2. If showAutoSignals is enabled, compute auto strategy signals across candles
+          if (showAutoSignals && chartData.length > 20) {
+            const autoSig = computeAutoSignalMarkers(chartData);
+            finalMarkers = [...finalMarkers, ...autoSig.markers];
           }
         }
+
+        const seen = new Set();
+        const uniqueMarkers = finalMarkers.filter(m => {
+          const key = `${m.time}_${m.text}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+
+        uniqueMarkers.sort((a, b) => (a.time as number) - (b.time as number));
+        if (!isMounted) return;
+        markersRef.current = uniqueMarkers;
+        if (showMarkers && seriesMarkersPluginRef.current) {
+          seriesMarkersPluginRef.current.setMarkers(uniqueMarkers);
+        }
       } catch (e: any) {
-        console.warn("Error fetching markers (Backend offline?):", e.message);
+        console.warn("Error fetching markers:", e.message);
       }
     };
 
@@ -771,7 +901,68 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
     return () => {
       isMounted = false;
     };
-  }, [symbol, timeframe]); // We removed showSmartTrend here because we have a dedicated hook now
+  }, [symbol, timeframe, showAutoSignals]); // We removed showSmartTrend here because we have a dedicated hook now
+
+  // 2a. Synchronize Active Signal Price Lines (Entry, SL, Target)
+  useEffect(() => {
+    if (!seriesRef.current) return;
+    const candleSeries = seriesRef.current;
+
+    // Clear old price lines
+    if (entryPriceLineRef.current) {
+      try { candleSeries.removePriceLine(entryPriceLineRef.current); } catch {}
+      entryPriceLineRef.current = null;
+    }
+    if (slPriceLineRef.current) {
+      try { candleSeries.removePriceLine(slPriceLineRef.current); } catch {}
+      slPriceLineRef.current = null;
+    }
+    if (targetPriceLineRef.current) {
+      try { candleSeries.removePriceLine(targetPriceLineRef.current); } catch {}
+      targetPriceLineRef.current = null;
+    }
+
+    if (!showAutoSignals || !signalLevels) return;
+
+    if (signalLevels.entry && signalLevels.entry > 0) {
+      try {
+        entryPriceLineRef.current = candleSeries.createPriceLine({
+          price: signalLevels.entry,
+          color: '#10B981',
+          lineWidth: 2,
+          lineStyle: 2,
+          axisLabelVisible: true,
+          title: `BUY ENTRY ₹${signalLevels.entry.toFixed(1)}`,
+        });
+      } catch {}
+    }
+
+    if (signalLevels.sl && signalLevels.sl > 0) {
+      try {
+        slPriceLineRef.current = candleSeries.createPriceLine({
+          price: signalLevels.sl,
+          color: '#EF4444',
+          lineWidth: 2,
+          lineStyle: 2,
+          axisLabelVisible: true,
+          title: `STOP LOSS ₹${signalLevels.sl.toFixed(1)}`,
+        });
+      } catch {}
+    }
+
+    if (signalLevels.target && signalLevels.target > 0) {
+      try {
+        targetPriceLineRef.current = candleSeries.createPriceLine({
+          price: signalLevels.target,
+          color: '#8B5CF6',
+          lineWidth: 2,
+          lineStyle: 2,
+          axisLabelVisible: true,
+          title: `TARGET ₹${signalLevels.target.toFixed(1)}`,
+        });
+      } catch {}
+    }
+  }, [signalLevels, showAutoSignals]);
 
   // 2b. Handle Chart Settings Changes Dynamically (No refetch)
   useEffect(() => {
@@ -849,9 +1040,17 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
   // 2c. Handle Marker Toggle without refetching
   useEffect(() => {
     if (seriesMarkersPluginRef.current) {
-      seriesMarkersPluginRef.current.setMarkers(showMarkers ? markersRef.current : []);
+      if (!showAutoSignalsState || !showMarkers) {
+        try {
+          seriesMarkersPluginRef.current.setMarkers([]);
+        } catch {}
+      } else {
+        try {
+          seriesMarkersPluginRef.current.setMarkers(markersRef.current || []);
+        } catch {}
+      }
     }
-  }, [showMarkers]);
+  }, [showAutoSignalsState, showMarkers]);
 
   // 2d. Render External Strategy Markers (BUY / SELL arrows)
   useEffect(() => {
@@ -1284,6 +1483,13 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
           title="Reset Zoom"
         >
           <ResetZoomIcon size={16} />
+        </button>
+        <button
+          onClick={() => setShowAutoSignalsState(!showAutoSignalsState)}
+          className={`p-2 rounded-full transition-all shadow-lg border backdrop-blur-md pointer-events-auto flex items-center justify-center hover:scale-110 active:scale-95 ${showAutoSignalsState ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40 shadow-emerald-500/10' : 'bg-background/90 hover:bg-background text-muted-foreground hover:text-foreground border-border/40'}`}
+          title={showAutoSignalsState ? "Signals ON (Click to turn OFF for Clean Normal Chart)" : "Signals OFF (Click to turn ON Auto BUY/SELL/SL Signals)"}
+        >
+          <Bot size={16} className={showAutoSignalsState ? "animate-pulse" : ""} />
         </button>
         <button
           onClick={() => setShowMarkers(!showMarkers)}

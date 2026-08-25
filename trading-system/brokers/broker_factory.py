@@ -204,7 +204,7 @@ class BrokerFactory:
             instance._authenticated = True   # synthetic paper mode — always "authenticated"
 
         logger.info(
-            "BrokerFactory: active broker set → %s (paper=%s)",
+            "BrokerFactory: active broker set -> %s (paper=%s)",
             broker_id, instance.paper_mode,
         )
         return instance

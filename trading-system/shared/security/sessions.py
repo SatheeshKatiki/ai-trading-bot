@@ -67,15 +67,27 @@ def _save(sessions: dict) -> None:
 
 def _purge_expired(sessions: dict) -> dict:
     now = time.time()
-    return {tok: s for tok, s in sessions.items() if s.get("expires_at", 0) > now}
+    valid = {tok: s for tok, s in sessions.items() if s.get("expires_at", 0) > now}
+    # Auto-cap at 20 active sessions to prevent file bloat
+    if len(valid) > 20:
+        sorted_tokens = sorted(valid.items(), key=lambda item: item[1].get("created_at", 0), reverse=True)
+        valid = dict(sorted_tokens[:20])
+    return valid
 
 
 def create_session(user_id: str, name: str = "", email: str = "",
                     ttl_seconds: int = DEFAULT_TTL_SECONDS) -> str:
-    """Create a new unguessable session token for ``user_id`` and persist it."""
-    token = secrets.token_urlsafe(32)
+    """Create or reuse an unguessable session token for ``user_id`` and persist it."""
     sessions = _purge_expired(_load())
     now = time.time()
+
+    # Reuse existing active internal session if it has > 1 day remaining
+    if user_id.startswith("trading_engine") or user_id.startswith("bot_"):
+        for tok, sess in sessions.items():
+            if sess.get("user_id") == user_id and sess.get("expires_at", 0) > now + 86400:
+                return tok
+
+    token = secrets.token_urlsafe(32)
     sessions[token] = {
         "user_id": user_id,
         "name": name,

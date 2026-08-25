@@ -9,6 +9,10 @@ node_modules/
 !tsconfig.json
 !package-lock.json
 *.log
+*.log.*
+*.zip
+fyersRequests.log
+trading-system/paper_obs_logs/
 data/
 # Exception: small, committed test fixture CSVs (not real cached market
 # data) used by Testing_Automation_AI_Trading_Bot/python-unit's
