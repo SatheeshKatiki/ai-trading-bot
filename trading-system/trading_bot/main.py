@@ -218,10 +218,19 @@ def _write_heartbeat(path: Path) -> None:
     `heartbeat_writer`'s loop (run_live_bot) so the actual write behavior
     is directly testable without spinning up the real event loop -- same
     reasoning as `_compute_retry_delay`/`_should_reset_failure_count`
-    below. Same tempfile+os.replace pattern as `_save_positions` above,
-    without its 5-attempt retry: a heartbeat write losing a single race
-    against a reader is fine (the next write is <=
-    `_HEARTBEAT_WRITE_INTERVAL_S` away), unlike position data.
+    below. Same tempfile+os.replace pattern as `_save_positions` above.
+
+    Root-cause fix (found live, 2026-08-26): this used to skip
+    `_save_positions`'s bounded retry on the theory that a heartbeat write
+    losing a single race against a reader is fine (the next write is <=
+    `_HEARTBEAT_WRITE_INTERVAL_S` away) -- true for main_process_watchdog's
+    behavior, but it still meant every transient WinError 5 ("Access is
+    denied", from api_bridge.py's main_process_watchdog reading this same
+    file mid-replace -- identical mechanism to `_save_positions`'s
+    documented 2026-08-03 finding) surfaced as a logged ERROR for what is,
+    by design, a harmless miss. Applying the same short bounded retry
+    _save_positions already uses removes that noise without changing the
+    "a miss is tolerable" policy -- it just makes a miss rarer.
     """
     import tempfile
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -229,7 +238,17 @@ def _write_heartbeat(path: Path) -> None:
     try:
         with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
             f.write(str(time.time()))
-        os.replace(temp_path, path)
+        last_exc = None
+        for attempt in range(5):
+            try:
+                os.replace(temp_path, path)
+                last_exc = None
+                break
+            except OSError as replace_exc:
+                last_exc = replace_exc
+                time.sleep(0.05 * (attempt + 1))
+        if last_exc is not None:
+            raise last_exc
     except Exception:
         if os.path.exists(temp_path):
             os.unlink(temp_path)
@@ -337,6 +356,24 @@ def _should_abort_missing_option_mapping(
     function checks.
     """
     return strategy_name != "premium" and option_mapping_required and not option_mapping_succeeded
+
+
+def _has_valid_spot_price_for_option_mapping(ltp: float) -> bool:
+    """False for any spot price that must not reach
+    `options_selector.select_option()` (and, downstream, `calculate_greeks`'
+    `math.log(spot / strike)`).
+
+    Root-cause fix (found live, 2026-08-25): a spot price of `0.0` — a
+    malformed/keepalive tick, not a real trade — was passed straight into
+    `math.log(spot / strike)`, raising `ValueError: expected a positive
+    input, got 0.0`, logged as a generic "Failed to auto-map option"
+    error. That's a data-validity problem, not a mapping failure; reject
+    it at this boundary so it never reaches the Black-Scholes math at all.
+    A negative ltp (never legitimately observed, but not structurally
+    impossible from a malformed feed message) is rejected for the same
+    reason.
+    """
+    return ltp > 0
 
 
 def _load_settings() -> dict:
@@ -1661,26 +1698,46 @@ async def run_live_bot(symbols: List[str]) -> None:
                             option_mapping_required = latest_signal != 0 and ("INDEX" in s or s.startswith("NSE:NIFTY") or s.startswith("BSE:SENSEX"))
                             option_mapping_succeeded = False
                             if option_mapping_required:
-                                try:
-                                    from trading_bot.strategies.premium_selection.options_selector import select_option
-                                    # instrument_key (shared.instruments.
-                                    # normalize_instrument) already resolved
-                                    # the same NIFTY50->NIFTY / NIFTYBANK->
-                                    # BANKNIFTY remap this used to redo inline
-                                    # — see instrument_key's computation above
-                                    # for why that's now one function instead
-                                    # of two independently-maintained copies.
-                                    opt_dir: Literal['CE', 'PE'] = "CE" if latest_signal == 1 else "PE"
-                                    opt = select_option(
-                                        instrument_key, ltp, opt_dir,
-                                        itm_strikes=settings.get("option_strike_itm_offset", 1),
+                                # Root-cause fix (found live, 2026-08-25): a
+                                # spot price of 0.0 (a malformed/keepalive
+                                # tick, not a real trade) fed straight into
+                                # calculate_greeks()'s math.log(spot / strike)
+                                # and blew up with "expected a positive
+                                # input, got 0.0" -- a data-validity problem
+                                # masquerading as a mapping failure. Reject
+                                # it at the boundary instead of letting an
+                                # invalid spot price reach the Black-Scholes
+                                # math at all; option_mapping_succeeded stays
+                                # False so the existing
+                                # _should_abort_missing_option_mapping guard
+                                # below correctly skips this entry, same as
+                                # any other mapping failure.
+                                if not _has_valid_spot_price_for_option_mapping(ltp):
+                                    logger.warning(
+                                        "Skipping option auto-map for %s -- invalid spot price from tick (ltp=%.4f)",
+                                        s, ltp,
                                     )
-                                    entry_symbol = opt.symbol
-                                    lot_size = opt.lot_size
-                                    option_mapping_succeeded = True
-                                    logger.info("Auto-mapped %s %s signal to Option: %s", instrument_key, opt_dir, entry_symbol)
-                                except Exception as e:
-                                    logger.error("Failed to auto-map option for %s: %s", s, e)
+                                else:
+                                    try:
+                                        from trading_bot.strategies.premium_selection.options_selector import select_option
+                                        # instrument_key (shared.instruments.
+                                        # normalize_instrument) already resolved
+                                        # the same NIFTY50->NIFTY / NIFTYBANK->
+                                        # BANKNIFTY remap this used to redo inline
+                                        # — see instrument_key's computation above
+                                        # for why that's now one function instead
+                                        # of two independently-maintained copies.
+                                        opt_dir: Literal['CE', 'PE'] = "CE" if latest_signal == 1 else "PE"
+                                        opt = select_option(
+                                            instrument_key, ltp, opt_dir,
+                                            itm_strikes=settings.get("option_strike_itm_offset", 1),
+                                        )
+                                        entry_symbol = opt.symbol
+                                        lot_size = opt.lot_size
+                                        option_mapping_succeeded = True
+                                        logger.info("Auto-mapped %s %s signal to Option: %s", instrument_key, opt_dir, entry_symbol)
+                                    except Exception as e:
+                                        logger.error("Failed to auto-map option for %s: %s", s, e)
 
 
                         if latest_signal == 0:

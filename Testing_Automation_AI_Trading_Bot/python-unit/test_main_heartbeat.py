@@ -33,6 +33,7 @@ same freeze-injection proof used for get_market_data in
 test_engine_freeze_prevention.py, applied to this call site.
 """
 import asyncio
+import os
 import time
 from pathlib import Path
 
@@ -145,3 +146,52 @@ def test_a_hanging_write_does_not_stall_a_concurrent_task():
         f"write -- the event loop was stalled (last tick at "
         f"{ticks[-1] - start:.2f}s, expected ~1.2s)"
     )
+
+
+# ----------------------------------------------------------------------
+# Root-cause fix #3 (found live, 2026-08-26): _write_heartbeat's
+# os.replace() had no retry, so every transient WinError 5 "Access is
+# denied" -- api_bridge.py's main_process_watchdog reading this same file
+# via Path.read_text() every 30s, exactly the race _save_positions'
+# 2026-08-03 fix already documented for active_positions.json -- surfaced
+# as a logged ERROR for what the design otherwise treats as a harmless
+# miss (the next write is <= _HEARTBEAT_WRITE_INTERVAL_S away). Now
+# retries os.replace() up to 5 times with the same short backoff
+# _save_positions uses, rather than raising on the first transient
+# failure.
+# ----------------------------------------------------------------------
+
+def test_write_heartbeat_retries_past_a_transient_replace_failure(tmp_path, monkeypatch):
+    path = tmp_path / "main_heartbeat.txt"
+    real_replace = os.replace
+    calls = {"n": 0}
+
+    def flaky_replace(src, dst):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise OSError(5, "Access is denied")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", flaky_replace)
+
+    _write_heartbeat(path)  # must not raise
+
+    assert calls["n"] == 3
+    assert path.is_file()
+
+
+def test_write_heartbeat_gives_up_after_five_persistent_replace_failures(tmp_path, monkeypatch):
+    path = tmp_path / "main_heartbeat.txt"
+    calls = {"n": 0}
+
+    def always_fails(src, dst):
+        calls["n"] += 1
+        raise OSError(5, "Access is denied")
+
+    monkeypatch.setattr(os, "replace", always_fails)
+
+    with pytest.raises(OSError):
+        _write_heartbeat(path)
+
+    assert calls["n"] == 5
+    assert not path.exists()

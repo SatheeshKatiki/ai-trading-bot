@@ -6,6 +6,59 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-08-28 — FIX: two `trading_bot/main.py` infra issues found reviewing `engine.log` for 2026-08-24–26 (no session was run those days; found via a status review, not live monitoring)
+
+**Finding #1 — option auto-map crashed on a zero spot price:**
+`engine.log` showed 12 occurrences on 2026-08-25 of `Failed to auto-map
+option for NSE:NIFTY50-INDEX: expected a positive input, got 0.0`.
+Root cause: `on_tick`'s auto-map block passed `ltp = tick["ltp"]`
+straight into `options_selector.select_option()` → `calculate_greeks()`'s
+`math.log(spot / strike)` with no check that `ltp` was a real, positive
+price — a malformed/keepalive tick with `ltp=0.0` hit `math.log(0.0)`,
+which raises exactly that message. Caught by the auto-map block's own
+broad `except Exception`, so no crash — `option_mapping_succeeded` stayed
+`False` and the existing `_should_abort_missing_option_mapping` gate
+(2026-08-07 audit fix) correctly skipped the entry — but it was noisy and
+one data-validity check away from being unnecessary. **Fix:** extracted
+`_has_valid_spot_price_for_option_mapping(ltp)` and guard the auto-map
+attempt with it — a non-positive `ltp` now logs a clear warning and skips
+straight to the existing abort gate, never reaching the Black-Scholes
+math. Regression tests:
+`Testing_Automation_AI_Trading_Bot/python-unit/test_option_mapping_invalid_spot_price.py`
+(pins the guard predicate and documents `calculate_greeks(0.0, ...)`'s
+exact failure mode).
+
+**Finding #2 — heartbeat writes logged spurious ERRORs on a known race:**
+6× `Heartbeat write failed: [WinError 5] Access is denied` clustered
+2026-08-26 14:35–14:41 IST. Same mechanism `_save_positions` was already
+fixed for on 2026-08-03 (`api_bridge.py`'s `main_process_watchdog` reads
+`main_heartbeat.txt` via `Path.read_text()` every 30s, racing `main.py`'s
+`os.replace()` of the same file every ~15s) — `_write_heartbeat` just
+never got the same bounded retry, on the reasoning that losing a single
+write is harmless (next write is ≤15s away). That reasoning still holds,
+but the transient failure doesn't need to be a logged ERROR either.
+**Fix:** applied `_save_positions`' existing 5-attempt bounded-retry
+pattern (0.05s × attempt backoff) to `_write_heartbeat`'s `os.replace()`
+call — same tolerance for a genuine miss, just rarer now. Regression
+tests added to
+`Testing_Automation_AI_Trading_Bot/python-unit/test_main_heartbeat.py`
+(`test_write_heartbeat_retries_past_a_transient_replace_failure`,
+`test_write_heartbeat_gives_up_after_five_persistent_replace_failures`).
+
+**Verification:** `python -m py_compile trading_bot/main.py` clean; full
+`Testing_Automation_AI_Trading_Bot/python-unit` suite — 635 passed, 2
+pre-existing unrelated xfails (both `drl_strategy` model-collapse, see
+that test's own docstring), 0 failures. Not yet verified against a live
+running engine — the engine was not running at the time of this fix (no
+python process found); next live session will be the first real exercise
+of both.
+
+**Not a strategy/risk-parameter change** — both fixes are input
+validation and file-write robustness in the tick-processing/heartbeat
+infra.
+
+---
+
 ## 2026-08-21 — ROOT CAUSE FOUND (operational, not code): overnight machine sleep on battery caused a ~9.5hr feed/engine stall through market open; fixed by disabling DC sleep
 
 **Symptom:** `api_bridge.py`'s `fyers_feed_watchdog` and `main_process_watchdog`
