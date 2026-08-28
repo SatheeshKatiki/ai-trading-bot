@@ -6,6 +6,94 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-08-28 (16:00 IST) — FIX: the CPU-livelock `Series.__setitem__` antipattern was re-introduced into the live-active strategy on 2026-08-08
+
+**How it surfaced:** a status-check of the running engine (started late, 13:20
+IST — well into the session) found `main.py`'s worker process holding
+~50–70% of a CPU core with `engine.log` showing nothing past `Connected to
+API Bridge WebSocket!` for 2.5 h. `py-spy dump` on the live PID caught the
+hot thread here:
+
+```
+generate_signals (trading_bot/strategies/ema_rsi_strategy.py:147)
+  Series.__setitem__ -> Series._set_with_engine -> Index.get_loc
+  -> Series.__repr__ -> to_string -> adjoin   (pandas/io/formats/printing.py)
+```
+
+**Root cause:** the edge-trigger step added to `ema_rsi` on 2026-08-08
+(commit `36afdc0`) was written as a boolean-mask assignment —
+
+```python
+signals[(signals == signals.shift(1)) & (signals != 0)] = 0
+```
+
+— which is the *exact* signature the 2026-08-06/07 audits rewrote
+`registry.py` and this same file's signal *construction* to avoid (see the
+2026-08-06/07 entries below and the module-level comment at
+`ema_rsi_strategy.py` ~line 110). Under a `DatetimeIndex` that is
+duplicate-laden or non-monotonic, pandas stops treating the mask as
+boolean and routes the assignment through `_set_with_engine ->
+Index.get_loc`, doing a label lookup *and building a full-Series repr for
+the resulting error message* per row. `ema_rsi` is the live-active
+strategy and this runs on every evaluation. The `Series.__repr__` /
+`to_string` / `adjoin` frames in the dump are the tell — that is pandas
+constructing an exception message, not doing arithmetic.
+
+The identical line had been copied into two other strategies in the same
+2026-08-08 edge-trigger pass / earlier: `advanced_ai_ml_strategy.py:274`
+(commit `5be0d66`, plus a dead no-op `.where(...)` line above it) and
+`ultra_meta_dip_swarm.py:91-92` (`signals[valid_call] = 1` /
+`signals[valid_put] = -1`, construction-side, dating to 2026-07-09 —
+missed by the original audit).
+
+**Fix:** new shared helper
+`trading_bot/strategies/_signal_utils.py::edge_trigger(signals)` computes
+the same result on the underlying numpy array (`np.where` on a shifted
+comparison), no `Series.__setitem__`. All three strategies now call it
+(`ultra_meta_dip_swarm` uses the `np.select` construction form already
+used by `registry.py` / `ema_rsi`). Semantics are unchanged — a run of an
+identical non-zero signal still collapses to its opening bar, a direction
+flip still fires immediately, bar 0 is always kept.
+
+**Tests:** new
+`Testing_Automation_AI_Trading_Bot/python-unit/test_edge_trigger_livelock_regression.py`
+— pins `edge_trigger` equivalence to the pre-fix setitem oracle,
+hand-worked edge cases, sub-1 s completion on a 1500-row duplicate
+`DatetimeIndex` (the shape that triggers the livelock), a guard that no
+strategy keeps a live boolean-mask edge-trigger in code, and an
+end-to-end "each strategy completes fast on a duplicate index" check.
+Full suite: **643 passed, 2 xfailed** (pre-existing `drl_strategy`
+market-blindness).
+
+**Verified live:** killed the wedged pre-fix worker (PID 7408), relaunched
+`main.py` (PID 21668) with the fix. `py-spy` on the new process no longer
+shows the `get_loc -> __repr__ -> adjoin` signature anywhere; the
+`ema_rsi` strategy profiles at ~92 ms/call on 1800 rows (was effectively
+unbounded on the bad index). Market was closed by restart time, so the
+first *market-hours* confirmation is still pending — next live session
+should re-check `py-spy` and per-eval latency.
+
+**Still open (flagged, not fixed — needs a human call):** `on_tick`'s
+"ZERO-LATENCY HFT TRIGGER" re-evaluates the *entire* feature +
+strategy + institutional-filter stack on the full candle DataFrame at up
+to 5×/s (200 ms throttle), driven by `api_bridge.py`'s
+`websocket_broadcaster` which pushes a snapshot every 50 ms **regardless
+of whether a new tick arrived, and regardless of whether the market is
+open**. Even with this livelock fixed that is ~140–180 ms of work every
+200 ms → ~70% of a core burned continuously, 24/7. It is what turned this
+livelock from "slow" into "engine silent for 2.5 h". Options: gate the
+eval loop on `market_open`, only re-evaluate on a genuinely new
+bar/tick, or evaluate on `df.tail(N)` instead of the whole history.
+Deferred because throttle/cadence is a design decision, not a wiring bug.
+
+**Note:** `engine.log` being quiet during a session is now partly
+expected — the `shared.sentiment` INFO chatter that used to dominate it
+moved to `api_bridge.py`'s `fyersApi.log` in v2.11.0. It is not, by
+itself, a sign the engine is wedged; cross-check `py-spy` / CPU / the
+`main_heartbeat.txt` mtime.
+
+---
+
 ## 2026-08-28 — FIX: two `trading_bot/main.py` infra issues found reviewing `engine.log` for 2026-08-24–26 (no session was run those days; found via a status review, not live monitoring)
 
 **Finding #1 — option auto-map crashed on a zero spot price:**

@@ -13,6 +13,7 @@ import xgboost as xgb
 from sklearn.model_selection import train_test_split
 
 from shared.indicators import ema, rsi, macd, smc_features
+from trading_bot.strategies._signal_utils import edge_trigger as _edge_trigger
 
 STRATEGY_NAME = "advanced_ai"
 
@@ -270,7 +271,13 @@ def generate_signals(
     # already edge-triggers internally (`sig_vals[i-1] != 1`); this
     # aligns the strategy's own output with that same semantics for the
     # live path, which does not.
-    signals = signals.where(signals != signals.shift(1), other=signals).astype(int)
-    signals[(signals == signals.shift(1)) & (signals != 0)] = 0
+    # Root-cause fix (2026-08-28): the first line here was a no-op
+    # (`where(cond, other=signals)` returns `signals` unchanged), and the
+    # second was a boolean-mask `Series.__setitem__` — the CPU-livelock
+    # signature that pegged a core and silenced the live engine for a whole
+    # session on 2026-08-28 via its instance in `ema_rsi_strategy.py`. Both
+    # replaced with the shared numpy-based helper. See
+    # docs/paper_trading_validation/anomaly_log.md's 2026-08-28 entry.
+    signals = _edge_trigger(signals)
 
     return signals

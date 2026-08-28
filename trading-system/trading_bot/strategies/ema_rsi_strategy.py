@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 
 from shared.indicators import ema, rsi
+from trading_bot.strategies._signal_utils import edge_trigger as _edge_trigger
 
 # Type alias for readability
 DataFrame = pd.DataFrame
@@ -144,6 +145,20 @@ def generate_signals(
     # rationale as advanced_ai; the legacy backtest engine already
     # edge-triggers internally (`sig_vals[i-1] != 1`), so this aligns the
     # strategy's own output with that semantics for the live path.
-    signals[(signals == signals.shift(1)) & (signals != 0)] = 0
+    #
+    # Root-cause fix (found live via py-spy, 2026-08-28): the edge-trigger
+    # was originally written as a boolean-mask `Series.__setitem__`
+    # (`signals[(signals == signals.shift(1)) & (signals != 0)] = 0`),
+    # which is the *exact* CPU-livelock signature this file's signal
+    # construction was rewritten to avoid 20 lines above — under a
+    # DatetimeIndex carrying duplicate/non-monotonic timestamps (which the
+    # live 5-min candle cache can accumulate) the mask stops being treated
+    # as boolean and routes through `Series._set_with_engine ->
+    # Index.get_loc -> Series.__repr__`, one label lookup + full-Series
+    # repr per row. It pegged a core and silenced the engine for a whole
+    # session on 2026-08-28. Rebuilt on the underlying numpy arrays, same
+    # as the `np.select` construction above. See
+    # docs/paper_trading_validation/anomaly_log.md's 2026-08-28 entry.
+    signals = _edge_trigger(signals)
 
     return signals

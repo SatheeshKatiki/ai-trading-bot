@@ -88,9 +88,22 @@ def generate_signals(df: pd.DataFrame, **kwargs) -> pd.Series:
     valid_call = (btd_signals == 1) & (call_scores >= 40)
     valid_put = (btd_signals == -1) & (put_scores >= 40)
     
-    signals[valid_call] = 1
-    signals[valid_put] = -1
-    
+    # Built via np.select rather than boolean-mask Series.__setitem__
+    # (`signals[valid_call] = 1`, `signals[valid_put] = -1`) — that form
+    # routes through Series._set_with_engine -> Index.get_loc under a
+    # duplicate/non-monotonic index and was the CPU-livelock that silenced
+    # the live engine for a session on 2026-08-28 (via ema_rsi's instance).
+    # valid_call / valid_put are mutually exclusive (btd == 1 vs btd == -1);
+    # valid_put listed first so it wins the (impossible) overlap case,
+    # matching the original `= 1` then `= -1` overwrite order. See
+    # docs/paper_trading_validation/anomaly_log.md's 2026-08-28 entry.
+    signals = pd.Series(
+        np.select([valid_put.to_numpy(), valid_call.to_numpy()], [-1, 1], default=0),
+        index=df.index,
+        dtype=int,
+    )
+
+
     # Store AI Scores for frontend visualization
     df['call_score'] = call_scores
     df['put_score'] = put_scores
