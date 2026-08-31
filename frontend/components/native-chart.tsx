@@ -47,6 +47,41 @@ function calculateEMA(data: any[], period: number) {
   return result;
 }
 
+// Bulletproof data sanitizer that guarantees strictly ascending Unix timestamps and no duplicates
+function sanitizeCandleSeries(arr: any[]) {
+  if (!arr || !Array.isArray(arr) || arr.length === 0) return [];
+  const valid = arr
+    .map((item: any) => {
+      let t = item.time;
+      if (typeof t !== 'number') {
+        t = parseBackendDatetimeToEpochSeconds(String(item.datetime || item.Datetime || item.date || item.time));
+      }
+      return {
+        ...item,
+        time: t,
+        open: Number(item.open ?? item.Open ?? 0),
+        high: Number(item.high ?? item.High ?? 0),
+        low: Number(item.low ?? item.Low ?? 0),
+        close: Number(item.close ?? item.Close ?? 0),
+        volume: Number(item.volume ?? item.Volume ?? 0)
+      };
+    })
+    .filter((b: any) => b.time !== null && isFinite(b.time) && !isNaN(b.close))
+    .sort((a: any, b: any) => Number(a.time) - Number(b.time));
+
+  // Deduplicate and ensure STRICTLY increasing timestamps for Lightweight Charts
+  const strictlyIncreasing: any[] = [];
+  let prevTime = -Infinity;
+  for (const c of valid) {
+    const curTime = Number(c.time);
+    if (curTime > prevTime) {
+      strictlyIncreasing.push(c);
+      prevTime = curTime;
+    }
+  }
+  return strictlyIncreasing;
+}
+
 // Simple SMA function
 function calculateSMA(data: any[], period: number = 20) {
   const p = Math.max(1, period || 20);
@@ -153,91 +188,139 @@ function isMarketOpen() {
   return isMarketOpenIST();
 }
 
-// Algorithmic Strategy Signal Generator for Clean Automated Buy / Sell / StopLoss / Target Markers
+// Algorithmic Strategy Signal Generator matching EMA 9 / EMA 20 Momentum & RSI-MA Strategy Rules
 function computeAutoSignalMarkers(candles: any[]): { markers: any[]; activeSignal: any } {
-  if (!candles || candles.length < 20) return { markers: [], activeSignal: null };
+  if (!candles || candles.length < 25) return { markers: [], activeSignal: null };
   
   const markers: any[] = [];
   const ema9 = calculateEMA(candles, 9);
-  const ema21 = calculateEMA(candles, 21);
+  const ema20 = calculateEMA(candles, 20);
+  const rsi14 = calculateRSI(candles, 14);
+  const rsiMa = calculateEMA(rsi14.map(r => ({ time: r.time, close: r.value })), 20);
   
-  let inPosition = false;
+  // Build lookup maps for fast indexed access
+  const rsiMap = new Map<number, number>();
+  rsi14.forEach(r => rsiMap.set(r.time as number, r.value));
+  const rsiMaMap = new Map<number, number>();
+  rsiMa.forEach(r => rsiMaMap.set(r.time as number, r.value));
+
+  let position: 'NONE' | 'CALL' | 'PUT' = 'NONE';
   let entryPrice = 0;
-  let slPrice = 0;
-  let targetPrice = 0;
   let activeSignal: any = null;
   
-  for (let i = 20; i < candles.length; i++) {
+  for (let i = 21; i < candles.length; i++) {
     const prev9 = ema9[i - 1]?.value;
-    const prev21 = ema21[i - 1]?.value;
+    const prev20 = ema20[i - 1]?.value;
     const curr9 = ema9[i]?.value;
-    const curr21 = ema21[i]?.value;
+    const curr20 = ema20[i]?.value;
     const c = candles[i];
-    const time = c.time;
+    const time = c.time as number;
     
-    if (!c || c.close <= 0) continue;
-    
-    // Golden Cross / Momentum Surge -> BUY Signal
-    if (!inPosition && prev9 !== undefined && prev21 !== undefined && prev9 <= prev21 && curr9 > curr21) {
-      inPosition = true;
-      entryPrice = c.close;
-      slPrice = Math.round(Math.max(0.05, c.low * 0.93) * 100) / 100;
-      const risk = Math.max(1, entryPrice - slPrice);
-      targetPrice = Math.round((entryPrice + risk * 2.2) * 100) / 100;
-      
-      markers.push({
-        time,
-        position: 'belowBar',
-        color: '#10B981',
-        shape: 'arrowUp',
-        text: `BUY @ ₹${entryPrice.toFixed(1)}`,
-      });
-      
-      activeSignal = {
-        type: 'BUY',
-        entry: entryPrice,
-        sl: slPrice,
-        target: targetPrice,
-        time: c.time,
-      };
-    } 
-    // In Position -> Check Target or SL Hit or Bearish Reversal
-    else if (inPosition) {
-      if (c.high >= targetPrice) {
+    if (!c || c.close <= 0 || prev9 === undefined || prev20 === undefined || curr9 === undefined || curr20 === undefined) continue;
+
+    const currRsi = rsiMap.get(time) ?? 50;
+    const currRsiMa = rsiMaMap.get(time) ?? 50;
+
+    // EMA Touch & No-Chasing Guard (prevents flying late candles like 14:50)
+    const buffer = c.close * 0.0006; // ~14.4 pts on NIFTY
+    const maxEma = Math.max(curr9, curr20);
+    const minEma = Math.min(curr9, curr20);
+    const touchCE = c.low <= (maxEma + buffer);
+    const touchPE = c.high >= (minEma - buffer);
+
+    // Bullish Entry: EMA 9 > EMA 20 and RSI bullish AND Low touched EMA
+    const isBullishCross = ((prev9 <= prev20 && curr9 > curr20) || (curr9 > curr20 && prev9 > prev20 && candles[i-1].low <= maxEma)) && (currRsi >= 50 || currRsi > currRsiMa) && touchCE;
+    // Bearish Entry: EMA 9 < EMA 20 and RSI bearish AND High touched EMA
+    const isBearishCross = ((prev9 >= prev20 && curr9 < curr20) || (curr9 < curr20 && prev9 < prev20 && candles[i-1].high >= minEma)) && (currRsi <= 50 || currRsi < currRsiMa) && touchPE;
+
+    if (position === 'NONE') {
+      if (isBullishCross) {
+        position = 'CALL';
+        entryPrice = c.close;
         markers.push({
-          time,
-          position: 'aboveBar',
-          color: '#8B5CF6',
-          shape: 'circle',
-          text: `TARGET @ ₹${targetPrice.toFixed(1)} 🎯`,
-        });
-        inPosition = false;
-        activeSignal = null;
-      } else if (c.low <= slPrice) {
-        markers.push({
-          time,
+          time: c.time,
           position: 'belowBar',
-          color: '#F59E0B',
-          shape: 'square',
-          text: `SL HIT @ ₹${slPrice.toFixed(1)} 🛡️`,
+          color: '#10B981',
+          shape: 'arrowUp',
+          text: 'BUY CE',
+          size: 2
         });
-        inPosition = false;
-        activeSignal = null;
-      } else if (prev9 !== undefined && prev21 !== undefined && prev9 >= prev21 && curr9 < curr21) {
+        activeSignal = { type: 'BUY CE', entry: entryPrice, time: c.time };
+      } else if (isBearishCross) {
+        position = 'PUT';
+        entryPrice = c.close;
         markers.push({
-          time,
+          time: c.time,
           position: 'aboveBar',
           color: '#EF4444',
           shape: 'arrowDown',
-          text: `SELL @ ₹${c.close.toFixed(1)}`,
+          text: 'BUY PE',
+          size: 2
         });
-        inPosition = false;
+        activeSignal = { type: 'BUY PE', entry: entryPrice, time: c.time };
+      }
+    } else if (position === 'CALL') {
+      // Exit CALL when EMA 9 crosses below EMA 20 or bearish reversal occurs
+      if (curr9 < curr20 || isBearishCross) {
+        markers.push({
+          time: c.time,
+          position: 'aboveBar',
+          color: '#F59E0B',
+          shape: 'arrowDown',
+          text: 'EXIT',
+          size: 2
+        });
+        position = 'NONE';
         activeSignal = null;
+
+        // If strong bearish crossover, trigger BUY PE immediately
+        if (isBearishCross) {
+          position = 'PUT';
+          entryPrice = c.close;
+          markers.push({
+            time: c.time,
+            position: 'aboveBar',
+            color: '#EF4444',
+            shape: 'arrowDown',
+            text: 'BUY PE',
+            size: 2
+          });
+          activeSignal = { type: 'BUY PE', entry: entryPrice, time: c.time };
+        }
+      }
+    } else if (position === 'PUT') {
+      // Exit PUT when EMA 9 crosses above EMA 20 or bullish reversal occurs
+      if (curr9 > curr20 || isBullishCross) {
+        markers.push({
+          time: c.time,
+          position: 'belowBar',
+          color: '#F59E0B',
+          shape: 'arrowUp',
+          text: 'EXIT',
+          size: 2
+        });
+        position = 'NONE';
+        activeSignal = null;
+
+        // If strong bullish crossover, trigger BUY CE immediately
+        if (isBullishCross) {
+          position = 'CALL';
+          entryPrice = c.close;
+          markers.push({
+            time: c.time,
+            position: 'belowBar',
+            color: '#10B981',
+            shape: 'arrowUp',
+            text: 'BUY CE',
+            size: 2
+          });
+          activeSignal = { type: 'BUY CE', entry: entryPrice, time: c.time };
+        }
       }
     }
   }
   
-  return { markers, activeSignal: inPosition ? activeSignal : null };
+  return { markers, activeSignal: position !== 'NONE' ? activeSignal : null };
 }
 
 export interface SignalLevels {
@@ -656,14 +739,18 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
         if (markers && markers.length > 0) {
           finalMarkers = [...markers];
         } else {
-          // 1. Fetch real executed trade markers from backend
+          // 1. Fetch real executed trade markers from backend state
           try {
             const stateRes = await fetch(`/api/state`);
             if (stateRes.ok) {
               const stateData = await stateRes.json();
               if (stateData.trades && stateData.trades.length > 0) {
                 const symClean = symbol.split(':')[1] || symbol;
-                const symbolTrades = stateData.trades.filter((t: any) => t.symbol && t.symbol.toUpperCase().includes(symClean.toUpperCase()));
+                const symbolTrades = stateData.trades.filter((t: any) => {
+                  if (!t.symbol) return false;
+                  const tSym = t.symbol.toUpperCase();
+                  return tSym.includes(symClean.toUpperCase()) || (symClean.toUpperCase().includes('NIFTY') && tSym.includes('NIFTY'));
+                });
 
                 symbolTrades.forEach((trade: any) => {
                   const dateStr = String(trade.entry_time || trade.time);
@@ -677,37 +764,89 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
                     const diff = Math.abs((candle.time as number) - (adjustedTime as number));
                     if (diff < minDiff) { minDiff = diff; closestTime = candle.time; }
                   }
-                  const p = trade.price ? ` @ ₹${Number(trade.price).toFixed(1)}` : '';
-                  if (trade.type === 'CALL BUY' || trade.type === 'BUY' || trade.side === 'BUY') {
-                    finalMarkers.push({ time: closestTime, position: 'belowBar', color: '#10B981', shape: 'arrowUp', text: `BUY${p}` });
-                  } else if (trade.type === 'PUT BUY' || trade.type === 'SELL' || trade.side === 'SELL') {
-                    finalMarkers.push({ time: closestTime, position: 'aboveBar', color: '#EF4444', shape: 'arrowDown', text: `SELL${p}` });
-                  } else if (trade.status === 'Target') {
-                    finalMarkers.push({ time: closestTime, position: 'aboveBar', color: '#8B5CF6', shape: 'circle', text: `TGT${p}` });
-                  } else if (trade.status === 'SL') {
-                    finalMarkers.push({ time: closestTime, position: 'belowBar', color: '#F59E0B', shape: 'square', text: `SL${p}` });
+
+                  const isPut = trade.type?.includes('PUT') || trade.symbol?.toUpperCase().includes('PE');
+                  const isExit = trade.side === 'SELL' || trade.type?.includes('SELL');
+
+                  if (isExit) {
+                    finalMarkers.push({
+                      time: closestTime,
+                      position: 'aboveBar',
+                      color: '#F59E0B',
+                      shape: 'arrowDown',
+                      text: 'EXIT',
+                      size: 2
+                    });
+                  } else if (isPut) {
+                    finalMarkers.push({
+                      time: closestTime,
+                      position: 'aboveBar',
+                      color: '#EF4444',
+                      shape: 'arrowDown',
+                      text: 'BUY PE',
+                      size: 2
+                    });
+                  } else {
+                    finalMarkers.push({
+                      time: closestTime,
+                      position: 'belowBar',
+                      color: '#10B981',
+                      shape: 'arrowUp',
+                      text: 'BUY CE',
+                      size: 2
+                    });
+                  }
+
+                  // Also add exit marker if exit_time exists
+                  if (trade.exit_time) {
+                    const exitEpoch = parseBackendDatetimeToEpochSeconds(String(trade.exit_time));
+                    if (exitEpoch !== null) {
+                      let closestExitTime = exitEpoch as Time;
+                      let minExitDiff = Infinity;
+                      for (const candle of chartData) {
+                        const diff = Math.abs((candle.time as number) - (exitEpoch as number));
+                        if (diff < minExitDiff) { minExitDiff = diff; closestExitTime = candle.time; }
+                      }
+                      finalMarkers.push({
+                        time: closestExitTime,
+                        position: 'aboveBar',
+                        color: '#F59E0B',
+                        shape: 'arrowDown',
+                        text: 'EXIT',
+                        size: 2
+                      });
+                    }
                   }
                 });
               }
             }
           } catch {}
 
-          // 2. If showAutoSignals is enabled, compute auto strategy signals across candles
-          if (showAutoSignals && chartData.length > 20) {
+          // 2. If no executed trade markers or showAutoSignals is enabled, compute auto strategy signals across candles
+          if (finalMarkers.length === 0 && showAutoSignals && chartData.length > 20) {
             const autoSig = computeAutoSignalMarkers(chartData);
-            finalMarkers = [...finalMarkers, ...autoSig.markers];
+            finalMarkers = [...autoSig.markers];
           }
         }
 
-        const seen = new Set();
-        const uniqueMarkers = finalMarkers.filter(m => {
-          const key = `${m.time}_${m.text}`;
-          if (seen.has(key)) return false;
-          seen.add(key);
-          return true;
+        // Prioritize and collapse to 1 clean marker per candle timestamp
+        const markerMap = new Map<number, any>();
+        
+        finalMarkers.forEach(m => {
+          const t = m.time as number;
+          const existing = markerMap.get(t);
+          if (!existing) {
+            markerMap.set(t, m);
+          } else {
+            // New Entry (BUY CE / BUY PE) takes priority over EXIT on the same reversal candle
+            if ((m.text === 'BUY CE' || m.text === 'BUY PE') && existing.text === 'EXIT') {
+              markerMap.set(t, m);
+            }
+          }
         });
 
-        uniqueMarkers.sort((a, b) => (a.time as number) - (b.time as number));
+        const uniqueMarkers = Array.from(markerMap.values()).sort((a, b) => (a.time as number) - (b.time as number));
+
         if (!isMounted) return;
         markersRef.current = uniqueMarkers;
         if (showMarkers && seriesMarkersPluginRef.current) {
@@ -728,12 +867,7 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
         // `setData()` crashes lightweight-charts' business-day parser. Every
         // other data path here funnels through `parseBackendDatetimeToEpochSeconds`
         // first -- do the same here instead of trusting the caller's shape.
-        const normalizedInitialData = initialData
-          .map((item: any) => ({
-            ...item,
-            time: typeof item.time === 'number' ? item.time : parseBackendDatetimeToEpochSeconds(String(item.time)),
-          }))
-          .filter((b: any) => b.time !== null && isFinite(b.time));
+        const normalizedInitialData = sanitizeCandleSeries(initialData);
 
         const ema1Data = calculateEMA(normalizedInitialData, ema1Length);
         const ema2Data = calculateSMA(normalizedInitialData, ema2Length);
@@ -754,14 +888,11 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
       const cacheKey = `${symbol}_${timeframe}`;
 
       if (chartDataCache[cacheKey]) {
-        const cached = chartDataCache[cacheKey];
+        const cached = sanitizeCandleSeries(chartDataCache[cacheKey]);
         if (!isMounted) return;
         
         const ema1Data = calculateEMA(cached, ema1Length);
         const ema2Data = calculateSMA(cached, ema2Length);
-        // Smart Trend coloring is intentionally skipped here for an instant
-        // cache-hit render -- the dedicated settings effect (2b) applies it
-        // right after.
 
         candleSeries.setData(cached);
         emaSeries.setData(ema1Data);
@@ -803,22 +934,7 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
           return;
         }
 
-        const formattedData = json.data.map((item: any) => {
-          const dateStr = String(item.datetime || item.Datetime || item.date);
-          const time = parseBackendDatetimeToEpochSeconds(dateStr);
-          return {
-            time, open: parseFloat(item.open || item.Open), high: parseFloat(item.high || item.High),
-            low: parseFloat(item.low || item.Low), close: parseFloat(item.close || item.Close),
-            volume: parseFloat(item.volume || item.Volume || 0)
-          };
-        }).filter((b: any) => b.time !== null && isFinite(b.time))
-          .sort((a: any, b: any) => (a.time as number) - (b.time as number));
-
-        const uniqueData = [];
-        const seenTimes = new Set();
-        for (const item of formattedData) {
-          if (!seenTimes.has(item.time)) { seenTimes.add(item.time); uniqueData.push(item); }
-        }
+        const uniqueData = sanitizeCandleSeries(json.data);
 
         if (uniqueData.length > 0) {
           chartDataCache[cacheKey] = uniqueData; // Cache it!
@@ -967,7 +1083,7 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
   // 2b. Handle Chart Settings Changes Dynamically (No refetch)
   useEffect(() => {
     const cacheKey = `${symbol}_${timeframe}`;
-    const cachedData = chartDataCache[cacheKey];
+    const cachedData = sanitizeCandleSeries(chartDataCache[cacheKey]);
 
     if (cachedData && cachedData.length > 0 && seriesRef.current) {
       // 1. Update visibility and styles
@@ -1052,9 +1168,9 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
     }
   }, [showAutoSignalsState, showMarkers]);
 
-  // 2d. Render External Strategy Markers (BUY / SELL arrows)
+  // 2d. Render External Strategy Markers (BUY CE / BUY PE / EXIT arrows)
   useEffect(() => {
-    if (seriesRef.current && markers && Array.isArray(markers)) {
+    if (seriesMarkersPluginRef.current && markers && Array.isArray(markers)) {
       try {
         const formatted = markers.map((m: any) => {
           let timeVal = m.time;
@@ -1062,21 +1178,39 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
             const parsed = parseBackendDatetimeToEpochSeconds(timeVal);
             if (parsed !== null) timeVal = parsed as Time;
           }
+          const isPut = m.type?.includes('PUT') || m.symbol?.toUpperCase().includes('PE') || m.text?.includes('PE');
+          const isExit = m.type === 'EXIT' || m.type === 'SELL' || m.side === 'SELL' || m.text?.includes('EXIT');
+
+          let label = 'BUY CE';
+          let color = '#10B981';
+          let shape = 'arrowUp';
+          let position = 'belowBar';
+
+          if (isExit) {
+            label = 'EXIT';
+            color = '#F59E0B';
+            shape = 'arrowDown';
+            position = 'aboveBar';
+          } else if (isPut) {
+            label = 'BUY PE';
+            color = '#EF4444';
+            shape = 'arrowDown';
+            position = 'aboveBar';
+          }
+
           return {
             time: timeVal,
-            position: m.position || (m.type === 'BUY' ? 'belowBar' : 'aboveBar'),
-            color: m.color || (m.type === 'BUY' ? '#00F5A0' : '#FF3B69'),
-            shape: m.shape || (m.type === 'BUY' ? 'arrowUp' : 'arrowDown'),
-            text: m.text || (m.type === 'BUY' ? `BUY @ ${m.entry}` : `SELL @ ${m.entry}`),
-            size: m.size || 2
+            position: m.position || position,
+            color: m.color || color,
+            shape: m.shape || shape,
+            text: m.text || label,
+            size: 2
           };
         }).sort((a: any, b: any) => (a.time as number) - (b.time as number));
 
-        if (typeof (seriesRef.current as any).setMarkers === 'function') {
-          (seriesRef.current as any).setMarkers(formatted);
-        }
+        seriesMarkersPluginRef.current.setMarkers(formatted);
       } catch (err) {
-        console.warn("Failed to set markers on candle series:", err);
+        console.warn("Failed to set markers on seriesMarkersPlugin:", err);
       }
     }
   }, [markers]);

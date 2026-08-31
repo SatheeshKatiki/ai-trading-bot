@@ -124,11 +124,12 @@ from trading_bot.strategies.momentum_strategy import generate_signals as momentu
 from trading_bot.strategies.ema_crossover_pro_strategy import generate_signals as ema_crossover_signals
 from trading_bot.strategies.meta_agent_strategy import generate_signals as meta_agent_signals
 from trading_bot.strategies.buy_the_dip_strategy import generate_signals as buy_dip_signals
-
+from trading_bot.strategies.ema9_rsi_momentum import generate_signals as ema9_rsi_signals
 from trading_bot.strategies.marl_strategy import generate_signals as marl_signals
 
 # Register strategies for the API
 registry.register("ema_rsi",      ema_rsi_signals)
+registry.register("ema9_rsi_momentum", ema9_rsi_signals)
 registry.register("enhanced_ai",  enhanced_signals)
 registry.register("premium",      premium_signals)
 registry.register("advanced_ai", advanced_ai_signals)
@@ -2166,27 +2167,45 @@ async def get_backtest(
         # Load Settings (cached — no disk I/O on every backtest call)
         settings = _load_config_settings()
                 
+        # Root-cause fix: these five names are `ema_rsi_strategy.py`'s own
+        # legacy parameter names (EMA 20/50 + RSI 55/45), not a universal
+        # strategy contract. Every OTHER registered strategy declares a
+        # bare `**kwargs` and silently absorbs/ignores them, so force-
+        # passing them here was harmless for those — but `ema9_rsi_momentum`
+        # (spec: EMA 9/20, RSI 14) deliberately names its own parameters
+        # `ema_fast`/`ema_slow` to match this same dashboard convention,
+        # so passing ema_rsi's 20/50 through unconditionally would silently
+        # override its spec'd 9/20 defaults for every backtest. Scoping
+        # these five to `strategy == "ema_rsi"` changes nothing for any
+        # existing strategy (they never read them) and fixes the collision
+        # for the new one.
         ema_fast = settings.get("ema_fast", 20)
         ema_slow = settings.get("ema_slow", 50)
         rsi_window = settings.get("rsi_window", 14)
         rsi_buy = settings.get("rsi_buy", 55)
         rsi_sell = settings.get("rsi_sell", 45)
-        
+
+        legacy_ema_rsi_kwargs = {}
+        if strategy == "ema_rsi":
+            legacy_ema_rsi_kwargs = {
+                "ema_fast": ema_fast,
+                "ema_slow": ema_slow,
+                "rsi_window": rsi_window,
+                "rsi_buy_thresh": rsi_buy,
+                "rsi_sell_thresh": rsi_sell,
+            }
+
         # Lowercase columns for the strategy
         df.columns = [c.lower() for c in df.columns]
-        
+
         # Generate Signals using Python Strategy via Registry
         try:
             from fastapi.concurrency import run_in_threadpool
             signals_data = await run_in_threadpool(
                 registry.run_strategy,
-                strategy, 
-                df, 
-                ema_fast=ema_fast, 
-                ema_slow=ema_slow, 
-                rsi_window=rsi_window, 
-                rsi_buy_thresh=rsi_buy, 
-                rsi_sell_thresh=rsi_sell,
+                strategy,
+                df,
+                **legacy_ema_rsi_kwargs,
                 stoploss_pct=stoploss_pct,
                 target_pct=target_pct,
                 enable_ema_filter=enable_ema_filter,
@@ -3667,6 +3686,16 @@ async def get_btst_prediction(symbol: str = "NIFTY"):
 if __name__ == "__main__":
     from shared.singleton_lock import acquire_singleton_lock
     acquire_singleton_lock("api_bridge", script_hint="api_bridge.py")
+
+    # Run automated system maintenance on startup — cleans old logs,
+    # truncates unbounded SDK logs, purges __pycache__ and stale .bak files.
+    try:
+        from shared.maintenance import run_system_maintenance
+        _maint = run_system_maintenance()
+        if _maint.get("total_freed_mb", 0) > 0:
+            logger.info("Startup maintenance freed %.1f MB", _maint["total_freed_mb"])
+    except Exception as _maint_exc:
+        logger.debug("Startup maintenance skipped: %s", _maint_exc)
 
     _setup_log_rotation()
     import uvicorn

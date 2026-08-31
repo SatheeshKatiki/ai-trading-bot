@@ -11,6 +11,7 @@ node_modules/
 *.log
 *.log.*
 *.zip
+.claude/
 fyersRequests.log
 trading-system/paper_obs_logs/
 data/

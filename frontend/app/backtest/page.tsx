@@ -171,8 +171,8 @@ export const getBaseQty = (sym: string): number => {
 export default function Backtest() {
   const [symbol, setSymbol] = useState("NIFTY");
   const [selectedAssetName, setSelectedAssetName] = useState("NIFTY 50");
-  const [timeframe, setTimeframe] = useState("1 Min");
-  const [strategy, setStrategy] = useState("institutional_momentum");
+  const [timeframe, setTimeframe] = useState("5 Min");
+  const [strategy, setStrategy] = useState("ema9_rsi_momentum");
   const [startDate, setStartDate] = useState(() => {
     const d = new Date();
     d.setFullYear(d.getFullYear() - 1);
@@ -206,7 +206,7 @@ export default function Backtest() {
   const [enableAdxFilter, setEnableAdxFilter] = useState(false);
   const [enableVwapFilter, setEnableVwapFilter] = useState(false);
   const [enableRsiFilter, setEnableRsiFilter] = useState(false);
-  const [enableSqueezeFilter, setEnableSqueezeFilter] = useState(false);
+  const [enableSqueezeFilter, setEnableSqueezeFilter] = useState(true);
   const [enableExtensionFilter, setEnableExtensionFilter] = useState(false);
   const [enableCprFilter, setEnableCprFilter] = useState(false);
   const [enableAggressionFilter, setEnableAggressionFilter] = useState(false);
@@ -216,6 +216,27 @@ export default function Backtest() {
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [suggestions, setSuggestions] = useState<any[]>([]);
   const searchRef = useRef<HTMLDivElement>(null);
+
+  // Auto-apply winning settings whenever EMA9/RSI Momentum is selected
+  useEffect(() => {
+    if (strategy === "ema9_rsi_momentum") {
+      setTimeframe("5 Min");
+      setStoplossPct(0.6);
+      setTargetPct(2.5);
+      setTrailTrigger(0.5);
+      setTrailOffset(0.35);
+      setTrailingSl(true);
+      setEnableSqueezeFilter(true);
+      setEnableExtensionFilter(false);
+      setEnableCprFilter(false);
+      setEnableAggressionFilter(false);
+      setEnablePyramiding(true);
+      setScalePct(0.2);
+      setMaxScales(2);
+      setMaxDailyLossPct(3);
+      setMaxDailyTrades(0);
+    }
+  }, [strategy]);
 
   useEffect(() => {
     // Close suggestions on outside click

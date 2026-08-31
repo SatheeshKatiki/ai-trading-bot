@@ -297,3 +297,45 @@ def record_trade(symbol: str, side: str, price: float, timestamp: str, qty: int 
             'qty': qty,
             'last_update': _CACHE["last_update"]
         })
+
+
+def record_journal_entry(
+    symbol: str,
+    strategy_name: str,
+    direction: str,
+    entry_price: float,
+    exit_price: float,
+    qty: int,
+    pnl: float,
+    ai_feedback: str = "",
+    tags: str = "",
+    trade_date: str = "",
+) -> None:
+    """Record a completed round-trip trade into the trade_journal table for the Trading Journal UI."""
+    trade_date = trade_date or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        with contextlib.closing(sqlite3.connect(_STATE_DB, timeout=30.0, check_same_thread=False)) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS trade_journal (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    trade_date TEXT,
+                    symbol TEXT,
+                    strategy_name TEXT,
+                    direction TEXT,
+                    entry_price REAL,
+                    exit_price REAL,
+                    qty INTEGER,
+                    pnl REAL,
+                    ai_feedback TEXT,
+                    tags TEXT
+                )
+            """)
+            cursor.execute("""
+                INSERT INTO trade_journal (trade_date, symbol, strategy_name, direction, entry_price, exit_price, qty, pnl, ai_feedback, tags)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (trade_date, symbol, strategy_name, direction, entry_price, exit_price, qty, pnl, ai_feedback, tags))
+            conn.commit()
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).error("Failed to record journal entry: %s", exc)

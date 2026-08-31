@@ -13,6 +13,9 @@ interface MetricsBarProps {
 function MetricsBarComponent({ isLoading, isMarketOpen }: MetricsBarProps) {
     const equity = useLiveMarketStore(state => state.equity);
     const pnl = useLiveMarketStore(state => state.pnl);
+    const unrealizedPnl = useLiveMarketStore(state => state.unrealizedPnl);
+    const totalPnl = useLiveMarketStore(state => state.totalPnl);
+    const openPositionsCount = useLiveMarketStore(state => state.openPositionsCount);
     const aiConfidence = useLiveMarketStore(state => state.aiConfidence);
     const riskStatus = useLiveMarketStore(state => state.riskStatus);
     const trades = useLiveMarketStore(state => state.trades);
@@ -80,14 +83,24 @@ function MetricsBarComponent({ isLoading, isMarketOpen }: MetricsBarProps) {
                 variants={{ hidden: { opacity: 0, y: 20 }, show: { opacity: 1, y: 0 } }}
                 className="stat-card px-3 py-2 relative overflow-hidden group"
             >
-                <div className={`absolute left-0 top-0 w-1 h-full rounded-l-lg transition-shadow ${pnl >= 0 ? 'bg-gradient-to-b from-success to-emerald-600 ' : 'bg-gradient-to-b from-destructive to-rose-600 '}`}></div>
-                <div className="flex items-center gap-2 mb-0.5 pl-2">
+                <div className={`absolute left-0 top-0 w-1 h-full rounded-l-lg transition-shadow ${totalPnl >= 0 ? 'bg-gradient-to-b from-success to-emerald-600 ' : 'bg-gradient-to-b from-destructive to-rose-600 '}`}></div>
+                <div className="flex items-center justify-between mb-0.5 pl-2 pr-1">
                     <span className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider">📊 Today's PNL</span>
+                    {openPositionsCount > 0 && (
+                        <span className="inline-flex items-center gap-1 text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-primary/20 text-primary animate-pulse">
+                            <span className="w-1.5 h-1.5 rounded-full bg-primary animate-ping"></span> Live M2M
+                        </span>
+                    )}
                 </div>
-                <div className={`text-xl md:text-2xl font-bold font-mono pl-2 tracking-tight flex items-center gap-1 ${pnl >= 0 ? "text-success" : "text-destructive"}`}>
-                    {pnl >= 0 ? <TrendingUp className="w-4 h-4 animate-pulse" /> : <TrendingDown className="w-4 h-4 animate-pulse" />}
-                    {isLoading ? <div className="h-6 w-24 bg-muted animate-pulse rounded"></div> : `${pnl >= 0 ? "+" : ""}₹${(pnl ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`}
+                <div className={`text-xl md:text-2xl font-bold font-mono pl-2 tracking-tight flex items-center gap-1 ${totalPnl >= 0 ? "text-success" : "text-destructive"}`}>
+                    {totalPnl >= 0 ? <TrendingUp className="w-4 h-4 animate-pulse" /> : <TrendingDown className="w-4 h-4 animate-pulse" />}
+                    {isLoading ? <div className="h-6 w-24 bg-muted animate-pulse rounded"></div> : `${totalPnl >= 0 ? "+" : ""}₹${(totalPnl ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
                 </div>
+                {openPositionsCount > 0 && (
+                    <div className="pl-2 text-[9px] font-mono text-muted-foreground mt-0.5">
+                        Running: <span className={unrealizedPnl >= 0 ? "text-success font-semibold" : "text-destructive font-semibold"}>{unrealizedPnl >= 0 ? "+" : ""}₹{unrealizedPnl.toFixed(2)}</span> | Realized: {pnl >= 0 ? "+" : ""}₹{pnl.toFixed(2)}
+                    </div>
+                )}
             </motion.div>
 
             {/* Card 3: AI Confidence */}

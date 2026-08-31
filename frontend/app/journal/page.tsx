@@ -3,9 +3,23 @@
 import { useState, useEffect } from "react";
 import Sidebar from "@/components/sidebar";
 import Header from "@/components/header";
-import { BookOpen, AlertTriangle, CheckCircle, Brain, TrendingUp, TrendingDown, Target, Clock, Filter } from "lucide-react";
+import { 
+  BookOpen, 
+  Brain, 
+  TrendingUp, 
+  TrendingDown, 
+  Clock, 
+  Filter, 
+  ArrowUpRight, 
+  ArrowDownRight, 
+  Sparkles,
+  Calendar,
+  Layers,
+  ArrowRight,
+  ShieldCheck,
+  Tag
+} from "lucide-react";
 
-// Mirrors trading-system/scripts/init_journal.py's trade_journal schema
 interface JournalEntry {
   id: number;
   trade_date: string;
@@ -20,9 +34,53 @@ interface JournalEntry {
   tags: string | null;
 }
 
+function parseSymbol(symbol: string) {
+  // Formats 'NSE:NIFTY26AUG24050CE' into clean 'NIFTY 24050 CE'
+  const clean = symbol.replace(/^NSE:/, "");
+  const match = clean.match(/^(NIFTY|BANKNIFTY|FINNIFTY|SENSEX).*?(\d{5})(CE|PE)$/);
+  if (match) {
+    return {
+      index: match[1],
+      strike: match[2],
+      type: match[3] as "CE" | "PE",
+      displayName: `${match[1]} ${match[2]} ${match[3]}`
+    };
+  }
+  return {
+    index: clean.includes("NIFTY") ? "NIFTY" : "INDEX",
+    strike: clean,
+    type: clean.endsWith("PE") ? ("PE" as const) : ("CE" as const),
+    displayName: clean
+  };
+}
+
+function formatTradeDate(dateStr: string) {
+  try {
+    const d = new Date(dateStr.replace(" ", "T"));
+    if (isNaN(d.getTime())) {
+      return { date: dateStr.split(" ")[0] || dateStr, time: dateStr.split(" ")[1] || "" };
+    }
+    const dateFormatted = d.toLocaleDateString("en-IN", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric"
+    });
+    const timeFormatted = d.toLocaleTimeString("en-IN", {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: true
+    });
+    return { date: dateFormatted, time: timeFormatted };
+  } catch {
+    return { date: dateStr, time: "" };
+  }
+}
+
 export default function JournalPage() {
   const [loading, setLoading] = useState(true);
   const [trades, setTrades] = useState<JournalEntry[]>([]);
+  const [filterType, setFilterType] = useState<"ALL" | "WINS" | "LOSSES">("ALL");
   const [stats, setStats] = useState({ total: 0, winRate: 0, netPnl: 0, bestTrade: 0, worstTrade: 0 });
 
   useEffect(() => {
@@ -61,158 +119,321 @@ export default function JournalPage() {
     return () => { cancelled = true; };
   }, []);
 
+  const filteredTrades = trades.filter((t) => {
+    if (filterType === "WINS") return t.pnl > 0;
+    if (filterType === "LOSSES") return t.pnl <= 0;
+    return true;
+  });
+
   return (
     <div data-testid="journal-page" className="flex h-screen bg-background text-foreground">
       <Sidebar />
       <div className="flex-1 flex flex-col overflow-hidden">
         <Header />
         
-        <div className="flex-1 overflow-y-auto p-4 md:p-8 bg-background relative z-10 w-full">
-      <div className="w-full space-y-6">
-        
-        {/* Header */}
-        <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 mb-8">
-          <div>
-            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-primary/10 text-primary border border-primary/20 text-xs font-bold uppercase tracking-widest mb-4">
-              <BookOpen className="w-3.5 h-3.5" /> Post-Trade Analytics
-            </div>
-            <h1 className="text-4xl font-display font-black tracking-tight text-foreground">
-              Trading Journal
-            </h1>
-            <p className="text-muted-foreground mt-2 max-w-2xl text-lg">
-              AI-driven analysis of your historical trades to identify mistakes and improve edge.
-            </p>
-          </div>
-          <button className="flex items-center gap-2 bg-card border border-border/50 hover:bg-muted/50 transition-colors px-4 py-2 rounded-xl text-sm font-semibold text-foreground">
-            <Filter className="w-4 h-4" /> Filter Logs
-          </button>
-        </div>
+        <div className="flex-1 overflow-y-auto p-4 md:p-6 lg:p-8 bg-background relative z-10 w-full">
+          <div className="w-full space-y-6">
+            
+            {/* Header Banner */}
+            <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 pb-2 border-b border-border/40 w-full">
+              <div>
+                <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 text-xs font-bold uppercase tracking-wider mb-2">
+                  <Sparkles className="w-3.5 h-3.5" /> Institutional Trade Journal
+                </div>
+                <h1 className="text-3xl md:text-4xl font-display font-black tracking-tight text-foreground">
+                  Trading Journal & Execution Analytics
+                </h1>
+                <p className="text-muted-foreground mt-1 max-w-2xl text-sm md:text-base">
+                  AI-driven post-trade analysis, entry/exit audit trail, and edge verification.
+                </p>
+              </div>
 
-        {/* Stats Grid */}
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-          <div className="glass-card rounded-2xl p-5 border border-border/50">
-            <span className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Total Trades</span>
-            <div className="text-3xl font-bold font-mono mt-2 text-foreground">{stats.total}</div>
-          </div>
-          <div className="glass-card rounded-2xl p-5 border border-border/50">
-            <span className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Win Rate</span>
-            <div className={`text-3xl font-bold font-mono mt-2 ${stats.winRate > 50 ? 'text-success' : 'text-warning'}`}>
-              {stats.winRate}%
-            </div>
-          </div>
-          <div className="glass-card rounded-2xl p-5 border border-border/50">
-            <span className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Net PnL</span>
-            <div className={`text-3xl font-bold font-mono mt-2 ${stats.netPnl >= 0 ? 'text-success' : 'text-destructive'}`}>
-              {stats.netPnl >= 0 ? '+' : ''}₹{stats.netPnl.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-            </div>
-          </div>
-          <div className="glass-card rounded-2xl p-5 border border-border/50">
-            <span className="text-xs text-muted-foreground font-medium uppercase tracking-wider flex items-center gap-1">
-              <TrendingUp className="w-3 h-3 text-success" /> Best Trade
-            </span>
-            <div className="text-3xl font-bold font-mono mt-2 text-success">
-              +₹{stats.bestTrade.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-            </div>
-          </div>
-          <div className="glass-card rounded-2xl p-5 border border-border/50">
-            <span className="text-xs text-muted-foreground font-medium uppercase tracking-wider flex items-center gap-1">
-              <TrendingDown className="w-3 h-3 text-destructive" /> Worst Trade
-            </span>
-            <div className="text-3xl font-bold font-mono mt-2 text-destructive">
-              ₹{stats.worstTrade.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-            </div>
-          </div>
-        </div>
-
-        {/* Journal Entries */}
-        <div className="space-y-4 mt-8">
-          <h2 className="text-xl font-bold flex items-center gap-2 mb-4">
-            <Clock className="w-5 h-5 text-primary" /> Execution Timeline
-          </h2>
-          
-          {loading ? (
-            <div className="h-32 flex items-center justify-center glass-card rounded-2xl">
-              <div className="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin"></div>
-            </div>
-          ) : trades.length === 0 ? (
-            <div className="glass-card rounded-2xl p-8 text-center border border-border/50">
-              <BookOpen className="w-12 h-12 text-muted-foreground mx-auto mb-4 opacity-50" />
-              <h3 className="text-lg font-bold text-foreground">No Trades Logged Yet</h3>
-              <p className="text-muted-foreground mt-1">Run the live bot or manually log trades to see the autopsy here.</p>
-            </div>
-          ) : (
-            <div className="glass-card rounded-2xl overflow-hidden border border-border/50">
-              <div className="overflow-x-auto">
-                <table data-testid="journal-table" className="w-full text-sm text-left">
-                  <thead className="bg-muted/30 border-b border-border text-xs uppercase tracking-wider text-muted-foreground">
-                    <tr>
-                      <th className="py-3 px-4 font-medium">Date & Time</th>
-                      <th className="py-3 px-4 font-medium">Symbol / Strategy</th>
-                      <th className="py-3 px-4 font-medium text-center">Type</th>
-                      <th className="py-3 px-4 font-medium text-right">Qty</th>
-                      <th className="py-3 px-4 font-medium text-right">Entry → Exit</th>
-                      <th className="py-3 px-4 font-medium text-right">PnL</th>
-                      <th className="py-3 px-4 font-medium">AI Feedback</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-border">
-                    {trades.map((trade) => {
-                      const isProfit = trade.pnl > 0;
-                      return (
-                        <tr key={trade.id} data-testid="journal-row" data-symbol={trade.symbol} data-pnl-sign={isProfit ? "positive" : "negative"} className="border-b border-border hover:bg-muted/10 transition-colors group">
-                          <td className="py-3 px-4 font-mono text-[11px] whitespace-nowrap text-muted-foreground">
-                            {trade.trade_date}
-                          </td>
-                          <td className="py-3 px-4">
-                            <div className="font-bold text-foreground text-sm">{trade.symbol}</div>
-                            <div className="text-[10px] text-muted-foreground font-mono uppercase mt-0.5">{trade.strategy_name}</div>
-                          </td>
-                          <td className="py-3 px-4 text-center">
-                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider ${trade.direction === 'BUY' ? 'bg-success/20 text-success' : 'bg-destructive/20 text-destructive'}`}>
-                              {trade.direction}
-                            </span>
-                          </td>
-                          <td className="py-3 px-4 text-right font-mono text-xs">
-                            {trade.qty}
-                          </td>
-                          <td className="py-3 px-4 text-right font-mono text-[11px] text-muted-foreground">
-                            <span className="text-foreground">₹{Number(trade.entry_price).toFixed(2)}</span> <span className="text-border mx-1">→</span> <span className="text-foreground">₹{Number(trade.exit_price).toFixed(2)}</span>
-                          </td>
-                          <td className="py-3 px-4 text-right">
-                            <div className={`font-bold font-mono text-sm ${isProfit ? 'text-success' : 'text-destructive'}`}>
-                              {isProfit ? '+' : ''}₹{trade.pnl.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                            </div>
-                          </td>
-                          <td className="py-3 px-4 min-w-[300px]">
-                            <div className="flex items-start gap-2">
-                              <Brain className="w-3.5 h-3.5 text-primary shrink-0 mt-0.5 opacity-70 group-hover:opacity-100 transition-opacity" />
-                              <div className="text-xs text-muted-foreground line-clamp-2 group-hover:line-clamp-none transition-all">
-                                {trade.ai_feedback || "-"}
-                                {trade.tags && (
-                                  <div className="flex flex-wrap gap-1 mt-1.5">
-                                    {trade.tags.split(',').map((tag: string, idx: number) => (
-                                      <span key={idx} className="text-[9px] font-mono px-1.5 py-0.5 bg-background border border-border/50 rounded text-muted-foreground uppercase tracking-wider">
-                                        #{tag.trim()}
-                                      </span>
-                                    ))}
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+              {/* Filter Pills */}
+              <div className="flex items-center gap-2 bg-card border border-border/60 p-1 rounded-xl shadow-sm">
+                <button
+                  onClick={() => setFilterType("ALL")}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                    filterType === "ALL" 
+                      ? "bg-primary text-primary-foreground shadow-sm" 
+                      : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+                  }`}
+                >
+                  All ({trades.length})
+                </button>
+                <button
+                  onClick={() => setFilterType("WINS")}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                    filterType === "WINS" 
+                      ? "bg-emerald-500 text-white shadow-sm" 
+                      : "text-muted-foreground hover:text-emerald-500 hover:bg-emerald-500/10"
+                  }`}
+                >
+                  Wins ({trades.filter(t => t.pnl > 0).length})
+                </button>
+                <button
+                  onClick={() => setFilterType("LOSSES")}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                    filterType === "LOSSES" 
+                      ? "bg-rose-500 text-white shadow-sm" 
+                      : "text-muted-foreground hover:text-rose-500 hover:bg-rose-500/10"
+                  }`}
+                >
+                  Losses ({trades.filter(t => t.pnl <= 0).length})
+                </button>
               </div>
             </div>
-          )}
-        </div>
-        
+
+            {/* Performance Stats Grid */}
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3.5">
+              <div className="bg-card/70 border border-border/60 rounded-2xl p-4 shadow-sm hover:border-primary/40 transition-colors">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] text-muted-foreground font-bold uppercase tracking-wider">Total Trades</span>
+                  <BookOpen className="w-4 h-4 text-muted-foreground/60" />
+                </div>
+                <div className="text-2xl md:text-3xl font-black font-mono mt-2 text-foreground">{stats.total}</div>
+                <span className="text-[10px] text-muted-foreground mt-0.5 block">Logged sessions</span>
+              </div>
+
+              <div className="bg-card/70 border border-border/60 rounded-2xl p-4 shadow-sm hover:border-primary/40 transition-colors">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] text-muted-foreground font-bold uppercase tracking-wider">Win Rate</span>
+                  <ShieldCheck className="w-4 h-4 text-muted-foreground/60" />
+                </div>
+                <div className={`text-2xl md:text-3xl font-black font-mono mt-2 ${stats.winRate >= 50 ? 'text-emerald-500' : 'text-amber-500'}`}>
+                  {stats.winRate}%
+                </div>
+                <span className="text-[10px] text-muted-foreground mt-0.5 block">Execution accuracy</span>
+              </div>
+
+              <div className="bg-card/70 border border-border/60 rounded-2xl p-4 shadow-sm hover:border-primary/40 transition-colors">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] text-muted-foreground font-bold uppercase tracking-wider">Net P&L</span>
+                  <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${stats.netPnl >= 0 ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : 'bg-rose-500/10 text-rose-600 dark:text-rose-400'}`}>
+                    {stats.netPnl >= 0 ? 'PROFIT' : 'DRAWDOWN'}
+                  </span>
+                </div>
+                <div className={`text-2xl md:text-3xl font-black font-mono mt-2 ${stats.netPnl >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                  {stats.netPnl >= 0 ? '+' : ''}₹{stats.netPnl.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </div>
+                <span className="text-[10px] text-muted-foreground mt-0.5 block">Realized net return</span>
+              </div>
+
+              <div className="bg-card/70 border border-border/60 rounded-2xl p-4 shadow-sm hover:border-primary/40 transition-colors">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] text-muted-foreground font-bold uppercase tracking-wider">Best Trade</span>
+                  <TrendingUp className="w-4 h-4 text-emerald-500" />
+                </div>
+                <div className="text-2xl md:text-3xl font-black font-mono mt-2 text-emerald-500">
+                  +₹{stats.bestTrade.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </div>
+                <span className="text-[10px] text-muted-foreground mt-0.5 block">Peak profit captured</span>
+              </div>
+
+              <div className="bg-card/70 border border-border/60 rounded-2xl p-4 shadow-sm hover:border-primary/40 transition-colors col-span-2 md:col-span-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] text-muted-foreground font-bold uppercase tracking-wider">Worst Trade</span>
+                  <TrendingDown className="w-4 h-4 text-rose-500" />
+                </div>
+                <div className="text-2xl md:text-3xl font-black font-mono mt-2 text-rose-500">
+                  ₹{stats.worstTrade.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </div>
+                <span className="text-[10px] text-muted-foreground mt-0.5 block">Controlled stoploss cut</span>
+              </div>
+            </div>
+
+            {/* Execution Table Card */}
+            <div className="bg-card/80 border border-border/60 rounded-2xl shadow-md overflow-hidden">
+              <div className="px-6 py-4 border-b border-border/60 bg-muted/20 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Clock className="w-4 h-4 text-primary" />
+                  <h2 className="text-base font-bold text-foreground">Execution Timeline & Trade Audit</h2>
+                </div>
+                <span className="text-xs text-muted-foreground font-mono">
+                  Showing {filteredTrades.length} of {trades.length} records
+                </span>
+              </div>
+              
+              {loading ? (
+                <div className="h-48 flex items-center justify-center">
+                  <div className="flex flex-col items-center gap-3">
+                    <div className="w-7 h-7 border-2 border-primary border-t-transparent rounded-full animate-spin"></div>
+                    <span className="text-xs text-muted-foreground font-medium">Loading trade records...</span>
+                  </div>
+                </div>
+              ) : filteredTrades.length === 0 ? (
+                <div className="p-12 text-center">
+                  <BookOpen className="w-12 h-12 text-muted-foreground mx-auto mb-3 opacity-30" />
+                  <h3 className="text-base font-bold text-foreground">No Trades Logged Yet</h3>
+                  <p className="text-muted-foreground text-xs mt-1">Live bot session trades and backtest entries will appear here.</p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto w-full">
+                  <table data-testid="journal-table" className="w-full text-left border-collapse table-auto">
+                    <thead>
+                      <tr className="bg-muted/40 border-b border-border/60 text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
+                        <th className="py-3.5 px-6 w-[15%]">Date & Time</th>
+                        <th className="py-3.5 px-6 w-[20%]">Instrument / Strike</th>
+                        <th className="py-3.5 px-4 text-center w-[10%]">Type / Qty</th>
+                        <th className="py-3.5 px-6 text-center w-[22%]">Entry & Exit Prices</th>
+                        <th className="py-3.5 px-6 text-right w-[15%]">Net P&L</th>
+                        <th className="py-3.5 px-6 w-[18%]">AI Strategy Feedback & Tags</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border/40 text-sm">
+                      {filteredTrades.map((trade) => {
+                        const isProfit = trade.pnl > 0;
+                        const parsed = parseSymbol(trade.symbol);
+                        const { date, time } = formatTradeDate(trade.trade_date);
+                        const points = trade.exit_price - trade.entry_price;
+                        const returnPct = trade.entry_price > 0 ? ((points / trade.entry_price) * 100) : 0;
+
+                        return (
+                          <tr 
+                            key={trade.id} 
+                            data-testid="journal-row" 
+                            data-symbol={trade.symbol} 
+                            data-pnl-sign={isProfit ? "positive" : "negative"} 
+                            className="hover:bg-muted/20 transition-colors group"
+                          >
+                            {/* 1. Date & Time */}
+                            <td className="py-4.5 px-6 align-top">
+                              <div className="flex flex-col">
+                                <span className="font-semibold text-foreground text-xs flex items-center gap-1.5">
+                                  <Calendar className="w-3.5 h-3.5 text-muted-foreground/70" />
+                                  {date}
+                                </span>
+                                <span className="font-mono text-[11px] text-muted-foreground mt-1 bg-muted/50 px-2 py-0.5 rounded-md w-fit border border-border/40">
+                                  {time || trade.trade_date}
+                                </span>
+                              </div>
+                            </td>
+
+                            {/* 2. Instrument / Strike */}
+                            <td className="py-4.5 px-6 align-top">
+                              <div className="flex flex-col">
+                                <div className="flex items-center gap-2">
+                                  <span className="font-bold text-foreground text-sm tracking-tight">
+                                    {parsed.displayName}
+                                  </span>
+                                  <span className={`text-[10px] font-black px-1.5 py-0.5 rounded uppercase tracking-wider font-mono ${
+                                    parsed.type === 'CE' 
+                                      ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20' 
+                                      : 'bg-indigo-500/15 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20'
+                                  }`}>
+                                    {parsed.type}
+                                  </span>
+                                </div>
+                                <span className="text-[11px] text-muted-foreground font-mono mt-1 flex items-center gap-1">
+                                  <Layers className="w-3 h-3 text-muted-foreground/60" />
+                                  {trade.strategy_name.replace(/_/g, " ").toUpperCase()}
+                                </span>
+                              </div>
+                            </td>
+
+                            {/* 3. Type / Qty */}
+                            <td className="py-4.5 px-4 align-top text-center">
+                              <div className="flex flex-col items-center gap-1">
+                                <span className={`text-[10px] font-black px-2.5 py-1 rounded-md uppercase tracking-wider shadow-sm ${
+                                  trade.direction === 'BUY' 
+                                    ? 'bg-emerald-500 text-white dark:bg-emerald-600' 
+                                    : 'bg-rose-500 text-white dark:bg-rose-600'
+                                }`}>
+                                  {trade.direction}
+                                </span>
+                                <span className="text-[11px] font-mono font-semibold text-muted-foreground mt-0.5">
+                                  {trade.qty} Qty <span className="text-[9px] text-muted-foreground/60">({Math.round(trade.qty / 65)}L)</span>
+                                </span>
+                              </div>
+                            </td>
+
+                            {/* 4. Entry & Exit Prices Card */}
+                            <td className="py-4.5 px-6 align-top">
+                              <div className="bg-muted/30 border border-border/50 rounded-xl p-2.5 flex items-center justify-between gap-2 shadow-xs">
+                                {/* Entry */}
+                                <div className="flex flex-col">
+                                  <span className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground">Entry</span>
+                                  <span className="font-mono font-bold text-xs text-foreground mt-0.5">
+                                    ₹{Number(trade.entry_price).toFixed(2)}
+                                  </span>
+                                </div>
+
+                                <ArrowRight className="w-3.5 h-3.5 text-muted-foreground/50 shrink-0" />
+
+                                {/* Exit */}
+                                <div className="flex flex-col">
+                                  <span className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground">Exit</span>
+                                  <span className="font-mono font-bold text-xs text-foreground mt-0.5">
+                                    ₹{Number(trade.exit_price).toFixed(2)}
+                                  </span>
+                                </div>
+
+                                {/* Points Badge */}
+                                <div className={`text-[10px] font-bold font-mono px-2 py-1 rounded-md border ${
+                                  points >= 0 
+                                    ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20' 
+                                    : 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/20'
+                                }`}>
+                                  {points >= 0 ? '+' : ''}{points.toFixed(2)} pts
+                                </div>
+                              </div>
+                            </td>
+
+                            {/* 5. Net P&L */}
+                            <td className="py-4.5 px-6 align-top text-right">
+                              <div className="flex flex-col items-end">
+                                <div className={`text-base font-black font-mono tracking-tight px-2.5 py-1 rounded-lg inline-flex items-center gap-1 ${
+                                  isProfit 
+                                    ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/25' 
+                                    : 'bg-rose-500/15 text-rose-600 dark:text-rose-400 border border-rose-500/25'
+                                }`}>
+                                  {isProfit ? <ArrowUpRight className="w-4 h-4" /> : <ArrowDownRight className="w-4 h-4" />}
+                                  {isProfit ? '+' : ''}₹{trade.pnl.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                </div>
+                                <span className={`text-[10px] font-bold font-mono mt-1 ${isProfit ? 'text-emerald-500' : 'text-rose-500'}`}>
+                                  {returnPct >= 0 ? '+' : ''}{returnPct.toFixed(1)}% ROI
+                                </span>
+                              </div>
+                            </td>
+
+                            {/* 6. AI Strategy Feedback & Tags */}
+                            <td className="py-4.5 px-6 align-top">
+                              <div className="bg-muted/20 border border-border/40 rounded-xl p-3">
+                                <div className="flex items-start gap-2">
+                                  <Brain className="w-4 h-4 text-primary shrink-0 mt-0.5" />
+                                  <div className="flex-1">
+                                    <p className="text-xs text-foreground/90 font-medium leading-relaxed">
+                                      {trade.ai_feedback || "Executed based on system crossover & momentum rules."}
+                                    </p>
+                                    {trade.tags && (
+                                      <div className="flex flex-wrap gap-1.5 mt-2 pt-2 border-t border-border/30">
+                                        {trade.tags.split(',').map((tag: string, idx: number) => (
+                                          <span 
+                                            key={idx} 
+                                            className="inline-flex items-center gap-1 text-[10px] font-mono font-medium px-2 py-0.5 bg-card border border-border/60 rounded-md text-muted-foreground"
+                                          >
+                                            <Tag className="w-2.5 h-2.5 opacity-60" />
+                                            {tag.trim()}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            </td>
+
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+          </div>
         </div>
       </div>
-    </div>
     </div>
   );
 }

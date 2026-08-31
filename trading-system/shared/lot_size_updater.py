@@ -168,12 +168,12 @@ _SETTINGS_PATH = os.path.join(
 
 # Known safe defaults — used when settings.json doesn't have a value yet.
 _DEFAULT_LOT_SIZES: dict[str, int] = {
-    "NSE:NIFTY50-INDEX":   75,
-    "NSE:NIFTY-I":         75,
-    "NSE:BANKNIFTY-INDEX": 35,
-    "NSE:BANKNIFTY-I":     35,
+    "NSE:NIFTY50-INDEX":   65,
+    "NSE:NIFTY-I":         65,
+    "NSE:BANKNIFTY-INDEX": 30,
+    "NSE:BANKNIFTY-I":     30,
     "NSE:FINNIFTY-INDEX":  40,
-    "BSE:SENSEX-INDEX":    10,
+    "BSE:SENSEX-INDEX":    20,
 }
 
 

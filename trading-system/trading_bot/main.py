@@ -53,7 +53,7 @@ _IST = pytz.timezone("Asia/Kolkata")
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from shared.config import CONFIG
-from shared.state import update_equity, record_trade
+from shared.state import update_equity, record_trade, record_journal_entry
 
 # ---------------------------------------------------------------------------
 # Module-level mutable state lifecycle note (Low audit finding):
@@ -93,6 +93,7 @@ from trading_bot.strategies.premium_selection import (
 from trading_bot.strategies.momentum_strategy import MomentumStrategy
 from trading_bot.strategies.drl_strategy import generate_signals as drl_signals
 from trading_bot.strategies.marl_strategy import generate_signals as marl_signals
+from trading_bot.strategies.ema9_rsi_momentum import STRATEGY_NAME as EMA9_RSI_MOMENTUM_STRATEGY_NAME
 
 _m2m_last_update: float = 0.0
 
@@ -1508,6 +1509,18 @@ async def run_live_bot(symbols: List[str]) -> None:
                     is_opt = "CE" in open_position.symbol or "PE" in open_position.symbol
                     state_action = "SELL" if is_opt else ("SELL" if open_position.side == 1 else "BUY")
                     record_trade(open_position.symbol, state_action, exit_check_price, datetime.now(_IST).isoformat(), qty=qty_to_close)
+                    record_journal_entry(
+                        symbol=open_position.symbol,
+                        strategy_name=strategy_name or "EMA9/RSI Momentum",
+                        direction="BUY",
+                        entry_price=open_position.entry_price,
+                        exit_price=exit_check_price,
+                        qty=qty_to_close,
+                        pnl=pnl,
+                        ai_feedback=f"Exit: {reason}. Smart Trailing Stoploss managed.",
+                        tags=f"{'PROFIT' if pnl > 0 else 'LOSS'},{strategy_name or 'EMA9_RSI'},{'CE' if 'CE' in open_position.symbol else 'PE'}",
+                        trade_date=datetime.now(_IST).strftime("%Y-%m-%d %H:%M:%S")
+                    )
                     update_equity(risk_manager.current_equity, risk_manager.daily_pnl)
                     alerter.send_exit_alert(sym, open_position.side, qty_to_close, exit_check_price, pnl, reason)
 
@@ -2590,6 +2603,16 @@ def _count_trades_already_executed_today(trades: List[Dict[str, Any]], today_str
 if __name__ == "__main__":
     from shared.singleton_lock import acquire_singleton_lock
     acquire_singleton_lock("main", script_hint="main.py")
+
+    # Run automated system maintenance on startup — cleans old logs,
+    # truncates unbounded SDK logs, purges __pycache__ and stale .bak files.
+    try:
+        from shared.maintenance import run_system_maintenance
+        _maint = run_system_maintenance()
+        if _maint.get("total_freed_mb", 0) > 0:
+            logger.info("Startup maintenance freed %.1f MB", _maint["total_freed_mb"])
+    except Exception as _maint_exc:
+        logger.debug("Startup maintenance skipped: %s", _maint_exc)
 
     # Durable file log — main.py otherwise only logs to its console window,
     # which is invisible to anything monitoring the process from outside.

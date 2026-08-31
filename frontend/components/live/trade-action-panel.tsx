@@ -98,6 +98,7 @@ export function TradeActionPanel({ urlSymbol, defaultBaseQty }: TradeActionPanel
 
     const strategyNames: Record<string, string> = {
         "ema_rsi": "EMA + RSI (Classic)",
+        "ema9_rsi_momentum": "EMA9/RSI Momentum",
         "enhanced_ai": "Enhanced AI Strategy",
         "advanced_ai": "Advanced AI/ML",
         "premium": "Premium Options Alpha",

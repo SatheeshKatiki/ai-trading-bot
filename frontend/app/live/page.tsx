@@ -11,7 +11,6 @@ import { BtstPredictor } from '@/components/btst-predictor';
 import { MarketTicker } from '@/components/live/market-ticker';
 import { OptionsDesk } from '@/components/options-desk';
 import { LivePositions } from '@/components/live/live-positions';
-import { OptionSymbolSelector } from '@/components/live/option-symbol-selector';
 import { useLiveMarketStore } from '@/store/useLiveMarketStore';
 import { useLiveSettingsStore } from '@/store/useLiveSettingsStore';
 import { NumberInput } from "@/components/number-input";
@@ -84,7 +83,6 @@ import dynamic from "next/dynamic";
 
 // Dynamic imports for charts to prevent SSR hydration errors
 const NativeChart = dynamic(() => import("@/components/native-chart"), { ssr: false });
-const AdvancedOptionChart = dynamic(() => import("@/components/live/advanced-option-chart"), { ssr: false });
 
 function formatTradeDisplay(symbol: string, price: number, side: string, qty?: number) {
     // Parse options symbol like "NSE:NIFTY26DEC2424000CE"
@@ -439,43 +437,21 @@ function AiCommentaryPanel({ urlSymbol, timeframe }: { urlSymbol: string, timefr
     );
 }
 
-function getAtmOptionSymbol(baseSymbol: string, price: number): string {
-    const rawPrice = price > 0 ? price : (baseSymbol.includes('BANK') ? 52000 : baseSymbol.includes('SENSEX') ? 80000 : 24350);
-    const step = baseSymbol.includes('BANK') ? 100 : baseSymbol.includes('SENSEX') ? 100 : 50;
-    const strike = Math.round(rawPrice / step) * step;
-    return `${baseSymbol} ${strike} CE`;
-}
-
 interface LiveMarketChartContainerProps {
     urlSymbol: string;
     timeframe: string;
     showDynamicTrend: boolean;
-    isDualChart: boolean;
-    dualSyncMode: boolean;
-    manualOptionSymbol: string;
 }
 
 function LiveMarketChartContainer({
     urlSymbol,
     timeframe,
     showDynamicTrend,
-    isDualChart,
-    dualSyncMode,
-    manualOptionSymbol
 }: LiveMarketChartContainerProps) {
-    // Only subscribe live ticks inside this focused component to avoid re-rendering the full page
     const mainLivePrice = useLiveMarketStore(state => state.tickerData[urlSymbol]?.lp || state.currentPrice || 0);
 
-    const optionSymbol = dualSyncMode
-        ? getAtmOptionSymbol(urlSymbol, mainLivePrice)
-        : manualOptionSymbol;
-
-    const optionLivePrice = useLiveMarketStore(state => 
-        state.tickerData[optionSymbol]?.lp || (optionSymbol === urlSymbol ? mainLivePrice : 0)
-    );
-
     return (
-        <div className={`w-full flex-1 min-h-0 rounded-lg overflow-hidden ${isDualChart ? 'grid grid-cols-1 md:grid-cols-2 gap-3' : 'flex flex-col'}`}>
+        <div className="w-full flex-1 min-h-[520px] h-[600px] rounded-xl overflow-hidden flex flex-col">
             <ErrorBoundary title="Chart Module Error">
                 <NativeChart
                     symbol={urlSymbol}
@@ -484,19 +460,6 @@ function LiveMarketChartContainer({
                     showDynamicTrend={showDynamicTrend}
                 />
             </ErrorBoundary>
-
-            {isDualChart && (
-                <ErrorBoundary title="Option Chart Module Error">
-                    <AdvancedOptionChart
-                        symbol={optionSymbol}
-                        livePrice={optionLivePrice}
-                        spotPrice={mainLivePrice}
-                        timeframe={timeframe}
-                        showDynamicTrend={showDynamicTrend}
-                        baseSymbol={urlSymbol}
-                    />
-                </ErrorBoundary>
-            )}
         </div>
     );
 }
@@ -523,11 +486,6 @@ function LiveTradingContent() {
     const [showDynamicTrend, setShowDynamicTrend] = useState(false);
     const [notifications, setNotifications] = useState<Notification[]>([]);
     const [showLiveGuard, setShowLiveGuard] = useState(false);
-
-    // Dual Chart & Auto-Sync / Manual Lock states
-    const [isDualChart, setIsDualChart] = useState<boolean>(true);
-    const [dualSyncMode, setDualSyncMode] = useState<boolean>(true); // true = Auto AI Sync, false = Manual Pin
-    const [manualOptionSymbol, setManualOptionSymbol] = useState<string>("NIFTY 24350 CE");
 
     // Live Settings from Zustand
     const {
@@ -969,15 +927,6 @@ function LiveTradingContent() {
                                                 >
                                                     <Activity className="w-4 h-4" />
                                                 </button>
-                                                {/* Dual Chart Layout Toggle */}
-                                                <button
-                                                    onClick={() => setIsDualChart(!isDualChart)}
-                                                    className={`cursor-pointer px-2.5 py-1 text-xs font-bold rounded-md transition-all whitespace-nowrap ${isDualChart ? 'bg-primary/20 text-primary border border-primary/30' : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'}`}
-                                                    title="Toggle Dual Chart View"
-                                                >
-                                                    {isDualChart ? "Dual Chart (50|50)" : "Single Chart"}
-                                                </button>
-
                                                 {/* Full Screen Toggle */}
                                                 <button
                                                     onClick={() => setIsChartFullScreen(!isChartFullScreen)}
@@ -991,57 +940,11 @@ function LiveTradingContent() {
                                     </div>
                                 </div>
 
-                                {/* Dual Sync Bar Controls & Searchable Option Selector */}
-                                {isDualChart && (
-                                    <div className="flex items-center justify-between bg-muted/20 px-3 py-1.5 rounded-lg border border-border/30 mb-2 gap-3 flex-wrap">
-                                        <div className="flex items-center gap-3">
-                                            <button
-                                                onClick={() => {
-                                                    const newSync = !dualSyncMode;
-                                                    setDualSyncMode(newSync);
-                                                    toast.info(newSync ? "🤖 Auto AI Sync Mode Activated" : "🔒 Manual Pin Mode Activated");
-                                                }}
-                                                className={`cursor-pointer px-3 py-1 rounded-md text-xs font-bold transition-all flex items-center gap-1.5 ${
-                                                    dualSyncMode
-                                                        ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
-                                                        : "bg-amber-500/20 text-amber-400 border border-amber-500/30"
-                                                }`}
-                                            >
-                                                {dualSyncMode ? "🤖 Auto AI Sync Mode" : "🔒 Manual Pin Mode"}
-                                            </button>
-
-                                            {/* Searchable Option Symbol Dropdown Selector */}
-                                            <OptionSymbolSelector
-                                                baseSymbol={urlSymbol}
-                                                currentSymbol={dualSyncMode ? getAtmOptionSymbol(urlSymbol, useLiveMarketStore.getState().currentPrice) : manualOptionSymbol}
-                                                spotPrice={useLiveMarketStore.getState().currentPrice}
-                                                dualSyncMode={dualSyncMode}
-                                                onSelectSymbol={(newSymbol) => {
-                                                    setManualOptionSymbol(newSymbol);
-                                                    setDualSyncMode(false);
-                                                    toast.success(`Option Contract Selected: ${newSymbol}`);
-                                                }}
-                                                onResetAiSync={() => {
-                                                    setDualSyncMode(true);
-                                                    toast.info("🤖 Auto AI Sync Mode Restored");
-                                                }}
-                                            />
-                                        </div>
-
-                                        <span className="text-[11px] font-mono text-muted-foreground flex items-center gap-1">
-                                            Right Window: <strong className="text-primary font-bold">{dualSyncMode ? `${urlSymbol} Active Premium (AI Auto)` : `${manualOptionSymbol} (Manual)`}</strong>
-                                        </span>
-                                    </div>
-                                )}
-
-                                {/* Container for Native / Dual Chart */}
+                                {/* Container for Native Full-Width Chart */}
                                 <LiveMarketChartContainer
                                     urlSymbol={urlSymbol}
                                     timeframe={timeframe}
                                     showDynamicTrend={showDynamicTrend}
-                                    isDualChart={isDualChart}
-                                    dualSyncMode={dualSyncMode}
-                                    manualOptionSymbol={manualOptionSymbol}
                                 />
                             </div>
                         </div>

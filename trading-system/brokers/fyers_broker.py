@@ -117,27 +117,52 @@ class FyersBroker(BaseBroker):
     # Authentication
     # ------------------------------------------------------------------
 
+    def _create_fyers_model(self, client_id: str, token: str) -> Optional[Any]:
+        """Safely instantiate and configure FyersModel with default timeouts."""
+        if not token:
+            return None
+        try:
+            try:
+                from fyers_apiv3 import fyersModel  # type: ignore[import]
+            except ImportError:
+                from fyers_api import fyersModel  # type: ignore[import]
+
+            effective_client_id = client_id or self.credentials.get("client_id") or self.credentials.get("app_id", "")
+            fyers_cls: Any = getattr(fyersModel, "FyersModel", None)
+            if fyers_cls is None:
+                return None
+
+            kwargs: Dict[str, Any] = {
+                "client_id": effective_client_id,
+                "token": token,
+                "log_path": "",
+            }
+            try:
+                model = fyers_cls(**kwargs)
+            except TypeError:
+                kwargs.pop("log_path", None)
+                model = fyers_cls(**kwargs)
+
+            _mount_default_timeout(model)
+            return model
+        except Exception as exc:
+            logger.error("Failed to initialize FyersModel SDK: %s", exc)
+            return None
+
     def authenticate(self) -> bool:
+        """Authenticate with Fyers using the stored credentials."""
         if self.paper_mode:
             self._authenticated = True
             logger.info("Fyers: paper mode — skipping real authentication.")
-            
             # Initialize model for data fetching in paper mode if token exists!
             token = self._load_cached_token()
             if token:
-                try:
-                    from fyers_apiv3 import fyersModel
-                except ImportError:
-                    from fyers_api import fyersModel
-                    
-                kwargs = {
-                    "client_id": self.credentials.get("client_id", ""),
-                    "token": token,
-                    "log_path": "",
-                }
-                self._fyers_model = fyersModel.FyersModel(**kwargs)  # type: ignore
-                _mount_default_timeout(self._fyers_model)
-                logger.info("Fyers: Initialized model in paper mode for data fetching.")
+                self._fyers_model = self._create_fyers_model(
+                    client_id=self.credentials.get("client_id", ""),
+                    token=token,
+                )
+                if self._fyers_model:
+                    logger.info("Fyers: Initialized model in paper mode for data fetching.")
             return True
 
         token = self._load_cached_token() or self.credentials.get("access_token")
@@ -152,26 +177,15 @@ class FyersBroker(BaseBroker):
             )
             return False
 
-        try:
-            try:
-                from fyers_apiv3 import fyersModel
-            except ImportError:
-                from fyers_api import fyersModel   # type: ignore[import]
-                
-            kwargs = {
-                "client_id": self.credentials.get("client_id", ""),
-                "token": token,
-                "log_path": "",
-            }
-            self._fyers_model = fyersModel.FyersModel(**kwargs)  # type: ignore
-            _mount_default_timeout(self._fyers_model)
-            self._authenticated = True
-            logger.info("Fyers: authenticated successfully.")
-            return True
-        except Exception as exc:
+        model = self._create_fyers_model(client_id=client_id, token=token)
+        if model is None:
             raise AuthenticationError(
-                f"Fyers SDK init failed: {exc}", broker_id=self.BROKER_ID
-            ) from exc
+                "Fyers SDK init failed: Could not instantiate FyersModel", broker_id=self.BROKER_ID
+            )
+        self._fyers_model = model
+        self._authenticated = True
+        logger.info("Fyers: authenticated successfully.")
+        return True
 
     def get_login_url(self) -> Optional[str]:
         """Generate the Fyers OAuth URL the user must visit in a browser."""
@@ -280,17 +294,15 @@ class FyersBroker(BaseBroker):
         token = self._load_cached_token()
         if not token:
             return False
-        try:
-            from fyers_apiv3 import fyersModel
-        except ImportError:
-            from fyers_api import fyersModel  # type: ignore[import]
-        self._fyers_model = fyersModel.FyersModel(  # type: ignore
-            client_id=self.credentials.get("client_id", ""),
-            token=token,
-            log_path="",
-        )
-        _mount_default_timeout(self._fyers_model)
-        return True
+        
+        client_id = self.credentials.get("client_id") or self.credentials.get("app_id", "")
+        model = self._create_fyers_model(client_id=client_id, token=token)
+        if model is not None:
+            self._fyers_model = model
+            self._authenticated = True
+            logger.info("Fyers: refreshed active model with latest cached token.")
+            return True
+        return False
 
     def _save_cached_token(self, token: str) -> None:
         from .token_cache import save_token
