@@ -73,14 +73,18 @@ def plan_fib_levels(swing_high: float, swing_low: float, direction: int):
     return (swing_low - 0.5 * span, swing_low - 0.618 * span, swing_low - span)
 
 
+from shared.exits.exit_analyzer import ExitAnalyzerAgent
+
+
 class SmartExitEngine:
     """Engine for determining when to exit a position.
 
     Combines multiple exit strategies:
     1. Hard Stop-Loss / Profit Target
-    2. ATR Trailing Stop
-    3. Time-based End-of-Day Exit
-    4. Partial Profit Booking
+    2. AI Exit Analyzer (Multi-Factor Peak Protection & Adaptive Exits)
+    3. ATR Trailing Stop
+    4. Time-based End-of-Day Exit
+    5. Partial Profit Booking
     """
 
     def __init__(
@@ -92,6 +96,7 @@ class SmartExitEngine:
         partial_booking_pct: float = 50.0,
         partial_target_reward: float = 1.0,
         use_dynamic_fib_trail: bool = False,
+        enable_exit_analyzer: bool = False,
     ):
         """
         Parameters
@@ -102,20 +107,15 @@ class SmartExitEngine:
             Profit percentage required before trailing stop activates.
         trailing_offset_pct : float
             Percentage points given back from the peak profit % before the
-            percentage-based trailing stop fires (runs alongside the
-            ATR-based trailing stop below — whichever triggers first wins).
-            Matches the "Trail Offset" dashboard setting and the equivalent
-            trail_offset concept already implemented in the backtest engine
-            (backtesting_engine/run.py) — previously this dashboard control
-            had no effect on live trading at all, since main.py set this
-            same attribute name but SmartExitEngine never defined or read
-            it.
+            percentage-based trailing stop fires.
         eod_exit_time : str
             Time (HH:MM:SS) to square off all intraday positions.
         partial_booking_pct : float
             Percentage of position to close at partial target.
         partial_target_reward : float
             Reward-to-risk ratio at which to take partial profit.
+        enable_exit_analyzer : bool
+            Enable AI Exit Analyzer Agent for multi-factor peak protection.
         """
         self.atr_multiplier = atr_multiplier
         self.trailing_activation_pct = trailing_activation_pct
@@ -123,10 +123,9 @@ class SmartExitEngine:
         self.eod_exit_time = eod_exit_time
         self.partial_booking_pct = partial_booking_pct
         self.partial_target_reward = partial_target_reward
-        # OFF by default. When False, `evaluate_exit` never reads the two
-        # new underlying arguments and never touches the fib state, so
-        # every existing strategy takes byte-identical decisions.
         self.use_dynamic_fib_trail = use_dynamic_fib_trail
+        self.enable_exit_analyzer = enable_exit_analyzer
+        self.exit_analyzer = ExitAnalyzerAgent()
 
     def evaluate_exit(
         self,
@@ -136,6 +135,7 @@ class SmartExitEngine:
         current_atr: float,
         underlying_price: Optional[float] = None,
         underlying_favourable: Optional[float] = None,
+        df: Optional[pd.DataFrame] = None,
     ) -> tuple[bool, str, Optional[int]]:
         """Evaluate if the position should be exited or partially booked.
 
@@ -328,13 +328,36 @@ class SmartExitEngine:
                         import logging
                         logging.getLogger(__name__).info("Single lot partial target reached. Trailing SL to breakeven for %s", position.symbol)
 
-        # 5. ATR Trailing Stop (Activates only after a certain profit percentage)
+        # 4b. AI Exit Analyzer Agent (Autonomous Multi-Factor Peak Protection)
+        # Evaluates peak giveback, fast EMA9 break, RSI exhaustion, and volume deceleration.
         profit_pct = 0.0
         if effective_side == 1:
             profit_pct = (current_price - position.entry_price) / position.entry_price * 100
         else:
             profit_pct = (position.entry_price - current_price) / position.entry_price * 100
 
+        if self.enable_exit_analyzer and profit_pct > 0:
+            analysis = self.exit_analyzer.evaluate(
+                entry_price=position.entry_price,
+                current_price=current_price,
+                highest_price=position.highest_price,
+                lowest_price=position.lowest_price,
+                direction=effective_side,
+                df=df,
+                is_option_premium=is_option,
+            )
+            if analysis.should_exit:
+                logger.info("AI Exit Analyzer triggered for %s: %s", position.symbol, analysis.reason)
+                return True, f"AI Exit Analyzer ({analysis.mode}): {analysis.reason}", None
+
+            # Ratchet stop-loss upwards if the agent calculated a tighter trailing lock
+            if analysis.suggested_sl is not None:
+                if effective_side == 1 and analysis.suggested_sl > position.stop_loss:
+                    position.stop_loss = analysis.suggested_sl
+                elif effective_side == -1 and analysis.suggested_sl < position.stop_loss:
+                    position.stop_loss = analysis.suggested_sl
+
+        # 5. ATR Trailing Stop (Activates only after a certain profit percentage)
         if profit_pct >= self.trailing_activation_pct:
             if effective_side == 1:
                 # Trailing stop for Long

@@ -175,15 +175,26 @@ export const useLiveMarketStore = create<LiveMarketState>((set, get) => ({
 
                     get().setLastPingTime(Date.now());
 
-                    if (data.NIFTY) {
-                        pendingTickerUpdates.NIFTY = data.NIFTY;
-                        if (data.SENSEX) pendingTickerUpdates.SENSEX = data.SENSEX;
-                        if (data.BANKNIFTY) pendingTickerUpdates.BANKNIFTY = data.BANKNIFTY;
+                    if (data.NIFTY || data["NSE:NIFTY50-INDEX"]) {
+                        const nVal = data.NIFTY || data["NSE:NIFTY50-INDEX"];
+                        pendingTickerUpdates.NIFTY = nVal;
+                        pendingTickerUpdates["NSE:NIFTY50-INDEX"] = nVal;
+                        if (data.SENSEX || data["BSE:SENSEX-INDEX"]) {
+                            const sVal = data.SENSEX || data["BSE:SENSEX-INDEX"];
+                            pendingTickerUpdates.SENSEX = sVal;
+                            pendingTickerUpdates["BSE:SENSEX-INDEX"] = sVal;
+                        }
+                        if (data.BANKNIFTY || data["NSE:NIFTYBANK-INDEX"]) {
+                            const bVal = data.BANKNIFTY || data["NSE:NIFTYBANK-INDEX"];
+                            pendingTickerUpdates.BANKNIFTY = bVal;
+                            pendingTickerUpdates["NSE:NIFTYBANK-INDEX"] = bVal;
+                        }
                     }
 
-                    if (data[urlSymbol]) {
-                        pendingUpdates.currentPrice = data[urlSymbol].lp;
-                        pendingUpdates.changePercent = data[urlSymbol].chp;
+                    const symTick = data[urlSymbol] || data[urlSymbol.replace('NSE:', '').replace('BSE:', '').replace('-INDEX', '')] || data.NIFTY;
+                    if (symTick) {
+                        pendingUpdates.currentPrice = symTick.lp;
+                        pendingUpdates.changePercent = symTick.chp;
                     }
 
                     // ── Real-time P&L fields (from backend broadcaster) ──────────
@@ -254,9 +265,34 @@ export const useLiveMarketStore = create<LiveMarketState>((set, get) => ({
                 }, backoffTime);
             };
         }
+
+        // ── Active HTTP Polling Fallback (syncs every 3s) ───────────────────
+        if (typeof window !== 'undefined') {
+            const pollState = async () => {
+                try {
+                    const res = await fetch('/api/state', { cache: 'no-store' });
+                    if (res.ok) {
+                        const s = await res.json();
+                        set(state => ({
+                            equity: s.capital ?? state.equity,
+                            pnl: s.day_pnl ?? state.pnl,
+                            trades: s.trades ?? state.trades,
+                            openPositionsCount: s.open_positions ?? state.openPositionsCount
+                        }));
+                    }
+                } catch {}
+            };
+            pollState();
+            const pollTimer = setInterval(pollState, 3000);
+            (window as any).__liveStatePollTimer = pollTimer;
+        }
     },
 
     disconnectWs: () => {
+        if (typeof window !== 'undefined' && (window as any).__liveStatePollTimer) {
+            clearInterval((window as any).__liveStatePollTimer);
+            (window as any).__liveStatePollTimer = null;
+        }
         const currentWs = get().ws;
         if (currentWs) {
             currentWs.onclose = null;

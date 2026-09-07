@@ -41,6 +41,12 @@ try:
 except Exception:
     m_res = None
 
+# Telegram Alerts Integration
+try:
+    from shared.alerts.telegram import alerter
+except Exception:
+    alerter = None
+
 IST = pytz.timezone("Asia/Kolkata")
 MARKET_OPEN  = datetime.time(9, 15)
 MARKET_CLOSE = datetime.time(15, 30)
@@ -351,6 +357,8 @@ def run_session(day_num, date_str, day_name):
                             if pos["sl_premium"] < pos["entry_premium"]:
                                 pos["sl_premium"] = pos["entry_premium"]
                                 print(f"  [{ts}] 🛡️ Trailing SL -> Breakeven (Rs.{pos['entry_premium']:.2f}) for {pos['contract']}")
+                                if alerter:
+                                    alerter.send_alert(f"🛡️ *Trailing SL Triggered*\n\nContract: {pos['contract']}\nStop Loss moved to Breakeven @ ₹{pos['entry_premium']:.2f}")
                                 save_session_atomic(session_log, out_file)
                         
                         # EOD square-off
@@ -369,6 +377,17 @@ def run_session(day_num, date_str, day_name):
                             
                             # Incremental state save immediately on trade exit!
                             save_session_atomic(session_log, out_file)
+                            
+                            # Dispatch real-time Telegram Exit / SL / Target Alert
+                            if alerter:
+                                alerter.send_exit_alert(
+                                    symbol=pos["contract"],
+                                    side=pos["direction"],
+                                    qty=pos["quantity"],
+                                    price=est_opt_ltp,
+                                    pnl=pos["net_pnl"],
+                                    reason=exit_reason
+                                )
                             
                             icon = "💰 WIN [PROFIT]" if pos["outcome"] == "WIN" else "🛑 LOSS [SL]"
                             print(f"\n  [{ts}] {icon} EXIT {pos['contract']} | {exit_reason}")
@@ -418,6 +437,16 @@ def run_session(day_num, date_str, day_name):
                             
                             # Incremental state save immediately on new trade entry!
                             save_session_atomic(session_log, out_file)
+                            
+                            # Dispatch real-time Telegram Entry Alert
+                            if alerter:
+                                alerter.send_trade_alert(
+                                    symbol=opt["contract"],
+                                    side=direction,
+                                    qty=qty,
+                                    price=entry_p,
+                                    confidence=(conf / 100.0) if conf > 1 else conf
+                                )
                             
                             print(f"  [{ts}] 🔵 ENTRY {opt['contract']} (Qty: {qty}) @ Rs.{entry_p:.2f} | Spot: {state['spot']} | Conf: {conf}% | Delta: {opt['delta']} | SL: Rs.{sl_p:.2f} | Tgt: Rs.{tgt_p:.2f}")
                 
@@ -525,29 +554,18 @@ def main():
         today_str = now_ist().strftime("%Y-%m-%d")
         today_session = next((s for s in all_sessions if today_str in s.get("date", "")), None)
         
-        # If all 3 days are completed
-        if completed_days_count >= 3 and (today_session and ist_time() >= MARKET_CLOSE):
-            print(f"  [AUDIT COMPLETE] All 3 live trading sessions have been completed!")
-            generate_final_report(all_sessions)
-            break
-            
-        # Determine the current day index
+        # Determine current day index
         if today_session and is_market_open():
-            # Resume today's session
+            # Resume today's active session
             day_idx = completed_days_count
         elif today_session and ist_time() >= MARKET_CLOSE:
             # Today's session is already done, stand by for next day
             day_idx = completed_days_count + 1
         else:
-            # Next new day
+            # Next trading session
             day_idx = completed_days_count + 1
             
-        if day_idx > 3:
-            print(f"  [AUDIT COMPLETE] All 3 live trading sessions completed!")
-            generate_final_report(all_sessions)
-            break
-            
-        print(f"  [SESSION STATUS] Completed Days: {completed_days_count}/3 | Target Day: Day {day_idx}")
+        print(f"  [SESSION STATUS] Completed Days: {completed_days_count} | Target Session: Day {day_idx}")
         
         # Check market hours
         if not is_market_open():
@@ -582,11 +600,14 @@ def main():
         day_name = now_ist().strftime("%A")
         res = run_session(day_idx, date_str, day_name)
         
-        # Refresh session list
+        # Refresh session list and update audit report
         existing_sessions = detect_existing_sessions()
         all_sessions = [sess_data for _, sess_data in existing_sessions]
-        if len(existing_sessions) >= 3:
-            generate_final_report(all_sessions)
+        generate_final_report(all_sessions)
+        
+        # If running as a subprocess under auto_daily_session, complete today's run
+        if ist_time() >= MARKET_CLOSE:
+            print("  [SESSION COMPLETE] Intraday session closed. Returning to daily orchestrator.")
             break
 
 if __name__ == "__main__":

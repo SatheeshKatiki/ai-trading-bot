@@ -68,15 +68,15 @@ export default function RiskManagement() {
         const data: RiskResponse = await res.json();
         if (cancelled) return;
 
-        if (data && !data.error) {
-          setMaxDailyLoss(data.limits.maxDailyLoss.toString());
-          setRiskPerTrade(data.limits.riskPerTrade.toString());
-          setMaxPositions(data.limits.maxPositions.toString());
-          setCircuitBreaker(data.limits.circuitBreaker);
+        if (data && !data.error && data.limits) {
+          setMaxDailyLoss(String(data.limits.maxDailyLoss ?? 3000));
+          setRiskPerTrade(String(data.limits.riskPerTrade ?? 1000));
+          setMaxPositions(String(data.limits.maxPositions ?? 2));
+          setCircuitBreaker(Boolean(data.limits.circuitBreaker));
 
-          setExposureData(data.exposureData);
-          setDrawdownData(data.drawdownData);
-          setCorrelationMatrix(data.correlationMatrix);
+          setExposureData(data.exposureData || []);
+          setDrawdownData(data.drawdownData || []);
+          setCorrelationMatrix(data.correlationMatrix || []);
         }
         setIsLoading(false);
       } catch (error) {

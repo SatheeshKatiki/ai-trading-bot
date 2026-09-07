@@ -359,7 +359,7 @@ def select_option(
     from datetime import datetime
     now = as_of if as_of is not None else datetime.now()
     days_to_expiry = (expiry - now.date()).days
-    if days_to_expiry == 0 and now.hour >= 14:
+    if days_to_expiry == 0 and 14 <= now.hour < 16:
         # Expiry day after 2 PM -> Theta is extreme, Delta drops
         # Force going DEEP ITM to protect Delta and minimize Theta decay
         strike = atm_strike - (2 * step) if direction == "CE" else atm_strike + (2 * step)

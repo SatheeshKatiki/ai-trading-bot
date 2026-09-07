@@ -128,7 +128,8 @@ export function TradeActionPanel({ urlSymbol, defaultBaseQty }: TradeActionPanel
                             : Object.entries(data.strategies).map(([key, v]) => ({ name: key, ...v }));
                         setAvailableStrategies(formatted);
                         if (formatted.length > 0 && !formatted.find((s) => s.name === strategy)) {
-                            setStrategy(formatted[0].name);
+                            const hasEma9 = formatted.find((s) => s.name === "ema9_rsi_momentum");
+                            setStrategy(hasEma9 ? "ema9_rsi_momentum" : formatted[0].name);
                         }
                     }
                 }

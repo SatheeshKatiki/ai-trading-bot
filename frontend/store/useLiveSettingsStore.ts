@@ -66,10 +66,10 @@ interface LiveSettingsState {
 export const useLiveSettingsStore = create<LiveSettingsState>((set) => ({
     tradingMode: 'paper',
     autoMode: true,
-    strategy: 'MARL_Ultra',
+    strategy: 'ema9_rsi_momentum',
     inputMode: 'lots',
     quantity: 0,
-    stoploss: 0.45,
+    stoploss: 0.6,
     timeframe: "5 Min",
     lotSizes: { NIFTY: 65, BANKNIFTY: 15, FINNIFTY: 25, SENSEX: 10, MIDCPNIFTY: 50 },
 

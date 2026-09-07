@@ -51,6 +51,10 @@ ENABLE_TIME_FILTER: bool = True
 TIME_START: str = "09:25"
 TIME_END: str = "15:00"
 ENABLE_TOUCH_FILTER: bool = True
+ENABLE_EXIT_ANALYZER: bool = True
+MIN_PEAK_PROFIT_PTS: float = 30.0
+MAX_GIVEBACK_PCT: float = 20.0
+URGENCY_THRESHOLD: float = 0.70
 
 
 @dataclass(frozen=True)
@@ -76,6 +80,10 @@ class Ema9RsiMomentumConfig:
     time_start: str = TIME_START
     time_end: str = TIME_END
     enable_touch_filter: bool = ENABLE_TOUCH_FILTER
+    enable_exit_analyzer: bool = ENABLE_EXIT_ANALYZER
+    min_peak_profit_pts: float = MIN_PEAK_PROFIT_PTS
+    max_giveback_pct: float = MAX_GIVEBACK_PCT
+    urgency_threshold: float = URGENCY_THRESHOLD
 
     @classmethod
     def from_settings(cls, settings: dict | None = None, **overrides) -> "Ema9RsiMomentumConfig":

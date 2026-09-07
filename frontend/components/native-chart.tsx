@@ -9,7 +9,7 @@ import { parseBackendDatetimeToEpochSeconds, getISTNowParts, istWallTimeToEpochS
 
 const SettingGroup = ({ title, active, onToggle, children }: { title: string, active: boolean, onToggle: () => void, children: React.ReactNode }) => (
   <div className="border border-border/50 rounded-lg overflow-hidden bg-background shadow-sm mb-3 transition-all duration-200">
-    <div 
+    <div
       className={`px-4 py-3 flex items-center justify-between cursor-pointer transition-colors ${active ? 'bg-muted/40' : 'hover:bg-muted/30'}`}
       onClick={onToggle}
     >
@@ -191,13 +191,13 @@ function isMarketOpen() {
 // Algorithmic Strategy Signal Generator matching EMA 9 / EMA 20 Momentum & RSI-MA Strategy Rules
 function computeAutoSignalMarkers(candles: any[]): { markers: any[]; activeSignal: any } {
   if (!candles || candles.length < 25) return { markers: [], activeSignal: null };
-  
+
   const markers: any[] = [];
   const ema9 = calculateEMA(candles, 9);
   const ema20 = calculateEMA(candles, 20);
   const rsi14 = calculateRSI(candles, 14);
   const rsiMa = calculateEMA(rsi14.map(r => ({ time: r.time, close: r.value })), 20);
-  
+
   // Build lookup maps for fast indexed access
   const rsiMap = new Map<number, number>();
   rsi14.forEach(r => rsiMap.set(r.time as number, r.value));
@@ -206,8 +206,10 @@ function computeAutoSignalMarkers(candles: any[]): { markers: any[]; activeSigna
 
   let position: 'NONE' | 'CALL' | 'PUT' = 'NONE';
   let entryPrice = 0;
+  let highestPrice = 0;
+  let lowestPrice = Infinity;
   let activeSignal: any = null;
-  
+
   for (let i = 21; i < candles.length; i++) {
     const prev9 = ema9[i - 1]?.value;
     const prev20 = ema20[i - 1]?.value;
@@ -215,28 +217,33 @@ function computeAutoSignalMarkers(candles: any[]): { markers: any[]; activeSigna
     const curr20 = ema20[i]?.value;
     const c = candles[i];
     const time = c.time as number;
-    
+
     if (!c || c.close <= 0 || prev9 === undefined || prev20 === undefined || curr9 === undefined || curr20 === undefined) continue;
 
     const currRsi = rsiMap.get(time) ?? 50;
     const currRsiMa = rsiMaMap.get(time) ?? 50;
 
-    // EMA Touch & No-Chasing Guard (prevents flying late candles like 14:50)
-    const buffer = c.close * 0.0006; // ~14.4 pts on NIFTY
+    // Time-of-day filter (09:25 to 15:00 IST)
+    const p = formatEpochISTParts(time);
+    const hhmm = `${p.hour}:${p.minute}`;
+    const isTimeOk = hhmm >= "09:25" && hhmm <= "15:00";
+
+    // EMA Touch & No-Chasing Guard (candle must be anchored near EMA cluster)
+    const buffer = c.close * 0.0008; // ~19 pts buffer on NIFTY 24000
     const maxEma = Math.max(curr9, curr20);
     const minEma = Math.min(curr9, curr20);
     const touchCE = c.low <= (maxEma + buffer);
     const touchPE = c.high >= (minEma - buffer);
 
-    // Bullish Entry: EMA 9 > EMA 20 and RSI bullish AND Low touched EMA
-    const isBullishCross = ((prev9 <= prev20 && curr9 > curr20) || (curr9 > curr20 && prev9 > prev20 && candles[i-1].low <= maxEma)) && (currRsi >= 50 || currRsi > currRsiMa) && touchCE;
-    // Bearish Entry: EMA 9 < EMA 20 and RSI bearish AND High touched EMA
-    const isBearishCross = ((prev9 >= prev20 && curr9 < curr20) || (curr9 < curr20 && prev9 < prev20 && candles[i-1].high >= minEma)) && (currRsi <= 50 || currRsi < currRsiMa) && touchPE;
+    // Exact Clean Edge Crossover Rules matching Python Engine
+    const isBullishCross = (prev9 <= prev20 && curr9 > curr20) && (currRsi > currRsiMa) && touchCE && isTimeOk;
+    const isBearishCross = (prev9 >= prev20 && curr9 < curr20) && (currRsi < currRsiMa) && touchPE && isTimeOk;
 
     if (position === 'NONE') {
       if (isBullishCross) {
         position = 'CALL';
         entryPrice = c.close;
+        highestPrice = Math.max(c.high || c.close, c.close);
         markers.push({
           time: c.time,
           position: 'belowBar',
@@ -249,6 +256,7 @@ function computeAutoSignalMarkers(candles: any[]): { markers: any[]; activeSigna
       } else if (isBearishCross) {
         position = 'PUT';
         entryPrice = c.close;
+        lowestPrice = Math.min(c.low || c.close, c.close);
         markers.push({
           time: c.time,
           position: 'aboveBar',
@@ -260,8 +268,16 @@ function computeAutoSignalMarkers(candles: any[]): { markers: any[]; activeSigna
         activeSignal = { type: 'BUY PE', entry: entryPrice, time: c.time };
       }
     } else if (position === 'CALL') {
-      // Exit CALL when EMA 9 crosses below EMA 20 or bearish reversal occurs
-      if (curr9 < curr20 || isBearishCross) {
+      highestPrice = Math.max(highestPrice, c.high || c.close);
+      const peakGain = highestPrice - entryPrice;
+      const giveback = peakGain > 0 ? (highestPrice - c.close) / peakGain : 0;
+
+      // AI Exit Analyzer: Peak Giveback (>= 20% from +30pt peak) or SL or Opposite Crossover
+      const isPeakLockExit = peakGain >= 30 && giveback >= 0.20;
+      const isHardSlExit = (entryPrice - c.close) / entryPrice >= 0.006;
+      const isReversalExit = prev9 >= prev20 && curr9 < curr20;
+
+      if (isPeakLockExit || isHardSlExit || isReversalExit) {
         markers.push({
           time: c.time,
           position: 'aboveBar',
@@ -273,10 +289,11 @@ function computeAutoSignalMarkers(candles: any[]): { markers: any[]; activeSigna
         position = 'NONE';
         activeSignal = null;
 
-        // If strong bearish crossover, trigger BUY PE immediately
+        // If strong fresh bearish crossover, transition immediately to BUY PE
         if (isBearishCross) {
           position = 'PUT';
           entryPrice = c.close;
+          lowestPrice = Math.min(c.low || c.close, c.close);
           markers.push({
             time: c.time,
             position: 'aboveBar',
@@ -289,8 +306,16 @@ function computeAutoSignalMarkers(candles: any[]): { markers: any[]; activeSigna
         }
       }
     } else if (position === 'PUT') {
-      // Exit PUT when EMA 9 crosses above EMA 20 or bullish reversal occurs
-      if (curr9 > curr20 || isBullishCross) {
+      lowestPrice = Math.min(lowestPrice, c.low || c.close);
+      const peakGain = entryPrice - lowestPrice;
+      const giveback = peakGain > 0 ? (c.close - lowestPrice) / peakGain : 0;
+
+      // AI Exit Analyzer: Peak Giveback (>= 20% from +30pt peak) or SL or Opposite Crossover
+      const isPeakLockExit = peakGain >= 30 && giveback >= 0.20;
+      const isHardSlExit = (c.close - entryPrice) / entryPrice >= 0.006;
+      const isReversalExit = prev9 <= prev20 && curr9 > curr20;
+
+      if (isPeakLockExit || isHardSlExit || isReversalExit) {
         markers.push({
           time: c.time,
           position: 'belowBar',
@@ -302,10 +327,11 @@ function computeAutoSignalMarkers(candles: any[]): { markers: any[]; activeSigna
         position = 'NONE';
         activeSignal = null;
 
-        // If strong bullish crossover, trigger BUY CE immediately
+        // If strong fresh bullish crossover, transition immediately to BUY CE
         if (isBullishCross) {
           position = 'CALL';
           entryPrice = c.close;
+          highestPrice = Math.max(c.high || c.close, c.close);
           markers.push({
             time: c.time,
             position: 'belowBar',
@@ -319,7 +345,7 @@ function computeAutoSignalMarkers(candles: any[]): { markers: any[]; activeSigna
       }
     }
   }
-  
+
   return { markers, activeSignal: position !== 'NONE' ? activeSignal : null };
 }
 
@@ -366,7 +392,7 @@ const chartDataCache: Record<string, any> = {};
 
 export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", initialData, disableFetch, lastTick = 0, markers, showAutoSignals = true, signalLevels }: NativeChartProps) {
   const { theme } = useTheme();
-  
+
   const {
     ema1Length, ema1Color, ema1LineWidth, ema1LineStyle,
     ema2Length, ema2Color, ema2LineWidth, ema2LineStyle,
@@ -820,18 +846,23 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
                 });
               }
             }
-          } catch {}
+          } catch { }
 
-          // 2. If no executed trade markers or showAutoSignals is enabled, compute auto strategy signals across candles
-          if (finalMarkers.length === 0 && showAutoSignals && chartData.length > 20) {
+          // 2. Compute algorithmic strategy signals across candles if showAutoSignals is enabled
+          if (showAutoSignals && chartData.length > 20) {
             const autoSig = computeAutoSignalMarkers(chartData);
-            finalMarkers = [...autoSig.markers];
+            if (finalMarkers.length === 0) {
+              finalMarkers = [...autoSig.markers];
+            } else {
+              // Merge auto signals with executed trades
+              autoSig.markers.forEach(am => finalMarkers.push(am));
+            }
           }
         }
 
         // Prioritize and collapse to 1 clean marker per candle timestamp
         const markerMap = new Map<number, any>();
-        
+
         finalMarkers.forEach(m => {
           const t = m.time as number;
           const existing = markerMap.get(t);
@@ -890,7 +921,7 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
       if (chartDataCache[cacheKey]) {
         const cached = sanitizeCandleSeries(chartDataCache[cacheKey]);
         if (!isMounted) return;
-        
+
         const ema1Data = calculateEMA(cached, ema1Length);
         const ema2Data = calculateSMA(cached, ema2Length);
 
@@ -937,6 +968,7 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
         const uniqueData = sanitizeCandleSeries(json.data);
 
         if (uniqueData.length > 0) {
+          const prevLen = (chartDataCache[cacheKey] || []).length;
           chartDataCache[cacheKey] = uniqueData; // Cache it!
           if (!isMounted) return;
           // Apply dynamic colors if enabled
@@ -958,19 +990,14 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
 
               let customColor;
               if (isChop) {
-                // Squeeze / Chop Phase
                 customColor = chopColor;
               } else if (isHighVolume && d.close > ema1) {
-                // Bullish Institutional Surge
                 customColor = bullishSurgeColor;
               } else if (isHighVolume && d.close < ema1) {
-                // Bearish Institutional Surge
                 customColor = bearishSurgeColor;
               } else if (d.close >= ema1) {
-                // Normal Bullish Trend
                 customColor = d.close >= d.open ? bullishNormalColor : "#059669";
               } else {
-                // Normal Bearish Trend
                 customColor = d.close < d.open ? bearishNormalColor : "#991B1B";
               }
               return { ...d, color: customColor, wickColor: customColor, borderColor: customColor };
@@ -995,8 +1022,10 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
           if (uniqueData.length > 0) {
             setLastCandleOpen(uniqueData[uniqueData.length - 1].open);
             lastCandleRef.current = uniqueData[uniqueData.length - 1];
-            chart.priceScale('right').applyOptions({ autoScale: true });
-            chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, uniqueData.length - 150), to: uniqueData.length });
+            if (prevLen === 0 || uniqueData.length > prevLen) {
+              chart.priceScale('right').applyOptions({ autoScale: true });
+              chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, uniqueData.length - 150), to: uniqueData.length });
+            }
           } else {
             chart.timeScale().fitContent();
           }
@@ -1014,10 +1043,19 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
 
     fetchHistory();
 
+    // Auto-poll history every 15s during live trading so new closed candles are automatically appended
+    const pollInterval = !disableFetch ? setInterval(() => {
+      if (typeof document !== 'undefined' && !document.hidden && chartRef.current) {
+        fetchHistory();
+      }
+    }, 15000) : null;
+
     return () => {
       isMounted = false;
+      if (pollInterval) clearInterval(pollInterval);
     };
-  }, [symbol, timeframe, showAutoSignals]); // We removed showSmartTrend here because we have a dedicated hook now
+  }, [symbol, timeframe, showAutoSignals]);
+  // We removed showSmartTrend here because we have a dedicated hook now
 
   // 2a. Synchronize Active Signal Price Lines (Entry, SL, Target)
   useEffect(() => {
@@ -1026,15 +1064,15 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
 
     // Clear old price lines
     if (entryPriceLineRef.current) {
-      try { candleSeries.removePriceLine(entryPriceLineRef.current); } catch {}
+      try { candleSeries.removePriceLine(entryPriceLineRef.current); } catch { }
       entryPriceLineRef.current = null;
     }
     if (slPriceLineRef.current) {
-      try { candleSeries.removePriceLine(slPriceLineRef.current); } catch {}
+      try { candleSeries.removePriceLine(slPriceLineRef.current); } catch { }
       slPriceLineRef.current = null;
     }
     if (targetPriceLineRef.current) {
-      try { candleSeries.removePriceLine(targetPriceLineRef.current); } catch {}
+      try { candleSeries.removePriceLine(targetPriceLineRef.current); } catch { }
       targetPriceLineRef.current = null;
     }
 
@@ -1050,7 +1088,7 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
           axisLabelVisible: true,
           title: `BUY ENTRY ₹${signalLevels.entry.toFixed(1)}`,
         });
-      } catch {}
+      } catch { }
     }
 
     if (signalLevels.sl && signalLevels.sl > 0) {
@@ -1063,7 +1101,7 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
           axisLabelVisible: true,
           title: `STOP LOSS ₹${signalLevels.sl.toFixed(1)}`,
         });
-      } catch {}
+      } catch { }
     }
 
     if (signalLevels.target && signalLevels.target > 0) {
@@ -1076,7 +1114,7 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
           axisLabelVisible: true,
           title: `TARGET ₹${signalLevels.target.toFixed(1)}`,
         });
-      } catch {}
+      } catch { }
     }
   }, [signalLevels, showAutoSignals]);
 
@@ -1100,7 +1138,7 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
       const ema1Data = calculateEMA(cachedData, ema1Length);
       const ema2Data = calculateSMA(cachedData, ema2Length);
       const rsiData = calculateRSI(cachedData, rsiLength);
-      
+
       // 3. Re-apply Smart Trend colors
       let dataToSet = cachedData;
       if (showSmartTrend) {
@@ -1129,8 +1167,8 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
           return { ...d, color: customColor, wickColor: customColor, borderColor: customColor };
         });
       } else {
-         // Reset colors if disabled
-         dataToSet = cachedData.map((d: any) => ({ ...d, color: undefined, wickColor: undefined, borderColor: undefined }));
+        // Reset colors if disabled
+        dataToSet = cachedData.map((d: any) => ({ ...d, color: undefined, wickColor: undefined, borderColor: undefined }));
       }
 
       // 4. Update Series Data
@@ -1159,11 +1197,11 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
       if (!showAutoSignalsState || !showMarkers) {
         try {
           seriesMarkersPluginRef.current.setMarkers([]);
-        } catch {}
+        } catch { }
       } else {
         try {
           seriesMarkersPluginRef.current.setMarkers(markersRef.current || []);
-        } catch {}
+        } catch { }
       }
     }
   }, [showAutoSignalsState, showMarkers]);
@@ -1427,13 +1465,13 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
 
           {/* Tabs */}
           <div className="flex px-5 pt-3 gap-6 border-b border-border/50 bg-muted/10">
-            <button 
+            <button
               onClick={() => setActiveTab('indicators')}
               className={`pb-2.5 text-sm font-medium transition-colors border-b-2 ${activeTab === 'indicators' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
             >
               Indicators
             </button>
-            <button 
+            <button
               onClick={() => setActiveTab('smartTrend')}
               className={`pb-2.5 text-sm font-medium transition-colors border-b-2 ${activeTab === 'smartTrend' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
             >
@@ -1548,7 +1586,7 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
             {activeTab === 'smartTrend' && (
               <div className="flex flex-col gap-5 animate-in fade-in duration-300">
                 <Toggle checked={showSmartTrend} onChange={setShowSmartTrend} label="Enable Smart Trend Colors" />
-                
+
                 {showSmartTrend && (
                   <div className="bg-muted/30 rounded-lg p-4 border border-border/50 shadow-inner">
                     <div className="flex flex-col gap-1">
@@ -1598,7 +1636,7 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
           </div>
         </div>
       )}
-      
+
       {/* Floating Countdown on Price Scale */}
       {countdown && isMarketOpen() && (
         <div ref={countdownRef} className="absolute right-0 w-[55px] z-20 pointer-events-none flex justify-center" style={{ top: 0 }}>
@@ -1657,5 +1695,30 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
 
       <div ref={chartContainerRef} className="w-full h-full min-h-[450px] absolute inset-0 z-0" />
     </div>
+  );
+}
+if (!chartRef.current) return;
+const canvas = chartRef.current.takeScreenshot();
+const link = document.createElement('a');
+link.href = canvas.toDataURL('image/png');
+link.download = `${symbol.replace(/[:\s]/g, '_')}_${timeframe.replace(/\s/g, '')}_chart.png`;
+link.click();
+          }}
+className = "p-2 rounded-full bg-background/90 hover:bg-background text-muted-foreground hover:text-foreground transition-all shadow-lg border border-border/40 backdrop-blur-md pointer-events-auto flex items-center justify-center hover:scale-110 active:scale-95"
+title = "Export Chart as PNG"
+  >
+  <Download size={16} />
+        </button >
+  <button
+    onClick={() => showSettings ? handleCancelSettings() : handleOpenSettings()}
+    className="p-2 rounded-full bg-background/90 hover:bg-background text-muted-foreground hover:text-foreground transition-all shadow-lg border border-border/40 backdrop-blur-md pointer-events-auto flex items-center justify-center hover:scale-110 active:scale-95"
+    title="Chart Settings"
+  >
+    <Settings2 size={16} />
+  </button>
+      </div >
+
+  <div ref={chartContainerRef} className="w-full h-full min-h-[450px] absolute inset-0 z-0" />
+    </div >
   );
 }

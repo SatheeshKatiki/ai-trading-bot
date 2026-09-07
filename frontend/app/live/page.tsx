@@ -329,14 +329,14 @@ const LOT_SIZES: Record<string, number> = {
 
 export const getBaseQty = (sym: string): number => {
     const upperSym = sym.toUpperCase();
-    
+
     // First check dynamic lot sizes from settings
     const { lotSizes } = useLiveSettingsStore.getState();
     const dynamicKeys = Object.keys(lotSizes || {}).sort((a, b) => b.length - a.length);
     for (const key of dynamicKeys) {
         if (upperSym.includes(key)) return lotSizes[key];
     }
-    
+
     // Fallback to hardcoded list
     const keys = Object.keys(LOT_SIZES).sort((a, b) => b.length - a.length);
     for (const key of keys) {
@@ -354,7 +354,7 @@ function TradeNotifications() {
     const trades = useLiveMarketStore(state => state.trades);
     const prevTradesRef = useRef<Trade[]>([]);
     const isInitialFetch = useRef<boolean>(true);
-    
+
     useEffect(() => {
         if (isInitialFetch.current && trades.length > 0) {
             isInitialFetch.current = false;
@@ -473,11 +473,11 @@ function LiveTradingContent() {
     const [showAllTimeframes, setShowAllTimeframes] = useState(false);
 
     // Removed heavy state subscriptions to prevent entire page re-rendering at 20 FPS
-    
+
     // Zustand Setters (needed for HTTP polling fallback)
     const setTradingMode = useLiveSettingsStore(state => state.setTradingMode);
     const tradingMode = useLiveSettingsStore(state => state.tradingMode);
-    
+
     const connectWs = useLiveMarketStore(state => state.connectWs);
     const disconnectWs = useLiveMarketStore(state => state.disconnectWs);
 
@@ -532,7 +532,7 @@ function LiveTradingContent() {
                     if (typeof window !== 'undefined') {
                         localStorage.setItem('tradingMode', mode);
                     }
-                    setStrategy(data.active_strategy || "institutional_momentum");
+                    setStrategy(data.active_strategy || "ema9_rsi_momentum");
                     if (data.stoploss !== undefined) {
                         setStoploss(data.stoploss);
                     }
@@ -640,7 +640,7 @@ function LiveTradingContent() {
                 const res = await fetch(`/api/state?symbol=${urlSymbol}&live=${tradingMode === 'live'}`, { cache: 'no-store' });
                 if (!isMounted) return;
                 const data = await res.json();
-                
+
                 const store = useLiveMarketStore.getState();
 
                 // Only use fallback polling for trades/pnl if WS is disconnected
