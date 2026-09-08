@@ -118,7 +118,8 @@ function isMarketOpen() {
 function IsolatedMarketTicker() {
     const isWsConnected = useLiveMarketStore(state => state.isWsConnected);
     const tickerData = useLiveMarketStore(state => state.tickerData);
-    return <MarketTicker isWsConnected={isWsConnected} tickerData={tickerData} />;
+    const feed = useLiveMarketStore(state => state.feed);
+    return <MarketTicker isWsConnected={isWsConnected} tickerData={tickerData} feed={feed} />;
 }
 
 export default function LiveTrading() {

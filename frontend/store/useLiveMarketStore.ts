@@ -9,6 +9,28 @@ let pendingTickerUpdates: Record<string, TickerData> = {};
 export interface TickerData {
     lp: number;
     chp: number;
+    /** Where this price came from: 'fyers' | 'broker' | 'yfinance' | 'pending'.
+     *  Absent only on legacy payloads. Never render a price whose provenance
+     *  you have not checked -- see FeedStatus below. */
+    src?: string;
+    /** Epoch seconds at which the price was actually observed upstream. */
+    ts?: number;
+}
+
+/** Feed health published by the backend broadcaster on every frame.
+ *  'live'     - at least one authoritative, fresh, tradeable price
+ *  'degraded' - prices exist but none are tradeable (delayed/stale/placeholder)
+ *  'down'     - no market data at all
+ *  The dashboard must show this. Silently rendering a number from a degraded
+ *  feed is exactly the failure this field exists to prevent. */
+export interface FeedStatus {
+    status: 'live' | 'degraded' | 'down';
+    sources: string[];
+    symbols: number;
+    tradeable_symbols: number;
+    market_open: boolean;
+    simulated: boolean;
+    ts: number;
 }
 
 export interface Trade {
@@ -34,6 +56,8 @@ export interface PositionDetail {
 
 export interface LiveMarketState {
     tickerData: Record<string, TickerData>;
+    /** Backend feed health. null until the first frame arrives. */
+    feed: FeedStatus | null;
     currentPrice: number;
     changePercent: number;
     pnl: number;             // Realized P&L (closed trades today)
@@ -76,11 +100,13 @@ export interface LiveMarketState {
 }
 
 export const useLiveMarketStore = create<LiveMarketState>((set, get) => ({
-    tickerData: {
-        NIFTY: { lp: 23820.35, chp: -1.49 },
-        SENSEX: { lp: 76015.28, chp: -1.70 },
-        BANKNIFTY: { lp: 51000.00, chp: 0.0 }
-    },
+    // Deliberately EMPTY. This used to be seeded with hardcoded index prices
+    // (NIFTY 23820.35, ...) which rendered as a live quote until the first
+    // real WebSocket frame arrived -- the client-side half of the same
+    // fabricated-market-data defect fixed in api_bridge.py on 2026-09-09.
+    // Consumers must handle "no price yet" rather than being handed a fiction.
+    tickerData: {},
+    feed: null,
     currentPrice: 0,
     changePercent: 0,
     pnl: 0,
@@ -174,6 +200,10 @@ export const useLiveMarketStore = create<LiveMarketState>((set, get) => ({
                     const data = JSON.parse(event.data);
 
                     get().setLastPingTime(Date.now());
+
+                    // Feed health first: everything below is only meaningful
+                    // in the context of whether the feed can be trusted.
+                    if (data.feed) pendingUpdates.feed = data.feed as FeedStatus;
 
                     if (data.NIFTY || data["NSE:NIFTY50-INDEX"]) {
                         const nVal = data.NIFTY || data["NSE:NIFTY50-INDEX"];

@@ -6,6 +6,84 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-09-09 — FIX (CRITICAL): six code paths fabricated market prices, and they reached the live trading engine — not just the dashboard
+
+**How it surfaced:** a full read-only project audit noticed that v3.13.0's
+yfinance fallback in `api_bridge.py` manufactured five interpolated
+"micro-ticks" per second between real polls. Tracing who consumes them turned
+a display concern into a critical one.
+
+**Root cause — the consumption path nobody had traced:**
+
+```
+current_market_data          (api_bridge.py)
+  -> snapshot                (websocket_broadcaster)
+  -> websocket_data["raw_ticks"]
+  -> /ws/live
+  -> FyersBroker.stream_quotes()          (brokers/fyers_broker.py:807)
+       await on_tick({"symbol": sym, "ltp": val["lp"], ...})
+  -> trading_bot/main.py on_tick()        <-- NO market-hours or quality gate
+  -> CandleAggregator -> strategy -> ENTRY / EXIT / mark-to-market P&L
+```
+
+Every price was a bare `{"lp", "chp"}` pair with no record of where it came
+from, and **six** separate places were allowed to invent one:
+
+| # | Location | What it invented |
+|---|---|---|
+| 1 | `current_market_data`'s literal seed | NIFTY 23820.35 / SENSEX 76015.28 / BANKNIFTY 51000.00, served as real from process start |
+| 2 | `websocket_broadcaster`'s `if not current_market_data:` re-seed | a *different* invented set (23971.88) |
+| 3 | `get_sim_tick()` | sine-ish wiggle broadcast whenever the market was closed |
+| 4 | v3.13.0 yfinance fallback | 5 interpolated micro-ticks/sec, falling back to hardcoded 23840 / 57080 / 76260 if yfinance itself failed |
+| 5 | `useLiveMarketStore.ts` initial state | same three hardcoded index quotes, client-side |
+| 6 | `live-ticker.tsx` initial state | five invented quotes incl. RELIANCE 2950.00, TCS 3950.00, on the main dashboard |
+
+Paths 1–4 all fed `raw_ticks`, so the strategy could open and close positions
+against prices that never existed. Path 4's failure mode is the realistic one:
+`run_auto_auth()` failing does not abort the session, so a token-less morning
+would have had the engine trading a sine wave while the EOD Telegram card
+reported the resulting P&L as a real result.
+
+**Fix — a price now carries its provenance, and nothing fabricates one:**
+
+* `make_tick(lp, chp, src, ts)` is the only way to construct a market-data
+  entry. `src` ∈ `fyers` / `broker` / `yfinance` / `pending`, `ts` is the real
+  observation time.
+* `current_market_data` starts **empty**. An empty feed is an honest feed.
+* All six fabrication sites removed. The yfinance fallback now publishes only
+  what it actually observed (real `lastPrice`, real `previousClose`-derived
+  change%, 5s cadence — the old 1s hammering bought no information, these
+  quotes are delayed anyway) tagged `src="yfinance"`.
+* **The engine gate**: `select_tradeable_ticks()` — a pure, directly-testable
+  function — is now the single definition of "tradeable". `raw_ticks` carries
+  only ticks that are authoritative (`fyers`/`broker`), priced (> 0) and fresh
+  (≤ 30 s). Everything else is still broadcast for display, clearly tagged,
+  but the engine receives nothing for it and therefore does nothing — the
+  correct behaviour when you cannot see the market.
+* The broadcast gained a `feed` block (`status: live|degraded|down`, sources,
+  tradeable count, `simulated: false`) so the UI states feed health instead of
+  inferring it from socket liveness — the 2026-08-12 zombie-socket incident
+  was exactly a healthy socket carrying no data.
+* `market-ticker.tsx` renders `—  NO FEED` for a missing price and a muted
+  `YFINANCE · DELAYED` badge for a non-tradeable one. It previously rendered
+  `?? 0`, i.e. a confident "₹0.00" with a green up-arrow. `live-ticker.tsx`
+  shows "Waiting for market data feed…".
+
+**Verification:** `test_market_data_provenance.py` (16 tests, new) pins the
+gate — yfinance, pending, zero-price, stale, and legacy untagged ticks are all
+rejected; authoritative fresh ticks pass; malformed entries do not crash it.
+An end-to-end scenario run confirms the engine receives **nothing** in all
+five failure states (cold boot, old seed values, yfinance fallback, stale
+market-closed tick, unpriced subscription) and only trades on a genuine live
+Fyers tick. Full backend suite **721 passed / 2 xfailed**; `tsc --noEmit`
+clean; `npm run build` green.
+
+**Behaviour change worth knowing:** index prices no longer drift after market
+close, because the sine-wave generator is gone. A flat price when the market
+is shut is correct; the previous movement was fabricated.
+
+---
+
 ## 2026-09-09 — FIX: the zero-touch watchdog relaunched the Paper Observer 370 times and burned the first two hours of the 2026-09-07 session
 
 **How it surfaced:** a full read-only project audit grepped

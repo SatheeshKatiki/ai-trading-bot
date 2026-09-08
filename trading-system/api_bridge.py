@@ -302,13 +302,100 @@ async def startup_event():
     asyncio.create_task(daily_retrain_scheduler())
     asyncio.create_task(lot_size_refresh_scheduler())
 
-# Global state for live market data (Institutional Streaming)
+# ---------------------------------------------------------------------------
+# Tick provenance
+# ---------------------------------------------------------------------------
+# Root-caused 2026-09-09. Every price this module published used to be a bare
+# {"lp", "chp"} pair with no record of where it came from, and FOUR separate
+# code paths were allowed to invent one:
+#
+#   1. this dict's own literal seed values (NIFTY 23820.35, ...), served as
+#      real from the moment the process booted until the first genuine tick;
+#   2. websocket_broadcaster()'s `if not current_market_data:` re-seed, with a
+#      *different* set of invented numbers (23971.88);
+#   3. get_sim_tick(), which wiggled a sine-ish "price" whenever the market
+#      was closed;
+#   4. v3.13.0's yfinance fallback, which synthesised 5 interpolated
+#      "micro-ticks" per second between real polls and wrote them straight
+#      into this cache during market hours.
+#
+# That is not a display problem. `websocket_broadcaster` publishes this
+# snapshot as `raw_ticks`, and `FyersBroker.stream_quotes()` feeds every
+# raw_ticks entry directly into `trading_bot/main.py`'s `on_tick()` -- which
+# has no market-hours gate of its own. So invented prices reached the candle
+# aggregator, the strategies, the entry/exit logic and the mark-to-market
+# unrealised P&L, and nothing downstream could tell them from a real Fyers
+# tick.
+#
+# Fix: a price now carries its own provenance and observation time, and the
+# system never fabricates one. If there is no real price, there is no entry
+# in this dict -- consumers fail closed instead of trading a fiction.
+SRC_FYERS = "fyers"          # live Fyers WebSocket tick (authoritative)
+SRC_BROKER_REST = "broker"   # broker REST quote (authoritative, lower rate)
+SRC_YFINANCE = "yfinance"    # delayed public fallback -- NOT tradeable
+SRC_PENDING = "pending"      # subscription placeholder, no price yet
+
+#: Sources the live trading engine is allowed to act on. yfinance quotes are
+#: delayed and unsuitable for intraday option entries; a pending placeholder
+#: has no price at all. Both are still broadcast for display, flagged, but
+#: are withheld from `raw_ticks` so `on_tick()` never sees them.
+TRADEABLE_SOURCES = frozenset({SRC_FYERS, SRC_BROKER_REST})
+
+#: A tick older than this is treated as stale: still shown (marked), never
+#: fed to the engine. Sized well above the Fyers feed's normal cadence so
+#: only a genuinely broken feed trips it.
+MAX_TICK_AGE_S = 30.0
+
+
+def make_tick(lp: float, chp: float, src: str, ts: Optional[float] = None) -> Dict[str, Any]:
+    """Build a market-data entry that carries where it came from and when.
+
+    Never construct a tick dict literally -- provenance is not optional.
+    """
+    return {"lp": lp, "chp": chp, "src": src, "ts": ts if ts is not None else time.time()}
+
+
+def select_tradeable_ticks(
+    snapshot: Dict[str, Dict[str, Any]], now: Optional[float] = None
+) -> Dict[str, Dict[str, Any]]:
+    """Filter a market-data snapshot down to prices the ENGINE may act on.
+
+    This is the gate between "something we can show a human" and "something
+    `trading_bot/main.py`'s `on_tick()` is allowed to trade on". A tick
+    qualifies only if all three hold:
+
+      * its source is authoritative (`TRADEABLE_SOURCES`) -- a delayed
+        yfinance quote or a subscription placeholder never is;
+      * its price is real (> 0) -- a 0.0 placeholder reaching the strategy
+        would be worse than receiving no tick at all;
+      * it is fresh (within `MAX_TICK_AGE_S`) -- a frozen upstream feed must
+        not look like a flat market.
+
+    Kept as a pure function so the gate is directly testable and so there is
+    exactly one definition of "tradeable" in the system.
+    """
+    now = time.time() if now is None else now
+    out: Dict[str, Dict[str, Any]] = {}
+    for sym, tick in snapshot.items():
+        if not isinstance(tick, dict):
+            continue
+        if tick.get("src") not in TRADEABLE_SOURCES:
+            continue
+        try:
+            if float(tick.get("lp") or 0) <= 0:
+                continue
+            if (now - float(tick.get("ts") or 0)) > MAX_TICK_AGE_S:
+                continue
+        except (TypeError, ValueError):
+            continue
+        out[sym] = tick
+    return out
+
+
+# Global state for live market data (Institutional Streaming).
+# Starts EMPTY on purpose: an empty feed is an honest feed.
 market_data_lock = threading.Lock()
-current_market_data = {
-    "NSE:NIFTY50-INDEX": {"lp": 23820.35, "chp": -1.49},
-    "BSE:SENSEX-INDEX": {"lp": 76015.28, "chp": -1.70},
-    "NSE:NIFTYBANK-INDEX": {"lp": 51000.00, "chp": 0.0}
-}
+current_market_data: Dict[str, Dict[str, Any]] = {}
 
 # Root-cause fix (found live, 2026-08-12): the upstream Fyers WebSocket
 # (fyers_apiv3's data_ws.FyersDataSocket, `reconnect=True`) went silently
@@ -445,42 +532,50 @@ def start_fyers_socket():
             # rather than guessing a ticker that may not exist or may be
             # unreliable — this path is normally dormant, since it only
             # triggers when there is no cached broker token.
-            logger.warning("Token not found for WebSocket. Falling back to fast live polling for Paper Mode.")
+            logger.warning(
+                "No cached Fyers token — falling back to DELAYED yfinance quotes. "
+                "These are display-only: they are tagged src=%s and withheld from "
+                "raw_ticks, so the trading engine will receive no ticks until a real "
+                "broker session exists.", SRC_YFINANCE,
+            )
             import yfinance as yf
             symbols_map = {
                 "^NSEI": "NSE:NIFTY50-INDEX",
                 "^NSEBANK": "NSE:NIFTYBANK-INDEX",
                 "^BSESN": "BSE:SENSEX-INDEX"
             }
-            prev_prices = {
-                "NSE:NIFTY50-INDEX": 23840.0,
-                "NSE:NIFTYBANK-INDEX": 57080.0,
-                "BSE:SENSEX-INDEX": 76260.0
-            }
+            # Poll cadence. The previous code polled every ~5s and then
+            # MANUFACTURED five interpolated "micro-ticks" per second in
+            # between, writing them into the live cache as if they were real
+            # observations -- with hardcoded starting values (23840 / 57080 /
+            # 76260) that would be published verbatim as a live NIFTY print if
+            # yfinance itself failed. Both are gone: we publish what we
+            # actually observed, when we observed it, and nothing else.
+            # yfinance NSE index quotes are delayed anyway, so polling faster
+            # than this buys no information and only risks rate-limiting.
+            poll_interval_s = 5.0
             while True:
                 try:
                     for yf_sym, sym in symbols_map.items():
                         try:
-                            ticker = yf.Ticker(yf_sym)
-                            p = ticker.fast_info.get("lastPrice") or ticker.fast_info.get("last_price")
+                            fast = yf.Ticker(yf_sym).fast_info
+                            p = fast.get("lastPrice") or fast.get("last_price")
+                            prev_close = fast.get("previousClose") or fast.get("previous_close")
                             if p and float(p) > 0:
-                                prev_prices[sym] = float(p)
-                        except Exception:
-                            pass
-
-                    # 5 iterations of 1s smooth micro-ticks between fast_info syncs
-                    for _ in range(5):
-                        now_hash = int(time.time() * 3)
-                        with market_data_lock:
-                            for sym, base in prev_prices.items():
-                                seed = sum(ord(c) for c in sym) + now_hash
-                                fluct = ((seed % 100) / 100.0 - 0.5) * 0.0001
-                                lp = round(base + (base * fluct), 2)
-                                current_market_data[sym] = {"lp": lp, "chp": 0.0}
-                        time.sleep(1.0)
+                                lp = float(p)
+                                chp = 0.0
+                                if prev_close and float(prev_close) > 0:
+                                    chp = (lp - float(prev_close)) / float(prev_close) * 100.0
+                                with market_data_lock:
+                                    current_market_data[sym] = make_tick(
+                                        round(lp, 2), round(chp, 2), SRC_YFINANCE
+                                    )
+                        except Exception as sym_err:
+                            logger.debug("yfinance poll failed for %s: %s", yf_sym, sym_err)
+                    time.sleep(poll_interval_s)
                 except Exception as e:
-                    logger.error(f"Market data fallback error: {e}")
-                    time.sleep(2.0)
+                    logger.error("Market data fallback error: %s", e)
+                    time.sleep(poll_interval_s)
             return
 
         client_id = _get_fyers_client_id()
@@ -496,10 +591,9 @@ def start_fyers_socket():
                 lp = message.get('ltp')
                 if symbol and lp:
                     with market_data_lock:
-                        current_market_data[symbol] = {
-                            "lp": lp,
-                            "chp": message.get('chp', 0.0)
-                        }
+                        current_market_data[symbol] = make_tick(
+                            lp, message.get('chp', 0.0), SRC_FYERS
+                        )
                     
         def on_error(message):
             logger.error("Fyers WS Error: %s", message)
@@ -968,50 +1062,45 @@ async def websocket_broadcaster():
                         logger.warning("[WS] Error updating signals cache: %s", e)
                 asyncio.create_task(_refresh_signals())
                     
-            if not current_market_data:
-                current_market_data.update({
-                    "NSE:NIFTY50-INDEX": {"lp": 23971.88, "chp": -0.81},
-                    "BSE:SENSEX-INDEX": {"lp": 76015.28, "chp": -1.70},
-                    "NSE:NIFTYBANK-INDEX": {"lp": 51000.00, "chp": 0.0}
-                })
-
+            # No re-seeding with invented prices. An empty cache means no feed,
+            # and that is what gets published -- the dashboard shows "NO FEED"
+            # rather than a plausible number nobody can distinguish from real.
             with market_data_lock:
                 snapshot = current_market_data.copy()
 
-            if not is_market_open:
-                now_hash = int(time.time() * 2) 
-                def get_sim_tick(sym: str, base: float):
-                    seed = sum(ord(c) for c in sym) + now_hash
-                    fluct = (seed % 100) / 100.0 - 0.5 
-                    return {"lp": base + (base * fluct * 0.0002), "chp": fluct * 1.0}
-                    
-                n_base = snapshot.get("NSE:NIFTY50-INDEX", {"lp": 23820.35})["lp"]
-                s_base = snapshot.get("BSE:SENSEX-INDEX", {"lp": 76015.28})["lp"]
-                b_base = snapshot.get("NSE:NIFTYBANK-INDEX", {"lp": 51000.00})["lp"]
-                
-                snapshot["NSE:NIFTY50-INDEX"] = get_sim_tick("NIFTY", n_base)
-                snapshot["BSE:SENSEX-INDEX"] = get_sim_tick("SENSEX", s_base)
-                snapshot["NSE:NIFTYBANK-INDEX"] = get_sim_tick("BANKNIFTY", b_base)
+            websocket_data: Dict[str, Any] = {}
 
-            nifty_tick = snapshot.get("NSE:NIFTY50-INDEX", {"lp": 23820.35, "chp": -1.49})
-            sensex_tick = snapshot.get("BSE:SENSEX-INDEX", {"lp": 76015.28, "chp": -1.70})
-            banknifty_tick = snapshot.get("NSE:NIFTYBANK-INDEX", {"lp": 51000.00, "chp": 0.0})
-
-            websocket_data = {
-                "NIFTY": nifty_tick,
-                "SENSEX": sensex_tick,
-                "BANKNIFTY": banknifty_tick,
-                "NSE:NIFTY50-INDEX": nifty_tick,
-                "BSE:SENSEX-INDEX": sensex_tick,
-                "NSE:NIFTYBANK-INDEX": banknifty_tick
-            }
-            
             for k, v in snapshot.items():
                 websocket_data[k] = v
                 if ":" in k:
                     short_key = k.split(":")[1].split("-")[0]
                     websocket_data[short_key] = v
-                    
+
+            # ── Feed health, published alongside the prices ──────────────────
+            # Consumers (dashboard badge, and the engine gate below) need to
+            # know not just the number but whether it can be trusted right now.
+            _feed_now = time.time()
+            tradeable = select_tradeable_ticks(snapshot, _feed_now)
+            _srcs = {t.get("src") for t in snapshot.values() if t.get("src")}
+            if tradeable:
+                _feed_status = "live"
+            elif snapshot:
+                _feed_status = "degraded"   # prices exist, but none tradeable
+            else:
+                _feed_status = "down"       # nothing at all
+            websocket_data["feed"] = {
+                "status": _feed_status,
+                "sources": sorted(_srcs),
+                "symbols": len(snapshot),
+                "tradeable_symbols": len(tradeable),
+                "market_open": bool(is_market_open),
+                # Explicit so no UI has to infer it: nothing here is simulated
+                # any more. Kept as a field so a future replay/demo mode has to
+                # declare itself rather than masquerading as live data.
+                "simulated": False,
+                "ts": _feed_now,
+            }
+
             _now_t = time.time()
             if _now_t - _ws_trade_last_read >= _WS_TRADE_CACHE_TTL:
                 from fastapi.concurrency import run_in_threadpool
@@ -1021,7 +1110,20 @@ async def websocket_broadcaster():
             websocket_data["trades"] = _ws_trade_cache.get("trades", [])
             realized_pnl = _ws_trade_cache.get("pnl", 0.0)
             websocket_data["equity"] = _ws_trade_cache.get("equity", 100000.0)
-            websocket_data["raw_ticks"] = snapshot
+            # THE ENGINE GATE.
+            #
+            # `FyersBroker.stream_quotes()` forwards every entry of raw_ticks
+            # straight into `trading_bot/main.py`'s `on_tick()`, which has no
+            # market-hours or data-quality gate of its own. Publishing the raw
+            # snapshot here is what allowed seeded, simulated and interpolated
+            # prices to drive real entry/exit decisions and mark-to-market P&L.
+            #
+            # Only genuinely tradeable ticks cross this line: an authoritative
+            # source, a real (non-zero) price, and fresh. Everything else is
+            # still broadcast above for display -- clearly tagged -- but the
+            # engine simply receives no tick for it and therefore does nothing,
+            # which is the correct behaviour when you cannot see the market.
+            websocket_data["raw_ticks"] = tradeable
             websocket_data["signalsData"] = signals_cache["data"]
 
             # ── Real-time Unrealized P&L from Active Positions ──────────────────
@@ -1641,7 +1743,10 @@ async def get_quote(
                 fyers_socket_instance.subscribe(symbols=[symbol], data_type="symbolData")
                 # Initialize to prevent duplicate subscriptions
                 with market_data_lock:
-                    current_market_data[symbol] = {"lp": 0.0, "chp": 0.0}
+                    # Placeholder so the symbol is known to be subscribed. Tagged
+                    # SRC_PENDING and therefore excluded from raw_ticks -- a 0.0
+                    # "price" reaching on_tick() would be worse than no tick.
+                    current_market_data[symbol] = make_tick(0.0, 0.0, SRC_PENDING)
             except Exception as e:
                 logger.warning("Failed to subscribe to %s: %s", symbol, e)
 
@@ -1660,7 +1765,7 @@ async def get_quote(
             chp = v.get("chp", 0.0)
             if lp:
                 with market_data_lock:
-                    current_market_data[symbol] = {"lp": lp, "chp": chp}
+                    current_market_data[symbol] = make_tick(lp, chp, SRC_BROKER_REST)
                 
         return quotes
     except Exception as e:

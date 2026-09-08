@@ -18,13 +18,13 @@ function isTickerEntry(v: unknown): v is TickerEntry {
 }
 
 export default function LiveTicker() {
-  const [tickerData, setTickerData] = useState<Record<string, unknown>>({
-    "NIFTY": { lp: 23820.35, chp: -1.49, up: false },
-    "BANKNIFTY": { lp: 51000.00, chp: 0.08, up: true },
-    "SENSEX": { lp: 76015.28, chp: -1.70, up: false },
-    "RELIANCE": { lp: 2950.00, chp: 0.12, up: true },
-    "TCS": { lp: 3950.00, chp: -0.45, up: false },
-  });
+  // Deliberately EMPTY. This used to be seeded with five invented quotes
+  // (NIFTY 23820.35, RELIANCE 2950.00, TCS 3950.00, ...) that rendered on the
+  // main dashboard as live prices until the first WebSocket frame arrived --
+  // and stayed there indefinitely if the feed never came up. Part of the
+  // fabricated-market-data cleanup of 2026-09-09; see api_bridge.py's tick
+  // provenance block. Render "waiting for feed" instead of a fiction.
+  const [tickerData, setTickerData] = useState<Record<string, unknown>>({});
   const [lastPrices, setLastPrices] = useState<Record<string, number>>({});
   const [flashes, setFlashes] = useState<Record<string, "up" | "down">>({});
 
@@ -97,8 +97,13 @@ export default function LiveTicker() {
         </div>
       </div>
       <div className="flex-1 overflow-hidden relative">
+        {Object.keys(tickerData).filter(k => k !== "trades" && k !== "signalsData" && k !== "raw_ticks" && k !== "feed").length === 0 && (
+          <div className="flex items-center h-full px-4 text-xs text-muted-foreground font-medium tracking-wide">
+            Waiting for market data feed…
+          </div>
+        )}
         <div className="flex whitespace-nowrap animate-marquee-slower gap-12 items-center px-4 hover:pause">
-          {Object.keys(tickerData).filter(k => k !== "trades" && k !== "signalsData" && k !== "raw_ticks").map((symbol, i) => {
+          {Object.keys(tickerData).filter(k => k !== "trades" && k !== "signalsData" && k !== "raw_ticks" && k !== "feed").map((symbol, i) => {
             const data = tickerData[symbol];
             if (!isTickerEntry(data)) return null;
             const isUp = data.chp >= 0;
@@ -118,7 +123,7 @@ export default function LiveTicker() {
             );
           })}
           {/* Duplicate for seamless loop */}
-          {Object.keys(tickerData).filter(k => k !== "trades" && k !== "signalsData" && k !== "raw_ticks").map((symbol, i) => {
+          {Object.keys(tickerData).filter(k => k !== "trades" && k !== "signalsData" && k !== "raw_ticks" && k !== "feed").map((symbol, i) => {
             const data = tickerData[symbol];
             if (!isTickerEntry(data)) return null;
             const isUp = data.chp >= 0;
