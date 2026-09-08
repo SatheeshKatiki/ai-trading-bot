@@ -6,6 +6,72 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-09-09 — FIX: the XGBoost model artifact followed the working directory, deployed unconditionally, and was rewritten as a side effect of asking for a signal
+
+**How it surfaced:** `git status` showed `trading-system/models/xgboost_model.json`
+as modified immediately after a plain `pytest` run during the audit.
+
+**Root cause — three separate defects in
+`trading_bot/strategies/advanced_ai_ml_strategy.py`:**
+
+1. **CWD-relative artifact path.** `os.path.join("models", "xgboost_model.json")`
+   resolved against whatever working directory the process happened to have.
+   From the repo root that is `./models/`; from `trading-system/` (where
+   `main.py`, `api_bridge.py` and the test suite all run) it is
+   `trading-system/models/`. **Both were tracked in git and had drifted into
+   two different models** — `c778bd07…` (210,186 bytes, Sep 4) and
+   `fe2e7b72…` (215,960 bytes, Sep 8). Proven by resolving the old expression
+   from three different working directories.
+   `shared/ai/model.py` already had the right convention
+   (`Path(__file__).resolve().parents[2] / "models"`); this file did not.
+
+2. **No accuracy gate.** Audit Critical #12 added a deployment gate to
+   `shared/ai/model.py`, but this strategy owns a *separate* save path that
+   bypassed it entirely — every retrain hot-deployed unconditionally, even
+   when the run had learned nothing.
+
+3. **Retraining as a side effect of signal generation.** The function
+   retrained and saved in place whenever the artifact was older than 24h.
+   Anything that merely *evaluated* the strategy therefore rewrote the live
+   model: a backtest sweep, a parallel experiment, the tick loop, the unit
+   suite. A trading desk does not re-fit its model because someone asked it
+   for a quote.
+
+**Fix:**
+
+* `_MODEL_PATH` is anchored to `__file__`, overridable via
+  `QUANTAI_XGB_MODEL_PATH` for tests/backtests/experiments.
+* A chronological (never shuffled — shuffling leaks future bars) 80/20
+  holdout gate refuses to publish a model below a 0.55 floor; 0.50 is a coin
+  flip on a two-class target, so anything at or under it has learned nothing.
+* Inline retraining is now **opt-in** (`QUANTAI_ALLOW_INLINE_RETRAIN`, default
+  off). With it off the strategy still trains *in memory* and uses that model
+  for the current call — signal quality is unchanged — it simply does not
+  publish. Deployment belongs to `scripts/daily_ai_retrain.py`.
+* The unit suite's `conftest.py` redirects the artifact to a scratch file and
+  adds a session-level guard that checksums the deployed artifacts at start
+  and end and fails the run if either moved.
+
+**Verification:** `test_xgb_model_artifact.py` (7 tests, new) proves the path
+no longer varies with the working directory, that the old form provably did,
+that the floor is above chance, that a rejected retrain leaves the incumbent
+untouched, and that the suite redirects the artifact away from production.
+
+**Important correction to an earlier reading in this same session.** While
+verifying, the deployed artifact appeared to change on *some* full-suite runs
+and not others. That was chased at length — an in-process probe on the
+strategy's save path and on `XGBClassifier.save_model` recorded **no** write
+to the production path, and the change did not appear at
+`pytest_sessionfinish`. The cause turned out not to be the test suite at all:
+**this working tree was being edited concurrently by another session** (real
+feature work landed mid-audit in `paper_observer.py`, `api_bridge.py`'s
+`compute_signals`, `main.py`'s default strategy, and three frontend files).
+The intermittent artifact change is consistent with that concurrent activity,
+not with the suite. The three fixes above stand on their own merits; the
+"tests mutate production" framing was over-attributed and is corrected here.
+
+---
+
 ## 2026-09-09 — FIX: `/api/option-greeks` called an undefined function, swallowed the NameError, and priced every Greek off a hardcoded spot
 
 **How it surfaced:** ruff's `F821 Undefined name '_get_quote_data'` at

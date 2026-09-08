@@ -12,8 +12,62 @@ from typing import Dict, Any
 import xgboost as xgb
 from sklearn.model_selection import train_test_split
 
+from pathlib import Path
+
 from shared.indicators import ema, rsi, macd, smc_features
 from trading_bot.strategies._signal_utils import edge_trigger as _edge_trigger
+
+# Anchored to THIS FILE, not the process working directory.
+#
+# Root-caused 2026-09-09: this was `os.path.join("models", "xgboost_model.json")`
+# -- resolved against whatever CWD the process happened to have. Run from the
+# repo root it wrote `./models/`; run from `trading-system/` (as main.py,
+# api_bridge.py and the pytest suite all do) it wrote
+# `trading-system/models/`. Both paths were tracked in git and had drifted
+# into two different models with different content and mtimes, and merely
+# RUNNING THE TEST SUITE silently retrained and overwrote whichever one the
+# CWD pointed at -- i.e. the live production artifact. Mirrors the convention
+# shared/ai/model.py already uses for trade_filter_rf.pkl.
+#
+# Overridable via QUANTAI_XGB_MODEL_PATH so a test run, a backtest sweep or a
+# parallel experiment can retrain against a scratch artifact instead of the
+# deployed one. The unit suite sets it (see the suite's conftest.py): this
+# strategy auto-retrains any model older than 24h, so without an override a
+# plain `pytest` run silently rewrote the live production model -- verified,
+# not theoretical.
+_MODEL_PATH = Path(
+    os.environ.get("QUANTAI_XGB_MODEL_PATH")
+    or (Path(__file__).resolve().parents[2] / "models" / "xgboost_model.json")
+)
+
+#: Absolute floor for a freshly-trained binary classifier. Below this the run
+#: is not a usable model, it is a failed one -- 50% is a coin flip on a
+#: two-class target, so anything at or under that has learned nothing.
+#: Deliberately stricter than chance to leave no ambiguity.
+_MIN_XGB_ACCURACY = 0.55
+
+
+def _inline_retrain_allowed() -> bool:
+    """May *generating a signal* retrain and overwrite the deployed model?
+
+    Default: no.
+
+    This function used to retrain and save whenever the artifact was older
+    than 24h -- as a side effect of being asked for a signal. Anything that
+    evaluated this strategy therefore rewrote the live, git-tracked model:
+    a backtest sweep, a parallel experiment, the tick loop, and the unit
+    suite. It was traced on 2026-09-09 to a write that lands during
+    interpreter shutdown (a background thread finishing after pytest's own
+    session hooks have run), which is exactly why it was so hard to see and
+    why no amount of per-test cleanup could contain it.
+
+    A trading desk does not re-fit its model because someone asked it for a
+    quote. Retraining is a deliberate, supervised operation -- it belongs to
+    `scripts/daily_ai_retrain.py` and the scheduler, which set this flag.
+    With it off the strategy still trains in memory when no artifact exists,
+    so signal quality is unchanged; it simply does not publish.
+    """
+    return os.environ.get("QUANTAI_ALLOW_INLINE_RETRAIN", "0").lower() in ("1", "true", "yes")
 
 STRATEGY_NAME = "advanced_ai"
 
@@ -127,7 +181,7 @@ def generate_signals(
     # 2. XGBoost ML Modeling (Aggressive Tuning)
     # ---------------------------------------------------------
     try:
-        model_path = os.path.join("models", "xgboost_model.json")
+        model_path = str(_MODEL_PATH)
         model = xgb.XGBClassifier()
         
         # Check if we need to train
@@ -157,21 +211,68 @@ def generate_signals(
                     n_jobs=1
                 )
                 model.fit(X_train_slice, y_train_slice)
-                import tempfile
-                os.makedirs(os.path.dirname(model_path), exist_ok=True)
-                
-                # Atomic save to prevent cross-process corruption during simultaneous Live+Backtest
-                temp_fd, temp_path = tempfile.mkstemp(dir=os.path.dirname(model_path), prefix="xgboost_tmp_", suffix=".json")
-                try:
-                    os.close(temp_fd) # Close immediately, XGBoost handles opening
-                    model.save_model(temp_path)
-                    os.replace(temp_path, model_path)
-                except Exception as e:
-                    if os.path.exists(temp_path):
-                        os.unlink(temp_path)
-                    raise e
-                print(f"[AI Strategy] Model saved to {model_path}")
-                need_train = False
+
+                # ── Accuracy gate ────────────────────────────────────────
+                # Audit Critical #12 added a deployment gate to
+                # shared/ai/model.py, but this strategy has its OWN save path
+                # and bypassed it entirely: every retrain hot-deployed
+                # unconditionally, overwriting the live artifact even when the
+                # run had learned nothing. Hold out the tail of the training
+                # window (chronological, never shuffled -- shuffling leaks
+                # future bars into the score) and refuse to publish a model
+                # that cannot beat the floor.
+                deploy = True
+                holdout_acc = None
+                split = int(len(X_train_slice) * 0.8)
+                if split >= 5 and len(X_train_slice) - split >= 5:
+                    X_fit, X_hold = X_train_slice.iloc[:split], X_train_slice.iloc[split:]
+                    y_fit, y_hold = y_train_slice.iloc[:split], y_train_slice.iloc[split:]
+                    if len(y_fit.unique()) > 1:
+                        gate_model = xgb.XGBClassifier(
+                            n_estimators=100, max_depth=5, learning_rate=0.05,
+                            subsample=0.8, colsample_bytree=0.8,
+                            objective='binary:logistic', random_state=42, n_jobs=1,
+                        )
+                        gate_model.fit(X_fit, y_fit)
+                        holdout_acc = float((gate_model.predict(X_hold) == y_hold).mean())
+                        if holdout_acc < _MIN_XGB_ACCURACY:
+                            deploy = False
+
+                if not deploy:
+                    print(
+                        f"[AI Strategy] REJECTED retrain: holdout accuracy "
+                        f"{holdout_acc:.1%} < {_MIN_XGB_ACCURACY:.0%} floor. "
+                        f"Keeping the existing deployed model."
+                    )
+                    need_train = False
+                elif not _inline_retrain_allowed():
+                    # Trained in memory and used for THIS call's signals, but
+                    # not published. See _inline_retrain_allowed().
+                    print(
+                        "[AI Strategy] Model retrained in memory; not published "
+                        "(inline retrain disabled). Set QUANTAI_ALLOW_INLINE_RETRAIN=1 "
+                        "or use scripts/daily_ai_retrain.py to deploy."
+                    )
+                    need_train = False
+                else:
+                    import tempfile
+                    os.makedirs(os.path.dirname(model_path), exist_ok=True)
+
+                    # Atomic save to prevent cross-process corruption during simultaneous Live+Backtest
+                    temp_fd, temp_path = tempfile.mkstemp(dir=os.path.dirname(model_path), prefix="xgboost_tmp_", suffix=".json")
+                    try:
+                        os.close(temp_fd) # Close immediately, XGBoost handles opening
+                        model.save_model(temp_path)
+                        os.replace(temp_path, model_path)
+                    except Exception as e:
+                        if os.path.exists(temp_path):
+                            os.unlink(temp_path)
+                        raise e
+                    if holdout_acc is not None:
+                        print(f"[AI Strategy] Model saved to {model_path} (holdout accuracy {holdout_acc:.1%}).")
+                    else:
+                        print(f"[AI Strategy] Model saved to {model_path} (too few rows to gate).")
+                    need_train = False
             else:
                 print("[AI Strategy] Not enough data to train. Using rule-based fallback.")
                 need_train = False
