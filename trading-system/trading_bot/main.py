@@ -695,7 +695,25 @@ async def run_live_bot(symbols: List[str]) -> None:
             _executed_today,
         )
     ai_filter = TradeFilterModel()
-    exit_engine = SmartExitEngine(atr_multiplier=1.5, partial_booking_pct=50.0)
+    # Exit Analyzer tuning comes from settings.json so the dashboard controls
+    # are actually connected. Previously ExitAnalyzerAgent() was constructed
+    # with no arguments, so ema9_rsi_momentum/config.py's MIN_PEAK_PROFIT_PTS /
+    # MAX_GIVEBACK_PCT / URGENCY_THRESHOLD were declared but reached nothing.
+    _ea_settings = _load_settings()
+    exit_engine = SmartExitEngine(
+        atr_multiplier=1.5,
+        partial_booking_pct=50.0,
+        enable_exit_analyzer=bool(
+            _ea_settings.get("enable_exit_analyzer",
+                             _ea_settings.get("enableExitAnalyzer", False))
+        ),
+        exit_analyzer_kwargs={
+            "min_peak_profit_pts": float(_ea_settings.get("ea_min_peak_profit_pts", 30.0)),
+            "min_peak_profit_pct": float(_ea_settings.get("ea_min_peak_profit_pct", 12.0)),
+            "max_giveback_pct": float(_ea_settings.get("ea_max_giveback_pct", 20.0)),
+            "urgency_threshold": float(_ea_settings.get("ea_urgency_threshold", 0.70)),
+        },
+    )
     pyramid_sizer = PyramidSizer(pct_trigger=0.2, max_scales=2)
     # max_consecutive_losses=7 matches PortfolioRiskEngine's own documented
     # design (get_position_multiplier(): 3-4 losses -> half size, 5-6 ->
@@ -1423,9 +1441,38 @@ async def run_live_bot(symbols: List[str]) -> None:
                         # If turned off, set activation pct to an unreachable high number
                         exit_engine.trailing_activation_pct = 9999.0
 
+                    # ── AI Exit Analyzer ────────────────────────────────────
+                    # Shipped in v3.13.0 but never actually reachable: the
+                    # engine was constructed with enable_exit_analyzer left at
+                    # its False default and nothing ever set it, and this call
+                    # passed no `df`, so even once enabled 65% of the scoring
+                    # weight (price action + RSI + volume) would have been
+                    # permanently zero and the urgency score could never reach
+                    # its 0.70 threshold. Both halves are wired here.
+                    #
+                    # The frame passed is the UNDERLYING index, resampled to
+                    # 5-minute bars with the still-forming bar dropped -- the
+                    # same treatment TieredExitManager already gets above, and
+                    # for the same reason: these are candle-CLOSE rules, and
+                    # feeding the forming bar turns them into intrabar-noise
+                    # triggers that cut winners early.
+                    exit_engine.enable_exit_analyzer = bool(
+                        settings.get("enable_exit_analyzer",
+                                     settings.get("enableExitAnalyzer", False))
+                    )
+                    analyzer_df = None
+                    if exit_engine.enable_exit_analyzer and not df.empty:
+                        analyzer_df = df.resample('5min', label='right', closed='right').agg({
+                            'open': 'first', 'high': 'max', 'low': 'min',
+                            'close': 'last', 'volume': 'sum'
+                        }).dropna()
+                        if len(analyzer_df) > 1:
+                            analyzer_df = analyzer_df.iloc[:-1]
+
                     old_stop_loss = open_position.stop_loss
                     should_exit, reason, exit_qty = exit_engine.evaluate_exit(
-                        open_position, exit_check_price, current_time, current_atr
+                        open_position, exit_check_price, current_time, current_atr,
+                        df=analyzer_df,
                     )
                     # Phase 5: Persist Trailing SL to disk immediately to prevent amnesia on reboot
                     if open_position.stop_loss != old_stop_loss:

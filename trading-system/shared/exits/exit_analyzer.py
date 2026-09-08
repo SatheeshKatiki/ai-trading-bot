@@ -74,11 +74,37 @@ class ExitAnalyzerAgent:
         current_price: float,
         highest_price: float,
         lowest_price: float,
-        direction: int,  # +1 for BUY CE (Bullish), -1 for BUY PE (Bearish)
+        direction: int,  # P&L-space direction: +1 when the priced instrument rising = profit
         df: Optional[pd.DataFrame] = None,
         is_option_premium: bool = False,
+        underlying_direction: Optional[int] = None,
     ) -> ExitAnalysisResult:
-        """Evaluate exit urgency and determine if an immediate peak exit should fire."""
+        """Evaluate exit urgency and determine if an immediate peak exit should fire.
+
+        Two different "directions" are in play and conflating them inverts the
+        momentum read on every PUT:
+
+        ``direction``
+            P&L space, i.e. the space `entry_price` / `current_price` /
+            `highest_price` live in. A *bought* option — CE or PE alike — profits
+            when its own premium rises, so this is ``+1`` for any long option.
+        ``underlying_direction``
+            Thesis space: ``+1`` for a CALL, ``-1`` for a PUT. Defaults to
+            ``direction`` for cash/futures, where the two coincide.
+
+        Factor 1 (peak giveback) is a P&L question and uses ``direction``.
+        Factors 2-4 (EMA9 break, RSI exhaustion, volume fade) are momentum
+        questions about the UNDERLYING and use ``underlying_direction``: for a
+        PUT holder a close *below* EMA9 confirms the thesis, it does not
+        threaten it. Reading them off ``direction`` would have called every
+        winning PUT a reversal.
+
+        ``df`` should therefore be the UNDERLYING index frame, not the option's
+        own premium candles — premium is a non-linear function of spot, IV and
+        time, so EMA/RSI computed on it is noise. This mirrors the rule the
+        Fibonacci trail in SmartExitEngine already follows: the thesis is about
+        where the index goes; only the resulting stop is expressed in premium.
+        """
         if entry_price <= 0 or current_price <= 0:
             return ExitAnalysisResult(
                 should_exit=False,
@@ -86,6 +112,23 @@ class ExitAnalyzerAgent:
                 mode=TREND_RIDE,
                 reason="Invalid price parameters",
             )
+
+        if underlying_direction is None:
+            underlying_direction = direction
+
+        # Single definition of "a peak worth protecting", used by BOTH the
+        # factor scoring and the exit decisions below. Previously Factor 1
+        # honoured `is_option_premium` (12% of entry premium) while the
+        # PEAK_LOCK / FAST_EMA_BREAK decisions re-tested a hardcoded
+        # `>= self.min_peak_profit_pts` (30 points) -- so on a 150-rupee
+        # premium a 12% (18-point) peak scored as significant but could never
+        # actually fire an exit. The headline protection was unreachable on
+        # exactly the instrument it was written for.
+        significant_peak = (
+            entry_price * (self.min_peak_profit_pct / 100.0)
+            if is_option_premium
+            else self.min_peak_profit_pts
+        )
 
         # ---------------------------------------------------------
         # Factor 1: Peak Profit & Giveback (Weight: 35%)
@@ -100,8 +143,7 @@ class ExitAnalyzerAgent:
             peak_profit = peak_price - entry_price
             giveback_pts = peak_price - current_price
             
-            threshold = (entry_price * (self.min_peak_profit_pct / 100.0)) if is_option_premium else self.min_peak_profit_pts
-            if peak_profit >= threshold and peak_profit > 0:
+            if peak_profit >= significant_peak and peak_profit > 0:
                 giveback_pct = (giveback_pts / peak_profit) * 100.0
                 # Ratchet suggested SL to lock in 80% of peak profit (giveback of 20%)
                 suggested_sl = peak_price - (peak_profit * (self.max_giveback_pct / 100.0))
@@ -116,8 +158,7 @@ class ExitAnalyzerAgent:
             peak_profit = entry_price - trough_price
             giveback_pts = current_price - trough_price
             
-            threshold = (entry_price * (self.min_peak_profit_pct / 100.0)) if is_option_premium else self.min_peak_profit_pts
-            if peak_profit >= threshold and peak_profit > 0:
+            if peak_profit >= significant_peak and peak_profit > 0:
                 giveback_pct = (giveback_pts / peak_profit) * 100.0
                 suggested_sl = trough_price + (peak_profit * (self.max_giveback_pct / 100.0))
                 
@@ -145,11 +186,11 @@ class ExitAnalyzerAgent:
                 last_low = float(df["low"].iloc[-1])
                 candle_range = max(0.001, last_high - last_low)
                 
-                if direction >= 0:
+                if underlying_direction >= 0:
                     # Close broke below EMA 9
                     if last_close < last_ema9:
                         has_ema9_break = True
-                        score_pa = 1.0 if peak_profit >= self.min_peak_profit_pts else 0.70
+                        score_pa = 1.0 if peak_profit >= significant_peak else 0.70
                     # Upper rejection wick > 30% of total candle range
                     upper_wick = last_high - max(last_open, last_close)
                     if (upper_wick / candle_range) >= 0.30:
@@ -159,7 +200,7 @@ class ExitAnalyzerAgent:
                     # Close broke above EMA 9
                     if last_close > last_ema9:
                         has_ema9_break = True
-                        score_pa = 1.0 if peak_profit >= self.min_peak_profit_pts else 0.70
+                        score_pa = 1.0 if peak_profit >= significant_peak else 0.70
                     # Lower rejection wick > 30% of total candle range
                     lower_wick = min(last_open, last_close) - last_low
                     if (lower_wick / candle_range) >= 0.30:
@@ -180,7 +221,7 @@ class ExitAnalyzerAgent:
                 curr_rsi_ma = float(rsi_ma_series.iloc[-1])
                 prev_rsi = float(rsi_series.iloc[-2])
 
-                if direction >= 0:
+                if underlying_direction >= 0:
                     # CE: Was overbought (> 65) and hooked down or crossed below RSI-MA
                     if (prev_rsi >= 65.0 or curr_rsi >= 65.0) and curr_rsi < prev_rsi:
                         score_rsi += 0.50
@@ -231,6 +272,15 @@ class ExitAnalyzerAgent:
             "volume_decel": round(score_vol, 2),
             "giveback_pct": round(giveback_pct, 1),
             "peak_profit": round(peak_profit, 2),
+            # Which sub-signal drove Factor 2. Both were computed but only
+            # folded into `score_pa`, leaving `has_rejection_wick` flagged by
+            # the linter as dead. They are the explainable part of the verdict,
+            # so surface them instead of discarding them.
+            "ema9_break": float(has_ema9_break),
+            "rejection_wick": float(has_rejection_wick),
+            # The bar the peak test was measured against, so a logged exit can
+            # be reconciled after the fact without re-deriving it.
+            "significant_peak": round(significant_peak, 2),
         }
 
         # ---------------------------------------------------------
@@ -241,7 +291,7 @@ class ExitAnalyzerAgent:
         reason = "Trend intact. Urgency low."
 
         # Case 1: Hard Peak Lock Trigger (Gave back >= max_giveback_pct of significant peak)
-        if giveback_pct >= self.max_giveback_pct and peak_profit >= self.min_peak_profit_pts:
+        if giveback_pct >= self.max_giveback_pct and peak_profit >= significant_peak:
             should_exit = True
             mode = PEAK_LOCK
             reason = (
@@ -250,7 +300,7 @@ class ExitAnalyzerAgent:
             )
 
         # Case 2: Fast EMA 9 Break on Profitable Position with Giveback >= 15%
-        elif has_ema9_break and peak_profit >= self.min_peak_profit_pts and giveback_pct >= 15.0:
+        elif has_ema9_break and peak_profit >= significant_peak and giveback_pct >= 15.0:
             should_exit = True
             mode = FAST_EMA_BREAK
             reason = f"Fast EMA9 Close Break after +{peak_profit:.1f} pts gain (Gave back {giveback_pct:.1f}%)."
@@ -268,7 +318,7 @@ class ExitAnalyzerAgent:
                 mode = MOMENTUM_REVERSAL
                 reason = f"Multi-factor Momentum Reversal with {total_urgency*100:.0f}% Urgency."
 
-        # Case 3: Trending Ride with moderate caution
+        # Case 4: Trending Ride with moderate caution
         elif total_urgency >= 0.40:
             mode = PEAK_LOCK
             reason = f"Caution: Urgency {total_urgency*100:.0f}%. Holding with tight trailing stop."

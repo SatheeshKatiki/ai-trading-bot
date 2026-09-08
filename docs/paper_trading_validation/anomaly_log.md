@@ -6,6 +6,86 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-09-09 — FIX: the v3.13.0 AI Exit Analyzer never ran, and would have been wrong on options if it had
+
+**How it surfaced:** the audit traced v3.13.0's headline feature end to end
+and found nothing connected it to the live engine.
+
+**Root cause — three independent defects, all of which had to be fixed for
+the feature to do anything correct:**
+
+**A. Never enabled.** `main.py` constructed
+`SmartExitEngine(atr_multiplier=1.5, partial_booking_pct=50.0)`, leaving
+`enable_exit_analyzer` at its `False` default, and nothing anywhere set it
+True. `trading_bot/strategies/ema9_rsi_momentum/config.py` declared
+`ENABLE_EXIT_ANALYZER: bool = True` and a matching dataclass field, but a
+repo-wide grep confirms no code path ever read that field.
+**`config/settings.json` already had `"enable_exit_analyzer": true`** — the
+operator had switched the feature on and it was silently inert.
+
+**B. Never fed.** The call site was
+`exit_engine.evaluate_exit(pos, price, time, atr)` — no `df`. Factors 2, 3
+and 4 (price action / RSI exhaustion / volume fade) are **65% of the scoring
+weight** and all require a frame, so they were permanently 0.0. Total urgency
+was capped at Factor 1's 0.35 and could never reach the 0.70 threshold. Even
+if (A) had been fixed alone, only the hard PEAK_LOCK branch could ever fire.
+
+**C. Unreachable on options, and inverted on puts.**
+
+* Factor 1 honoured `is_option_premium` (threshold = 12% of entry premium),
+  but the **decisions** re-tested a hardcoded `peak_profit >= 30.0` *points*.
+  On a Rs.150 premium a 12% peak is 18 points: it scored as significant, then
+  failed the decision gate. The "don't give back your peak" protection was
+  structurally unreachable on the instrument it was written for.
+* One `direction` argument drove both the premium-space peak maths *and* the
+  underlying-momentum factors. A bought PUT is `direction=+1` in premium space
+  (its premium rises when the trade works), so every confirming down-bar on
+  the index was scored as bullish exhaustion. The analyzer would have exited
+  winning puts into their own trend.
+
+**Fix:**
+
+* `evaluate()` now takes `underlying_direction` (thesis space: +1 CE / −1 PE)
+  separately from `direction` (P&L space). Factor 1 uses `direction`;
+  Factors 2–4 use `underlying_direction`. It defaults to `direction`, so
+  cash/futures behaviour is unchanged. `SmartExitEngine` forwards
+  `position.side`, which keeps the real CE/PE meaning.
+* A single `significant_peak` value — option-aware — is computed once and used
+  by both the factor scoring and every decision branch.
+* `main.py` reads `enable_exit_analyzer` from settings on each evaluation and
+  passes the **underlying** 5-minute frame with the still-forming bar dropped
+  — the same treatment `TieredExitManager` already gets, and for the same
+  reason: these are candle-*close* rules, and the forming bar turns them into
+  intrabar-noise triggers that cut runners early.
+* Why the underlying and not the option's own candles: premium is a non-linear
+  function of spot, IV and time, so EMA/RSI computed on it is noise. Same rule
+  the Fibonacci trail already follows — thesis on the index, stop in premium.
+* `SmartExitEngine(exit_analyzer_kwargs=...)` forwards tuning, so
+  MIN_PEAK_PROFIT_PTS / MAX_GIVEBACK_PCT / URGENCY_THRESHOLD reach the agent.
+  Previously it was built as bare `ExitAnalyzerAgent()` — the knobs turned but
+  were not connected.
+* `has_ema9_break` / `has_rejection_wick` (flagged dead by ruff) are now
+  surfaced in `factors` along with `significant_peak`, so a logged exit can be
+  reconciled after the fact.
+
+**Verification:** `test_exit_analyzer_wiring.py` (11 tests, new) pins all
+three defects: PEAK_LOCK now fires on a Rs.150 CE that peaked +12% (18 pts)
+and gave back 25% — impossible before; index positions still use the 30-point
+rule; a winning PUT on a falling index scores strictly lower price-action
+urgency than the same trade read with the premium direction (and the mirror
+case for calls); the engine forwards `direction=1` / `underlying_direction=-1`
+for a PE; tuning reaches the agent; and a missing/empty frame cannot crash the
+cold-start path. The 7 pre-existing `test_exit_analyzer_agent.py` tests still
+pass unchanged. Suite **741 passed / 2 xfailed**.
+
+**⚠ Behaviour change on the next live run.** Because `settings.json` already
+has `enable_exit_analyzer: true`, this feature now genuinely activates and
+will close positions that previously ran to the ATR/percentage trail. That is
+what the setting asked for, but it is a real change to exit behaviour and the
+first session with it live should be watched.
+
+---
+
 ## 2026-09-09 — FIX: the entire Options Desk was fiction — fake India VIX, fake IV Rank, "Max Pain" that was just the ATM strike, a random PCR, and an expiry six weeks in the past
 
 **How it surfaced:** chasing the fabricated `India VIX` pill

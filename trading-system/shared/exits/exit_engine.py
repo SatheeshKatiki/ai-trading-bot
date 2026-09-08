@@ -97,6 +97,7 @@ class SmartExitEngine:
         partial_target_reward: float = 1.0,
         use_dynamic_fib_trail: bool = False,
         enable_exit_analyzer: bool = False,
+        exit_analyzer_kwargs: Optional[dict] = None,
     ):
         """
         Parameters
@@ -116,6 +117,13 @@ class SmartExitEngine:
             Reward-to-risk ratio at which to take partial profit.
         enable_exit_analyzer : bool
             Enable AI Exit Analyzer Agent for multi-factor peak protection.
+        exit_analyzer_kwargs : dict, optional
+            Tuning passed straight to ``ExitAnalyzerAgent`` (min_peak_profit_pts,
+            min_peak_profit_pct, max_giveback_pct, urgency_threshold, factor
+            weights). Previously the agent was constructed with no arguments at
+            all, so `ema9_rsi_momentum/config.py`'s MIN_PEAK_PROFIT_PTS /
+            MAX_GIVEBACK_PCT / URGENCY_THRESHOLD were declared but reached
+            nothing -- the knobs turned, but were not connected.
         """
         self.atr_multiplier = atr_multiplier
         self.trailing_activation_pct = trailing_activation_pct
@@ -125,7 +133,7 @@ class SmartExitEngine:
         self.partial_target_reward = partial_target_reward
         self.use_dynamic_fib_trail = use_dynamic_fib_trail
         self.enable_exit_analyzer = enable_exit_analyzer
-        self.exit_analyzer = ExitAnalyzerAgent()
+        self.exit_analyzer = ExitAnalyzerAgent(**(exit_analyzer_kwargs or {}))
 
     def evaluate_exit(
         self,
@@ -342,7 +350,18 @@ class SmartExitEngine:
                 current_price=current_price,
                 highest_price=position.highest_price,
                 lowest_price=position.lowest_price,
+                # P&L space: a bought option profits when its own premium
+                # rises, CE and PE alike -- same convention as everything
+                # else in this function.
                 direction=effective_side,
+                # `df` is the UNDERLYING index frame (see main.py's call
+                # site), so the momentum factors must be read against the
+                # trade's thesis direction, not its premium direction.
+                # position.side keeps the real CE=+1 / PE=-1 meaning; without
+                # this a winning PUT (index falling, premium rising) would
+                # score every confirming down-bar as a reversal and exit into
+                # its own trend.
+                underlying_direction=position.side if is_option else effective_side,
                 df=df,
                 is_option_premium=is_option,
             )
