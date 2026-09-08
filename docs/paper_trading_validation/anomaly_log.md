@@ -6,6 +6,85 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-09-09 — FIX: the zero-touch watchdog relaunched the Paper Observer 370 times and burned the first two hours of the 2026-09-07 session
+
+**How it surfaced:** a full read-only project audit grepped
+`logs/daily_orchestrator.log` and found the same WARNING line 370 times:
+
+```
+[2026-09-07 09:14:24] [WARNING] Paper Observer process stopped unexpectedly! Auto-restarting...
+   ... one every 20 seconds ...
+[2026-09-07 11:17:29] [WARNING] Paper Observer process stopped unexpectedly! Auto-restarting...
+```
+
+`logs/paper_observer_stdout.log` shows the matching child side — 372 copies
+of the startup banner, each followed immediately by:
+
+```
+  [AUDIT COMPLETE] All 3 live trading sessions completed!
+```
+
+**Root cause:** the observer was **not crashing**. That run was still the
+pre-v3.13.0 3-day-capped build, so it hit its own `break`, printed the audit
+scorecard and exited **cleanly with returncode 0** in about two seconds,
+every single time. The watchdog in `auto_daily_session.py` only asked:
+
+```python
+if observer_proc and observer_proc.poll() is not None:
+    logger.warning("Paper Observer process stopped unexpectedly! Auto-restarting...")
+    start_paper_observer()
+```
+
+`poll() is not None` is true for *any* exit. The supervisor had no notion of
+**why** a child stopped, so it spent two hours fighting the child's own
+deliberate, successful decision to stop. Net effect: **no paper trading at
+all for the first two hours of the session**, plus 370 identical "Market is
+OPEN" Telegram messages (the announcement lived inside the launch function)
+and 372 leaked stdout file handles (`open(...)` on every restart, `close()`
+never).
+
+The v3.13.0 "perpetual paper trading" change removed *one specific trigger*
+for this — the 3-day cap — but left the watchdog defect itself completely
+untouched. Any future early exit would reproduce it exactly.
+
+**Fix:** replaced the poll-and-relaunch watchdog with a real
+`ServiceSupervisor` that decides whether an exit is even worth restarting:
+
+| Exit condition | Old behaviour | New behaviour |
+|---|---|---|
+| `returncode == 0` (observer) | relaunch forever | honour it, escalate **once**, stand down |
+| `returncode != 0` | relaunch every 20 s | restart behind a `0/5/15/30/60/120/300 s` backoff ladder, ceiling of 5 per burst, then escalate and stand down |
+| crash after a long healthy run | — | uptime ≥ 120 s starts a **fresh** burst, so a service that stays healthy is never abandoned |
+| `returncode == 0` (API bridge) | relaunch forever | still a fault — a server is never "done" — so it *is* retried, but under the same ladder and ceiling |
+
+Also fixed in the same pass, all consequences of the same defect:
+
+* the "Market is OPEN" Telegram announcement now fires only on launch #1;
+* `ServiceSupervisor` owns the child's stdout handle and closes the previous
+  one on every restart and on `stop()`;
+* `reset()` clears the give-up latch at the start of each session, since the
+  supervisors are module singletons that outlive a day in `--daemon` mode
+  (without it a Monday give-up would leave the service unsupervised all week);
+* the **same thrash defect one level up**: `run_daemon_loop()` re-entered
+  `run_session_flow()` immediately whenever it returned early (e.g. "Failed to
+  start backend service. Aborting session."), re-running auto-auth and port
+  kills in a tight loop for the rest of the day. Now capped at 3 attempts per
+  day with a 5-minute cool-off and a one-time alert.
+
+**Verification:** `test_orchestrator_supervisor.py` (8 tests, new) replays the
+real timeline — a child exiting code 0 after 2 s against 370 twenty-second
+watchdog ticks. Old code: 370 launches. New code: **1 launch**, one alert,
+`given_up = True`. The suite also pins the backoff ladder spacing, the
+crash ceiling, the healthy-uptime burst reset, the API-bridge clean-exit
+exception, the give-up latch reset, and file-handle release. Full backend
+suite: **705 passed, 2 xfailed**.
+
+**Still open (not a code fault):** the observer that ran on 2026-09-07 was a
+stale build. Worth confirming the orchestrator always launches the current
+checkout before the next unattended session.
+
+---
+
 ## 2026-08-28 (16:00 IST) — FIX: the CPU-livelock `Series.__setitem__` antipattern was re-introduced into the live-active strategy on 2026-08-08
 
 **How it surfaced:** a status-check of the running engine (started late, 13:20
