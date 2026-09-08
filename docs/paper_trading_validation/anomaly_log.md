@@ -6,6 +6,58 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-09-09 — FIX: `/api/option-greeks` called an undefined function, swallowed the NameError, and priced every Greek off a hardcoded spot
+
+**How it surfaced:** ruff's `F821 Undefined name '_get_quote_data'` at
+`api_bridge.py:2002` — one of only two real findings in the CI lint gate.
+
+**Root cause:** the Greeks endpoint's auto-fetch block called
+`await _get_quote_data(formatted)`, but no function of that name existed
+anywhere in the codebase. The resulting `NameError` was caught by a bare
+`except Exception: pass`, so execution fell through to the tick-cache lookup
+and then to this:
+
+```python
+if S <= 0:
+    S = 24250 if "NIFTY" in symbol.upper() and "BANK" not in symbol.upper() else (
+        52000 if "BANK" in symbol.upper() else 80000 if "SENSEX" in symbol.upper() else 24250
+    )
+```
+
+Spot is the single most load-bearing input to Black-Scholes — every Greek
+returned is a function of it. The endpoint responded HTTP 200 with confident,
+precisely-formatted delta/gamma/theta/vega for a strike priced off a number
+nobody supplied. Measured against a real quote taken during this fix, the
+hardcoded 24250 was **615 points (2.6%) away** from the actual NIFTY spot of
+23635.10 — more than enough to move a delta from OTM-ish to meaningfully
+wrong, and to misstate theta per lot.
+
+**Fix:**
+
+* `_get_quote_data(symbol)` now genuinely exists: the body of the
+  `/api/quote` route extracted into a reusable coroutine, with the route
+  delegating to it. Both callers therefore share one code path, and the tick
+  cache is refreshed identically from either.
+* The hardcoded spot ladder is deleted. An unresolvable spot is now an
+  explicit **HTTP 503** — Greeks computed on an invented spot are worse than
+  no Greeks.
+* The response carries `spot_source` (`caller` / `broker` / a tick `src`), so
+  a caller can tell a broker-sourced valuation from a cached one.
+* The catch-all handler re-raises `HTTPException` first, so the new 503 is not
+  re-wrapped into a generic 500, and it no longer leaks raw exception text to
+  the client (it logs server-side and returns a fixed message) — the same
+  policy already applied to this file's other 14 handlers by audit Medium #21.
+
+**Verification:** end-to-end against `TestClient` with a real session token —
+with no broker quote and an empty cache the endpoint returns 503 (previously
+200 + fabricated Greeks); with a caller-supplied spot it reports
+`spot_source: "caller"`; and with a live broker session it now returns a real
+spot of 23635.10 tagged `spot_source: "broker"` where it would previously have
+used 24250. `ruff --select E9,F8,F4` on `api_bridge.py` is now **completely
+clean** (both F821s gone). Suite **741 passed / 2 xfailed**.
+
+---
+
 ## 2026-09-09 — FIX: the v3.13.0 AI Exit Analyzer never ran, and would have been wrong on options if it had
 
 **How it surfaced:** the audit traced v3.13.0's headline feature end to end

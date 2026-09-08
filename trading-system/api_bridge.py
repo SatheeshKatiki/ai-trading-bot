@@ -1763,6 +1763,19 @@ async def get_quote(
     symbol: str = Query(..., description="The symbol (e.g., NSE:NIFTY50-INDEX)")
 ):
     """Fetches real-time quote (LTP) from Fyers."""
+    return await _get_quote_data(symbol)
+
+
+async def _get_quote_data(symbol: str) -> Dict[str, Any]:
+    """Fetch a live broker quote for `symbol` and refresh the tick cache.
+
+    Extracted from the /api/quote route body so other endpoints can reuse it.
+    `/api/option-greeks` already called a function by this exact name to
+    auto-fetch spot, but it was never defined -- ruff's F821 flagged it. The
+    resulting NameError was swallowed by a bare `except Exception: pass`, so
+    the Greeks endpoint silently fell through to a hardcoded spot price and
+    returned Greeks for a strike priced off a number nobody supplied.
+    """
     try:
         from brokers.token_cache import load_token
         token = load_token("fyers")
@@ -2140,26 +2153,49 @@ async def get_option_greeks(
     import math
     from datetime import datetime, timedelta
     try:
-        # Auto-fetch spot price if not provided
+        # Auto-fetch spot price if not provided.
+        #
+        # Spot is the single most load-bearing input to Black-Scholes: every
+        # Greek returned below is a function of it. This block used to end in
+        # a hardcoded guess (24250 / 52000 / 80000) and, because the broker
+        # lookup above called an undefined `_get_quote_data` whose NameError
+        # was swallowed by `except Exception: pass`, that guess was the path
+        # actually taken whenever the tick cache also missed. The endpoint
+        # then returned confident, precisely-formatted delta/gamma/theta/vega
+        # for a strike priced off a number nobody supplied.
+        #
+        # Greeks computed on an invented spot are worse than no Greeks, so an
+        # unresolvable spot is now an explicit 503 rather than a plausible
+        # answer.
         S = spot
+        spot_source = "caller"
         if S <= 0:
             try:
-                broker = BrokerFactory.get_active_broker()
                 formatted = format_broker_symbol(symbol)
                 quotes = await _get_quote_data(formatted)
                 if quotes and quotes.get("s") == "ok" and "d" in quotes and len(quotes["d"]) > 0:
-                    S = quotes["d"][0].get("v", {}).get("lp", 0)
-            except Exception:
-                pass
+                    S = float(quotes["d"][0].get("v", {}).get("lp", 0) or 0)
+                    spot_source = SRC_BROKER_REST
+            except Exception as quote_err:
+                logger.warning("Spot quote lookup failed for %s: %s", symbol, quote_err)
             if S <= 0:
                 with market_data_lock:
                     for key, val in current_market_data.items():
-                        if symbol.upper() in key.upper():
-                            S = val.get("lp", 0)
+                        if symbol.upper() in key.upper() and float(val.get("lp") or 0) > 0:
+                            S = float(val["lp"])
+                            spot_source = val.get("src") or "cache"
                             break
             if S <= 0:
-                S = 24250 if "NIFTY" in symbol.upper() and "BANK" not in symbol.upper() else (
-                    52000 if "BANK" in symbol.upper() else 80000 if "SENSEX" in symbol.upper() else 24250
+                logger.warning(
+                    "Cannot compute Greeks for %s %s %s: no live spot price available.",
+                    symbol, strike, opt_type,
+                )
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        f"No live spot price available for {symbol}. "
+                        "Greeks are not computed against an assumed price."
+                    ),
                 )
 
         K = strike
@@ -2238,6 +2274,9 @@ async def get_option_greeks(
             "strike": K,
             "opt_type": opt_type.upper(),
             "spot": round(S, 2),
+            # Where the spot used for every Greek below came from. Callers can
+            # tell a broker-sourced valuation from a cached or stale one.
+            "spot_source": spot_source,
             "premium": round(price, 2),
             "intrinsic": round(intrinsic, 2),
             "extrinsic": round(extrinsic, 2),
@@ -2256,9 +2295,17 @@ async def get_option_greeks(
             "distance_points": round(abs(S - K), 2),
             "distance_pct": round(abs(S - K) / max(1, S) * 100, 2),
         }
+    except HTTPException:
+        # Deliberate, already-meaningful responses (e.g. the 503 above when no
+        # live spot exists) must not be re-wrapped into a generic 500 by the
+        # catch-all below.
+        raise
     except Exception as e:
-        logger.error("Option Greeks calculation error: %s", e)
-        raise HTTPException(status_code=500, detail=f"Failed to compute Greeks: {e}")
+        logger.error("Option Greeks calculation error for %s %s %s: %s",
+                     symbol, strike, opt_type, e, exc_info=True)
+        # Log server-side, return a client-safe message -- same policy as the
+        # other 14 handlers in this file (audit Medium #21).
+        raise HTTPException(status_code=500, detail="Failed to compute option Greeks.")
 
 @app.get("/api/inspect")
 def inspect_broker():
