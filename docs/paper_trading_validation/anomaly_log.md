@@ -6,6 +6,75 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-09-09 — FIX: the entire Options Desk was fiction — fake India VIX, fake IV Rank, "Max Pain" that was just the ATM strike, a random PCR, and an expiry six weeks in the past
+
+**How it surfaced:** chasing the fabricated `India VIX` pill
+(`14.2 + Math.sin(Date.now()/60000) * 1.5`) found by the audit, then reading
+what else the `/api/option-chain` payload actually contained.
+
+**Root cause:** `get_option_chain()` is a Black-Scholes *model*, not a broker
+feed — its own docstring says "live or simulated" — and everything derived
+from it was presented as market data:
+
+| Field | What it really was |
+|---|---|
+| `India VIX` (UI) | `14.2 + Math.sin(Date.now()/60000) * 1.5`, colour-coded red above 18 as a risk signal |
+| `IV Rank` (UI) | `35 + Math.sin(Date.now()/90000) * 20` |
+| `maxPain` | `atm_strike` — the ATM strike relabelled. By construction "distance to max pain" was **always zero** |
+| `pcr` | `deterministic_random(base_price, 99, 0.6, 1.4)` — an MD5 hash of the spot price, unrelated to the OI table printed beside it |
+| `expiry` | hardcoded `"2026-07-25"` — already six weeks in the past |
+| premiums / Greeks / OI / volume | Black-Scholes on a `deterministic_random()` implied vol |
+| header badge | a green **"LIVE"** over all of the above |
+
+This matters beyond display: `paper_observer.select_best_option()` reads
+`ltp`, `delta` and `pcr` from this chain to choose strikes and set entry
+premiums, so paper-trade fills are theoretical prices. Real NIFTY weekly
+premiums diverge from Black-Scholes by bid-ask spread, volatility skew and
+liquidity, so the validation window's P&L measures the model, not the market.
+
+**Fix — real where real is possible, honest everywhere else:**
+
+* **India VIX is now real.** It is an ordinary NSE index; subscribed as
+  `NSE:INDIA VIX-INDEX` on the live Fyers feed alongside the other indices and
+  served on the chain payload as `indiaVix` with `src`/`ts`, or `null`. The UI
+  shows an em-dash when it is unavailable rather than inventing one.
+* **IV Rank removed, not faked.** It is by definition the current IV
+  percentile against a trailing (typically 1-year) IV history, and this system
+  stores no historical implied-volatility series, so it cannot be computed
+  from anything available. Deleted rather than approximated.
+* **Max pain is now actually computed** — the strike minimising total
+  intrinsic value owed to buyers — so it can finally diverge from ATM and mean
+  something.
+* **PCR is computed from this chain's own open interest**, so it is at least
+  internally consistent with the table beside it; `null` when there is no CE OI.
+* **Expiry** delegates to `premium_selection._next_expiry()`, the same
+  resolver the live strike selector uses, so the desk and the trading path can
+  never disagree about the contract series. Resolves to 2026-09-15 today.
+* **Provenance is stated, loudly.** The payload carries
+  `synthetic: true`, `priceSource: "black_scholes_model"` and
+  `realFields: ["underlying_price", "indiaVix"]`. The UI replaces the green
+  "LIVE" badge with an amber **"MODEL CHAIN"** and shows a banner above
+  the table saying in plain words that only spot and VIX are real and that
+  P&L booked against the chain measures the model.
+
+**Verification:** `test_option_chain_metrics.py` (9 tests, new) pins the max
+pain and PCR maths against hand-computed books — including a skewed chain
+where max pain lands at 23700 while ATM is 24000, the divergence the old
+`maxPain: atm_strike` could never express — and asserts the expiry resolves,
+is not in the past, and matches the live strike selector. Suite **730 passed
+/ 2 xfailed**. `tsc` clean, build green.
+
+**Still open — needs a decision (not fixed here):** the chain remains model
+output. The real fix is wiring Fyers' actual option-chain endpoint so premiums,
+OI and IV are traded values. Until then, paper-trading P&L should not be read
+as evidence of live performance. Related: `MarketEnvironmentFilter`'s "VIX safe
+band" gate and `institutional_momentum`'s adaptive-Donchian `daily_vix` are
+never given a value by `main.py` (default 15.0), so both run blind — now
+fixable since a real VIX exists, but wiring it changes trade admission and
+wants a backtest first.
+
+---
+
 ## 2026-09-09 — FIX (CRITICAL): six code paths fabricated market prices, and they reached the live trading engine — not just the dashboard
 
 **How it surfaced:** a full read-only project audit noticed that v3.13.0's

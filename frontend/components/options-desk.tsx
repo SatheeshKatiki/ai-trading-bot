@@ -12,7 +12,14 @@ interface OptionData {
 interface StrikeRow { strike: number; ce: OptionData; pe: OptionData; }
 interface OptionChain {
     symbol: string; expiry: string; atm: number;
-    maxPain: number; pcr: number; chain: StrikeRow[];
+    maxPain: number | null; pcr: number | null; chain: StrikeRow[];
+    /** Real India VIX from the broker feed, or null when unavailable. */
+    indiaVix?: { value: number; chp: number; src?: string; ts?: number } | null;
+    /** True when per-strike premiums/Greeks/OI are Black-Scholes model output
+     *  rather than traded prices. See api_bridge.get_option_chain(). */
+    synthetic?: boolean;
+    priceSource?: string;
+    realFields?: string[];
 }
 
 // ─── Stat Pill ────────────────────────────────────────────────────────────────
@@ -60,7 +67,15 @@ function OIChange({ val }: { val: number }) {
 }
 
 // ─── PCR Arc Gauge ────────────────────────────────────────────────────────────
-function PCRArc({ pcr }: { pcr: number }) {
+function PCRArc({ pcr }: { pcr: number | null }) {
+    if (pcr == null) {
+        return (
+            <div className="flex flex-col items-center justify-center h-[90px] gap-1">
+                <span className="text-lg font-black font-mono text-muted-foreground/60">—</span>
+                <span className="text-[9px] uppercase tracking-widest text-muted-foreground">PCR unavailable</span>
+            </div>
+        );
+    }
     const clamped = Math.min(2, Math.max(0, pcr));
     const pct = clamped / 2;
     const R = 44, CX = 56, CY = 56;
@@ -191,10 +206,18 @@ export function OptionsDesk({ symbol }: { symbol: string }) {
     const topPe = [...chain].sort((a, b) => (b.pe?.oi ?? 0) - (a.pe?.oi ?? 0)).slice(0, 3);
     const topCeBuildup = [...chain].sort((a, b) => (b.ce?.oichg ?? 0) - (a.ce?.oichg ?? 0)).slice(0, 3);
     const topPeBuildup = [...chain].sort((a, b) => (b.pe?.oichg ?? 0) - (a.pe?.oichg ?? 0)).slice(0, 3);
-    const mpDist = data.atm - data.maxPain;
-    const pcr = data.pcr ?? 1;
-    const vix = (14.2 + Math.sin(Date.now() / 60000) * 1.5).toFixed(1);
-    const ivRank = Math.round(35 + Math.sin(Date.now() / 90000) * 20);
+    const mpDist = data.maxPain != null ? data.atm - data.maxPain : null;
+    const pcr = data.pcr ?? null;
+    // India VIX now comes from the broker feed (NSE:INDIA VIX-INDEX) or is
+    // absent. It was previously `14.2 + Math.sin(Date.now()/60000) * 1.5` --
+    // a sine wave rendered as a live volatility read, colour-coded above 18
+    // as if it were a real risk signal.
+    const vix = data.indiaVix ?? null;
+    // "IV Rank" is gone rather than faked. It is by definition the current IV
+    // percentile against a trailing (usually 1-year) IV history, and this
+    // system stores no historical implied-volatility series at all, so the
+    // number cannot be computed from anything available. It was
+    // `35 + Math.sin(Date.now()/90000) * 20`.
 
     const TABS = [
         { id: "chain" as const, label: "Option Chain (Advanced)" },
@@ -204,6 +227,21 @@ export function OptionsDesk({ symbol }: { symbol: string }) {
 
     return (
         <div className="rounded-2xl border border-border bg-card dark:bg-[#0b0d12] overflow-hidden shadow-xl">
+
+            {/* ══ PROVENANCE BANNER ═══════════════════════════════════════════ */}
+            {data.synthetic && (
+                <div className="px-5 py-2 bg-amber-500/10 border-b border-amber-500/25 flex items-start gap-2">
+                    <span className="text-amber-600 dark:text-amber-400 text-xs font-black mt-px">⚠</span>
+                    <p className="text-[11px] leading-relaxed text-amber-800 dark:text-amber-300/90">
+                        <span className="font-bold">Theoretical chain.</span>{" "}
+                        Only the spot price{data.indiaVix ? " and India VIX" : ""} come from the broker.
+                        Every premium, Greek, open-interest and volume figure below is Black-Scholes
+                        model output — not traded prices. Real NIFTY weekly premiums differ from
+                        theoretical by bid-ask spread, volatility skew and liquidity, so P&amp;L booked
+                        against this chain measures the model, not the market.
+                    </p>
+                </div>
+            )}
 
             {/* ══ HEADER ══════════════════════════════════════════════════════ */}
             <div className="border-b border-border bg-muted/30 dark:bg-[#0e1117]">
@@ -215,9 +253,21 @@ export function OptionsDesk({ symbol }: { symbol: string }) {
                         <div>
                             <div className="flex items-center gap-2">
                                 <h2 className="text-sm font-black tracking-wide text-foreground uppercase">Options Desk</h2>
-                                <span className={`text-[9px] px-2 py-0.5 rounded-full font-bold tracking-wider ${refreshing ? "bg-amber-500/15 text-amber-600 dark:text-amber-400" : "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"}`}>
-                                    {refreshing ? "●  UPDATING" : "●  LIVE"}
-                                </span>
+                                {/* A "LIVE" badge over Black-Scholes model output is the most
+                                    misleading thing this screen could show. The badge now
+                                    reflects what the numbers actually are. */}
+                                {data.synthetic ? (
+                                    <span
+                                        className="text-[9px] px-2 py-0.5 rounded-full font-bold tracking-wider bg-amber-500/15 text-amber-600 dark:text-amber-400"
+                                        title="Premiums, Greeks, OI and volume on this chain are Black-Scholes model output computed from the live spot price — not traded prices. Real premiums differ by bid-ask spread, volatility skew and liquidity."
+                                    >
+                                        ●  MODEL CHAIN
+                                    </span>
+                                ) : (
+                                    <span className={`text-[9px] px-2 py-0.5 rounded-full font-bold tracking-wider ${refreshing ? "bg-amber-500/15 text-amber-600 dark:text-amber-400" : "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"}`}>
+                                        {refreshing ? "●  UPDATING" : "●  LIVE"}
+                                    </span>
+                                )}
                             </div>
                             <p className="text-[10px] text-muted-foreground font-mono mt-0.5">
                                 {data.expiry} · {lastTime}
@@ -236,10 +286,13 @@ export function OptionsDesk({ symbol }: { symbol: string }) {
 
                     <div className="flex items-stretch divide-x divide-border">
                         <StatPill label="ATM" value={data.atm.toLocaleString("en-IN")} color="text-primary" />
-                        <StatPill label="Max Pain" value={data.maxPain.toLocaleString("en-IN")} color="text-amber-600 dark:text-amber-400" />
-                        <StatPill label="PCR" value={pcr.toFixed(2)} color={pcr > 1.2 ? "text-emerald-600 dark:text-emerald-400" : pcr < 0.8 ? "text-rose-600 dark:text-rose-400" : "text-violet-600 dark:text-violet-400"} />
-                        <StatPill label="IV Rank" value={`${ivRank}%`} color={ivRank > 60 ? "text-rose-600 dark:text-rose-400" : ivRank < 30 ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400"} />
-                        <StatPill label="India VIX" value={vix} color={parseFloat(vix) > 18 ? "text-rose-600 dark:text-rose-400" : "text-foreground"} />
+                        <StatPill label="Max Pain" value={data.maxPain != null ? data.maxPain.toLocaleString("en-IN") : "—"} color="text-amber-600 dark:text-amber-400" />
+                        <StatPill label="PCR" value={pcr != null ? pcr.toFixed(2) : "—"} color={pcr == null ? "text-muted-foreground" : pcr > 1.2 ? "text-emerald-600 dark:text-emerald-400" : pcr < 0.8 ? "text-rose-600 dark:text-rose-400" : "text-violet-600 dark:text-violet-400"} />
+                        <StatPill
+                            label="India VIX"
+                            value={vix ? vix.value.toFixed(2) : "—"}
+                            color={!vix ? "text-muted-foreground" : vix.value > 18 ? "text-rose-600 dark:text-rose-400" : "text-foreground"}
+                        />
 
                         <div className="flex items-center px-3">
                             <button onClick={() => fetchSymbol(sym, true)} className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground hover:text-foreground transition-all">
@@ -415,7 +468,8 @@ export function OptionsDesk({ symbol }: { symbol: string }) {
                             <p className="text-[9px] font-bold tracking-widest uppercase text-muted-foreground/90 dark:text-muted-foreground/80 self-start">Put–Call Ratio</p>
                             <PCRArc pcr={pcr} />
                             <p className="text-[10px] text-muted-foreground text-center leading-relaxed">
-                                {pcr > 1.2 ? "Heavy Put writing detected. Institutional writers expect market to hold or rise."
+                                {pcr == null ? "Put/Call Ratio unavailable — no open-interest data for this chain."
+                                    : pcr > 1.2 ? "Heavy Put writing detected. Institutional writers expect market to hold or rise."
                                     : pcr < 0.8 ? "Heavy Call writing detected. Resistance forming. Bearish bias."
                                     : "Balanced OI. Market in consolidation. No clear directional bias."}
                             </p>
@@ -443,7 +497,7 @@ export function OptionsDesk({ symbol }: { symbol: string }) {
                             <div className="space-y-2 mt-4 pt-4 border-t border-amber-200 dark:border-amber-500/10">
                                 {[
                                     ["Current ATM", data.atm.toLocaleString("en-IN"), "text-primary"],
-                                    ["Distance", `${mpDist > 0 ? "+" : ""}${mpDist} pts`, mpDist === 0 ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400"],
+                                    ["Distance", mpDist == null ? "—" : `${mpDist > 0 ? "+" : ""}${mpDist} pts`, mpDist === 0 ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400"],
                                 ].map(([k, v, c]) => (
                                     <div key={k} className="flex justify-between items-center text-xs">
                                         <span className="text-amber-700/80 dark:text-muted-foreground/70">{k}</span>
@@ -451,7 +505,8 @@ export function OptionsDesk({ symbol }: { symbol: string }) {
                                     </div>
                                 ))}
                                 <p className="text-[10px] text-amber-700/80 dark:text-muted-foreground/70 pt-2 leading-relaxed">
-                                    {Math.abs(mpDist) < 50 ? "✓ Near Max Pain — expiry grind expected."
+                                    {mpDist == null ? "Max Pain unavailable — no open-interest data for this chain."
+                                        : Math.abs(mpDist) < 50 ? "✓ Near Max Pain — expiry grind expected."
                                         : mpDist > 0 ? `Market ${mpDist}pt above Max Pain. Expiry pull-down possible.`
                                         : `Market ${Math.abs(mpDist)}pt below Max Pain. Expiry pull-up possible.`}
                                 </p>
@@ -603,9 +658,9 @@ export function OptionsDesk({ symbol }: { symbol: string }) {
                 )}
                 <span className="flex items-center gap-1.5 text-[10px] text-amber-700 dark:text-amber-400/80">
                     <Target className="w-3 h-3 flex-shrink-0" />
-                    <span className="font-semibold">Max Pain {data.maxPain}</span>
+                    <span className="font-semibold">Max Pain {data.maxPain ?? "—"}</span>
                     <span className="text-muted-foreground/80 dark:text-muted-foreground">
-                        {Math.abs(mpDist) < 50 ? "— At max pain zone" : mpDist > 0 ? `— ${mpDist}pt above, pull-down on expiry` : `— ${Math.abs(mpDist)}pt below, pull-up on expiry`}
+                        {mpDist == null ? "— unavailable" : Math.abs(mpDist) < 50 ? "— At max pain zone" : mpDist > 0 ? `— ${mpDist}pt above, pull-down on expiry` : `— ${Math.abs(mpDist)}pt below, pull-up on expiry`}
                     </span>
                 </span>
                 <div className="ml-auto flex items-center gap-3 text-[9px] text-muted-foreground/80 dark:text-muted-foreground font-mono">

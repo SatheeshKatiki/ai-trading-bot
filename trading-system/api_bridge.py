@@ -346,6 +346,41 @@ TRADEABLE_SOURCES = frozenset({SRC_FYERS, SRC_BROKER_REST})
 #: only a genuinely broken feed trips it.
 MAX_TICK_AGE_S = 30.0
 
+#: India VIX, as the broker names it. Subscribed alongside the indices so the
+#: dashboard and the strategy's macro filter can both use a real number.
+INDIA_VIX_SYMBOL = "NSE:INDIA VIX-INDEX"
+
+
+def _next_weekly_expiry_str(symbol: str) -> str:
+    """Next weekly expiry for an index, as YYYY-MM-DD.
+
+    The options-chain response used to hardcode `"expiry": "2026-07-25"`, so
+    from late July 2026 onward the Options Desk labelled every chain with an
+    expiry that had already passed. Delegates to the same
+    `premium_selection._next_expiry()` the live strike selector uses, so the
+    desk and the trading path can never disagree about which contract series
+    is current.
+    """
+    try:
+        from trading_bot.strategies.premium_selection.options_selector import _next_expiry
+        instrument = "NIFTY"
+        upper = (symbol or "").upper()
+        if "BANKNIFTY" in upper or "NIFTYBANK" in upper:
+            instrument = "BANKNIFTY"
+        elif "FINNIFTY" in upper:
+            instrument = "FINNIFTY"
+        elif "SENSEX" in upper:
+            instrument = "SENSEX"
+        broker = None
+        try:
+            broker = BrokerFactory.get_active_broker()
+        except Exception:
+            pass
+        return _next_expiry(instrument, broker=broker).strftime("%Y-%m-%d")
+    except Exception as exc:
+        logger.warning("Could not resolve next weekly expiry for %s: %s", symbol, exc)
+        return ""
+
 
 def make_tick(lp: float, chp: float, src: str, ts: Optional[float] = None) -> Dict[str, Any]:
     """Build a market-data entry that carries where it came from and when.
@@ -632,6 +667,13 @@ def start_fyers_socket():
             _subscribed_symbols.update({
                 "NSE:NIFTY50-INDEX", "BSE:SENSEX-INDEX", "NSE:NIFTYBANK-INDEX",
                 "NSE:FINNIFTY-INDEX", "NSE:RELIANCE-EQ", "NSE:TCS-EQ",
+                # India VIX. Added 2026-09-09: the Options Desk displayed a
+                # VIX derived from `Math.sin(Date.now())`, and
+                # MarketEnvironmentFilter gates entries on a "VIX safe band"
+                # it was never given a real value for. It is a plain NSE index
+                # and costs one extra subscription, so there is no reason to
+                # guess at it.
+                INDIA_VIX_SYMBOL,
             })
             logger.info("Fyers WS Connected!")
             if fyers_socket_instance:
@@ -3282,13 +3324,65 @@ async def get_option_chain(symbol: str = "NSE:NIFTY50-INDEX"):
                 }
             })
             
+        # ── India VIX: a real number or none at all ─────────────────────────
+        # Previously the dashboard synthesised this from Math.sin(Date.now()).
+        # India VIX is an ordinary NSE index, now subscribed on the live feed
+        # (see INDIA_VIX_SYMBOL), so serve the real tick or serve nothing.
+        india_vix = None
+        with market_data_lock:
+            _vix_tick = current_market_data.get(INDIA_VIX_SYMBOL)
+        if _vix_tick and float(_vix_tick.get("lp") or 0) > 0:
+            india_vix = {
+                "value": round(float(_vix_tick["lp"]), 2),
+                "chp": round(float(_vix_tick.get("chp") or 0.0), 2),
+                "src": _vix_tick.get("src"),
+                "ts": _vix_tick.get("ts"),
+            }
+
+        # ── PCR from this chain's own open interest ─────────────────────────
+        # This used to be `deterministic_random(base_price, 99, 0.6, 1.4)` -- a
+        # hash of the spot price, unrelated to any option data, presented as
+        # the Put/Call Ratio. At minimum it must now be internally consistent
+        # with the open interest actually shown in the table beside it.
+        _tot_ce_oi = sum((row.get("ce") or {}).get("oi", 0) for row in chain)
+        _tot_pe_oi = sum((row.get("pe") or {}).get("oi", 0) for row in chain)
+        pcr = round(_tot_pe_oi / _tot_ce_oi, 2) if _tot_ce_oi else None
+
+        # ── Max pain, actually computed ─────────────────────────────────────
+        # This used to be `atm_strike` under the label "maxPain", which is not
+        # what max pain means. Compute it properly: the strike at which the
+        # total intrinsic value owed to option buyers is smallest.
+        max_pain_strike = None
+        if chain:
+            def _pain_at(expiry_price: float) -> float:
+                total = 0.0
+                for row in chain:
+                    k = row["strike"]
+                    total += max(0.0, expiry_price - k) * (row.get("ce") or {}).get("oi", 0)
+                    total += max(0.0, k - expiry_price) * (row.get("pe") or {}).get("oi", 0)
+                return total
+            max_pain_strike = min((row["strike"] for row in chain), key=_pain_at)
+
         return {
             "symbol": symbol,
             "underlying_price": base_price,
             "atm": atm_strike,
-            "maxPain": atm_strike,
-            "pcr": round(deterministic_random(base_price, 99, 0.6, 1.4), 2),
-            "expiry": "2026-07-25",
+            "maxPain": max_pain_strike,
+            "pcr": pcr,
+            "expiry": _next_weekly_expiry_str(symbol),
+            "indiaVix": india_vix,
+            # ── Provenance, same principle as tick `src` ─────────────────────
+            # Only `underlying_price` and `indiaVix` come from the broker. Every
+            # per-strike premium, Greek, OI and volume below is MODEL OUTPUT:
+            # Black-Scholes on a deterministic_random() implied vol, not traded
+            # prices. Real premiums differ from theoretical by bid-ask spread,
+            # volatility skew and liquidity -- routinely several percent on
+            # NIFTY weeklies and far more on illiquid strikes. Anything that
+            # books a P&L off this chain is measuring the model, not the market,
+            # so consumers are told outright rather than left to assume.
+            "synthetic": True,
+            "priceSource": "black_scholes_model",
+            "realFields": ["underlying_price", "indiaVix"],
             "chain": chain
         }
     except Exception as e:
