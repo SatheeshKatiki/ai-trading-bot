@@ -1697,28 +1697,3 @@ export default function NativeChart({ symbol, livePrice, timeframe = "5 Min", in
     </div>
   );
 }
-if (!chartRef.current) return;
-const canvas = chartRef.current.takeScreenshot();
-const link = document.createElement('a');
-link.href = canvas.toDataURL('image/png');
-link.download = `${symbol.replace(/[:\s]/g, '_')}_${timeframe.replace(/\s/g, '')}_chart.png`;
-link.click();
-          }}
-className = "p-2 rounded-full bg-background/90 hover:bg-background text-muted-foreground hover:text-foreground transition-all shadow-lg border border-border/40 backdrop-blur-md pointer-events-auto flex items-center justify-center hover:scale-110 active:scale-95"
-title = "Export Chart as PNG"
-  >
-  <Download size={16} />
-        </button >
-  <button
-    onClick={() => showSettings ? handleCancelSettings() : handleOpenSettings()}
-    className="p-2 rounded-full bg-background/90 hover:bg-background text-muted-foreground hover:text-foreground transition-all shadow-lg border border-border/40 backdrop-blur-md pointer-events-auto flex items-center justify-center hover:scale-110 active:scale-95"
-    title="Chart Settings"
-  >
-    <Settings2 size={16} />
-  </button>
-      </div >
-
-  <div ref={chartContainerRef} className="w-full h-full min-h-[450px] absolute inset-0 z-0" />
-    </div >
-  );
-}
