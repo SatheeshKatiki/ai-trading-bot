@@ -6,6 +6,87 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-09-09 (later) — FIX: every paper trade was filled at a hardcoded Rs.100, at the mid, with 12x too little theta
+
+**How it surfaced:** picking up the "model entry at the ask, exit at the bid"
+item left open by the option-chain work, and reading
+`paper_observer.select_best_option()` properly for the first time.
+
+**Root cause — three compounding defects:**
+
+**1. Wrong chain keys, so every field silently defaulted.**
+`select_best_option()` read `row["call"]` / `row["put"]`. The chain publishes
+its legs under `"ce"` / `"pe"`. `opt_details` was therefore always `{}`:
+
+```python
+opt_details = selected_row.get(opt_key, {})   # -> {} every time
+ltp   = opt_details.get("ltp", 100.0)         # -> 100.0
+delta = opt_details.get("delta", 0.50 ...)    # -> 0.50
+theta = opt_details.get("theta", -10.0)       # -> -10.0
+```
+
+**Every paper trade was entered at a flat Rs.100.00 premium**, with a constant
+0.50 delta and -10.0 theta, regardless of instrument, strike or expiry.
+
+Honest attribution: this became *active* when the chain moved from the
+synthetic `call`/`put` shape to the real broker's `ce`/`pe` shape earlier the
+same day — i.e. the earlier fix in this log introduced the mismatch. Before
+that the keys matched, but the values were Black-Scholes theoretical prices
+off a `deterministic_random()` implied vol. **Either way, no paper trade
+recorded before this fix was filled at a real market price.** Worth noting the
+same mismatch ran the other way on the frontend: at `cfd1941` the backend
+emitted `call`/`put` while `options-desk.tsx` already read `ce`/`pe`, so the
+Options Desk had been rendering an empty chain (`?? 0` everywhere) all along.
+`ce`/`pe` is now canonical on both sides.
+
+**2. Mid-price fills.** Entry used `ltp`. A buyer lifts the offer on entry and
+hits the bid on exit; both legs cost real money and neither was modelled.
+
+**3. Decay understated ~12x.** The mark-to-market used a flat `0.05/hour`
+(~1.2/day) for every contract.
+
+**Measured against the live chain, NIFTY 23450 CE, expiry 15-09-2026:**
+
+| | Old | Real |
+|---|---|---|
+| entry premium | Rs.100.00 (hardcoded) | Rs.139.45 (**ask**) |
+| mid / bid / ask | — | 138.50 / 138.15 / 139.45 |
+| spread | not modelled | 0.94% |
+| delta | 0.50 | 0.5093 |
+| theta | −10.00/day | −13.93/day |
+| IV | — | 11.58% |
+
+* Entry-price error alone: **Rs.+39.45/unit = Rs.+2,564 per lot (65).**
+* Decay over a 4-hour hold: old Rs.13/lot vs real Rs.151/lot — **12x**.
+
+**Fix:**
+
+* `select_best_option()` reads `ce`/`pe`, and returns `bid`, `ask`,
+  `spread_pct` and `iv` alongside ltp/delta/theta. A leg with no usable quote
+  now returns `None` — no trade — rather than inventing one.
+* Entry fills at the **ask**.
+* The mark-to-market marks to the **bid**, applying half the entry spread to
+  the exit side so the round trip is paid once each way.
+* Decay scales the contract's own per-day theta by hours actually held.
+* The originating quote (`entry_ltp`/`entry_bid`/`entry_ask`/
+  `entry_spread_pct`) is recorded on the trade so any fill can be reconciled
+  afterwards.
+
+**Verification:** `test_paper_observer_fills.py` (14 tests, new) pins the leg
+keys for both CE and PE, proves a legacy `call`/`put`-shaped row is now
+rejected rather than filled at 100.0, that entry is strictly above the mid,
+that the round trip exceeds 5% of the stop distance, that an unquoted chain
+still falls back to ltp, and that real theta dominates the old constant at 1h,
+4h and 6h. Suite **859 passed / 1 skipped / 2 xfailed**.
+
+**⚠ Consequence for the validation window: every paper trade recorded before
+this commit is invalid as evidence of live performance.** Entry prices were
+not real, spread was never paid, and decay was a twelfth of reality. The
+`GO_NO_GO_CHECKLIST.md` §2 clean-session count should restart from the first
+session run on this build.
+
+---
+
 ## 2026-09-09 — FIX: wired the REAL Fyers option chain; the Options Desk and paper fills no longer price off a Black-Scholes model
 
 **Background:** the previous entry labelled the synthetic chain honestly but

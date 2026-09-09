@@ -197,18 +197,36 @@ def select_best_option(symbol, direction, spot_price):
         return None
     
     selected_row = sorted_strikes[0]
-    opt_key = "call" if direction == "BUY" else "put"
+    # The chain publishes legs under "ce"/"pe" (NSE terminology, and what the
+    # Options Desk reads). This looked them up as "call"/"put", so opt_details
+    # was ALWAYS {} and every field below silently fell back to its default --
+    # entry premium a flat 100.0, delta 0.50, theta -10.0, on every paper trade
+    # ever recorded. Real ATM premium when this was found was 138.50.
+    opt_key = "ce" if direction == "BUY" else "pe"
     opt_type = "CE" if direction == "BUY" else "PE"
-    opt_details = selected_row.get(opt_key, {})
-    ltp = opt_details.get("ltp", 100.0)
+    opt_details = selected_row.get(opt_key) or {}
+    ltp = opt_details.get("ltp") or 0.0
+    bid = opt_details.get("bid") or 0.0
+    ask = opt_details.get("ask") or 0.0
+
+    if ltp <= 0:
+        return None    # no tradeable quote: do not invent one
     
     return {
         "contract": f"{symbol} {selected_row['strike']} {opt_type}",
         "strike": selected_row["strike"],
         "type": opt_type,
-        "ltp": float(ltp) if ltp and ltp > 0 else round(spot_price * 0.0075, 2),
+        "ltp": float(ltp),
+        # Real two-sided quote. An option BUYER lifts the offer on entry and
+        # hits the bid on exit; both legs cost real money and neither was
+        # modelled before.
+        "bid": float(bid),
+        "ask": float(ask),
+        "spread_pct": opt_details.get("spread_pct"),
         "delta": opt_details.get("delta", 0.50 if direction == "BUY" else -0.50),
+        # Theta from the chain is per DAY (Black-Scholes convention).
         "theta": opt_details.get("theta", -10.0),
+        "iv": opt_details.get("iv"),
         "pcr": pcr
     }
 
@@ -393,9 +411,23 @@ def run_session(day_num, date_str, day_name):
                         spot_change = cur_spot - pos["entry_spot"]
                         delta = pos["opt_delta"]
                         
-                        time_decay = 0.05 * (time.time() - pos["entry_time_epoch"]) / 3600.0
+                        # Theta from the chain is per DAY; scale it to the hours
+                        # actually held. This was a flat 0.05/hour (~1.2/day)
+                        # regardless of contract, against a real ATM theta of
+                        # about -13.92/day when measured -- roughly a 10x
+                        # understatement. Every held position therefore looked
+                        # better than it was, and the error grew with time held.
+                        hours_held = (time.time() - pos["entry_time_epoch"]) / 3600.0
+                        theta_per_day = abs(float(pos.get("opt_theta") or 10.0))
+                        time_decay = theta_per_day * (hours_held / 24.0)
                         premium_change = (spot_change * delta) - time_decay
-                        est_opt_ltp = max(0.5, round(pos["entry_premium"] + premium_change, 2))
+                        mid_est = max(0.5, round(pos["entry_premium"] + premium_change, 2))
+
+                        # Mark to the BID: closing a long option means hitting the
+                        # bid, not the mid. Applies half the entry spread to this
+                        # side, mirroring what the entry already paid.
+                        half_spread_pct = float(pos.get("entry_spread_pct") or 0.0) / 2.0
+                        est_opt_ltp = max(0.5, round(mid_est * (1.0 - half_spread_pct / 100.0), 2))
                         pos["current_ltp"] = est_opt_ltp
                         pos["highest_premium"] = max(pos.get("highest_premium", pos["entry_premium"]), est_opt_ltp)
                         pos["lowest_premium"] = min(pos.get("lowest_premium", pos["entry_premium"]), est_opt_ltp)
@@ -495,7 +527,15 @@ def run_session(day_num, date_str, day_name):
                         opt = select_best_option(symbol, direction, state["spot"])
                         if opt and opt["ltp"] > 0:
                             qty = LOT_SIZE.get(symbol, 65)
-                            entry_p = opt["ltp"]
+                            # Fill at the ASK. A buyer does not get the mid --
+                            # they pay the offer. Using ltp (or worse, the old
+                            # hardcoded 100.0) silently credited the account with
+                            # half the spread on entry, and again on exit. ATM
+                            # NIFTY weeklies quoted a 0.42-0.70% spread when this
+                            # was measured, so a round trip is roughly 1% of
+                            # premium -- material against a 15% stop and a 33%
+                            # target.
+                            entry_p = round(opt.get("ask") or opt["ltp"], 2)
                             sl_p = round(entry_p * 0.85, 2)       # 15% Stop Loss
                             tgt_p = round(entry_p * 1.33, 2)      # 33% Target (1:2.2 R:R)
                             
@@ -508,8 +548,15 @@ def run_session(day_num, date_str, day_name):
                                 "opt_type": opt["type"],
                                 "strike": opt["strike"],
                                 "opt_delta": opt["delta"],
+                                "opt_theta": opt.get("theta", -10.0),
                                 "entry_spot": state["spot"],
                                 "entry_premium": entry_p,
+                                # The quote this fill came from, so a recorded
+                                # trade can be reconciled after the fact.
+                                "entry_ltp": opt["ltp"],
+                                "entry_bid": opt.get("bid", 0.0),
+                                "entry_ask": opt.get("ask", 0.0),
+                                "entry_spread_pct": opt.get("spread_pct"),
                                 "current_ltp": entry_p,
                                 "highest_premium": entry_p,
                                 "lowest_premium": entry_p,
