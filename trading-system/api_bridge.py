@@ -2620,10 +2620,20 @@ async def get_equity_data(symbol: str = "NIFTY"):
 signals_cache_store = {}
 
 def compute_signals(
-    symbol: str = "NIFTY"
+    symbol: str = "NIFTY",
+    strategy: Optional[str] = None
 ):
-    """Generates live signals using the actual strategy files and broker data."""
+    """Generates live signals using the configured active strategy (defaults to ema9_rsi_momentum)."""
     try:
+        if not strategy:
+            try:
+                current_settings = _load_config_settings()
+                strategy = current_settings.get("active_strategy", "ema9_rsi_momentum")
+            except Exception:
+                strategy = "ema9_rsi_momentum"
+        strategy_name = strategy or "ema9_rsi_momentum"
+        cache_key = f"{symbol}_{strategy_name}"
+
         # IST-anchored (not server-local) so "today" never silently excludes
         # today's IST candles for a server whose OS clock isn't set to IST.
         end_date = datetime.now(_IST)
@@ -2642,19 +2652,73 @@ def compute_signals(
         df = pd.DataFrame(data)
         df.columns = [c.lower() for c in df.columns]
 
-        # Generate Signals via Registry using advanced_ai!
-        from trading_bot.strategies.advanced_ai_ml_strategy import generate_signals as advanced_ai_signals
-        signals = advanced_ai_signals(df)
-        
-        # Read scores from dataframe and clean NaN/None/non-numeric values
-        call_scores = df['call_score'] if 'call_score' in df.columns else pd.Series(0, index=df.index)
-        put_scores = df['put_score'] if 'put_score' in df.columns else pd.Series(0, index=df.index)
-        
-        # Clean the scores (replace NaN, None, etc with 0)
+        call_scores = pd.Series(0, index=df.index, dtype=int)
+        put_scores = pd.Series(0, index=df.index, dtype=int)
+
+        # ── Dynamic Strategy Execution ──
+        if strategy_name == "ema9_rsi_momentum":
+            from trading_bot.strategies.ema9_rsi_momentum import generate_signals as ema9_rsi_signals
+            from trading_bot.strategies.ema9_rsi_momentum.config import Ema9RsiMomentumConfig
+            from trading_bot.strategies.ema9_rsi_momentum.signal_engine import compute_indicator_set
+            from shared.indicators import adx as calc_adx
+
+            cfg = Ema9RsiMomentumConfig()
+            signals = ema9_rsi_signals(df)
+            ind = compute_indicator_set(df, cfg.ema_fast, cfg.ema_slow, cfg.rsi_length, cfg.rsi_ma_length)
+            adx_series = calc_adx(df) if len(df) >= 14 else pd.Series(20.0, index=df.index)
+
+            for i in range(len(df)):
+                ef = float(ind.ema_fast.iloc[i]) if not pd.isna(ind.ema_fast.iloc[i]) else 0
+                es = float(ind.ema_slow.iloc[i]) if not pd.isna(ind.ema_slow.iloc[i]) else 0
+                r = float(ind.rsi.iloc[i]) if not pd.isna(ind.rsi.iloc[i]) else 50
+                rm = float(ind.rsi_ma.iloc[i]) if not pd.isna(ind.rsi_ma.iloc[i]) else 50
+                ax = float(adx_series.iloc[i]) if not pd.isna(adx_series.iloc[i]) else 20
+
+                if ef > es and r > rm:
+                    base = 65
+                    if r >= 60: base += 15
+                    elif r >= 50: base += 10
+                    if ax >= 25: base += 10
+                    elif ax >= 18: base += 5
+                    if signals.iloc[i] == 1: base = min(98, base + 10)
+                    call_scores.iloc[i] = min(98, base)
+                elif ef > es:
+                    call_scores.iloc[i] = 55
+
+                if ef < es and r < rm:
+                    base = 65
+                    if r <= 40: base += 15
+                    elif r <= 50: base += 10
+                    if ax >= 25: base += 10
+                    elif ax >= 18: base += 5
+                    if signals.iloc[i] == -1: base = min(98, base + 10)
+                    put_scores.iloc[i] = min(98, base)
+                elif ef < es:
+                    put_scores.iloc[i] = 55
+
+        elif strategy_name == "advanced_ai":
+            from trading_bot.strategies.advanced_ai_ml_strategy import generate_signals as advanced_ai_signals
+            signals = advanced_ai_signals(df)
+            if 'call_score' in df.columns:
+                call_scores = pd.to_numeric(df['call_score'], errors='coerce').fillna(0).astype(int)
+            if 'put_score' in df.columns:
+                put_scores = pd.to_numeric(df['put_score'], errors='coerce').fillna(0).astype(int)
+        else:
+            from trading_bot.strategies.registry import registry
+            if not registry.registered_strategies:
+                registry.autodiscover()
+            signals = registry.run_strategy(strategy_name, df)
+            for i in range(len(df)):
+                if signals.iloc[i] == 1:
+                    call_scores.iloc[i] = 85
+                elif signals.iloc[i] == -1:
+                    put_scores.iloc[i] = 85
+
+        # Clean scores
         call_scores = pd.to_numeric(call_scores, errors='coerce').fillna(0).astype(int)
         put_scores = pd.to_numeric(put_scores, errors='coerce').fillna(0).astype(int)
         
-        # Generate trendData using the max score of each candle!
+        # Generate trendData using the max score of each candle
         trend_data = []
         for i in range(max(0, len(df) - 20), len(df)):
             current_time = df['datetime'].iloc[i].split(' ')[1][:5] if 'datetime' in df.columns else "00:00"
@@ -2664,8 +2728,9 @@ def compute_signals(
                 "value": score
             })
             
-        # Generate real signals list from the last 5 days data!
+        # Generate real signals list from recent data
         real_signals = []
+        strat_display = "EMA 9 / RSI Momentum" if strategy_name == "ema9_rsi_momentum" else strategy_name.replace("_", " ").title()
         for i in range(len(df)):
             if signals.iloc[i] == 1:
                 current_time = df['datetime'].iloc[i].split(' ')[1][:5] if 'datetime' in df.columns else "00:00"
@@ -2673,10 +2738,11 @@ def compute_signals(
                     "symbol": symbol,
                     "type": "CALL BUY",
                     "bias": "BUY",
-                    "strength": "Strong" if call_scores.iloc[i] > 85 else "Moderate",
+                    "strength": "Strong" if call_scores.iloc[i] > 80 else "Moderate",
                     "confidence": int(call_scores.iloc[i]),
                     "time": current_time,
-                    "reason": f"Institutional crossover with score {int(call_scores.iloc[i])}"
+                    "strategy": strategy_name,
+                    "reason": f"{strat_display} crossover with score {int(call_scores.iloc[i])}"
                 })
             elif signals.iloc[i] == -1:
                 current_time = df['datetime'].iloc[i].split(' ')[1][:5] if 'datetime' in df.columns else "00:00"
@@ -2684,22 +2750,19 @@ def compute_signals(
                     "symbol": symbol,
                     "type": "PUT BUY",
                     "bias": "SELL",
-                    "strength": "Strong" if put_scores.iloc[i] > 85 else "Moderate",
+                    "strength": "Strong" if put_scores.iloc[i] > 80 else "Moderate",
                     "confidence": int(put_scores.iloc[i]),
                     "time": current_time,
-                    "reason": f"Institutional crossover with score {int(put_scores.iloc[i])}"
+                    "strategy": strategy_name,
+                    "reason": f"{strat_display} crossover with score {int(put_scores.iloc[i])}"
                 })
 
-        # Always use the most recent scores (last candle) for the current state,
-        # whether the market is open or closed. Using old non-zero scores causes 
-        # stale "Bearish" or "Bullish" signals after hours!
+        # Most recent scores (last candle)
         valid_calls = call_scores.dropna()
         valid_puts = put_scores.dropna()
         last_call_score = int(valid_calls.iloc[-1]) if len(valid_calls) > 0 else 0
         last_put_score = int(valid_puts.iloc[-1]) if len(valid_puts) > 0 else 0
         
-        # If both are exactly 0 (flat close), calculate a micro-trend from the last few candles
-        # to give a slight bias instead of a dead 0% neutral, unless it's truly completely flat.
         if last_call_score == 0 and last_put_score == 0 and len(df) > 5:
             recent_trend = df['close'].iloc[-1] - df['close'].iloc[-5]
             if recent_trend > 0:
@@ -2710,16 +2773,15 @@ def compute_signals(
         confidence = max(last_call_score, last_put_score)
         
         bias = "NEUTRAL"
-        status = "Scanning..."
+        status = f"Scanning {strat_display}..."
         
-        if last_call_score >= 75:
+        if last_call_score >= 70:
             bias = "BUY"
-            status = "Institutional Call Buy Setup"
-        elif last_put_score >= 75:
+            status = f"{strat_display} Call Setup"
+        elif last_put_score >= 70:
             bias = "SELL"
-            status = "Institutional Put Buy Setup"
+            status = f"{strat_display} Put Setup"
         else:
-            # If scores are very close (within 5 points) and not extremely strong, use actual recent price trend as tie-breaker!
             if abs(last_call_score - last_put_score) <= 8 and max(last_call_score, last_put_score) < 65 and len(df) >= 4:
                 recent_trend = df['close'].iloc[-1] - df['close'].iloc[-4]
                 if recent_trend > 0:
@@ -2742,6 +2804,8 @@ def compute_signals(
                 status = "Awaiting Setup"
         
         result = {
+            "strategy": strategy_name,
+            "strategy_display": strat_display,
             "confidence": confidence,
             "status": status,
             "bias": f"{bias} BIAS",
@@ -2749,34 +2813,61 @@ def compute_signals(
             "signals": real_signals[-10:][::-1],
             "timestamp": time.time()
         }
+        signals_cache_store[cache_key] = result
         signals_cache_store[symbol] = result
         return result
     except Exception as e:
         logger.error("Error in compute_signals: %s", e)
-        err_res = {"error": str(e), "confidence": 50, "direction": "NEUTRAL", "timestamp": time.time(), "bias": "ERROR", "status": "Connection Error"}
+        strat_display = "EMA 9 / RSI Momentum" if (strategy or "ema9_rsi_momentum") == "ema9_rsi_momentum" else (strategy or "Strategy").replace("_", " ").title()
+        err_res = {
+            "error": str(e),
+            "strategy": strategy or "ema9_rsi_momentum",
+            "strategy_display": strat_display,
+            "confidence": 50,
+            "direction": "NEUTRAL",
+            "timestamp": time.time(),
+            "bias": "ERROR",
+            "status": "Connection Error"
+        }
+        signals_cache_store[f"{symbol}_{strategy or 'ema9_rsi_momentum'}"] = err_res
         signals_cache_store[symbol] = err_res
         return err_res
 
 @app.get("/api/signals")
 async def get_signals_api(
-    symbol: str = Query("NIFTY", description="The stock ticker")
+    symbol: str = Query("NIFTY", description="The stock ticker"),
+    strategy: Optional[str] = Query(None, description="The strategy name (defaults to active_strategy in settings.json)")
 ):
-    """Returns cached AI signals instantly to avoid blocking UI."""
-    cached = signals_cache_store.get(symbol, {})
+    """Returns cached signals instantly using the active strategy."""
+    try:
+        active_strat = strategy or _load_config_settings().get("active_strategy", "ema9_rsi_momentum")
+    except Exception:
+        active_strat = strategy or "ema9_rsi_momentum"
+
+    cache_key = f"{symbol}_{active_strat}"
+    cached = signals_cache_store.get(cache_key, {})
     is_calculating = cached.get("direction") == "CALCULATING"
     
-    # Refresh cache if older than 30 seconds
+    # Refresh cache if older than 30 seconds or empty
     needs_refresh = False
     if not cached or (not is_calculating and "timestamp" in cached and time.time() - cached["timestamp"] > 30):
         needs_refresh = True
         
     if needs_refresh:
-        # Prevent race conditions by marking as calculating immediately
-        signals_cache_store[symbol] = {**cached, "direction": "CALCULATING"} if cached else {"symbol": symbol, "confidence": 50, "direction": "CALCULATING"}
+        signals_cache_store[cache_key] = {
+            **cached,
+            "direction": "CALCULATING",
+            "strategy": active_strat
+        } if cached else {
+            "symbol": symbol,
+            "strategy": active_strat,
+            "confidence": 50,
+            "direction": "CALCULATING"
+        }
         from fastapi.concurrency import run_in_threadpool
         import asyncio
-        asyncio.create_task(run_in_threadpool(compute_signals, symbol))
-        return cached if cached else {"symbol": symbol, "confidence": 50, "direction": "CALCULATING"}
+        asyncio.create_task(run_in_threadpool(compute_signals, symbol, active_strat))
+        return cached if cached else {"symbol": symbol, "strategy": active_strat, "confidence": 50, "direction": "CALCULATING"}
         
     return cached
 
@@ -3246,12 +3337,278 @@ async def get_trade_journal():
         logger.error(f"Error fetching journal API: {e}")
         return {"trades": [], "error": str(e)}
 
+def _implied_vol(premium, S, K, T, r, is_call):
+    """Solve Black-Scholes for sigma by bisection, from a REAL traded premium.
+
+    The model chain used ``deterministic_random()`` for implied volatility --
+    an MD5 hash of the strike. Here IV is recovered from the price the market
+    actually paid, which is what makes the Greeks below mean anything.
+
+    Returns None when the premium carries no extrinsic value (nothing to
+    invert) or when no sane volatility reproduces it.
+    """
+    import math
+
+    if premium is None or premium <= 0 or S <= 0 or K <= 0 or T <= 0:
+        return None
+    intrinsic = max(0.0, (S - K) if is_call else (K - S))
+    if premium <= intrinsic + 1e-6:
+        return None
+
+    def _ncdf(x):
+        return (1.0 + math.erf(x / math.sqrt(2.0))) / 2.0
+
+    def bs_price(sigma):
+        if sigma <= 0:
+            return intrinsic
+        d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
+        d2 = d1 - sigma * math.sqrt(T)
+        if is_call:
+            return S * _ncdf(d1) - K * math.exp(-r * T) * _ncdf(d2)
+        return K * math.exp(-r * T) * _ncdf(-d2) - S * _ncdf(-d1)
+
+    lo, hi = 1e-4, 5.0
+    if bs_price(hi) < premium:
+        return None
+    for _ in range(60):
+        mid = 0.5 * (lo + hi)
+        if bs_price(mid) < premium:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)
+
+
+def _greeks_from_iv(S, K, T, r, sigma, is_call):
+    """Black-Scholes Greeks evaluated at a REAL, market-implied volatility."""
+    import math
+
+    if not sigma or sigma <= 0 or T <= 0 or S <= 0 or K <= 0:
+        return {}
+
+    def _ncdf(x):
+        return (1.0 + math.erf(x / math.sqrt(2.0))) / 2.0
+
+    def _npdf(x):
+        return math.exp(-0.5 * x * x) / math.sqrt(2.0 * math.pi)
+
+    d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
+    d2 = d1 - sigma * math.sqrt(T)
+
+    delta = _ncdf(d1) if is_call else _ncdf(d1) - 1.0
+    gamma = _npdf(d1) / (S * sigma * math.sqrt(T))
+    vega = S * _npdf(d1) * math.sqrt(T) / 100.0
+    if is_call:
+        theta = (-(S * _npdf(d1) * sigma) / (2 * math.sqrt(T))
+                 - r * K * math.exp(-r * T) * _ncdf(d2)) / 365.0
+    else:
+        theta = (-(S * _npdf(d1) * sigma) / (2 * math.sqrt(T))
+                 + r * K * math.exp(-r * T) * _ncdf(-d2)) / 365.0
+
+    return {
+        "delta": round(delta, 4),
+        "gamma": round(gamma, 6),
+        "theta": round(theta, 2),
+        "vega": round(vega, 2),
+    }
+
+
+def _chain_leg(row, S, T, r, is_call):
+    """Map one broker chain row into the shape the Options Desk consumes."""
+    ltp = float(row.get("ltp") or 0)
+    bid = float(row.get("bid") or 0)
+    ask = float(row.get("ask") or 0)
+    K = float(row.get("strike_price") or 0)
+    quoted = bid > 0 and ask > 0
+
+    iv = _implied_vol(ltp, S, K, T, r, is_call)
+    leg = {
+        "ltp": round(ltp, 2),
+        "bid": round(bid, 2),
+        "ask": round(ask, 2),
+        # The spread is what an option BUYER actually pays away on entry and
+        # again on exit. The model chain had no bid/ask at all, so this cost
+        # was structurally invisible to anything pricing against it.
+        "spread": round(ask - bid, 2) if quoted else None,
+        "spread_pct": round((ask - bid) / ltp * 100, 2) if quoted and ltp > 0 else None,
+        "oi": int(row.get("oi") or 0),
+        "oichg": int(row.get("oich") or 0),
+        "oichg_pct": round(float(row.get("oichp") or 0), 2),
+        "volume": int(row.get("volume") or 0),
+        "chg": round(float(row.get("ltpch") or 0), 2),
+        "chg_pct": round(float(row.get("ltpchp") or 0), 2),
+        "symbol": row.get("symbol"),
+        "iv": round(iv * 100, 2) if iv else None,
+    }
+    leg.update(_greeks_from_iv(S, K, T, r, iv, is_call))
+    return leg
+
+
+async def _fetch_real_option_chain(symbol: str):
+    """Fetch and normalise the broker's REAL option chain, or return None.
+
+    Never raises: when there is no cached broker session, or the call fails,
+    the caller falls back to the Black-Scholes model chain (flagged
+    ``synthetic: true``).
+    """
+    try:
+        from brokers.token_cache import load_token
+        token = load_token("fyers")
+        if not token:
+            return None
+
+        from fyers_apiv3 import fyersModel
+        fyers = fyersModel.FyersModel(
+            client_id=_get_fyers_client_id(), is_async=False, token=token, log_path=""
+        )
+
+        query_symbol = "NSE:NIFTY50-INDEX"
+        upper = (symbol or "").upper()
+        if "BANKNIFTY" in upper or "NIFTYBANK" in upper:
+            query_symbol = "NSE:NIFTYBANK-INDEX"
+        elif "FINNIFTY" in upper:
+            query_symbol = "NSE:FINNIFTY-INDEX"
+        elif "SENSEX" in upper:
+            query_symbol = "BSE:SENSEX-INDEX"
+
+        # Offloaded to a thread for the same reason every other Fyers REST
+        # call here is -- see /api/funds's note on the 2026-08-05 server freeze.
+        resp = await asyncio.to_thread(
+            fyers.optionchain,
+            data={"symbol": query_symbol, "strikecount": 20, "timestamp": ""},
+        )
+        if not resp or resp.get("s") != "ok":
+            logger.warning("Broker option chain unavailable for %s: %s",
+                           query_symbol, (resp or {}).get("message"))
+            return None
+
+        data = resp.get("data") or {}
+        rows = data.get("optionsChain") or []
+        if not rows:
+            return None
+
+        # The row carrying strike_price == -1 is the underlying itself.
+        spot = 0.0
+        for row in rows:
+            if float(row.get("strike_price") or 0) < 0 and row.get("ltp"):
+                spot = float(row["ltp"])
+                break
+        if spot <= 0:
+            return None
+
+        # Real expiry series; the nearest entry is the chain being returned.
+        expiries = data.get("expiryData") or []
+        expiry_str = ""
+        expiry_ts = None
+        if expiries:
+            expiry_str = expiries[0].get("date", "")
+            try:
+                expiry_ts = int(expiries[0].get("expiry"))
+            except (TypeError, ValueError):
+                expiry_ts = None
+        if expiry_ts:
+            secs = expiry_ts - datetime.now(timezone.utc).timestamp()
+            T = max(secs / (365.0 * 24 * 3600), 1.0 / (365.0 * 24 * 60))
+        else:
+            T = 1.0 / 365.0
+        r = 0.065
+
+        by_strike = {}
+        for row in rows:
+            opt_type = (row.get("option_type") or "").upper()
+            if opt_type not in ("CE", "PE"):
+                continue
+            K = float(row.get("strike_price") or 0)
+            if K <= 0:
+                continue
+            slot = by_strike.setdefault(K, {"strike": K, "ce": {}, "pe": {}})
+            slot["ce" if opt_type == "CE" else "pe"] = _chain_leg(
+                row, spot, T, r, opt_type == "CE"
+            )
+
+        chain = [by_strike[k] for k in sorted(by_strike)]
+        if not chain:
+            return None
+
+        strikes = [c["strike"] for c in chain]
+        step = min((b - a) for a, b in zip(strikes, strikes[1:])) if len(strikes) > 1 else 50
+        atm_strike = min(strikes, key=lambda k: abs(k - spot))
+
+        # PCR from the broker's own aggregate OI when present, else this chain.
+        call_oi = float(data.get("callOi") or 0)
+        put_oi = float(data.get("putOi") or 0)
+        if call_oi <= 0:
+            call_oi = sum(c["ce"].get("oi", 0) for c in chain)
+            put_oi = sum(c["pe"].get("oi", 0) for c in chain)
+        pcr = round(put_oi / call_oi, 2) if call_oi else None
+
+        # Max pain: the expiry price at which writers owe buyers the least.
+        def _pain_at(price):
+            total = 0.0
+            for c in chain:
+                total += max(0.0, price - c["strike"]) * c["ce"].get("oi", 0)
+                total += max(0.0, c["strike"] - price) * c["pe"].get("oi", 0)
+            return total
+
+        max_pain = min(strikes, key=_pain_at)
+
+        vix_row = data.get("indiavixData") or {}
+        india_vix = None
+        if float(vix_row.get("ltp") or 0) > 0:
+            india_vix = {
+                "value": round(float(vix_row["ltp"]), 2),
+                "chp": round(float(vix_row.get("ltpchp") or 0), 2),
+                "src": SRC_BROKER_REST,
+                "ts": time.time(),
+            }
+
+        return {
+            "symbol": symbol,
+            "underlying_price": round(spot, 2),
+            "atm": atm_strike,
+            "strike_step": step,
+            "maxPain": max_pain,
+            "pcr": pcr,
+            "totalCallOi": int(call_oi),
+            "totalPutOi": int(put_oi),
+            "expiry": expiry_str,
+            "expiries": expiries,
+            "indiaVix": india_vix,
+            # Real traded data. IV and the Greeks are DERIVED, in the honest
+            # direction: implied vol is solved from each real premium, then the
+            # Greeks follow from it -- the inverse of the model chain, which
+            # invented a vol and priced the premium from it.
+            "synthetic": False,
+            "priceSource": "broker_option_chain",
+            "derivedFields": ["iv", "delta", "gamma", "theta", "vega", "maxPain"],
+            "chain": chain,
+        }
+    except Exception as exc:
+        logger.warning("Real option chain fetch failed for %s: %s", symbol, exc)
+        return None
+
+
 @app.get("/api/option-chain")
 async def get_option_chain(symbol: str = "NSE:NIFTY50-INDEX"):
+    """Return the option chain for `symbol`.
+
+    Prefers the broker's REAL chain (Fyers `/options-chain-v3`): traded
+    premiums, genuine bid/ask, real open interest and OI change, real volume,
+    the real expiry series and the real India VIX. Falls back to the
+    Black-Scholes model chain below only when there is no broker session, and
+    says so via `synthetic: true`.
+
+    Why this matters: the model chain prices every strike from theory. Real
+    NIFTY weekly premiums diverge from theoretical by bid-ask spread,
+    volatility skew and liquidity, and the model chain had no bid/ask at all --
+    so anything booking a fill against it was measuring the model, not the
+    market. It also carried `deterministic_random()` open interest, which made
+    PCR, max pain and OI-buildup reads meaningless.
     """
-    Returns live or simulated option chain data with Greeks.
-    This generates a fully dynamic Option Chain mathematically synchronized to the real-time Live Spot Price using the Black-Scholes pricing model.
-    """
+    real = await _fetch_real_option_chain(symbol)
+    if real is not None:
+        return real
+
     try:
         import hashlib
         import math

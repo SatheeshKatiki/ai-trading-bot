@@ -6,6 +6,82 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-09-09 — FIX: wired the REAL Fyers option chain; the Options Desk and paper fills no longer price off a Black-Scholes model
+
+**Background:** the previous entry labelled the synthetic chain honestly but
+left it in place. This replaces it.
+
+**What was wrong:** `/api/option-chain` always returned model output —
+theoretical premiums computed from a `deterministic_random()` implied
+volatility, invented open interest and volume, a PCR that was an MD5 hash of
+the spot price, "max pain" that was literally the ATM strike, a hardcoded
+expiry, and **no bid/ask at all**. Because
+`paper_observer.select_best_option()` reads `ltp`, `delta` and `pcr` from this
+payload to pick strikes and set entry premiums, every paper fill was priced by
+the model rather than the market — and the absence of bid/ask meant every fill
+implicitly assumed perfect mid-price execution.
+
+**Fix:** `_fetch_real_option_chain()` now calls Fyers' `/options-chain-v3`
+(`fyersModel.optionchain`, `strikecount=20`) and is preferred over the model,
+which survives only as a fallback when there is no broker session — still
+flagged `synthetic: true`.
+
+Real, straight from the broker: traded premium, **bid/ask**, open interest, OI
+change, volume, the full expiry series, aggregate call/put OI, and India VIX.
+
+Derived — in the honest direction: implied volatility is solved out of each
+**real** premium by bisection, and the Greeks follow from that. The model
+chain did the inverse: invent a vol, then price the premium from it.
+
+Also computed properly rather than faked: max pain (the expiry price at which
+writers owe buyers least) and PCR (from the broker's own aggregate OI).
+
+**Live verification, NIFTY, 2026-09-09:**
+
+| Field | Real value | What the model chain said |
+|---|---|---|
+| India VIX | **11.23** | `14.2 + sin(now)*1.5` |
+| PCR | **0.65** (callOI 111.3M / putOI 72.3M) | `md5(spot)` → 0.6–1.4 |
+| Max Pain | **23750**, 100 pts from ATM | `= ATM`, so distance was always 0 |
+| Expiry | **15-09-2026** | hardcoded `2026-07-25` |
+| ATM 23650 CE | ltp 153.05, bid 153.65 / ask 154.30, **spread 0.42%**, IV 11.86, δ +0.5158, θ −13.78 | no bid/ask at all |
+| ATM 23650 PE | ltp 106.80, bid 106.05 / ask 106.80, **spread 0.70%**, IV 9.07, δ −0.4811, θ −6.86 | — |
+
+The IV numbers are a strong independent cross-check: solved purely from traded
+premiums, ATM CE 11.86 and PE 9.07 straddle the separately-reported India VIX
+of 11.23. Deltas of +0.516 / −0.481 at a 23650 strike against a 23635 spot are
+textbook.
+
+**Frontend:** the fabricated IV fallback
+(`ce.iv ?? Math.max(12, 28 - distance/100)`) is gone — a strike with no
+extrinsic value left to invert now shows an em-dash instead of a made-up
+smile. Greeks are typed optional because they legitimately can be absent. A new
+**ATM Spread** stat pill shows the round-trip bid/ask cost, colour-graded, so
+the single most important execution cost for an option buyer is finally on
+screen.
+
+**Verification:** `test_real_option_chain.py` (23 tests, new) round-trips the
+IV solver against known vols for calls and puts at four volatility levels,
+pins put-call delta parity (`δ_call − δ_put == 1`), asserts theta is negative
+on both legs (a sign error there would invert every decay-based exit rule),
+gamma/vega positive, IV `None` for pure-intrinsic and impossible premiums, and
+that the spread is `None` rather than `0` when a leg is unquoted. Suite **771
+passed / 2 xfailed**. `tsc` clean, `npm run build` green.
+
+**Incidental fix in the same file:** `compute_signals()` called
+`_read_settings()`, which does not exist anywhere in the codebase (ruff F821).
+Wrapped in `try/except Exception`, so it silently fell back to a default and
+the configured `active_strategy` was ignored. Repointed at the real helper,
+`_load_config_settings()`. Note this belongs to work another session landed
+mid-audit — see the concurrency note in the previous entry.
+
+**Still open:** `paper_observer.select_best_option()` still reads only `ltp`.
+Now that real bid/ask exists it should model entry at the **ask** and exit at
+the **bid**, rather than assuming a mid fill. That is a change to how paper
+P&L is computed and wants a deliberate decision before it lands.
+
+---
+
 ## 2026-09-09 — FIX: the XGBoost model artifact followed the working directory, deployed unconditionally, and was rewritten as a side effect of asking for a signal
 
 **How it surfaced:** `git status` showed `trading-system/models/xgboost_model.json`

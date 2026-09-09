@@ -7,7 +7,16 @@ import { Activity, RefreshCw, ArrowUp, ArrowDown, Minus, Target, Zap } from 'luc
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface OptionData {
     ltp: number; oi: number; oichg: number; volume: number;
-    delta: number; theta: number; gamma: number; vega: number; iv?: number;
+    /** Greeks are DERIVED from the implied vol solved out of the real traded
+     *  premium, so they are absent for strikes with no extrinsic value left
+     *  (deep ITM) where IV cannot be inverted. Optional on purpose. */
+    delta?: number | null; theta?: number | null;
+    gamma?: number | null; vega?: number | null; iv?: number | null;
+    /** Real quote. Absent on the Black-Scholes fallback chain, which has no
+     *  bid/ask at all — which is exactly why spread cost used to be invisible. */
+    bid?: number; ask?: number;
+    spread?: number | null; spread_pct?: number | null;
+    symbol?: string; chg?: number; chg_pct?: number; oichg_pct?: number;
 }
 interface StrikeRow { strike: number; ce: OptionData; pe: OptionData; }
 interface OptionChain {
@@ -208,6 +217,18 @@ export function OptionsDesk({ symbol }: { symbol: string }) {
     const topPeBuildup = [...chain].sort((a, b) => (b.pe?.oichg ?? 0) - (a.pe?.oichg ?? 0)).slice(0, 3);
     const mpDist = data.maxPain != null ? data.atm - data.maxPain : null;
     const pcr = data.pcr ?? null;
+    // Round-trip bid/ask cost at the ATM strike. For an option BUYER this is
+    // real money paid away on entry and again on exit, and it was structurally
+    // invisible before the real broker chain was wired in — the model chain
+    // had no bid/ask at all, so every backtest and paper fill implicitly
+    // assumed a perfect mid-price execution.
+    const atmRow = chain.find(r => r.strike === data.atm);
+    const atmSpreadPct = atmRow
+        ? [atmRow.ce?.spread_pct, atmRow.pe?.spread_pct].filter((v): v is number => typeof v === "number")
+        : [];
+    const avgSpreadPct = atmSpreadPct.length
+        ? atmSpreadPct.reduce((a, b) => a + b, 0) / atmSpreadPct.length
+        : null;
     // India VIX now comes from the broker feed (NSE:INDIA VIX-INDEX) or is
     // absent. It was previously `14.2 + Math.sin(Date.now()/60000) * 1.5` --
     // a sine wave rendered as a live volatility read, colour-coded above 18
@@ -288,6 +309,11 @@ export function OptionsDesk({ symbol }: { symbol: string }) {
                         <StatPill label="ATM" value={data.atm.toLocaleString("en-IN")} color="text-primary" />
                         <StatPill label="Max Pain" value={data.maxPain != null ? data.maxPain.toLocaleString("en-IN") : "—"} color="text-amber-600 dark:text-amber-400" />
                         <StatPill label="PCR" value={pcr != null ? pcr.toFixed(2) : "—"} color={pcr == null ? "text-muted-foreground" : pcr > 1.2 ? "text-emerald-600 dark:text-emerald-400" : pcr < 0.8 ? "text-rose-600 dark:text-rose-400" : "text-violet-600 dark:text-violet-400"} />
+                        <StatPill
+                            label="ATM Spread"
+                            value={avgSpreadPct != null ? `${avgSpreadPct.toFixed(2)}%` : "—"}
+                            color={avgSpreadPct == null ? "text-muted-foreground" : avgSpreadPct > 1.5 ? "text-rose-600 dark:text-rose-400" : avgSpreadPct > 0.75 ? "text-amber-600 dark:text-amber-400" : "text-emerald-600 dark:text-emerald-400"}
+                        />
                         <StatPill
                             label="India VIX"
                             value={vix ? vix.value.toFixed(2) : "—"}
@@ -378,8 +404,13 @@ export function OptionsDesk({ symbol }: { symbol: string }) {
                                         // Dynamic mocks for missing values
                                         const ceVal = ((ce.volume ?? 0) * (ce.ltp ?? 0)) / 100000; 
                                         const peVal = ((pe.volume ?? 0) * (pe.ltp ?? 0)) / 100000;
-                                        const ceIV = ce.iv ?? (Math.max(12, 28 - Math.abs(data.atm - row.strike) / 100));
-                                        const peIV = pe.iv ?? (Math.max(13, 30 - Math.abs(data.atm - row.strike) / 100));
+                                        // No invented IV. On the real chain, implied vol is solved
+                                        // from the traded premium and is legitimately absent for deep-ITM
+                                        // strikes with no extrinsic value left to invert. This used to
+                                        // fall back to `Math.max(12, 28 - distance/100)` — a fabricated
+                                        // smile that looked like data.
+                                        const ceIV = ce.iv ?? null;
+                                        const peIV = pe.iv ?? null;
 
                                         return (
                                             <tr key={row.strike}
@@ -389,7 +420,7 @@ export function OptionsDesk({ symbol }: { symbol: string }) {
                                                         : "border-border hover:bg-muted/50"}`}>
 
                                                 {/* ── CALL side 10 cols ── */}
-                                                <td className="px-2 py-2.5 text-right text-[9px] text-muted-foreground/90 dark:text-muted-foreground/60">{ceIV.toFixed(1)}</td>
+                                                <td className="px-2 py-2.5 text-right text-[9px] text-muted-foreground/90 dark:text-muted-foreground/60">{ceIV != null ? ceIV.toFixed(1) : "—"}</td>
                                                 <td className="px-2 py-2.5 text-right text-[9px] text-violet-700 dark:text-violet-400/60">{(ce.vega ?? 0).toFixed(2)}</td>
                                                 <td className="px-2 py-2.5 text-right text-[9px] text-amber-700 dark:text-amber-400/60">{(ce.gamma ?? 0).toFixed(3)}</td>
                                                 <td className="px-2 py-2.5 text-right text-[9px] text-rose-700 dark:text-rose-400/60">{(ce.theta ?? 0).toFixed(2)}</td>
@@ -424,7 +455,7 @@ export function OptionsDesk({ symbol }: { symbol: string }) {
                                                 <td className="px-2 py-2.5 text-left text-[9px] text-rose-700 dark:text-rose-400/60">{(pe.theta ?? 0).toFixed(2)}</td>
                                                 <td className="px-2 py-2.5 text-left text-[9px] text-amber-700 dark:text-amber-400/60">{(pe.gamma ?? 0).toFixed(3)}</td>
                                                 <td className="px-2 py-2.5 text-left text-[9px] text-violet-700 dark:text-violet-400/60">{(pe.vega ?? 0).toFixed(2)}</td>
-                                                <td className="px-2 py-2.5 text-left text-[9px] text-muted-foreground/90 dark:text-muted-foreground/60">{peIV.toFixed(1)}</td>
+                                                <td className="px-2 py-2.5 text-left text-[9px] text-muted-foreground/90 dark:text-muted-foreground/60">{peIV != null ? peIV.toFixed(1) : "—"}</td>
                                             </tr>
                                         );
                                     })}
