@@ -47,6 +47,13 @@ try:
 except Exception:
     alerter = None
 
+# Real-time state.db & active positions integration for UI dashboard
+try:
+    from shared.state import record_trade, update_equity
+except Exception:
+    record_trade = None
+    update_equity = None
+
 IST = pytz.timezone("Asia/Kolkata")
 MARKET_OPEN  = datetime.time(9, 15)
 MARKET_CLOSE = datetime.time(15, 30)
@@ -264,6 +271,48 @@ def save_session_atomic(session_log, out_file):
     except Exception as e:
         print(f"  [WARN] Failed to write session file: {e}")
 
+def sync_active_positions(active_positions):
+    """Atomically sync paper observer positions to config/active_positions.json for live UI M2M tracking."""
+    pos_file = ROOT_DIR / "config" / "active_positions.json"
+    try:
+        disk_data = {}
+        if pos_file.exists():
+            try:
+                with open(pos_file, "r", encoding="utf-8") as f:
+                    disk_data = json.load(f)
+            except Exception:
+                disk_data = {}
+
+        # Remove observer symbols that exited
+        for s in SYMBOLS:
+            if s in disk_data and s not in active_positions:
+                del disk_data[s]
+
+        # Write current active positions
+        for sym, pos in active_positions.items():
+            disk_data[sym] = {
+                "symbol": pos.get("contract", sym),
+                "underlying": sym,
+                "side": 1,  # Option buying (CE / PE)
+                "quantity": int(pos.get("quantity", 65)),
+                "entry_price": float(pos.get("entry_premium", 0.0)),
+                "current_price": float(pos.get("current_ltp", pos.get("entry_premium", 0.0))),
+                "ltp": float(pos.get("current_ltp", pos.get("entry_premium", 0.0))),
+                "entry_time": pos.get("entry_time", ""),
+                "highest_price": float(pos.get("highest_premium", pos.get("entry_premium", 0.0))),
+                "lowest_price": float(pos.get("lowest_premium", pos.get("entry_premium", 0.0))),
+                "stop_loss": float(pos.get("sl_premium", 0.0)),
+                "target": float(pos.get("tgt_premium", 0.0)),
+                "strategy": pos.get("strategy_name", "EMA 9 / RSI Momentum")
+            }
+
+        tmp = pos_file.with_suffix(".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(disk_data, f, indent=2)
+        tmp.replace(pos_file)
+    except Exception as e:
+        print(f"  [WARN] Failed to sync active positions: {e}")
+
 # --- Existing Session & Multi-Day Audit Detection ---
 def detect_existing_sessions():
     """Scan paper_obs_logs directory and return all valid completed/in-progress sessions."""
@@ -347,6 +396,9 @@ def run_session(day_num, date_str, day_name):
                         time_decay = 0.05 * (time.time() - pos["entry_time_epoch"]) / 3600.0
                         premium_change = (spot_change * delta) - time_decay
                         est_opt_ltp = max(0.5, round(pos["entry_premium"] + premium_change, 2))
+                        pos["current_ltp"] = est_opt_ltp
+                        pos["highest_premium"] = max(pos.get("highest_premium", pos["entry_premium"]), est_opt_ltp)
+                        pos["lowest_premium"] = min(pos.get("lowest_premium", pos["entry_premium"]), est_opt_ltp)
                         
                         exit_now = False
                         exit_reason = ""
@@ -381,9 +433,28 @@ def run_session(day_num, date_str, day_name):
                             
                             session_log["trades"].append(dict(pos))
                             del active_positions[symbol]
+                            sync_active_positions(active_positions)
                             
                             # Incremental state save immediately on trade exit!
                             save_session_atomic(session_log, out_file)
+                            
+                            # Record exit in state.db and update realized PnL
+                            if record_trade:
+                                try:
+                                    record_trade(
+                                        symbol=pos["contract"],
+                                        side="SELL",
+                                        price=est_opt_ltp,
+                                        timestamp=now_ist().isoformat(),
+                                        qty=pos["quantity"]
+                                    )
+                                except Exception:
+                                    pass
+                            if update_equity:
+                                realized_today = sum(t.get("net_pnl", 0.0) for t in session_log.get("trades", []))
+                                running_unrealized = sum((p.get("current_ltp", p["entry_premium"]) - p["entry_premium"]) * p["quantity"] for p in active_positions.values())
+                                tot_pnl = round(realized_today + running_unrealized, 2)
+                                update_equity(round(CAPITAL + tot_pnl, 2), tot_pnl)
                             
                             # Dispatch real-time Telegram Exit / SL / Target Alert
                             if alerter:
@@ -400,6 +471,14 @@ def run_session(day_num, date_str, day_name):
                             print(f"\n  [{ts}] {icon} EXIT {pos['contract']} | {exit_reason}")
                             print(f"       Fill: Rs.{est_opt_ltp:.2f} | Net P&L: Rs.{pos['net_pnl']:+.2f} ({pos['points']:+.2f} pts) | Time: {dur_min}m\n")
                             continue
+                        else:
+                            # Position still active: sync live mark-to-market PnL to UI
+                            sync_active_positions(active_positions)
+                            if update_equity:
+                                realized_today = sum(t.get("net_pnl", 0.0) for t in session_log.get("trades", []))
+                                running_unrealized = sum((p.get("current_ltp", p["entry_premium"]) - p["entry_premium"]) * p["quantity"] for p in active_positions.values())
+                                tot_pnl = round(realized_today + running_unrealized, 2)
+                                update_equity(round(CAPITAL + tot_pnl, 2), tot_pnl)
                 
                 # 2. Check New High-Probability Signal Trigger
                 prev_b = prev_signals.get(symbol, {}).get("bias")
@@ -431,6 +510,9 @@ def run_session(day_num, date_str, day_name):
                                 "opt_delta": opt["delta"],
                                 "entry_spot": state["spot"],
                                 "entry_premium": entry_p,
+                                "current_ltp": entry_p,
+                                "highest_premium": entry_p,
+                                "lowest_premium": entry_p,
                                 "sl_premium": sl_p,
                                 "tgt_premium": tgt_p,
                                 "quantity": qty,
@@ -443,9 +525,23 @@ def run_session(day_num, date_str, day_name):
                             
                             active_positions[symbol] = trade_obj
                             daily_trades_count += 1
+                            sync_active_positions(active_positions)
                             
                             # Incremental state save immediately on new trade entry!
                             save_session_atomic(session_log, out_file)
+
+                            # Record trade entry in state.db for UI reflection
+                            if record_trade:
+                                try:
+                                    record_trade(
+                                        symbol=opt["contract"],
+                                        side="BUY",
+                                        price=entry_p,
+                                        timestamp=now_ist().isoformat(),
+                                        qty=qty
+                                    )
+                                except Exception:
+                                    pass
                             
                             # Dispatch real-time Telegram Entry Alert
                             if alerter:

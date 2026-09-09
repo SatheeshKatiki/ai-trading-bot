@@ -501,7 +501,7 @@ backend_sv = ServiceSupervisor(
 )
 observer_sv = ServiceSupervisor(
     "Paper Observer",
-    lambda: [sys.executable, str(ROOT_DIR / "paper_observer.py")],
+    lambda: [sys.executable, "-u", str(ROOT_DIR / "paper_observer.py")],
     "paper_observer_stdout.log",
     # The observer legitimately ends its own session (EOD square-off, audit
     # complete, nothing to trade). Honour that -- see the incident note above.

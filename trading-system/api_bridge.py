@@ -1221,26 +1221,33 @@ async def websocket_broadcaster():
                         side        = int(pos.get("side", 1))   # 1=long, -1=short
                         opt_sym     = pos.get("symbol", base_sym)
 
+                        is_option = "CE" in opt_sym or "PE" in opt_sym
+
                         # Find the live price for this position's underlying symbol
                         ltp = 0.0
-                        # Try exact option symbol first (from dynamic subscription)
-                        if opt_sym in snapshot:
+                        # 1. Direct price from engine (e.g. paper_observer est_opt_ltp or main.py quote)
+                        if float(pos.get("current_price", 0)) > 0:
+                            ltp = float(pos["current_price"])
+                        elif float(pos.get("ltp", 0)) > 0:
+                            ltp = float(pos["ltp"])
+                        # 2. Try exact option symbol from market data feed snapshot
+                        elif opt_sym in snapshot:
                             ltp = snapshot[opt_sym].get("lp", 0.0)
-                        # Fallback: try base symbol (index)
-                        if ltp == 0.0:
+                        # 3. Only if NOT an option, fallback to base index symbol
+                        elif not is_option:
                             for key in [f"NSE:{base_sym}-INDEX", f"BSE:{base_sym}-INDEX", base_sym]:
                                 if key in snapshot:
                                     ltp = snapshot[key].get("lp", 0.0)
                                     break
-                        # Fallback: look in websocket_data short keys
-                        if ltp == 0.0:
-                            short = base_sym.replace("NSE:", "").replace("BSE:", "").split("-")[0]
-                            ltp_data = websocket_data.get(short)
-                            if isinstance(ltp_data, dict):
-                                ltp = ltp_data.get("lp", 0.0)
+                            if ltp == 0.0:
+                                short = base_sym.replace("NSE:", "").replace("BSE:", "").split("-")[0]
+                                ltp_data = websocket_data.get(short)
+                                if isinstance(ltp_data, dict):
+                                    ltp = ltp_data.get("lp", 0.0)
 
+                        eff_side = 1 if is_option else side
                         if entry_price > 0 and qty > 0 and ltp > 0:
-                            pos_unrealized = (ltp - entry_price) * qty * side
+                            pos_unrealized = (ltp - entry_price) * qty * eff_side
                         else:
                             pos_unrealized = 0.0
 
@@ -1250,7 +1257,7 @@ async def websocket_broadcaster():
                             "entry_price": entry_price,
                             "ltp": ltp,
                             "qty": qty,
-                            "side": side,
+                            "side": eff_side,
                             "unrealized_pnl": round(pos_unrealized, 2),
                             "sl": pos.get("stop_loss", 0),
                             "target": pos.get("target", 0),
@@ -1559,6 +1566,17 @@ async def execute_order(req: ExecuteOrderRequest, request: Request):
         if not broker.paper_mode and not ORDER_LIMITER.allow(broker.BROKER_ID):
             raise HTTPException(status_code=429, detail="Order rate limit exceeded — please retry shortly.")
 
+        # Determine real market price for execution if MARKET order
+        exec_price = float(req.price)
+        if exec_price <= 0:
+            with market_data_lock:
+                for k in [req.symbol, req.symbol.replace("NSE:", "").replace("BSE:", "").replace("-INDEX", ""), "NIFTY", "NSE:NIFTY50-INDEX"]:
+                    if k in current_market_data and current_market_data[k].get("lp", 0) > 0:
+                        exec_price = float(current_market_data[k]["lp"])
+                        break
+            if exec_price <= 0:
+                exec_price = 100.0
+
         from brokers import OrderRequest, OrderSide, OrderType, ProductType
         order_req = OrderRequest(
             symbol=req.symbol,
@@ -1566,17 +1584,66 @@ async def execute_order(req: ExecuteOrderRequest, request: Request):
             side=OrderSide.BUY if req.action.upper() == "BUY" else OrderSide.SELL,
             order_type=OrderType.MARKET if req.order_type.upper() == "MARKET" else OrderType.LIMIT,
             product_type=ProductType.INTRADAY if req.product_type.upper() == "INTRADAY" else ProductType.MARGIN,
-            price=req.price
+            price=exec_price
         )
         
         response = broker.place_order(order_req)
+        fill_price = response.price or exec_price
+
+        # Update config/active_positions.json so UI tracks it live
+        positions_path = Path(__file__).resolve().parent / "config" / "active_positions.json"
+        pos_dict = {}
+        if positions_path.exists():
+            try:
+                with open(positions_path, "r", encoding="utf-8") as _pf:
+                    pos_dict = json.load(_pf)
+            except Exception:
+                pos_dict = {}
+
+        clean_key = req.symbol.replace("NSE:", "").replace("BSE:", "").replace("-INDEX", "")
+        req_side = 1 if req.action.upper() == "BUY" else -1
+
+        # Check if closing an existing position with opposite side
+        if clean_key in pos_dict and pos_dict[clean_key].get("side") != req_side:
+            existing_pos = pos_dict[clean_key]
+            e_price = float(existing_pos.get("entry_price", fill_price))
+            e_qty = int(existing_pos.get("quantity", req.quantity))
+            e_side = int(existing_pos.get("side", 1))
+            is_opt = "CE" in req.symbol or "PE" in req.symbol
+            realized_delta = (fill_price - e_price) * min(e_qty, req.quantity) * (1 if is_opt else e_side)
+            del pos_dict[clean_key]
+            
+            from shared.state import update_equity, load_state
+            cur_state = load_state()
+            new_pnl = cur_state.get("pnl", 0.0) + realized_delta
+            new_equity = cur_state.get("equity", 100000.0) + realized_delta
+            update_equity(new_equity, new_pnl)
+        else:
+            pos_dict[clean_key] = {
+                "symbol": req.symbol,
+                "side": req_side,
+                "quantity": req.quantity,
+                "entry_price": fill_price,
+                "current_price": fill_price,
+                "ltp": fill_price,
+                "entry_time": datetime.now(_IST).strftime("%H:%M:%S"),
+                "highest_price": fill_price,
+                "lowest_price": fill_price,
+                "stop_loss": round(fill_price * 0.994, 2) if req_side == 1 else round(fill_price * 1.006, 2),
+                "target": round(fill_price * 1.025, 2) if req_side == 1 else round(fill_price * 0.975, 2),
+            }
+
+        tmp_p = positions_path.with_suffix(".tmp")
+        with open(tmp_p, "w", encoding="utf-8") as _pf:
+            json.dump(pos_dict, _pf, indent=2)
+        tmp_p.replace(positions_path)
         
         # Add to SQLite DB and global trades list for UI reflection
         from shared.state import record_trade
         record_trade(
             symbol=req.symbol,
             side=req.action.upper(),
-            price=response.price or req.price or 0.0,
+            price=fill_price,
             timestamp=datetime.now(_IST).isoformat(),
             qty=req.quantity
         )
