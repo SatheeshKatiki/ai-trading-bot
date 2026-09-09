@@ -9,6 +9,9 @@ let pendingTickerUpdates: Record<string, TickerData> = {};
 export interface TickerData {
     lp: number;
     chp: number;
+    vol?: number;
+    vol_traded_today?: number;
+    last_qty?: number;
     /** Where this price came from: 'fyers' | 'broker' | 'yfinance' | 'pending'.
      *  Absent only on legacy payloads. Never render a price whose provenance
      *  you have not checked -- see FeedStatus below. */

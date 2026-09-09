@@ -449,7 +449,9 @@ function LiveMarketChartContainer({
     timeframe,
     showDynamicTrend,
 }: LiveMarketChartContainerProps) {
-    const mainLivePrice = useLiveMarketStore(state => state.tickerData[urlSymbol]?.lp || state.currentPrice || 0);
+    const mainTicker = useLiveMarketStore(state => state.tickerData[urlSymbol] || state.tickerData[urlSymbol.replace('NSE:', '').replace('BSE:', '').replace('-INDEX', '')]);
+    const mainLivePrice = mainTicker?.lp || useLiveMarketStore(state => state.currentPrice) || 0;
+    const mainLiveVolume = mainTicker?.vol_traded_today || mainTicker?.vol || 0;
 
     return (
         <div className="w-full flex-1 min-h-[520px] h-[600px] rounded-xl overflow-hidden flex flex-col">
@@ -457,6 +459,7 @@ function LiveMarketChartContainer({
                 <NativeChart
                     symbol={urlSymbol}
                     livePrice={mainLivePrice}
+                    liveVolume={mainLiveVolume}
                     timeframe={timeframe}
                     showDynamicTrend={showDynamicTrend}
                 />

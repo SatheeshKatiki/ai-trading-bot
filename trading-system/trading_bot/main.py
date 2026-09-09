@@ -384,7 +384,7 @@ def _load_settings() -> dict:
     
     
     defaults = {
-        "active_strategy": "institutional_momentum",
+        "active_strategy": "ema9_rsi_momentum",
         "live_trading_mode": False,
         "ema_fast": 9,
         "ema_slow": 20,
@@ -1110,7 +1110,7 @@ async def run_live_bot(symbols: List[str]) -> None:
         # ----------------------------------------------------------------
         # Lazy Strategy Initialization
         # ----------------------------------------------------------------
-        strategy_name = settings.get("active_strategy", "institutional_momentum")
+        strategy_name = settings.get("active_strategy", "ema9_rsi_momentum")
         if strategy_name == "institutional_momentum" and sym not in momentum_strategies:
             momentum_strategies[sym] = MomentumStrategy(
                 capital=_initial_capital,
@@ -1360,7 +1360,7 @@ async def run_live_bot(symbols: List[str]) -> None:
                             exit_qty = open_position.quantity
 
             if not should_exit:
-                strategy_name = settings.get("active_strategy", "institutional_momentum")
+                strategy_name = settings.get("active_strategy", "ema9_rsi_momentum")
             
                 if strategy_name == "institutional_momentum" and sym in momentum_strategies:
                     m_strategy = momentum_strategies[sym]
@@ -1653,7 +1653,7 @@ async def run_live_bot(symbols: List[str]) -> None:
                 last_eval_time = current_time_sec
 
                 # Settings already loaded at top of on_tick (cached, no disk I/O)
-                strategy_name = settings.get("active_strategy", "institutional_momentum")
+                strategy_name = settings.get("active_strategy", "ema9_rsi_momentum")
                 is_live = not broker.paper_mode
                 target_pct = settings.get("target_pct", 500.0) / 100.0
                 sl_pct = settings.get("stoploss_pct", 15.0) / 100.0

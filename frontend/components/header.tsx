@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Bell, Search, User, BookOpen, LogOut, Settings, CreditCard, Command, Activity, ShieldAlert, XCircle, Lock, TrendingUp, TrendingDown, Wallet, Loader2 } from "lucide-react";
+import { Bell, Search, User, BookOpen, LogOut, Settings, CreditCard, Command, Activity, ShieldAlert, XCircle, Lock, TrendingUp, TrendingDown, Wallet, Loader2, Cpu } from "lucide-react";
 import { useRouter, usePathname } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import Link from "next/link";
@@ -229,6 +229,23 @@ export default function Header() {
   // already existed and was even cleared here on logout, but was never
   // actually read to display the real user.
   const [userProfile, setUserProfile] = useState<{ name?: string; email?: string } | null>(null);
+  const [activeStrategyName, setActiveStrategyName] = useState("EMA 9 / RSI Momentum");
+
+  useEffect(() => {
+    fetch('/api/settings')
+      .then(res => res.ok ? res.json() : null)
+      .then(data => {
+        if (data && data.active_strategy) {
+          const s = data.active_strategy;
+          const display = s === "ema9_rsi_momentum" 
+            ? "EMA 9 / RSI Momentum" 
+            : s.split('_').map((w: string) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+          setActiveStrategyName(display);
+        }
+      })
+      .catch(() => {});
+  }, [pathname]);
+
   useEffect(() => {
     try {
       const raw = localStorage.getItem("mana_ai_user_profile");
@@ -389,6 +406,17 @@ export default function Header() {
               {isMarketOpen ? 'Market Open' : 'Market Closed'}
             </span>
           </div>
+
+          {/* Active Strategy Badge */}
+          <Link
+            href="/strategy"
+            data-testid="header-active-strategy"
+            className="hidden lg:flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-primary/10 border border-primary/20 text-xs font-bold text-primary hover:bg-primary/20 transition-all cursor-pointer"
+            title="Active Execution Strategy — Click to customize in Strategy Settings"
+          >
+            <Cpu className="w-3.5 h-3.5" />
+            <span className="truncate max-w-[170px]">{activeStrategyName}</span>
+          </Link>
 
           {/* ── Real-time P&L Pill (displays live P&L whenever connected or active trades exist) ── */}
           <AnimatePresence>

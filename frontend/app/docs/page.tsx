@@ -10,7 +10,8 @@ import {
   ArrowRight, ChevronRight, Terminal, Cpu, Lock,
   BarChart2, Activity, TrendingUp, BookOpen, RefreshCw,
   Wrench, Lightbulb, TestTube, HardDrive, Monitor, Users,
-  LineChart, Filter, Moon, Map, BookMarked, Workflow
+  LineChart, Filter, Moon, Map, BookMarked, Workflow,
+  Bell, Clock, Eye
 } from "lucide-react";
 
 const tabs = [
@@ -44,6 +45,9 @@ const tabs = [
   { id: "btst",            label: "BTST Predictor",         icon: Moon },
   { id: "ux-workflows",    label: "UI/UX Workflows",        icon: Workflow },
   { id: "glossary",        label: "Trading Glossary",       icon: BookMarked },
+  { id: "zero-touch",      label: "Zero-Touch Automation",  icon: Clock },
+  { id: "paper-observer",  label: "Paper Trading Engine",   icon: Eye },
+  { id: "alerts",          label: "Alerts & Notifications", icon: Bell },
 ];
 
 // ─── Helper Components ────────────────────────────────────────────
@@ -644,6 +648,46 @@ On Each Tick (position open):
     EXIT → reason: "EOD Square-off"`}
         </CodeBlock>
       </Section>
+
+      {/* ── AI Exit Analyzer Agent ── */}
+      <div className="mt-8 p-6 rounded-2xl border border-amber-500/20 bg-amber-500/5">
+        <div className="flex items-center gap-3 mb-1">
+          <span className="text-xs font-bold text-amber-400 bg-amber-400/10 px-2 py-0.5 rounded">V3.13</span>
+          <span className="text-xs text-muted-foreground font-mono">shared/exits/exit_analyzer.py</span>
+        </div>
+        <h2 className="text-xl font-bold text-foreground mb-3">AI Exit Analyzer Agent — 4-Factor Probability Engine</h2>
+        <p className="text-sm text-muted-foreground mb-4">Autonomous multi-factor probability evaluator that monitors open profitable positions to prevent giving back large peak profits. Unlike simple trailing stops, the Exit Analyzer evaluates 4 independent dimensions and produces a weighted urgency score (0.0–1.0) for intelligent exit decisions.</p>
+        <div className="grid grid-cols-2 gap-4 mb-4">
+          <div className="p-3 rounded-lg bg-muted/20 border border-border/20">
+            <p className="text-xs font-bold text-muted-foreground mb-2 uppercase tracking-wider">4 Probability Factors</p>
+            {[["Factor 1 (35%)", "Peak Profit Giveback — High-Watermark Retracement"], ["Factor 2 (25%)", "Price Action — Fast EMA9 Close Break + Rejection Wicks"], ["Factor 3 (20%)", "RSI Momentum Exhaustion — Overbought Hook Detection"], ["Factor 4 (20%)", "Volume Deceleration — Divergence below 65% of 10-bar MA"]].map(([k, v]) => (
+              <div key={k} className="flex gap-2 py-1 border-b border-border/10 text-xs"><span className="font-mono text-amber-400 w-28 flex-shrink-0">{k}</span><span className="text-muted-foreground">{v}</span></div>
+            ))}
+          </div>
+          <div className="p-3 rounded-lg bg-muted/20 border border-border/20">
+            <p className="text-xs font-bold text-muted-foreground mb-2 uppercase tracking-wider">Exit Decision Modes</p>
+            <table className="w-full text-xs">
+              {[["TREND_RIDE", "Trend intact, urgency low → hold"], ["PEAK_LOCK", "Gave back ≥20% from peak → exit"], ["FAST_EMA_BREAK", "Close below EMA9 after gain → exit"], ["RSI_EXHAUSTION", "RSI hook + overbought → exit"], ["MOMENTUM_REVERSAL", "Multi-factor urgency ≥70% → exit"]].map(([k, v]) => (
+                <tr key={k} className="border-b border-border/10"><td className="py-1 font-mono text-amber-400">{k}</td><td className="py-1 text-right text-muted-foreground text-[10px]">{v}</td></tr>
+              ))}
+            </table>
+          </div>
+        </div>
+        <Section title="Urgency Score Formula">
+          <CodeBlock language="python">{`urgency = (score_peak × 0.35) + (score_price_action × 0.25)
+         + (score_rsi × 0.20) + (score_volume × 0.20)
+
+# Exit triggers if:
+#   1. Peak giveback ≥ 20% AND peak_profit ≥ 30 pts   → PEAK_LOCK
+#   2. EMA9 break + peak ≥ 30 pts + giveback ≥ 15%     → FAST_EMA_BREAK
+#   3. Weighted urgency ≥ 0.70 threshold               → MOMENTUM_REVERSAL
+
+# Output: ExitAnalysisResult(should_exit, urgency_score, mode, suggested_sl, reason)`}</CodeBlock>
+        </Section>
+        <div className="p-3 rounded-lg bg-green-500/5 border border-green-500/20 text-xs text-green-400">
+          <strong>Key Design:</strong> The analyzer protects profits proactively. Traditional trailing stops lag behind (EMA9/EMA20 crossover delay). The Exit Analyzer fires instantly when the 4-factor probability crosses the urgency threshold — preventing unnecessary profit giveback.
+        </div>
+      </div>
     </div>
   ),
 
@@ -1128,9 +1172,33 @@ RotatingFileHandler(
   deployment: (
     <div>
       <Section title="Deployment Architecture">
-        <p className="text-muted-foreground mb-4">Three processes must run simultaneously. Current target: single Windows or Linux machine.</p>
+        <p className="text-muted-foreground mb-4">The system supports two deployment modes: Manual (3-process) startup for development/debugging, and Zero-Touch automated mode for production trading.</p>
       </Section>
-      <Section title="Startup Commands">
+
+      {/* Zero-Touch Mode */}
+      <div className="mb-6 p-5 rounded-2xl border border-emerald-500/20 bg-emerald-500/5">
+        <div className="flex items-center gap-3 mb-2">
+          <span className="text-xs font-bold text-emerald-400 bg-emerald-400/10 px-2 py-0.5 rounded">RECOMMENDED</span>
+          <span className="text-sm font-bold text-foreground">Zero-Touch Automated Mode (Production)</span>
+        </div>
+        <p className="text-sm text-muted-foreground mb-3">Single command launches the full daily lifecycle. The orchestrator handles authentication, backend boot, observer launch, watchdog monitoring, EOD reports, and graceful teardown — completely unattended.</p>
+        <CodeBlock language="bash">{`# Option 1: Windows Task Scheduler (Fully Automated)
+# Use setup_windows_task.bat to register a scheduled task
+# Triggers daily at 08:40 AM → auto_daily_session.py --daemon
+
+# Option 2: Run via Start_Zero_Touch.bat
+Start_Zero_Touch.bat
+  [1] Daemon Mode  → Runs 24/7, wakes at 08:45 AM each trading day
+  [2] Immediate    → Run today's session now (--now)
+  [3] Test Login   → Test Fyers auto-auth only (--test-login)
+  [4] Test EOD     → Test Telegram EOD report (--test-eod)
+
+# Option 3: Direct Python execution
+cd trading-system
+.\\venv\\Scripts\\python.exe auto_daily_session.py --daemon`}</CodeBlock>
+      </div>
+
+      <Section title="Manual Startup (Development)">
         <CodeBlock language="bash">{`# ── Process 1: FastAPI Backend ────────────────────────────────
 cd "d:/Projects/AI trading Bot/trading-system"
 .\\venv\\Scripts\\uvicorn.exe api_bridge:app --host 0.0.0.0 --port 8000
@@ -1149,15 +1217,36 @@ npm run build && npm start    # production`}
         <Table headers={["Process", "Port", "Role", "Restart Needed?"]}>
           <TR cells={["Next.js", "3000", "Frontend UI", "On code change"]} />
           <TR cells={["FastAPI (Uvicorn)", "8000", "API Bridge + WebSocket server", "On api_bridge.py change"]} />
-          <TR cells={["Python Trading Bot", "N/A (subprocess)", "Autonomous trading engine", "On main.py or strategy change"]} />
+          <TR cells={["Paper Observer", "N/A (subprocess)", "Autonomous paper trading engine", "Auto-managed by orchestrator"]} />
+          <TR cells={["Orchestrator", "N/A", "Daily lifecycle manager (auto_daily_session.py)", "Via Windows Task Scheduler"]} />
         </Table>
+      </Section>
+      <Section title="Windows Task Scheduler Setup">
+        <CodeBlock language="bash">{`# Register the automated trading task:
+setup_windows_task.bat
+
+# This creates a Windows Scheduled Task:
+#   Name:    QuantAI-ZeroTouch
+#   Trigger: Daily at 08:40 AM
+#   Action:  Start_Zero_Touch.bat (Daemon mode)
+#   User:    Current logged-in user
+#   Runs:    Whether user is logged in or not
+
+# The task will:
+#   1. Skip weekends and NSE holidays automatically
+#   2. Authenticate with Fyers headlessly (TOTP/PIN)
+#   3. Boot API Bridge and Paper Observer
+#   4. Monitor processes with auto-recovery watchdog
+#   5. Generate EOD Telegram report at 15:30 PM
+#   6. Teardown and sleep until next trading day`}</CodeBlock>
       </Section>
       <Section title="Production Checklist">
         <UL items={[
-          "Use PM2 (npm i -g pm2) to keep all 3 processes alive after crash or reboot",
+          "Register Windows Task Scheduler task via setup_windows_task.bat for fully automated startup",
           "Set NODE_ENV=production and build frontend with npm run build",
           "Verify .env has valid FYERS_APP_ID, FYERS_SECRET_KEY, FYERS_CLIENT_ID",
           "Ensure .fyers_tokens.json is present (run broker login once manually)",
+          "Configure Telegram bot token and chat ID in .env for EOD reports",
           "Configure log rotation (already built-in — 5 MB × 3 backups)",
           "Set live_trading_mode=false initially and verify with paper trading first",
           "Ensure system clock is synced to IST (critical for market hours detection)",
@@ -1224,11 +1313,39 @@ npm run build && npm start    # production`}
   maintenance: (
     <div>
       <Section title="Maintenance & Operations">
-        <p className="text-muted-foreground mb-4">Routine tasks required to keep the system running at peak performance.</p>
+        <p className="text-muted-foreground mb-4">In Zero-Touch mode, most maintenance tasks are fully automated by the orchestrator. This section covers both automated and manual maintenance procedures.</p>
       </Section>
-      <Section title="Daily Checklist (Pre-Market)">
+
+      {/* Auto-Maintenance */}
+      <div className="mb-6 p-5 rounded-2xl border border-emerald-500/20 bg-emerald-500/5">
+        <div className="flex items-center gap-3 mb-2">
+          <span className="text-xs font-bold text-emerald-400 bg-emerald-400/10 px-2 py-0.5 rounded">AUTOMATED</span>
+          <span className="text-sm font-bold text-foreground">Zero-Touch Auto-Maintenance (runs daily at 08:50 AM)</span>
+        </div>
         <UL items={[
-          "Verify all 3 processes are running (API Bridge, Trading Engine, Frontend)",
+          "Log rotation: Old log files rotated and capped at 5 MB × 3 backups automatically",
+          "Port cleanup: Kill zombie processes on ports 8000 and 3000 before fresh boot",
+          "Stale session purge: Removes corrupted or orphaned paper_obs_logs/ sessions older than 30 days",
+          "Health monitoring: Watchdog polls API Bridge /docs endpoint every 60s with auto-restart on failure",
+          "Crash recovery: Paper Observer detects existing session files and resumes seamlessly on restart",
+          "EOD reporting: Telegram summary with 4K luxury card auto-generated at 15:30 PM",
+        ]} />
+      </div>
+
+      <Section title="Telegram EOD Monitoring">
+        <p className="text-muted-foreground mb-4">Every trading day at 15:30 PM, the orchestrator automatically generates and sends an institutional-grade performance report to Telegram. This includes a 4K Ultra-HD luxury card image with daily P&L, win rate, trade details, and a market audit log.</p>
+        <Table headers={["Report Component", "Description"]}>
+          <TR cells={["4K Luxury Card", "2400×1360 Pillow-generated PNG with gold/silver theme, glassmorphic P&L display"]} />
+          <TR cells={["Daily P&L", "Net profit/loss across all instruments with brokerage deducted"]} />
+          <TR cells={["Win Rate", "Percentage of winning trades for the day"]} />
+          <TR cells={["Trade Log", "Each trade: contract, entry/exit price, points, duration, exit reason"]} />
+          <TR cells={["System Health", "Session uptime, signals scanned, crash recovery status"]} />
+        </Table>
+      </Section>
+
+      <Section title="Daily Checklist (Manual Mode Only)">
+        <UL items={[
+          "Verify all processes are running (API Bridge, Trading Engine, Frontend)",
           "Check sidebar connection status: Green LIVE = backend connected",
           "Verify Fyers token is valid (Broker Settings page)",
           "Review previous day's trades in Trading Journal",
@@ -1243,6 +1360,8 @@ npm run build && npm start    # production`}
           "Run backtest to validate current strategy on last week's data",
           "Check disk space — log files should be capped by rotation",
           "Review P&L analytics for win rate and Sharpe ratio trends",
+          "Check paper_obs_logs/ for session continuity (Day_1, Day_2, etc.)",
+          "Review Telegram alert delivery history for missed notifications",
         ]} />
       </Section>
       <Section title="Dependency Updates">
@@ -1694,13 +1813,262 @@ if (timeInMins >= 870 && timeInMins <= 930) {  // 2:30PM–3:30PM
           <TR cells={["Signal Confidence", "XGBoost model's probability of UP move (0.0 to 1.0). > 0.65 = BUY, < 0.35 = SELL."]} />
           <TR cells={["Panic Exit", "Emergency button that closes ALL open positions immediately via POST /api/panic-exit."]} />
           <TR cells={["MTM Trailing", "Trailing stoploss that follows the peak MTM profit, locking in gains as the position moves in our favour."]} />
+          <TR cells={["Exit Analyzer", "AI probability engine that evaluates 4 factors (peak giveback, EMA break, RSI exhaustion, volume divergence) to decide optimal exits."]} />
+          <TR cells={["Zero-Touch", "Fully autonomous daily trading lifecycle — no human intervention from boot to teardown."]} />
+          <TR cells={["Paper Observer", "High-fidelity paper trading engine that simulates trades with live data but no real orders."]} />
         </Table>
+      </Section>
+    </div>
+  ),
+
+  "zero-touch": (
+    <div>
+      <Section title="Zero-Touch Daily Automation">
+        <p className="text-muted-foreground leading-relaxed mb-4">
+          The Zero-Touch Orchestrator (auto_daily_session.py) is the autonomous brain that runs the entire trading lifecycle with zero human intervention. From pre-market authentication to post-market EOD reports — it handles everything.
+        </p>
+      </Section>
+      <Section title="Daily Lifecycle Timeline">
+        <CodeBlock language="text">{`
+┌─────────┬────────────────────────────────────────────────────────┐
+│  TIME   │  ACTION                                                │
+├─────────┼────────────────────────────────────────────────────────┤
+│ 08:40   │  Windows Task Scheduler triggers Start_Zero_Touch      │
+│ 08:45   │  Pre-Market Wakeup → Holiday / Weekend Filter          │
+│ 08:46   │  Headless Auto-Auth (Fyers TOTP/PIN token gen)         │
+│ 08:50   │  Port Cleanup (8000, 3000) + System Maintenance        │
+│ 09:00   │  Boot FastAPI API Bridge → Health Check /docs           │
+│ 09:14   │  Launch Paper Observer (paper_observer.py)              │
+│ 09:15   │  ─── MARKET OPENS ── Continuous Watchdog ───            │
+│ 09:15 → │  Process watchdog every 60s (auto-restart on fail)      │
+│ 15:15   │  Trigger EOD Auto Square-off                           │
+│ 15:30   │  ─── MARKET CLOSES ──                                  │
+│ 15:31   │  Generate Institutional Performance Report              │
+│ 15:33   │  Send 4K Luxury Card + Summary to Telegram             │
+│ 15:35   │  Graceful Teardown → Sleep until next trading day       │
+└─────────┴────────────────────────────────────────────────────────┘`}
+        </CodeBlock>
+      </Section>
+      <Section title="Holiday & Weekend Filter">
+        <p className="text-muted-foreground mb-4">The orchestrator maintains a hardcoded NSE holiday calendar for 2026 (16 holidays). On weekends and holidays, it skips the entire session and sleeps until the next trading day.</p>
+        <Table headers={["Check", "Action"]}>
+          <TR cells={["Saturday / Sunday", "Skip — sleep until Monday 08:45 AM"]} />
+          <TR cells={["NSE Holiday (e.g. Republic Day, Diwali)", "Skip — log holiday name and sleep"]} />
+          <TR cells={["Trading Day", "Proceed with full lifecycle"]} />
+        </Table>
+      </Section>
+      <Section title="Headless Auto-Authentication">
+        <CodeBlock language="text">{`
+Auto-Auth Flow (scripts/auth/auto_login_fyers.py):
+  1. Load Fyers App ID + Secret from .env
+  2. Generate TOTP code from stored secret seed
+  3. Submit PIN + TOTP programmatically (no browser needed)
+  4. Exchange auth_code for access_token
+  5. Cache token to .fyers_tokens.json
+  6. Send Telegram notification: "Pre-Market Auto-Auth completed"
+
+  On Failure:
+    → Log error with full traceback
+    → Send Telegram alert: "Auto-Auth encountered an issue"
+    → Attempt to continue with cached token (if still valid)`}
+        </CodeBlock>
+      </Section>
+      <Section title="Process Watchdog">
+        <p className="text-muted-foreground mb-4">During market hours (09:15 – 15:15 IST), the orchestrator runs a continuous watchdog loop every 60 seconds. If the API Bridge or Paper Observer crashes, it auto-restarts the failed process.</p>
+        <Table headers={["Monitored Process", "Detection", "Recovery"]}>
+          <TR cells={["API Bridge (FastAPI)", "poll() returns non-None (process exited)", "Restart subprocess → wait for health check"]} />
+          <TR cells={["Paper Observer", "poll() returns non-None", "Restart subprocess → resumes from last saved session"]} />
+          <TR cells={["Both processes", "60s interval check loop", "Log restart event + Telegram alert"]} />
+        </Table>
+      </Section>
+      <Section title="CLI Arguments">
+        <Table headers={["Flag", "Description"]}>
+          <TR cells={["--daemon", "Run in 24/7 daemon mode. Wakes at 08:45 AM each trading day, sleeps overnight."]} />
+          <TR cells={["--now", "Run today's session immediately (skip waiting for 08:45 AM)."]} />
+          <TR cells={["--test-login", "Test Fyers auto-authentication only. Verifies TOTP/PIN flow works."]} />
+          <TR cells={["--test-eod", "Test EOD Telegram report generation. Sends a sample report."]} />
+        </Table>
+      </Section>
+    </div>
+  ),
+
+  "paper-observer": (
+    <div>
+      <Section title="Institutional Paper Trading Observer">
+        <p className="text-muted-foreground leading-relaxed mb-4">
+          The Paper Observer (paper_observer.py) is a high-fidelity paper trading engine that simulates real trading with live market data — no real orders are placed. It runs as a subprocess managed by the Zero-Touch Orchestrator and trades both NIFTY and BANKNIFTY options simultaneously.
+        </p>
+      </Section>
+      <Section title="Core Specifications">
+        <Table headers={["Parameter", "Value"]}>
+          <TR cells={["Virtual Capital", "₹1,00,000 (Rs. 1 Lakh)"]} />
+          <TR cells={["Instruments", "NIFTY (Lot: 65) + BANKNIFTY (Lot: 15)"]} />
+          <TR cells={["Max Trades/Day", "4 per instrument"]} />
+          <TR cells={["Poll Interval", "15 seconds (high-precision live observation)"]} />
+          <TR cells={["Market Hours", "9:15 AM – 3:30 PM IST"]} />
+          <TR cells={["EOD Cutoff", "3:15 PM IST (no new entries after this)"]} />
+          <TR cells={["Session Persistence", "paper_obs_logs/session_Day_N_*.json"]} />
+          <TR cells={["Crash Recovery", "Atomic saves + resume from last state"]} />
+        </Table>
+      </Section>
+      <Section title="Trade Lifecycle">
+        <CodeBlock language="text">{`
+Every 15 seconds, for each symbol (NIFTY, BANKNIFTY):
+
+  ── ENTRY LOGIC ──────────────────────────────────────────────
+  1. Fetch AI signals from /api/signals?symbol=NIFTY
+  2. Check: confidence ≥ 70% AND bias = BUY or SELL
+  3. Verify: new signal (not same as previous poll)
+  4. Check: daily_trades < MAX_TRADES_PER_DAY (4)
+  5. Check: time < 15:15 IST (EOD cutoff)
+  6. Analyze market state (EMA9/21, RSI, ATR alignment)
+  7. Select best option from live chain (ATM strike + Greeks)
+  8. Enter paper position → record to session JSON
+  9. Send Telegram trade entry alert
+
+  ── EXIT LOGIC (position open) ───────────────────────────────
+  1. Estimate live premium using: Δ(spot) × delta - θ(time_decay)
+  2. Check Stop Loss:  premium ≤ entry × 0.85  (15% loss)
+  3. Check Target:     premium ≥ entry × 1.33  (33% gain, 1:2.2 R:R)
+  4. Check Trailing:   if profit > 15%, move SL to breakeven
+  5. Check EOD:        if time ≥ 15:15 → auto square-off
+  6. On exit → compute P&L (with brokerage) → save atomically
+  7. Send Telegram exit alert with reason`}
+        </CodeBlock>
+      </Section>
+      <Section title="Crash Recovery (Atomic Saves)">
+        <p className="text-muted-foreground mb-4">The Paper Observer uses an atomic save mechanism to prevent data corruption on unexpected crashes (power loss, process kill, system restart).</p>
+        <CodeBlock language="python">{`# Atomic save: write to .tmp first, then rename (OS-level atomic op)
+def save_session_atomic(session_log, out_file):
+    tmp_file = out_file.with_suffix(".tmp")
+    with open(tmp_file, "w", encoding="utf-8") as f:
+        json.dump(session_log, f, indent=2, ensure_ascii=False)
+    tmp_file.replace(out_file)  # atomic rename
+
+# On restart: detects existing session and resumes
+if out_file.exists():
+    existing = json.load(out_file)
+    session_log["trades"] = existing["trades"]
+    # Seamlessly resumes from last known state`}</CodeBlock>
+      </Section>
+      <Section title="Multi-Day Persistence">
+        <p className="text-muted-foreground mb-4">Each trading day gets its own session file. The observer auto-increments the day counter and maintains a complete audit trail across unlimited trading days.</p>
+        <CodeBlock language="text">{`paper_obs_logs/
+  ├── session_Day_1_2026-09-08_Monday.json
+  ├── session_Day_2_2026-09-09_Tuesday.json
+  ├── session_Day_3_2026-09-10_Wednesday.json
+  └── ... (perpetual — no day limit)`}</CodeBlock>
+      </Section>
+      <Section title="Premium Estimation Model">
+        <p className="text-muted-foreground mb-4">Since paper trading does not execute real orders, the observer estimates live option premiums using a delta-theta model:</p>
+        <CodeBlock language="python">{`# Simplified Black-Scholes proxy for paper trading
+spot_change = current_spot - entry_spot
+time_decay  = 0.05 × (elapsed_hours)         # Theta proxy
+premium_change = (spot_change × delta) - time_decay
+estimated_ltp  = max(0.50, entry_premium + premium_change)`}</CodeBlock>
+      </Section>
+    </div>
+  ),
+
+  alerts: (
+    <div>
+      <Section title="Alerts & Notifications System">
+        <p className="text-muted-foreground leading-relaxed mb-4">
+          The Telegram alert system provides real-time trade notifications, exit alerts, trailing stop updates, and daily performance reports. All alerts are dispatched asynchronously on dedicated background threads — the trading engine is never blocked.
+        </p>
+      </Section>
+      <Section title="Architecture">
+        <CodeBlock language="text">{`
+Trading Engine / Observer / Orchestrator
+        │
+        │  alerter.send_trade_alert()  (returns instantly)
+        │  alerter.send_exit_alert()
+        │  alerter.send_eod_report()
+        ▼
+TelegramAlerter (shared/alerts/telegram.py)
+        │
+        ├── ThreadPoolExecutor (4 daemon workers)
+        │     ├── Worker 1: Trade Entry alert
+        │     ├── Worker 2: Exit / SL Hit alert
+        │     ├── Worker 3: Trailing SL update
+        │     └── Worker 4: EOD Report + Image
+        │
+        ├── Format: Markdown → Native HTML conversion
+        │     *bold*  → <b>bold</b>
+        │     \`code\` → <code>code</code>
+        │     _italic_ → <i>italic</i>
+        │     > quote  → <blockquote>quote</blockquote>
+        │
+        ├── Resilient Fallback: If HTML parse fails
+        │     → Strip all tags → Send as plain text
+        │
+        └── HTTPS POST → api.telegram.org/bot<token>/sendMessage
+              Content-Type: application/json
+              parse_mode: HTML
+              timeout: 6 seconds`}
+        </CodeBlock>
+      </Section>
+      <Section title="Alert Types">
+        <Table headers={["Alert", "Trigger", "Content"]}>
+          <TR cells={["Trade Entry", "New position opened", "Symbol, Action (BUY/SELL), Qty, Entry Price, AI Confidence %, Entry Reason"]} />
+          <TR cells={["Trade Exit", "Position closed", "Symbol, Exit Price, P&L (₹), Exit Reason (SL / Target / EOD)"]} />
+          <TR cells={["Trailing SL", "SL moved to breakeven", "Contract, new SL level"]} />
+          <TR cells={["System Event", "Auth / boot / error", "Pre-market auth status, process start/stop, error alerts"]} />
+          <TR cells={["EOD Report", "15:30 PM daily", "4K luxury card image + full day summary"]} />
+        </Table>
+      </Section>
+      <Section title="Multi-Language Support (I18N)">
+        <p className="text-muted-foreground mb-4">All trade alerts support 3 languages. Language is configured via the ALERT_LANGUAGE setting in the config.</p>
+        <Table headers={["Language Code", "Language", "Example"]}>
+          <TR cells={["te", "Telugu (Default)", "కొత్త ట్రేడ్ ఎంట్రీ — సింబల్, ధర, కాన్ఫిడెన్స్"]} />
+          <TR cells={["hi", "Hindi", "नया ट्रेड निष्पादन — प्रतीक, मूल्य, विश्वास"]} />
+          <TR cells={["en", "English", "NEW TRADE ENTRY — Symbol, Price, Confidence"]} />
+        </Table>
+      </Section>
+
+      {/* 4K Card Generator */}
+      <div className="mt-6 p-6 rounded-2xl border border-yellow-500/20 bg-yellow-500/5">
+        <div className="flex items-center gap-3 mb-1">
+          <span className="text-xs font-bold text-yellow-400 bg-yellow-400/10 px-2 py-0.5 rounded">4K ULTRA-HD</span>
+          <span className="text-xs text-muted-foreground font-mono">shared/alerts/image_generator.py</span>
+        </div>
+        <h2 className="text-xl font-bold text-foreground mb-3">Luxury Performance Card Generator</h2>
+        <p className="text-sm text-muted-foreground mb-4">Generates a 4K Ultra-HD (2400×1360 pixel) institutional-grade performance card using Pillow. The card uses a luxury gold & silver color palette with glassmorphic effects — designed to look like a high-net-worth trading terminal dashboard.</p>
+        <div className="grid grid-cols-2 gap-4 mb-4">
+          <div className="p-3 rounded-lg bg-muted/20 border border-border/20">
+            <p className="text-xs font-bold text-muted-foreground mb-2 uppercase tracking-wider">Card Design Specs</p>
+            <table className="w-full text-xs">
+              {[["Resolution", "2400 × 1360 px (4K / Retina)"], ["Scale Factor", "2× (1200×680 base)"], ["Background", "Deep Midnight Obsidian Navy"], ["Typography", "Champagne Gold + Golden Ivory"], ["Accents", "Gold & Silver metallic edges"], ["Hero Section", "Glassmorphic P&L container"], ["KPI Cards", "3 precision cards with vector icons"]].map(([k, v]) => (
+                <tr key={k} className="border-b border-border/10"><td className="py-1 text-muted-foreground">{k}</td><td className="py-1 text-right font-mono text-foreground text-[10px]">{v}</td></tr>
+              ))}
+            </table>
+          </div>
+          <div className="p-3 rounded-lg bg-muted/20 border border-border/20">
+            <p className="text-xs font-bold text-muted-foreground mb-2 uppercase tracking-wider">Card Content</p>
+            {[["Header", "MANA AI branding + date"], ["Hero P&L", "Large formatted profit/loss with ₹ symbol"], ["Win Rate", "% of winning trades with visual gauge"], ["Trade Count", "Total trades executed today"], ["Trade Table", "Each trade: contract, entry/exit, pts, duration"], ["Market Audit", "Signals scanned, session time, capital status"]].map(([k, v]) => (
+              <div key={k} className="flex gap-2 py-1 border-b border-border/10 text-xs"><span className="font-mono text-yellow-400 w-24 flex-shrink-0">{k}</span><span className="text-muted-foreground">{v}</span></div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <Section title="Credential Resolution Chain">
+        <CodeBlock language="text">{`
+Telegram Bot Token & Chat ID resolved in priority order:
+  1. Explicit constructor args (bot_token=, chat_id=)
+  2. CONFIG object (shared/config.py → TELEGRAM_BOT_TOKEN)
+  3. Encrypted Vault (brokers/credentials.py → load_credentials("telegram"))
+  4. Environment variables (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
+
+Security:
+  • Token is NEVER logged in full — masked as "881666****Uk"
+  • All dispatches over HTTPS (TLS 1.2+)
+  • Worker pool auto-shutdown via atexit hook`}</CodeBlock>
       </Section>
     </div>
   ),
 };
 
-// ─── Main Page ────────────────────────────────────────────────────
 export default function DocsPage() {
   const [activeTab, setActiveTab] = useState("architecture");
 
@@ -1718,7 +2086,7 @@ export default function DocsPage() {
                 <FileText className="w-4 h-4 text-primary" />
                 <h2 className="font-bold text-sm text-foreground">Documentation</h2>
               </div>
-              <p className="text-[11px] text-muted-foreground mt-1">v2.0 ULTRA — Institutional Grade</p>
+              <p className="text-[11px] text-muted-foreground mt-1">v3.13 ULTRA — Institutional Grade</p>
             </div>
             <nav className="p-2 space-y-0.5">
               {tabs.map((tab) => (

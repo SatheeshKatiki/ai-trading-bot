@@ -33,6 +33,15 @@ _IST = pytz.timezone("Asia/Kolkata")
 # Log rotation — cap fyersApi.log at 5 MB × 3 backups (≈ 20 MB total max)
 # ---------------------------------------------------------------------------
 
+class SafeRotatingFileHandler(logging.handlers.RotatingFileHandler):
+    """Windows-safe rotating file handler that catches WinError 32 file-in-use errors."""
+    def doRollover(self):
+        try:
+            super().doRollover()
+        except (PermissionError, OSError):
+            # File is held open by another thread/process on Windows — skip rollover safely
+            pass
+
 def _setup_log_rotation() -> None:
     """Install a rotating file handler for the primary Fyers log."""
     _LOG_FILE    = "fyersApi.log"
@@ -40,8 +49,8 @@ def _setup_log_rotation() -> None:
     _BACKUP_COUNT = 3                 # keep .1 .2 .3 rollover files
     root_logger = logging.getLogger()
     # Avoid duplicate handlers if uvicorn reloads the module
-    if not any(isinstance(h, logging.handlers.RotatingFileHandler) for h in root_logger.handlers):
-        rotating = logging.handlers.RotatingFileHandler(
+    if not any(isinstance(h, SafeRotatingFileHandler) for h in root_logger.handlers):
+        rotating = SafeRotatingFileHandler(
             _LOG_FILE, maxBytes=_MAX_BYTES, backupCount=_BACKUP_COUNT, encoding="utf-8"
         )
         rotating.setFormatter(logging.Formatter(

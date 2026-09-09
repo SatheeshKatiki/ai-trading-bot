@@ -1,10 +1,9 @@
 <!-- BEGIN:nextjs-agent-rules -->
-# Next.js version note
 
-This project runs Next.js 16 / React 19 — newer than many training cutoffs.
-In practice this codebase sticks to conventional App Router patterns
-(`app/**/page.tsx`, `app/**/layout.tsx`, `app/api/**/route.ts` handlers) —
-nothing exotic. If something you're about to write doesn't match what you
-see in the surrounding files, or you hit a deprecation warning, check
-`node_modules/next/dist/docs/` before assuming it's a training-data gap.
+# This is NOT the Next.js you know
+
+This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
+
+This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
+
 <!-- END:nextjs-agent-rules -->

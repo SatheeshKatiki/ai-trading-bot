@@ -92,11 +92,13 @@ export default function Dashboard() {
     confidence: number;
     status: string;
     bias: string;
+    strategy_display?: string;
     signals: AiSignalEntry[];
   }>({
     confidence: 0,
     status: "Initializing...",
     bias: "NEUTRAL Bias Detected",
+    strategy_display: "EMA 9 / RSI Momentum",
     signals: [],
   });
 
@@ -253,6 +255,7 @@ export default function Dashboard() {
             confidence: data.confidence ?? 0,
             status: data.status ?? "Scanning...",
             bias: data.bias ?? "NEUTRAL Bias Detected",
+            strategy_display: data.strategy_display ?? "EMA 9 / RSI Momentum",
             signals: data.signals ?? [],
           });
         }
@@ -576,7 +579,12 @@ export default function Dashboard() {
             <div className="lg:col-span-1 glass-card rounded-xl p-4 border border-border/20 flex flex-col justify-between h-full min-h-[280px]">
               <div>
                 <div className="flex justify-between items-center mb-4">
-                  <h3 className="text-xs font-bold text-foreground uppercase tracking-widest">AI Scanner</h3>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-xs font-bold text-foreground uppercase tracking-widest">AI Scanner</h3>
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-primary/10 text-primary font-bold">
+                      {aiSignal.strategy_display || "EMA 9 / RSI Momentum"}
+                    </span>
+                  </div>
                   <Search className="w-3.5 h-3.5 text-muted-foreground" />
                 </div>
 

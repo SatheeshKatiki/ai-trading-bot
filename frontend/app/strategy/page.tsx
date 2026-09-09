@@ -60,6 +60,7 @@ export default function StrategySettings() {
   }, [toast]);
 
   const [strategies, setStrategies] = useState([
+    { id: "ema9_rsi_momentum", name: "EMA 9 / RSI Momentum (Default)" },
     { id: "ema_rsi", name: "EMA + RSI (Classic)" },
     { id: "enhanced_ai", name: "Enhanced AI Strategy" },
     { id: "advanced_ai", name: "Advanced AI/ML" },
@@ -73,34 +74,8 @@ export default function StrategySettings() {
   ]);
 
   const defaultSettings: Record<string, any> = {
-    ema_rsi: {
-      enable_volume_filter: true,
-      enable_ema_filter: true,
-      enable_vwap_filter: true,
-      enable_rsi_filter: true,
-      enable_option_chain_filter: false,
-      enable_macd_filter: false,
-      enable_greeks_filter: false,
-    },
-    enhanced_ai: {
-      enable_volume_filter: false,
-      enable_ema_filter: false,
-      enable_vwap_filter: false,
-      enable_rsi_filter: true,
-      enable_option_chain_filter: true,
-      enable_macd_filter: true,
-      enable_greeks_filter: true,
-    },
-    premium: {
-      enable_volume_filter: true,
-      enable_ema_filter: false,
-      enable_vwap_filter: true,
-      enable_rsi_filter: true,
-      enable_option_chain_filter: false,
-      enable_macd_filter: true,
-      enable_greeks_filter: false,
-    },
     ema9_rsi_momentum: {
+      active_strategy: "ema9_rsi_momentum",
       timeframe: "5 Min",
       stoploss_pct: 0.6,
       target_pct: 2.5,
@@ -122,7 +97,38 @@ export default function StrategySettings() {
       enable_vwap_filter: false,
       enable_rsi_filter: false,
     },
+    ema_rsi: {
+      active_strategy: "ema_rsi",
+      enable_volume_filter: true,
+      enable_ema_filter: true,
+      enable_vwap_filter: true,
+      enable_rsi_filter: true,
+      enable_option_chain_filter: false,
+      enable_macd_filter: false,
+      enable_greeks_filter: false,
+    },
+    enhanced_ai: {
+      active_strategy: "enhanced_ai",
+      enable_volume_filter: false,
+      enable_ema_filter: false,
+      enable_vwap_filter: false,
+      enable_rsi_filter: true,
+      enable_option_chain_filter: true,
+      enable_macd_filter: true,
+      enable_greeks_filter: true,
+    },
+    premium: {
+      active_strategy: "premium",
+      enable_volume_filter: true,
+      enable_ema_filter: false,
+      enable_vwap_filter: true,
+      enable_rsi_filter: true,
+      enable_option_chain_filter: false,
+      enable_macd_filter: true,
+      enable_greeks_filter: false,
+    },
     MARL_Ultra: {
+      active_strategy: "MARL_Ultra",
       enable_volume_filter: false,
       enable_ema_filter: false,
       enable_vwap_filter: false,
@@ -146,12 +152,10 @@ export default function StrategySettings() {
   };
 
   const applyDefaults = (strategyId: string) => {
-    const defaults = defaultSettings[strategyId];
-    if (defaults) {
-      setSettings({ ...settings, ...defaults });
-      const strategyName = strategies.find(s => s.id === strategyId)?.name || strategyId;
-      setToast({ message: `Applied ${strategyName} Defaults Successfully..`, type: 'success' });
-    }
+    const defaults = defaultSettings[strategyId] || {};
+    setSettings((prev: any) => ({ ...prev, ...defaults, active_strategy: strategyId }));
+    const strategyName = strategies.find(s => s.id === strategyId)?.name || strategyId;
+    setToast({ message: `Applied ${strategyName} Defaults Successfully..`, type: 'success' });
   };
 
   const tabs = [
@@ -162,7 +166,12 @@ export default function StrategySettings() {
   const loadSettings = () => {
     fetch('/api/settings')
       .then(res => res.json())
-      .then(data => setSettings(data))
+      .then(data => {
+        setSettings(data);
+        if (data.active_strategy) {
+          setSelectedStrategy(data.active_strategy);
+        }
+      })
       .catch(err => console.error('Failed to fetch settings:', err));
   };
 
@@ -214,14 +223,16 @@ export default function StrategySettings() {
 
   const executeSave = async () => {
     try {
+      const payload = { ...settings, active_strategy: selectedStrategy };
       const response = await fetch('/api/settings', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(settings),
+        body: JSON.stringify(payload),
       });
       if (response.ok) {
+        setSettings(payload);
         console.log('Save successful, setting toast');
         setToast({ message: 'Saved Settings Successfully..', type: 'success' });
       } else {
@@ -295,8 +306,10 @@ export default function StrategySettings() {
                   <select
                     value={selectedStrategy}
                     onChange={(e) => {
-                      setSelectedStrategy(e.target.value);
-                      applyDefaults(e.target.value);
+                      const strat = e.target.value;
+                      setSelectedStrategy(strat);
+                      setSettings((prev: any) => ({ ...prev, active_strategy: strat }));
+                      applyDefaults(strat);
                     }}
                     className="bg-background border border-border rounded-xl pl-10 pr-4 py-2 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all"
                   >

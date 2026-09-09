@@ -31,6 +31,7 @@ export default function Signals() {
   const [confidence, setConfidence] = useState(0);
   const [status, setStatus] = useState("Scanning...");
   const [bias, setBias] = useState("Analyzing market conditions...");
+  const [strategyDisplay, setStrategyDisplay] = useState("EMA 9 / RSI Momentum");
   const [trendData, setTrendData] = useState<TrendPoint[]>([]);
   const [signals, setSignals] = useState<SignalEntry[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -53,18 +54,15 @@ export default function Signals() {
           confidence?: number;
           status?: string;
           bias?: string;
+          strategy_display?: string;
           trendData?: TrendPoint[];
           signals?: SignalEntry[];
         } = await res.json();
 
         if (data && !data.error) {
-          // While the backend is (re)computing signals for a symbol,
-          // GET /api/signals returns a placeholder
-          // {symbol, confidence, direction:"CALCULATING"} with no `error`
-          // key but also no status/bias/trendData/signals keys. Only apply
-          // the update once the real fields are actually present; otherwise
-          // keep showing the last good values instead of blanking the page
-          // or crashing the .map()/.length calls downstream.
+          if (data.strategy_display) {
+            setStrategyDisplay(data.strategy_display);
+          }
           if (data.status !== undefined && data.trendData !== undefined && data.signals !== undefined) {
             setConfidence(data.confidence ?? 0);
             setStatus(data.status);
@@ -131,7 +129,7 @@ export default function Signals() {
                 </h1>
               </div>
               <p className="text-xs font-mono text-muted-foreground uppercase tracking-widest flex items-center gap-2">
-                <Cpu className="w-3.5 h-3.5" /> Neural Network Active &bull; Latency: 14ms
+                <Cpu className="w-3.5 h-3.5 text-primary" /> {strategyDisplay} Engine &bull; Active &bull; 14ms
               </p>
             </div>
 
