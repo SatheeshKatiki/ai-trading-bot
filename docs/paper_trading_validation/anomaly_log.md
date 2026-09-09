@@ -6,6 +6,60 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-09-09 (evening) — EVIDENCE: 0 of 5 recorded sessions contain a single trade filled at a quoted price
+
+**Not a fix — a measurement.** `scripts/audit_session_fills.py` classifies the
+price provenance of every recorded paper trade, so "is this session evidence?"
+stops being a matter of opinion.
+
+**Result across every session on disk:**
+
+```
+REAL           0  (  0.0%)   filled at a quoted price
+MODEL         10  ( 71.4%)   theoretical or extrapolated price
+FABRICATED     4  ( 28.6%)   hardcoded default -- not a price at all
+
+Sessions usable as live-performance evidence: 0 of 5
+```
+
+**Day_5 (2026-09-09) caught the transition mid-session**, which is as clean a
+demonstration of the defect as could be asked for:
+
+| time | contract | entry | delta |
+|---|---|---|---|
+| 09:15:15 | NIFTY 23550 PE | 176.44 | −0.5 |
+| 09:15:15 | BANKNIFTY 56600 PE | 424.14 | −0.5 |
+| 11:35:21 | BANKNIFTY 56600**.0** CE | **100.00** | +0.5 |
+| 11:52:41 | NIFTY 23500**.0** PE | **100.00** | −0.5 |
+
+The 09:15 pair carries model premiums from the Black-Scholes chain. The 11:35
+pair carries the literal `100.0` fallback — the `ce`/`pe` chain change had
+landed by then while `select_best_option()` still read `call`/`put`. The
+float strikes (`56600.0`) are the real chain's signature, confirming exactly
+when the switch happened. **All four show delta of precisely ±0.5**, the
+constant fallback: a genuine ATM delta is 0.5091 or 0.4907, never exactly
+0.5000.
+
+**Fingerprints the audit keys on:**
+
+* `entry_premium == 100.0` with no recorded quote → the `get("ltp", 100.0)` default
+* `abs(opt_delta) == 0.50` exactly → the constant fallback
+* no `entry_bid`/`entry_ask` → priced before quote capture existed
+* `mark_source == "model"` → exit extrapolated rather than read
+
+**Verification:** `test_session_fill_audit.py` (15 tests, new) covers each
+fingerprint, confirms a real 0.5091 delta is *not* mistaken for the 0.5000
+fallback, that filling below the ask is flagged, and that session verdicts
+escalate correctly (one fabricated trade ⇒ UNUSABLE). Suite **888 passed / 1
+skipped / 2 xfailed**.
+
+**Consequence:** `GO_NO_GO_CHECKLIST.md` §2's clean-session count is **zero**,
+and should be counted from the first session run on the current build.
+Everything before it is measurement of a model, not of the market. Run this
+script after each session before adding it to the evidence package.
+
+---
+
 ## 2026-09-09 (later still) — FIX: open positions are now marked to the contract's real bid, not extrapolated from entry
 
 **Why this had to follow the entry-fill fix:** entry was made real (the ask),
