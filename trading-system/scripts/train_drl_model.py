@@ -34,6 +34,11 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import pandas as pd  # module-level: fetch_data()'s CSV fallback calls
+                     # pd.read_csv, but `pd` was only imported inside
+                     # compute_drl_features(), so that fallback raised
+                     # NameError instead of loading the file (ruff F821).
+
 # ── path setup ────────────────────────────────────────────────────────────────
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))

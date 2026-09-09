@@ -389,17 +389,73 @@ def send_telegram_notification(message: str) -> None:
 
 
 def kill_process_on_ports(ports: List[int]) -> None:
-    """Kill any zombie processes listening on given ports (Windows/Linux compatible)."""
-    for port in ports:
+    """Kill whatever is LISTENING on each given port. Exact, not approximate.
+
+    This used to shell out to::
+
+        for /f "tokens=5" %a in ('netstat -aon ^| findstr :8000') do taskkill /PID %a /F /T
+
+    ``findstr`` does a plain substring match, so ``:3000`` also matched
+    ``:30000``-``:30009`` and any *foreign* address ending in those digits --
+    then ``taskkill /F /T`` killed that PID and its whole process tree. On a
+    machine running anything else in the 30000-32767 range (Docker, Kubernetes
+    node ports, dev servers) this could take out unrelated software, and the
+    Linux branch had the same shape via ``fuser -k``.
+
+    psutil is already a dependency (it backs the singleton-instance guard), so
+    match the port exactly, require the socket to be LISTENING, and never kill
+    this process or its own parent.
+    """
+    try:
+        import psutil
+    except Exception as exc:      # pragma: no cover - psutil is a hard dep
+        logger.warning("psutil unavailable, skipping port cleanup: %s", exc)
+        return
+
+    wanted = set(ports)
+    self_pid = os.getpid()
+    protected = {self_pid, os.getppid()}
+    victims: dict = {}
+
+    try:
+        for conn in psutil.net_connections(kind="inet"):
+            if conn.status != psutil.CONN_LISTEN or not conn.laddr:
+                continue
+            if conn.laddr.port not in wanted or not conn.pid:
+                continue
+            if conn.pid in protected:
+                logger.debug("Not killing PID %s on port %s (self/parent)",
+                             conn.pid, conn.laddr.port)
+                continue
+            victims.setdefault(conn.pid, set()).add(conn.laddr.port)
+    except psutil.AccessDenied:
+        logger.warning("Insufficient privileges to enumerate listening sockets; "
+                       "skipping port cleanup.")
+        return
+    except Exception as exc:
+        logger.warning("Could not enumerate listening sockets: %s", exc)
+        return
+
+    for pid, occupied in victims.items():
         try:
-            if os.name == "nt":
-                cmd = f'for /f "tokens=5" %a in (\'netstat -aon ^| findstr :{port}\') do taskkill /PID %a /F /T 2>nul'
-                subprocess.run(cmd, shell=True, capture_output=True)
-            else:
-                subprocess.run(f"fuser -k {port}/tcp 2>/dev/null", shell=True)
-            logger.info("Cleaned up port %d", port)
-        except Exception as e:
-            logger.debug("Port cleanup notice for %d: %s", port, e)
+            proc = psutil.Process(pid)
+            name = proc.name()
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except psutil.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=3)
+            logger.info("Freed port(s) %s (killed PID %s, %s)",
+                        sorted(occupied), pid, name)
+        except psutil.NoSuchProcess:
+            pass
+        except Exception as exc:
+            logger.warning("Could not stop PID %s holding port(s) %s: %s",
+                           pid, sorted(occupied), exc)
+
+    for port in sorted(wanted - {p for pl in victims.values() for p in pl}):
+        logger.debug("Port %d already free.", port)
 
 
 def run_auto_auth() -> bool:
@@ -837,7 +893,14 @@ def run_daemon_loop() -> None:
                 logger.info("Trading window active. Launching session for %s", today)
                 run_session_flow()
             elif current_time < PRE_MARKET_TIME:
-                target_dt = datetime.datetime.combine(today, PRE_MARKET_TIME, tzinfo=IST)
+                # IST.localize(), not `tzinfo=IST`. pytz timezone objects carry
+                # their pre-1942 LMT offset (+05:53 for Asia/Kolkata) until
+                # localize() picks the correct one, so the tzinfo= form
+                # produced a datetime 23 minutes off and this sleep was
+                # consistently short by that much.
+                target_dt = IST.localize(
+                    datetime.datetime.combine(today, PRE_MARKET_TIME)
+                )
                 sleep_secs = (target_dt - current_ist).total_seconds()
                 logger.info("Waiting until 08:45 AM IST (in %d minutes)...", int(sleep_secs / 60))
                 time.sleep(min(sleep_secs, 300))

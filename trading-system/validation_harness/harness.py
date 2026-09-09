@@ -201,7 +201,6 @@ def run_strategy_backtest(
         friction = None
     model_theta = bool(realism and realism.intraday_theta)
     sim_clock = bool(realism and realism.simulated_clock)
-    friction_charges_total = 0.0
 
     def _dte(expiry, ts, bar_date):
         """Days to expiry for the PRICER. Integer-per-day by default —

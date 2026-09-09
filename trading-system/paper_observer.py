@@ -288,9 +288,15 @@ def run_session(day_num, date_str, day_name):
     print(f"  Time: {now_ist().strftime('%Y-%m-%d %H:%M:%S IST')}")
     print(f"{'='*65}")
     
+    active_settings = fetch_json("/api/settings") or {}
+    active_strategy = active_settings.get("active_strategy", "ema9_rsi_momentum")
+    strat_label = "EMA 9 / RSI Momentum" if active_strategy == "ema9_rsi_momentum" else active_strategy.replace("_", " ").title()
+
     # Check if resuming an existing session for today
     session_log = {
         "date": session_label,
+        "strategy": active_strategy,
+        "strategy_name": strat_label,
         "session_start": now_ist().isoformat(),
         "session_end": None,
         "trades": [],
@@ -312,7 +318,8 @@ def run_session(day_num, date_str, day_name):
     prev_signals = {}
     daily_trades_count = len(session_log["trades"])
     
-    print(f"  [SYS] Monitoring live candles, AI confidence, and Greeks...")
+    print(f"  [SYS] Active Strategy Engine: {strat_label} ({active_strategy})")
+    print(f"  [SYS] Monitoring live candles, momentum strength, and Greeks...")
     save_session_atomic(session_log, out_file)
     
     while running and is_market_open():
@@ -415,6 +422,8 @@ def run_session(day_num, date_str, day_name):
                             
                             trade_obj = {
                                 "symbol": symbol,
+                                "strategy": active_strategy,
+                                "strategy_name": strat_label,
                                 "contract": opt["contract"],
                                 "direction": direction,
                                 "opt_type": opt["type"],
@@ -598,7 +607,7 @@ def main():
         # Run today's session
         date_str = now_ist().strftime("%Y-%m-%d")
         day_name = now_ist().strftime("%A")
-        res = run_session(day_idx, date_str, day_name)
+        run_session(day_idx, date_str, day_name)
         
         # Refresh session list and update audit report
         existing_sessions = detect_existing_sessions()
