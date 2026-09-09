@@ -56,6 +56,28 @@ DEFAULT_BACKUP_COUNT = 3
 _REQUEST_LOG_LEVEL_ENV = "FYERS_REQUEST_LOG_LEVEL"
 
 
+class SafeRotatingFileHandler(logging.handlers.RotatingFileHandler):
+    """RotatingFileHandler that survives a locked file on Windows.
+
+    Rotation renames the active file, and Windows refuses that while another
+    handle is open on it (WinError 32). These two files are written by the
+    vendored SDK from whichever thread happens to be issuing a broker call, so
+    a rollover can land exactly while a request is being logged.
+
+    Skipping one rollover means the file briefly exceeds ``maxBytes`` and is
+    rotated on the next attempt -- unbounded growth is the thing being
+    prevented, and an exception raised from inside logging would propagate
+    into the broker call that triggered it. Mirrors the handler
+    ``api_bridge.py`` uses for its own root-logger rotation.
+    """
+
+    def doRollover(self):  # noqa: D102 - see class docstring
+        try:
+            super().doRollover()
+        except (PermissionError, OSError) as exc:
+            logger.debug("Deferred log rollover for %s: %s", self.baseFilename, exc)
+
+
 def _is_plain_file_handler(handler: logging.Handler) -> bool:
     """A FileHandler that is NOT already one of the rotating subclasses."""
     return (
@@ -90,7 +112,7 @@ def tame_fyers_sdk_logging(
                 if not path.name:
                     continue
 
-                rotating = logging.handlers.RotatingFileHandler(
+                rotating = SafeRotatingFileHandler(
                     str(path),
                     maxBytes=max_bytes,
                     backupCount=backup_count,
