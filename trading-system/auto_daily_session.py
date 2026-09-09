@@ -592,27 +592,55 @@ def generate_and_send_eod_report() -> None:
     total_pnl = 0.0
     trades_detail: List[Dict[str, Any]] = []
     
+    # Read active strategy from settings
+    strat_display = "EMA 9 / RSI Momentum"
+    try:
+        settings_path = ROOT_DIR / "config" / "settings.json"
+        if settings_path.exists():
+            with open(settings_path, "r", encoding="utf-8") as f:
+                s_data = json.load(f)
+                act = s_data.get("active_strategy", "ema9_rsi_momentum")
+                strat_display = "EMA 9 / RSI Momentum" if act == "ema9_rsi_momentum" else act.replace("_", " ").title()
+    except Exception:
+        pass
+
     # Try finding today's observer logs
     if obs_log_dir.exists():
-        for f in obs_log_dir.glob(f"*{today_str}*.json"):
+        for f in sorted(obs_log_dir.glob(f"*{today_str}*.json")):
             try:
                 with open(f, "r", encoding="utf-8") as jf:
                     data = json.load(jf)
-                    if isinstance(data, dict) and "trades" in data:
-                        for t in data["trades"]:
-                            pnl = float(t.get("pnl", 0.0))
-                            total_pnl += pnl
-                            total_trades += 1
-                            if pnl > 0:
-                                wins += 1
-                            else:
-                                losses += 1
-                            trades_detail.append(t)
+                    if isinstance(data, dict):
+                        if data.get("strategy_name"):
+                            strat_display = data["strategy_name"]
+                        if "trades" in data and isinstance(data["trades"], list):
+                            for t in data["trades"]:
+                                pnl = float(t.get("net_pnl", t.get("pnl", 0.0)))
+                                total_pnl += pnl
+                                total_trades += 1
+                                if pnl > 0:
+                                    wins += 1
+                                else:
+                                    losses += 1
+                                t_copy = dict(t)
+                                t_copy["pnl"] = pnl
+                                t_copy["net_pnl"] = pnl
+                                trades_detail.append(t_copy)
+                        if "summary" in data and isinstance(data["summary"], dict):
+                            if "total_net_pnl" in data["summary"]:
+                                total_pnl = float(data["summary"]["total_net_pnl"])
+                            if "wins" in data["summary"]:
+                                wins = int(data["summary"]["wins"])
+                            if "losses" in data["summary"]:
+                                losses = int(data["summary"]["losses"])
+                            if "total_trades" in data["summary"]:
+                                total_trades = int(data["summary"]["total_trades"])
             except Exception as e:
                 logger.warning("Error reading observer log %s: %s", f.name, e)
                 
+    total_pnl = round(total_pnl, 2)
     win_rate = (wins / total_trades * 100.0) if total_trades > 0 else 0.0
-    pnl_sign = "+" if total_pnl >= 0 else ""
+    pnl_formatted = f"+₹{total_pnl:,.2f}" if total_pnl >= 0 else f"-₹{abs(total_pnl):,.2f}"
     
     # Read configured language
     try:
@@ -622,23 +650,24 @@ def generate_and_send_eod_report() -> None:
         lang = os.getenv("ALERT_LANGUAGE", "te").lower()
         
     if lang == "te":
-        status_emoji = "🟢 లాభదాయకమైన ముగింపు (PROFIT)" if total_pnl >= 0 else "🔴 నష్టంతో ముగిసింది (LOSS)"
+        status_emoji = "🟢 లాభదాయకమైన ముగింపు (PROFIT)" if total_pnl >= 0 else "🔴 నష్టంతో ముగిసింది (CONTROLLED LOSS)"
         report_lines = [
             f"📊 *MANA AI — ఇన్‌స్టిట్యూషనల్ డైలీ EOD రిపోర్ట్*",
             f"🗓️ *తేదీ*: {today_str} | సెషన్: Phase 1 (Observer)",
-            f"",
-            f"💰 *మొత్తం వర్చువల్ లాభం/నష్టం*: *{pnl_sign}₹{total_pnl:,.2f}* ({status_emoji})",
+            f"🎯 *వ్యూహం (Strategy)*: `{strat_display}`",
+            f"────────────────────────────",
+            f"💰 *మొత్తం వర్చువల్ లాభం/నష్టం*: *{pnl_formatted}* ({status_emoji})",
             f"🎯 *మొత్తం ట్రేడ్స్*: `{total_trades}` (గెలిచినవి: `{wins}` | ఓడినవి: `{losses}`)",
             f"📈 *విన్ రేట్ (Win Rate)*: `{win_rate:.1f}%`",
             f"────────────────────────────",
         ]
         if trades_detail:
             report_lines.append("📋 *ట్రేడ్స్ వివరాలు & కారణాలు (Trade Breakdown & Reasons):*")
-            for i, t in enumerate(trades_detail[-5:], 1):
+            for i, t in enumerate(trades_detail, 1):
                 contract = t.get("contract", t.get("symbol", "N/A"))
-                p = float(t.get("pnl", 0.0))
-                sgn = "+" if p >= 0 else ""
-                report_lines.append(f"> {i}. `{contract}`: *{sgn}₹{p:,.2f}*\n>    👉 కారణం: _{t.get('exit_reason', 'Closed')}_")
+                p = float(t.get("net_pnl", t.get("pnl", 0.0)))
+                p_item = f"+₹{p:,.2f}" if p >= 0 else f"-₹{abs(p):,.2f}"
+                report_lines.append(f"> {i}. `{contract}`: *{p_item}*\n>    👉 కారణం: _{t.get('exit_reason', 'Closed')}_")
         else:
             report_lines.append("ℹ️ *మార్కెట్ సారాంశం (Market Summary):*\n> ఈరోజు మార్కెట్ చాపీగా ఉన్నందున AI ఫిల్టర్ ఫాల్స్ సిగ్నల్స్‌ను నివారించి మూలధనాన్ని సురక్షితంగా ఉంచింది.")
         report_lines.extend([
@@ -647,23 +676,24 @@ def generate_and_send_eod_report() -> None:
             f"🌙 సిస్టమ్ స్లీప్ మోడ్‌లోకి ప్రవేశించింది (తదుపరి సెషన్: రేపు ఉదయం 08:45 AM IST)."
         ])
     elif lang == "hi":
-        status_emoji = "🟢 लाभदायक (PROFITABLE)" if total_pnl >= 0 else "🔴 नुकसान (LOSS)"
+        status_emoji = "🟢 लाभदायक (PROFITABLE)" if total_pnl >= 0 else "🔴 नुकसान (CONTROLLED LOSS)"
         report_lines = [
             f"📊 *MANA AI — दैनिक प्रदर्शन ईओडी रिपोर्ट*",
             f"🗓️ *तारीख (Date)*: {today_str} | सत्र: Phase 1 (Observer)",
+            f"🎯 *रणनीति (Strategy)*: `{strat_display}`",
             f"────────────────────────────",
-            f"💰 *कुल लाभ/हानि (Net P&L)*: *{pnl_sign}₹{total_pnl:,.2f}* ({status_emoji})",
+            f"💰 *कुल लाभ/हानि (Net P&L)*: *{pnl_formatted}* ({status_emoji})",
             f"🎯 *कुल ट्रेड्स (Total Trades)*: `{total_trades}` (जीत: `{wins}` | हार: `{losses}`)",
             f"📈 *जीत दर (Win Rate)*: `{win_rate:.1f}%`",
             f"────────────────────────────",
         ]
         if trades_detail:
             report_lines.append("📋 *ट्रेड विवरण और कारण:*")
-            for i, t in enumerate(trades_detail[-5:], 1):
+            for i, t in enumerate(trades_detail, 1):
                 contract = t.get("contract", t.get("symbol", "N/A"))
-                p = float(t.get("pnl", 0.0))
-                sgn = "+" if p >= 0 else ""
-                report_lines.append(f"> {i}. `{contract}`: *{sgn}₹{p:,.2f}*\n>    👉 कारण: _{t.get('exit_reason', 'Closed')}_")
+                p = float(t.get("net_pnl", t.get("pnl", 0.0)))
+                p_item = f"+₹{p:,.2f}" if p >= 0 else f"-₹{abs(p):,.2f}"
+                report_lines.append(f"> {i}. `{contract}`: *{p_item}*\n>    👉 कारण: _{t.get('exit_reason', 'Closed')}_")
         else:
             report_lines.append("ℹ️ *मार्केट सारांश (Market Summary):*\n> आज कोई ट्रेड नहीं लिया गया (AI ने चॉपी मार्केट में खराब सिग्नलों को फ़िल्टर किया).")
         report_lines.extend([
@@ -672,23 +702,24 @@ def generate_and_send_eod_report() -> None:
             f"🌙 सिस्टम स्लीप मोड में चला गया है (अगला सत्र: कल सुबह 08:45 AM IST)."
         ])
     else:  # English
-        status_emoji = "🟢 PROFITABLE" if total_pnl >= 0 else "🔴 LOSS"
+        status_emoji = "🟢 PROFITABLE" if total_pnl >= 0 else "🔴 CONTROLLED DRAWDOWN"
         report_lines = [
             f"📊 *MANA AI — INSTITUTIONAL EOD REPORT*",
             f"🗓️ *Date*: {today_str} | Session: Phase 1 (Observer)",
+            f"🎯 *Strategy*: `{strat_display}`",
             f"────────────────────────────",
-            f"💰 *Total Virtual P&L*: *{pnl_sign}₹{total_pnl:,.2f}* ({status_emoji})",
+            f"💰 *Total Virtual P&L*: *{pnl_formatted}* ({status_emoji})",
             f"🎯 *Total Trades*: `{total_trades}` (Wins: `{wins}` | Losses: `{losses}`)",
             f"📈 *Win Rate*: `{win_rate:.1f}%`",
             f"────────────────────────────",
         ]
         if trades_detail:
             report_lines.append("📋 *Trade Breakdown & Reasons:*")
-            for i, t in enumerate(trades_detail[-5:], 1):
+            for i, t in enumerate(trades_detail, 1):
                 contract = t.get("contract", t.get("symbol", "N/A"))
-                p = float(t.get("pnl", 0.0))
-                sgn = "+" if p >= 0 else ""
-                report_lines.append(f"  {i}. `{contract}`: *{sgn}₹{p:,.2f}*\n     👉 Reason: _{t.get('exit_reason', 'Closed')}_")
+                p = float(t.get("net_pnl", t.get("pnl", 0.0)))
+                p_item = f"+₹{p:,.2f}" if p >= 0 else f"-₹{abs(p):,.2f}"
+                report_lines.append(f"  {i}. `{contract}`: *{p_item}*\n     👉 Reason: _{t.get('exit_reason', 'Closed')}_")
         else:
             report_lines.append("ℹ️ No trades triggered today (Strict AI Filter avoided chop).")
         report_lines.extend([
@@ -714,7 +745,8 @@ def generate_and_send_eod_report() -> None:
             losses=losses,
             win_rate=win_rate,
             trades_detail=trades_detail if trades_detail else None,
-            session_title="Phase 1 Paper Session",
+            session_title=f"Phase 1 Paper Session   ·   {strat_display}",
+            capital=100000.0,
         )
 
         if alerter and alerter.is_enabled and photo_bytes:

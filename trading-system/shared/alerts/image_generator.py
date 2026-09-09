@@ -143,6 +143,7 @@ def generate_eod_card(
     win_rate: float,
     trades_detail: Optional[List[Dict[str, Any]]] = None,
     session_title: str = "Phase 1 Paper Session",
+    capital: float = 100000.0,
 ) -> bytes:
     # ── 1. BASE CANVAS & GRADIENT ─────────────────────────────────────────────
     img = Image.new("RGBA", (W, H), BG_DEEP)
@@ -234,9 +235,10 @@ def generate_eod_card(
     # Label inside Hero Card (Bright Gold)
     d.text((_s(HX1 + 26), _s(HY1 + 18)), "NET REALIZED P&L  (TODAY)", font=_font(12, bold=True), fill=GOLD_BRIGHT)
 
-    # Session Status Pill (Top Right of Hero Card)
-    is_profit = total_pnl > 0
-    is_zero = total_pnl == 0
+    # Dynamic PnL, ROI & Status
+    roi = (total_pnl / capital * 100.0) if capital > 0 else 0.0
+    is_profit = total_pnl > 0.009
+    is_zero   = abs(total_pnl) < 0.01
 
     if is_profit:
         s_title = "PROFITABLE SESSION"
@@ -244,18 +246,36 @@ def generate_eod_card(
         s_border = GREEN_PROFIT
         s_fg = GOLD_IVORY
         s_icon = "check"
+        pnl_col = GREEN_PROFIT
+        roi_str = f"+{roi:.2f}% Session ROI"
+        roi_pill_fill = (6, 78, 59, 230)
+        roi_pill_border = GREEN_PROFIT
+        roi_pill_col = GREEN_PROFIT
+        roi_sub = "Alpha Hedged  ·  Target Reached"
     elif is_zero:
         s_title = "CAPITAL PRESERVED"
         s_bg = (16, 42, 70, 245)
         s_border = (56, 189, 248, 220)
         s_fg = GOLD_IVORY
         s_icon = "shield"
+        pnl_col = GOLD_CHAMPAGNE
+        roi_str = "+0.00% Session ROI"
+        roi_pill_fill = (22, 32, 52, 220)
+        roi_pill_border = (212, 175, 55, 140)
+        roi_pill_col = GOLD_CHAMPAGNE
+        roi_sub = "Alpha Hedged  ·  Zero Overnight Risk"
     else:
         s_title = "CONTROLLED DRAWDOWN"
         s_bg = RED_PILL
         s_border = RED_LOSS
         s_fg = GOLD_IVORY
         s_icon = "warn"
+        pnl_col = RED_LOSS
+        roi_str = f"{roi:.2f}% Session ROI"
+        roi_pill_fill = (55, 18, 24, 240)
+        roi_pill_border = RED_LOSS
+        roi_pill_col = RED_LOSS
+        roi_sub = "Alpha Hedged  ·  Hard SL Enforced"
 
     pw, ph = 250, 38
     px1, py1 = HX2 - pw - 22, HY1 + 15
@@ -274,46 +294,37 @@ def generate_eod_card(
 
     d.text((_s(px1 + 42), _s(py1 + 10)), s_title, font=_font(12, bold=True), fill=s_fg)
 
-    # BIG P&L NUMBER (Warm Champagne Gold for Zero, Emerald for Profit)
+    # BIG P&L NUMBER
     pnl_str = _format_inr(total_pnl)
-
-    if is_profit:
-        pnl_col = GREEN_PROFIT
-    elif is_zero:
-        pnl_col = GOLD_CHAMPAGNE
-    else:
-        pnl_col = RED_LOSS
-
     font_pnl = _font(64, bold=True)
     d.text((_s(HX1 + 26), _s(HY1 + 48)), pnl_str, font=font_pnl, fill=pnl_col)
     pnl_str_len = int(font_pnl.getlength(pnl_str) / SCALE if hasattr(font_pnl, "getlength") else 310)
 
-    # ROI Pill beside PnL (Gold Border & Champagne Text)
-    pnl_sign = "+" if total_pnl >= 0 else ""
-    roi_str = f"{pnl_sign}0.00% Session ROI" if is_zero else f"{pnl_sign}{(total_pnl / 50000.0 * 100):.2f}% Session ROI"
+    # ROI Pill beside PnL (Dynamic Red/Green/Gold)
+    font_roi = _font(13, bold=True)
+    roi_len = int(font_roi.getlength(roi_str) / SCALE if hasattr(font_roi, "getlength") else 150)
+    tag_w = max(210, roi_len + 54)
     tag_x = HX1 + 26 + pnl_str_len + 28
-    d.rounded_rectangle([(_s(tag_x), _s(HY1 + 64)), (_s(tag_x + 220), _s(HY1 + 98))], radius=_s(17), fill=(22, 32, 52, 220), outline=(212, 175, 55, 140), width=_s(1))
-    d.ellipse([(_s(tag_x + 12), _s(HY1 + 76)), (_s(tag_x + 20), _s(HY1 + 84))], fill=GOLD_BRIGHT)
-    d.text((_s(tag_x + 28), _s(HY1 + 71)), roi_str, font=_font(13, bold=True), fill=GOLD_CHAMPAGNE)
-    d.text((_s(tag_x + 4), _s(HY1 + 106)), "Alpha Hedged  ·  Zero Overnight Risk", font=_font(11, bold=False), fill=GOLD_MUTED)
+    d.rounded_rectangle([(_s(tag_x), _s(HY1 + 64)), (_s(tag_x + tag_w), _s(HY1 + 98))], radius=_s(17), fill=roi_pill_fill, outline=roi_pill_border, width=_s(1))
+    d.ellipse([(_s(tag_x + 14), _s(HY1 + 77)), (_s(tag_x + 22), _s(HY1 + 85))], fill=roi_pill_col)
+    d.text((_s(tag_x + 32), _s(HY1 + 71)), roi_str, font=font_roi, fill=roi_pill_col)
+    d.text((_s(tag_x + 4), _s(HY1 + 106)), roi_sub, font=_font(11, bold=False), fill=GOLD_MUTED)
 
     # Horizontal Divider inside Hero
     div_y = HY2 - 58
     d.line([(_s(HX1 + 24), _s(div_y)), (_s(HX2 - 24), _s(div_y))], fill=(48, 62, 92, 255), width=_s(1))
 
-    # 4 Quick Metric Columns inside Hero (WARM GOLDISH LABELS & VALUES)
+    # 4 Quick Metric Columns inside Hero
     col_w = (HX2 - HX1 - 48) // 4
     metrics = [
         ("TOTAL TRADES", f"{total_trades} Executed", GOLD_IVORY),
         ("PROFIT TRADES", f"{wins} Wins", GREEN_PROFIT if wins > 0 else GOLD_CHAMPAGNE),
         ("LOSS TRADES", f"{losses} Losses", RED_LOSS if losses > 0 else GOLD_CHAMPAGNE),
-        ("WIN RATE", f"{win_rate:.1f}%", GOLD_BRIGHT if win_rate > 0 else GOLD_CHAMPAGNE),
+        ("WIN RATE", f"{win_rate:.1f}%", GREEN_PROFIT if win_rate >= 50 else (RED_LOSS if (losses > 0 and wins == 0) else GOLD_CHAMPAGNE)),
     ]
     for idx, (m_label, m_val, m_col) in enumerate(metrics):
         cx = HX1 + 28 + idx * col_w
-        # Label in warm gold muted
         d.text((_s(cx), _s(div_y + 8)), m_label, font=_font(10, bold=True), fill=GOLD_MUTED)
-        # Value in warm gold / champagne bold
         d.text((_s(cx), _s(div_y + 24)), m_val, font=_font(17, bold=True), fill=m_col)
 
     # ── 5. THREE KPI CARDS (Middle Row) ──────────────────────────────────────
@@ -323,33 +334,90 @@ def generate_eod_card(
     GAP = 16
     KW = (1200 - 72 - GAP * 2) // 3
 
+    # Dynamic Win Accuracy KPI
+    if total_trades == 0:
+        win_acc_val = "0.0%"
+        win_acc_sub = "0 Wins  /  0 Losses"
+        win_acc_desc = "AI Guard: False Signals Rejected"
+        win_acc_col = GOLD_CHAMPAGNE
+        win_acc_accent = GOLD_METALLIC
+        win_icon_col = GOLD_METALLIC
+    elif win_rate >= 50.0:
+        win_acc_val = f"{win_rate:.1f}%"
+        win_acc_sub = f"{wins} Wins  /  {losses} Losses"
+        win_acc_desc = "Confluence Entry Verification"
+        win_acc_col = GREEN_PROFIT
+        win_acc_accent = GREEN_PROFIT
+        win_icon_col = GREEN_PROFIT
+    elif win_rate > 0:
+        win_acc_val = f"{win_rate:.1f}%"
+        win_acc_sub = f"{wins} Wins  /  {losses} Losses"
+        win_acc_desc = "Confluence Entry Verification"
+        win_acc_col = GOLD_BRIGHT
+        win_acc_accent = GOLD_BRIGHT
+        win_icon_col = GOLD_BRIGHT
+    else:  # 0% win rate with losses
+        win_acc_val = "0.0%"
+        win_acc_sub = f"{wins} Wins  /  {losses} Losses"
+        win_acc_desc = "Strict Stop Loss Discipline"
+        win_acc_col = RED_LOSS
+        win_acc_accent = RED_LOSS
+        win_icon_col = RED_LOSS
+
+    # Dynamic Session Activity KPI
+    orders_count = total_trades * 2 if total_trades > 0 else 0
+    act_val = f"{total_trades} Trades" if total_trades > 0 else "0 Trades"
+    act_sub = f"{orders_count} Orders (Daily Cap: 6)" if total_trades > 0 else "Daily Cap: Max 6 Trades"
+    act_desc = "Anti-Overtrading Protocol Active"
+
+    # Dynamic Risk Engine KPI (Calculated directly from capital & drawdown)
+    drawdown_val = max(0.0, -total_pnl)
+    drawdown_pct = (drawdown_val / capital * 100.0) if capital > 0 else 0.0
+    cap_intact_pct = max(0.0, ((capital - drawdown_val) / capital * 100.0)) if capital > 0 else 100.0
+
+    if total_pnl < 0:
+        risk_val = f"{cap_intact_pct:.2f}% INTACT"
+        risk_sub = f"Drawdown: -{drawdown_pct:.2f}% (Limit: 3.0%)"
+        risk_desc = "Theta Guard & Hard SL Active"
+        risk_val_col = GOLD_BRIGHT if drawdown_pct <= 1.5 else (251, 146, 60, 255)
+        risk_accent = GOLD_BRIGHT
+    else:
+        risk_val = "100.0% INTACT"
+        risk_sub = "Zero Drawdown Incurred"
+        risk_desc = "Theta Guard & Hard SL Active"
+        risk_val_col = GOLD_BRIGHT
+        risk_accent = GOLD_BRIGHT
+
     kpi_configs = [
         {
             "title": "WIN ACCURACY",
-            "val": f"{win_rate:.1f}%",
-            "sub": f"{wins} Wins  /  {losses} Losses",
-            "desc": "Confluence Entry Verification",
-            "val_col": GREEN_PROFIT if win_rate > 0 else GOLD_CHAMPAGNE,
-            "accent_col": GREEN_PROFIT,
-            "icon": "target"
+            "val": win_acc_val,
+            "sub": win_acc_sub,
+            "desc": win_acc_desc,
+            "val_col": win_acc_col,
+            "accent_col": win_acc_accent,
+            "icon": "target",
+            "icon_col": win_icon_col,
         },
         {
             "title": "SESSION ACTIVITY",
-            "val": f"{total_trades} Orders",
-            "sub": "Daily Cap: Max 6 Trades",
-            "desc": "Anti-Overtrading Protocol Active",
+            "val": act_val,
+            "sub": act_sub,
+            "desc": act_desc,
             "val_col": GOLD_IVORY,
             "accent_col": GOLD_METALLIC,
-            "icon": "activity"
+            "icon": "activity",
+            "icon_col": CYAN_ACCENT,
         },
         {
             "title": "RISK ENGINE",
-            "val": "100% SECURE",
-            "sub": "Theta Guard & Hard SL Active",
-            "desc": "Zero Overnight Capital Exposure",
-            "val_col": GOLD_BRIGHT,
-            "accent_col": GOLD_BRIGHT,
-            "icon": "shield"
+            "val": risk_val,
+            "sub": risk_sub,
+            "desc": risk_desc,
+            "val_col": risk_val_col,
+            "accent_col": risk_accent,
+            "icon": "shield",
+            "icon_col": GOLD_BRIGHT,
         },
     ]
 
@@ -364,12 +432,13 @@ def generate_eod_card(
         d.rounded_rectangle([(_s(kx1 + 4), _s(KY1)), (_s(kx2 - 4), _s(KY1 + 3))], radius=_s(2), fill=kpi["accent_col"])
 
         # Icon in top right of KPI card
+        icon_col = kpi.get("icon_col", GOLD_BRIGHT)
         if kpi["icon"] == "target":
-            _draw_target_icon(d, _s(kx2 - 38), _s(KY1 + 14), size=20, color=GREEN_PROFIT)
+            _draw_target_icon(d, _s(kx2 - 38), _s(KY1 + 14), size=20, color=icon_col)
         elif kpi["icon"] == "activity":
-            _draw_activity_icon(d, _s(kx2 - 38), _s(KY1 + 14), size=20, color=CYAN_ACCENT)
+            _draw_activity_icon(d, _s(kx2 - 38), _s(KY1 + 14), size=20, color=icon_col)
         elif kpi["icon"] == "shield":
-            _draw_shield_badge(d, _s(kx2 - 38), _s(KY1 + 14), size=20, color=GOLD_BRIGHT)
+            _draw_shield_badge(d, _s(kx2 - 38), _s(KY1 + 14), size=20, color=icon_col)
 
         # Title (Warm Gold Muted)
         d.text((_s(kx1 + 18), _s(KY1 + 14)), kpi["title"], font=_font(11, bold=True), fill=GOLD_MUTED)
@@ -392,12 +461,19 @@ def generate_eod_card(
     d.rounded_rectangle([(_s(46), _s(BY1)), (_s(1200 - 46), _s(BY1 + 3))], radius=_s(2), fill=GOLD_METALLIC)
 
     # Header inside Bottom Panel
-    d.text((_s(54), _s(BY1 + 14)), "MARKET INTELLIGENCE & EXECUTION AUDIT", font=_font(11, bold=True), fill=GOLD_BRIGHT)
+    audit_hdr = f"MARKET INTELLIGENCE & EXECUTION AUDIT   ·   {len(trades_detail) if trades_detail else 0} TRADES AUDITED"
+    d.text((_s(54), _s(BY1 + 14)), audit_hdr, font=_font(11, bold=True), fill=GOLD_BRIGHT)
     d.line([(_s(54), _s(BY1 + 32)), (_s(1200 - 54), _s(BY1 + 32))], fill=(48, 62, 92, 255), width=_s(1))
 
     if trades_detail and len(trades_detail) > 0:
-        ty = BY1 + 42
-        for t in trades_detail[-3:]:
+        displayed_trades = trades_detail[:6]
+        n_trades = len(displayed_trades)
+        row_gap = 28 if n_trades <= 3 else (25 if n_trades <= 4 else 22)
+        font_trade = _font(12 if n_trades >= 5 else 13, bold=True)
+        font_reason = _font(11 if n_trades >= 5 else 12, bold=False)
+
+        ty = BY1 + 38
+        for t in displayed_trades:
             contract = str(t.get("contract", t.get("symbol", "N/A")))
             p = float(t.get("net_pnl", t.get("pnl", 0.0)))
             rsn = str(t.get("exit_reason", "Target / SL Hit"))
@@ -405,11 +481,11 @@ def generate_eod_card(
             p_formatted = _format_inr(p)
 
             # Bullet dot
-            d.ellipse([(_s(56), _s(ty + 4)), (_s(66), _s(ty + 14))], fill=pc)
-            d.text((_s(76), _s(ty)), contract[:32], font=_font(13, bold=True), fill=GOLD_IVORY)
-            d.text((_s(520), _s(ty)), p_formatted, font=_font(13, bold=True), fill=pc)
-            d.text((_s(680), _s(ty)), f"[{rsn[:45]}]", font=_font(12, bold=False), fill=GOLD_MUTED)
-            ty += 28
+            d.ellipse([(_s(56), _s(ty + 3)), (_s(66), _s(ty + 13))], fill=pc)
+            d.text((_s(76), _s(ty)), contract[:32], font=font_trade, fill=GOLD_IVORY)
+            d.text((_s(520), _s(ty)), p_formatted, font=font_trade, fill=pc)
+            d.text((_s(680), _s(ty)), f"[{rsn[:48]}]", font=font_reason, fill=GOLD_MUTED)
+            ty += row_gap
     else:
         # High-clarity 3-row intelligence layout with warm goldish headers
         # Row 1: False-Signal Filter Protection
