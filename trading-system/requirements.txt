@@ -24,8 +24,35 @@ cryptography>=41.0.0
 fyers-apiv3                    # Fyers Securities (default, active)
 # kiteconnect>=5.0.1           # Zerodha Kite Connect  → run installer script
 # smartapi-python>=1.3.9       # Angel One SmartAPI    → run installer script
-# pyotp>=2.9.0                 # TOTP 2FA (required by Angel One)
 # websocket-client>=1.6.0      # WebSocket client (required by Angel One SDK)
+
+# TOTP 2FA. Previously commented out as "required by Angel One", but
+# scripts/auth/auto_login_fyers.py imports it unconditionally for the Fyers
+# TOTP step — i.e. the zero-touch orchestrator's very first action. A fresh
+# install from this file would have had the daily auto-login fail on an
+# ImportError before the market opened.
+pyotp>=2.9.0
+
+# ---------------------------------------------------------------------------
+# Previously undeclared. All were present locally only as transitive
+# dependencies of other packages (Pillow via matplotlib, aiohttp via the
+# broker SDKs), so the system worked here and would have broken on a clean
+# install, in Docker, or in CI the moment an upstream dropped them.
+# Found by an AST scan of every import against this file (2026-09-09).
+# ---------------------------------------------------------------------------
+Pillow>=10.0.0                 # shared/alerts/image_generator.py — EOD card render
+aiohttp>=3.9.0                 # shared/lot_size_updater.py — async symbol-master fetch
+
+# Market sentiment (shared/sentiment.py). Feeds main.py's live sentiment
+# circuit breaker, so a missing import here silently disables a risk control.
+feedparser>=6.0.0              # RSS ingestion
+vaderSentiment>=3.3.2          # sentiment scoring
+deep-translator>=1.11.0        # Telugu headline translation
+
+# Deep RL (drl/). Optional in practice — the live engine runs without them —
+# but drl/trading_env.py and drl/marl/*.py import them at module scope.
+gymnasium>=0.29.0
+torch>=2.0.0
 
 # Plotting
 matplotlib>=3.8.0

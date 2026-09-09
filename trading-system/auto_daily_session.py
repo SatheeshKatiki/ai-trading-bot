@@ -74,26 +74,76 @@ EOD_SQUAREOFF_TIME = datetime.time(15, 15)
 MARKET_CLOSE_TIME = datetime.time(15, 30)
 EOD_REPORT_TIME = datetime.time(15, 31)
 
-# NSE National Holidays 2026 (YYYY-MM-DD)
-NSE_HOLIDAYS_2026 = {
-    "2026-01-26",  # Republic Day
-    "2026-03-03",  # Holi
-    "2026-03-20",  # Id-Ul-Fitr
-    "2026-03-27",  # Ram Navami
-    "2026-04-03",  # Good Friday
-    "2026-04-14",  # Dr. Baba Saheb Ambedkar Jayanti
-    "2026-05-01",  # Maharashtra Day
-    "2026-05-28",  # Bakri Id
-    "2026-06-26",  # Muharram
-    "2026-08-15",  # Independence Day
-    "2026-09-04",  # Milad-un-Nabi
-    "2026-10-02",  # Mahatma Gandhi Jayanti
-    "2026-10-20",  # Dussehra
-    "2026-11-09",  # Diwali Laxmi Pujan
-    "2026-11-10",  # Diwali Balipratipada
-    "2026-11-24",  # Gurunanak Jayanti
-    "2026-12-25",  # Christmas
+# ---------------------------------------------------------------------------
+# NSE trading holidays, keyed by year (YYYY-MM-DD)
+# ---------------------------------------------------------------------------
+# This was a single flat `NSE_HOLIDAYS_2026` set, consulted unconditionally.
+# From 2027-01-01 every lookup would have missed, so `is_trading_day()` would
+# have returned True on every NSE holiday and the orchestrator would have run
+# a full session -- auto-auth, backend, observer -- into a closed exchange,
+# every holiday, silently. Keying by year makes the gap detectable instead of
+# invisible; `assert_holiday_calendar_current()` then makes it loud.
+#
+# NSE publishes the next year's list late in the preceding year. Add the new
+# year here when it does. Do NOT guess: several of these are lunar and move.
+NSE_HOLIDAYS: Dict[int, set] = {
+    2026: {
+        "2026-01-26",  # Republic Day
+        "2026-03-03",  # Holi
+        "2026-03-20",  # Id-Ul-Fitr
+        "2026-03-27",  # Ram Navami
+        "2026-04-03",  # Good Friday
+        "2026-04-14",  # Dr. Baba Saheb Ambedkar Jayanti
+        "2026-05-01",  # Maharashtra Day
+        "2026-05-28",  # Bakri Id
+        "2026-06-26",  # Muharram
+        "2026-08-15",  # Independence Day
+        "2026-09-04",  # Milad-un-Nabi
+        "2026-10-02",  # Mahatma Gandhi Jayanti
+        "2026-10-20",  # Dussehra
+        "2026-11-09",  # Diwali Laxmi Pujan
+        "2026-11-10",  # Diwali Balipratipada
+        "2026-11-24",  # Gurunanak Jayanti
+        "2026-12-25",  # Christmas
+    },
 }
+
+#: Backwards-compatible alias for anything still referring to the flat set.
+NSE_HOLIDAYS_2026 = NSE_HOLIDAYS[2026]
+
+#: Years already reported as uncovered, so the alert fires once per run.
+_holiday_gap_reported: set = set()
+
+
+def holiday_calendar_covers(year: int) -> bool:
+    """Is there a published NSE holiday list loaded for `year`?"""
+    return year in NSE_HOLIDAYS
+
+
+def assert_holiday_calendar_current(today: Optional[datetime.date] = None) -> bool:
+    """Warn loudly, once per year per run, if the calendar has run out.
+
+    Returns True when the year is covered. The session is still allowed to
+    proceed -- refusing to trade for a whole year because a data file is stale
+    would be worse than trading one holiday into a closed exchange, and the
+    broker rejects orders on a holiday anyway. But it must never be silent.
+    """
+    day = today or now_ist().date()
+    if holiday_calendar_covers(day.year):
+        return True
+    if day.year not in _holiday_gap_reported:
+        _holiday_gap_reported.add(day.year)
+        logger.error(
+            "NSE holiday calendar has no entry for %d (loaded years: %s). Every "
+            "holiday this year will be treated as a normal trading day. Add %d "
+            "to NSE_HOLIDAYS in auto_daily_session.py.",
+            day.year, sorted(NSE_HOLIDAYS), day.year,
+        )
+        send_telegram_notification(
+            f"\u26a0\ufe0f [QuantAI] NSE holiday calendar has no entry for {day.year}. "
+            f"The orchestrator will run sessions on exchange holidays until it is added."
+        )
+    return False
 
 # Subprocess references
 backend_proc: Optional[subprocess.Popen] = None
@@ -308,13 +358,19 @@ def now_ist() -> datetime.datetime:
 
 
 def is_trading_day(dt: Optional[datetime.date] = None) -> bool:
-    """Check if given date is a weekday and not an NSE holiday."""
+    """Is `dt` a weekday the NSE is actually open on?
+
+    Looks the date up in that year's calendar rather than a single hardcoded
+    year's set -- see NSE_HOLIDAYS. When the year is not covered the holiday
+    check cannot be performed, so the day is treated as a trading day and
+    `assert_holiday_calendar_current()` reports the gap.
+    """
     check_date = dt or now_ist().date()
     # 5 = Saturday, 6 = Sunday
     if check_date.weekday() in (5, 6):
         return False
-    date_str = check_date.strftime("%Y-%m-%d")
-    if date_str in NSE_HOLIDAYS_2026:
+    holidays = NSE_HOLIDAYS.get(check_date.year)
+    if holidays and check_date.strftime("%Y-%m-%d") in holidays:
         return False
     return True
 
@@ -665,6 +721,9 @@ def run_session_flow(force_now: bool = False) -> None:
     """Run one single daily market session lifecycle."""
     current_ist = now_ist()
     today_date = current_ist.date()
+
+    # Surfaces a stale holiday calendar before anything else happens today.
+    assert_holiday_calendar_current(today_date)
 
     if not force_now and not is_trading_day(today_date):
         logger.info("Today (%s) is a Weekend or NSE Holiday. Skipping session.", today_date)

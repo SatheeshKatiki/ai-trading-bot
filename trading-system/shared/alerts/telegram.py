@@ -77,15 +77,46 @@ class TelegramAlerter:
     # Ultra-Fast Dispatch Mechanism (Multi-threaded JSON POST)
     # ------------------------------------------------------------------
 
+    #: Characters that legacy MarkdownV2 call sites may have escaped with a
+    #: backslash. Kept as an explicit class so the pattern below stays readable.
+    _MD_ESCAPABLE = r"_*\[\]()~`>#+=|{}.!\\-"
+
     @staticmethod
     def format_to_html(text: str) -> str:
-        """Convert standard markdown formatting into native Telegram HTML tags.
-        Ensures bold (*text* -> <b>text</b>), code (`text` -> <code>text</code>),
-        italic (_text_ -> <i>text</i>), and blockquotes (> text -> <blockquote>text</blockquote>)
-        render natively without any broken backslash artifacts.
+        """Convert light markdown into native Telegram HTML.
+
+        Bold ``*text*`` -> ``<b>``, code `` `text` `` -> ``<code>``, italic
+        ``_text_`` -> ``<i>``, and ``> quote`` -> ``<blockquote>``.
+
+        Two bugs fixed here on 2026-09-09:
+
+        1. The backslash-stripping step was a **no-op**. Its character class
+           was over-escaped (``[_*\\[\\]()...]``), so the class terminated early
+           and the pattern matched none of the intended characters. Verified:
+           ``\\_underscore\\_`` came back as ``\\<i>underscore\\</i>`` -- the
+           backslashes survived AND the italic tags were applied around them,
+           producing exactly the "broken backslash artifacts" the docstring
+           claimed to prevent.
+
+        2. ``&``, ``<`` and ``>`` were never HTML-escaped. Telegram's HTML
+           parser rejects raw ones, so a single ``&`` or ``<`` anywhere in a
+           dynamic field (a symbol, an exit reason, a P&L string) returned
+           HTTP 400 and the whole message silently fell back to plain text --
+           losing all formatting, with only a debug-level log line.
+
+        Order matters: escape the payload FIRST, then insert our own tags, so
+        the tags we add are never themselves escaped.
         """
-        # 1. Strip any unintentional escape backslashes
-        clean = re.sub(r"\\([_*\\[\\]()~`>#+\-=|{}.!])", r"\1", str(text))
+        raw = str(text)
+
+        # 1. Strip backslashes that legacy MarkdownV2 call sites added.
+        clean = re.sub(r"\\([" + TelegramAlerter._MD_ESCAPABLE + r"])", r"\1", raw)
+
+        # 2. HTML-escape the payload before any tag is introduced. Telegram
+        #    only recognises these three entities.
+        clean = (clean.replace("&", "&amp;")
+                      .replace("<", "&lt;")
+                      .replace(">", "&gt;"))
 
         # 2. Process blockquotes (lines starting with '> ' or '>')
         lines = clean.split("\n")
@@ -95,9 +126,10 @@ class TelegramAlerter:
 
         for line in lines:
             stripped = line.strip()
-            if stripped.startswith(">"):
+            # '>' is '&gt;' by this point, having been escaped above.
+            if stripped.startswith("&gt;"):
                 in_quote = True
-                quote_buf.append(stripped.lstrip("> ").strip())
+                quote_buf.append(stripped[4:].strip())
             else:
                 if in_quote:
                     new_lines.append(f"<blockquote>{chr(10).join(quote_buf)}</blockquote>")
