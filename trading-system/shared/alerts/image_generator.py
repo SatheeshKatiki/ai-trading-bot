@@ -235,8 +235,16 @@ def generate_eod_card(
     # Label inside Hero Card (Bright Gold)
     d.text((_s(HX1 + 26), _s(HY1 + 18)), "NET REALIZED P&L  (TODAY)", font=_font(12, bold=True), fill=GOLD_BRIGHT)
 
-    # Dynamic PnL, ROI & Status
-    roi = (total_pnl / capital * 100.0) if capital > 0 else 0.0
+    # Dynamic PnL, Dual ROI & Status (Strictly dynamic - NO hardcoding)
+    # Option 1: Margin / Deployed Investment ROI (Calculated on actual premium deployed)
+    total_deployed = 0.0
+    if trades_detail and len(trades_detail) > 0:
+        total_deployed = sum(float(t.get("entry_premium", t.get("entry_price", 0.0))) * int(t.get("quantity", t.get("qty", 1))) for t in trades_detail)
+
+    # Option 2: Account Capital ROI (Calculated on total capital)
+    account_roi = (total_pnl / capital * 100.0) if capital > 0 else 0.0
+    margin_roi = (total_pnl / total_deployed * 100.0) if total_deployed > 0 else account_roi
+
     is_profit = total_pnl > 0.009
     is_zero   = abs(total_pnl) < 0.01
 
@@ -247,11 +255,11 @@ def generate_eod_card(
         s_fg = GOLD_IVORY
         s_icon = "check"
         pnl_col = GREEN_PROFIT
-        roi_str = f"+{roi:.2f}% Session ROI"
+        roi_str = f"+{margin_roi:.2f}% Margin ROI"
         roi_pill_fill = (6, 78, 59, 230)
         roi_pill_border = GREEN_PROFIT
         roi_pill_col = GREEN_PROFIT
-        roi_sub = "Alpha Hedged  ·  Target Reached"
+        roi_sub = f"Acct Impact: +{account_roi:.2f}%  ·  Target Reached"
     elif is_zero:
         s_title = "CAPITAL PRESERVED"
         s_bg = (16, 42, 70, 245)
@@ -259,11 +267,11 @@ def generate_eod_card(
         s_fg = GOLD_IVORY
         s_icon = "shield"
         pnl_col = GOLD_CHAMPAGNE
-        roi_str = "+0.00% Session ROI"
+        roi_str = "+0.00% Margin ROI"
         roi_pill_fill = (22, 32, 52, 220)
         roi_pill_border = (212, 175, 55, 140)
         roi_pill_col = GOLD_CHAMPAGNE
-        roi_sub = "Alpha Hedged  ·  Zero Overnight Risk"
+        roi_sub = f"Acct Impact: +0.00%  ·  Zero Overnight Risk"
     else:
         s_title = "CONTROLLED DRAWDOWN"
         s_bg = RED_PILL
@@ -271,11 +279,11 @@ def generate_eod_card(
         s_fg = GOLD_IVORY
         s_icon = "warn"
         pnl_col = RED_LOSS
-        roi_str = f"{roi:.2f}% Session ROI"
+        roi_str = f"{margin_roi:.2f}% Margin ROI"
         roi_pill_fill = (55, 18, 24, 240)
         roi_pill_border = RED_LOSS
         roi_pill_col = RED_LOSS
-        roi_sub = "Alpha Hedged  ·  Hard SL Enforced"
+        roi_sub = f"Acct Impact: {account_roi:.2f}%  ·  Hard SL Enforced"
 
     pw, ph = 250, 38
     px1, py1 = HX2 - pw - 22, HY1 + 15
@@ -303,7 +311,7 @@ def generate_eod_card(
     # ROI Pill beside PnL (Dynamic Red/Green/Gold)
     font_roi = _font(13, bold=True)
     roi_len = int(font_roi.getlength(roi_str) / SCALE if hasattr(font_roi, "getlength") else 150)
-    tag_w = max(210, roi_len + 54)
+    tag_w = max(230, roi_len + 54)
     tag_x = HX1 + 26 + pnl_str_len + 28
     d.rounded_rectangle([(_s(tag_x), _s(HY1 + 64)), (_s(tag_x + tag_w), _s(HY1 + 98))], radius=_s(17), fill=roi_pill_fill, outline=roi_pill_border, width=_s(1))
     d.ellipse([(_s(tag_x + 14), _s(HY1 + 77)), (_s(tag_x + 22), _s(HY1 + 85))], fill=roi_pill_col)
@@ -375,18 +383,27 @@ def generate_eod_card(
     drawdown_pct = (drawdown_val / capital * 100.0) if capital > 0 else 0.0
     cap_intact_pct = max(0.0, ((capital - drawdown_val) / capital * 100.0)) if capital > 0 else 100.0
 
-    if total_pnl < 0:
+    if is_profit:
+        risk_val = "100.0% INTACT"
+        risk_sub = f"+{account_roi:.2f}% Session Expansion"
+        risk_desc = "Capital Alpha Hedged & Compounding"
+        risk_val_col = GREEN_PROFIT
+        risk_accent = GREEN_PROFIT
+        risk_icon_col = GREEN_PROFIT
+    elif total_pnl < 0:
         risk_val = f"{cap_intact_pct:.2f}% INTACT"
         risk_sub = f"Drawdown: -{drawdown_pct:.2f}% (Limit: 3.0%)"
         risk_desc = "Theta Guard & Hard SL Active"
         risk_val_col = GOLD_BRIGHT if drawdown_pct <= 1.5 else (251, 146, 60, 255)
         risk_accent = GOLD_BRIGHT
+        risk_icon_col = GOLD_BRIGHT
     else:
         risk_val = "100.0% INTACT"
         risk_sub = "Zero Drawdown Incurred"
         risk_desc = "Theta Guard & Hard SL Active"
         risk_val_col = GOLD_BRIGHT
         risk_accent = GOLD_BRIGHT
+        risk_icon_col = GOLD_BRIGHT
 
     kpi_configs = [
         {
@@ -480,11 +497,19 @@ def generate_eod_card(
             pc = GREEN_PROFIT if p >= 0 else RED_LOSS
             p_formatted = _format_inr(p)
 
+            # Dynamic Trade-level ROI (on deployed premium)
+            t_entry = float(t.get("entry_premium", t.get("entry_price", 0.0)))
+            t_qty = int(t.get("quantity", t.get("qty", 1)))
+            t_inv = t_entry * t_qty
+            t_roi = (p / t_inv * 100.0) if t_inv > 0 else 0.0
+            t_roi_str = f"({'+' if t_roi >= 0 else ''}{t_roi:.1f}% ROI)"
+
             # Bullet dot
             d.ellipse([(_s(56), _s(ty + 3)), (_s(66), _s(ty + 13))], fill=pc)
-            d.text((_s(76), _s(ty)), contract[:32], font=font_trade, fill=GOLD_IVORY)
-            d.text((_s(520), _s(ty)), p_formatted, font=font_trade, fill=pc)
-            d.text((_s(680), _s(ty)), f"[{rsn[:48]}]", font=font_reason, fill=GOLD_MUTED)
+            d.text((_s(76), _s(ty)), contract[:30], font=font_trade, fill=GOLD_IVORY)
+            d.text((_s(470), _s(ty)), p_formatted, font=font_trade, fill=pc)
+            d.text((_s(590), _s(ty)), t_roi_str, font=font_trade, fill=pc)
+            d.text((_s(710), _s(ty)), f"[{rsn[:45]}]", font=font_reason, fill=GOLD_MUTED)
             ty += row_gap
     else:
         # High-clarity 3-row intelligence layout with warm goldish headers

@@ -236,14 +236,15 @@ export function LivePositions({ urlSymbol }: { urlSymbol: string }) {
                                     <th className="px-4 py-3">Side</th>
                                     <th className="px-4 py-3 text-right">Qty</th>
                                     <th className="px-4 py-3 text-right">Entry Price</th>
-                                    <th className="px-4 py-3 text-right">Live MTM</th>
+                                    <th className="px-4 py-3 text-right">Invested Margin</th>
+                                    <th className="px-4 py-3 text-right">Live MTM & ROI</th>
                                     <th className="px-4 py-3 text-center">Action</th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-border/30">
                                 {openTrades.length === 0 ? (
                                     <tr>
-                                        <td colSpan={6} className="px-4 py-16 text-center text-muted-foreground">
+                                        <td colSpan={7} className="px-4 py-16 text-center text-muted-foreground">
                                             <div className="flex flex-col items-center justify-center">
                                                 <div className="w-12 h-12 rounded-full bg-muted/50 flex items-center justify-center mb-3">
                                                     <CheckCircle2 className="w-6 h-6 opacity-50" />
@@ -256,18 +257,43 @@ export function LivePositions({ urlSymbol }: { urlSymbol: string }) {
                                 ) : (
                                     openTrades.map((trade, i) => {
                                         const mtm = computeMTM(trade);
+                                        const qty = trade.quantity || 1;
+                                        const invested = trade.price * qty;
+                                        const roi = (mtm !== null && invested > 0) ? (mtm / invested) * 100 : null;
+                                        const isProfit = mtm !== null && mtm > 0.009;
+                                        const isLoss = mtm !== null && mtm < -0.009;
+
                                         return (
-                                            <tr key={i} className="hover:bg-muted/30 transition-colors">
-                                                <td className="px-4 py-3 font-semibold text-foreground">{trade.symbol}</td>
+                                            <tr key={i} className={`transition-colors ${isProfit ? 'hover:bg-success/[0.04] bg-success/[0.01]' : isLoss ? 'hover:bg-destructive/[0.04] bg-destructive/[0.01]' : 'hover:bg-muted/30'}`}>
+                                                <td className="px-4 py-3 font-semibold text-foreground flex items-center gap-2">
+                                                    <span className={`w-2 h-2 rounded-full ${isProfit ? 'bg-success animate-pulse' : isLoss ? 'bg-destructive animate-pulse' : 'bg-muted-foreground'}`}></span>
+                                                    {trade.symbol}
+                                                </td>
                                                 <td className="px-4 py-3">
-                                                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${trade.side === 'BUY' ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : 'bg-rose-500/10 text-rose-600 dark:text-rose-400'}`}>
+                                                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${trade.side === 'BUY' ? 'bg-emerald-500/15 text-emerald-500 border border-emerald-500/30' : 'bg-rose-500/15 text-rose-500 border border-rose-500/30'}`}>
                                                         {trade.side}
                                                     </span>
                                                 </td>
                                                 <td className="px-4 py-3 text-right font-mono">{trade.quantity || '-'}</td>
                                                 <td className="px-4 py-3 text-right font-mono">₹{trade.price.toFixed(2)}</td>
-                                                <td className={`px-4 py-3 text-right font-mono font-bold ${mtm === null ? 'text-muted-foreground' : mtm > 0 ? 'text-success' : mtm < 0 ? 'text-destructive' : 'text-foreground'}`}>
-                                                    {mtm === null ? '—' : `${mtm > 0 ? '+' : ''}₹${mtm.toFixed(2)}`}
+                                                <td className="px-4 py-3 text-right font-mono text-muted-foreground">₹{invested.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                                                <td className="px-4 py-3 text-right font-mono">
+                                                    <div className="flex items-center justify-end gap-1.5">
+                                                        <span className={`font-bold ${isProfit ? 'text-success drop-shadow-[0_0_6px_rgba(34,197,94,0.3)]' : isLoss ? 'text-destructive drop-shadow-[0_0_6px_rgba(239,68,68,0.3)]' : 'text-foreground'}`}>
+                                                            {mtm === null ? '—' : `${mtm >= 0 ? '+' : ''}₹${mtm.toFixed(2)}`}
+                                                        </span>
+                                                        {roi !== null && (
+                                                            <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold border transition-colors ${
+                                                                isProfit 
+                                                                    ? 'bg-success/15 border-success/30 text-success' 
+                                                                    : isLoss 
+                                                                        ? 'bg-destructive/15 border-destructive/30 text-destructive' 
+                                                                        : 'bg-muted border-border text-muted-foreground'
+                                                            }`}>
+                                                                {roi >= 0 ? '+' : ''}{roi.toFixed(1)}%
+                                                            </span>
+                                                        )}
+                                                    </div>
                                                 </td>
                                                 <td className="px-4 py-3 flex items-center justify-center">
                                                     <button

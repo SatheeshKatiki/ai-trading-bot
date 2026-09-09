@@ -256,6 +256,8 @@ export default function Header() {
   // Real-time P&L from WebSocket store (isolated selector — no full re-render)
   const totalPnl           = useLiveMarketStore(state => state.totalPnl);
   const unrealizedPnl      = useLiveMarketStore(state => state.unrealizedPnl);
+  const marginRoi          = useLiveMarketStore(state => state.marginRoi);
+  const accountRoi         = useLiveMarketStore(state => state.accountRoi);
   const openPositionsCount = useLiveMarketStore(state => state.openPositionsCount);
   const isWsConnected      = useLiveMarketStore(state => state.isWsConnected);
   const connectWs          = useLiveMarketStore(state => state.connectWs);
@@ -429,33 +431,39 @@ export default function Header() {
                 animate={{ opacity: 1, scale: 1, x: 0 }}
                 exit={{ opacity: 0, scale: 0.85, x: -10 }}
                 transition={{ duration: 0.25, ease: 'easeOut' }}
-                className={`hidden md:flex items-center gap-2.5 px-3.5 py-1.5 rounded-full border font-mono text-sm font-bold transition-colors ${
+                className={`hidden md:flex items-center gap-2.5 px-3.5 py-1.5 rounded-full border font-mono text-sm font-bold transition-all duration-300 ${
                   totalPnl >= 0
-                    ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-500'
-                    : 'bg-red-500/10 border-red-500/30 text-red-500'
+                    ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-400 shadow-[0_0_16px_rgba(16,185,129,0.25)]'
+                    : 'bg-rose-500/15 border-rose-500/40 text-rose-400 shadow-[0_0_16px_rgba(239,68,68,0.25)]'
                 }`}
-                title={`Realized: ₹${(totalPnl - unrealizedPnl).toFixed(2)} | Unrealized: ₹${unrealizedPnl.toFixed(2)}`}
+                title={`Realized: ₹${(totalPnl - unrealizedPnl).toFixed(2)} | Unrealized: ₹${unrealizedPnl.toFixed(2)} | Acct Impact: ${(accountRoi >= 0 ? '+' : '') + accountRoi.toFixed(2)}%`}
               >
-                {/* Live pulse dot — only when WS connected and position is open */}
+                {/* Live pulse dot — green when in profit, red when in loss */}
                 {openPositionsCount > 0 && isWsConnected && (
                   <span className="relative flex h-2 w-2 shrink-0">
-                    <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-60 ${
-                      totalPnl >= 0 ? 'bg-emerald-500' : 'bg-red-500'
+                    <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${
+                      totalPnl >= 0 ? 'bg-emerald-400' : 'bg-rose-400'
                     }`} />
                     <span className={`relative inline-flex h-2 w-2 rounded-full ${
-                      totalPnl >= 0 ? 'bg-emerald-500' : 'bg-red-500'
+                      totalPnl >= 0 ? 'bg-emerald-400' : 'bg-rose-400'
                     }`} />
                   </span>
                 )}
                 {totalPnl >= 0
-                  ? <TrendingUp className="w-3.5 h-3.5 shrink-0" />
-                  : <TrendingDown className="w-3.5 h-3.5 shrink-0" />
+                  ? <TrendingUp className="w-3.5 h-3.5 shrink-0 text-emerald-400 animate-pulse" />
+                  : <TrendingDown className="w-3.5 h-3.5 shrink-0 text-rose-400 animate-pulse" />
                 }
                 <span>
-                  {totalPnl >= 0 ? '+' : ''}₹{totalPnl.toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                  {totalPnl >= 0 ? '+' : ''}₹{totalPnl.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </span>
+                {/* Dynamic Margin ROI Badge */}
+                <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                  totalPnl >= 0 ? 'bg-emerald-500/25 text-emerald-300' : 'bg-rose-500/25 text-rose-300'
+                }`}>
+                  {marginRoi >= 0 ? '+' : ''}{marginRoi.toFixed(1)}% ROI
                 </span>
                 {openPositionsCount > 0 && (
-                  <span className="text-[10px] opacity-70 font-semibold border-l border-current/30 pl-2 ml-0.5">
+                  <span className="text-[10px] opacity-75 font-semibold border-l border-current/30 pl-2 ml-0.5">
                     {openPositionsCount} pos
                   </span>
                 )}

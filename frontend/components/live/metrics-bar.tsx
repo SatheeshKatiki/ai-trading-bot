@@ -15,6 +15,10 @@ function MetricsBarComponent({ isLoading, isMarketOpen }: MetricsBarProps) {
     const pnl = useLiveMarketStore(state => state.pnl);
     const unrealizedPnl = useLiveMarketStore(state => state.unrealizedPnl);
     const totalPnl = useLiveMarketStore(state => state.totalPnl);
+    const marginDeployed = useLiveMarketStore(state => state.marginDeployed);
+    const marginRoi = useLiveMarketStore(state => state.marginRoi);
+    const accountRoi = useLiveMarketStore(state => state.accountRoi);
+    const positionsDetail = useLiveMarketStore(state => state.positionsDetail);
     const openPositionsCount = useLiveMarketStore(state => state.openPositionsCount);
     const aiConfidence = useLiveMarketStore(state => state.aiConfidence);
     const riskStatus = useLiveMarketStore(state => state.riskStatus);
@@ -24,6 +28,15 @@ function MetricsBarComponent({ isLoading, isMarketOpen }: MetricsBarProps) {
     const stoploss = useLiveSettingsStore(state => state.stoploss);
 
     const isLive = tradingMode === "live";
+
+    // Dynamic ROI calculations (Strictly dynamic - NO hardcoding)
+    const computedMargin = marginDeployed > 0 
+        ? marginDeployed 
+        : positionsDetail.reduce((acc, p) => acc + (p.entry_price * p.qty), 0);
+    const computedMarginRoi = computedMargin > 0 ? (totalPnl / computedMargin) * 100 : (marginRoi || 0);
+    const computedAccountRoi = equity > 0 ? (totalPnl / equity) * 100 : (accountRoi || 0);
+    const isProfit = totalPnl > 0.009;
+    const isLoss = totalPnl < -0.009;
 
     // Determine risk engine colour based on actual riskStatus
     const isRiskOk = !riskStatus || riskStatus === "ACTIVE" || riskStatus === "OK" || riskStatus === "IDLE";
@@ -81,23 +94,56 @@ function MetricsBarComponent({ isLoading, isMarketOpen }: MetricsBarProps) {
             {/* Card 2: Today's PNL */}
             <motion.div
                 variants={{ hidden: { opacity: 0, y: 20 }, show: { opacity: 1, y: 0 } }}
-                className="stat-card px-3 py-2 relative overflow-hidden group"
+                className={`stat-card px-3 py-2 relative overflow-hidden group transition-all duration-300 ${
+                    isProfit 
+                        ? 'border-success/40 bg-success/[0.04] shadow-[0_0_20px_rgba(34,197,94,0.12)]' 
+                        : isLoss 
+                            ? 'border-destructive/40 bg-destructive/[0.04] shadow-[0_0_20px_rgba(239,68,68,0.12)]' 
+                            : 'border-border/40'
+                }`}
             >
-                <div className={`absolute left-0 top-0 w-1 h-full rounded-l-lg transition-shadow ${totalPnl >= 0 ? 'bg-gradient-to-b from-success to-emerald-600 ' : 'bg-gradient-to-b from-destructive to-rose-600 '}`}></div>
+                <div className={`absolute left-0 top-0 w-1.5 h-full rounded-l-lg transition-all duration-300 ${
+                    isProfit 
+                        ? 'bg-gradient-to-b from-success via-emerald-500 to-emerald-600 shadow-[0_0_8px_rgba(34,197,94,0.6)]' 
+                        : isLoss 
+                            ? 'bg-gradient-to-b from-destructive via-rose-500 to-rose-600 shadow-[0_0_8px_rgba(239,68,68,0.6)]' 
+                            : 'bg-muted-foreground'
+                }`}></div>
                 <div className="flex items-center justify-between mb-0.5 pl-2 pr-1">
                     <span className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider">📊 Today's PNL</span>
-                    {openPositionsCount > 0 && (
-                        <span className="inline-flex items-center gap-1 text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-primary/20 text-primary animate-pulse">
-                            <span className="w-1.5 h-1.5 rounded-full bg-primary animate-ping"></span> Live M2M
+                    <div className="flex items-center gap-1.5">
+                        {openPositionsCount > 0 && (
+                            <span className="inline-flex items-center gap-1 text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-primary/20 text-primary animate-pulse">
+                                <span className="w-1.5 h-1.5 rounded-full bg-primary animate-ping"></span> Live M2M
+                            </span>
+                        )}
+                        {/* Dual Dynamic ROI Pill (Margin ROI) */}
+                        <span className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-bold tracking-tight border transition-colors ${
+                            isProfit 
+                                ? 'bg-success/15 border-success/30 text-success shadow-[0_0_10px_rgba(34,197,94,0.2)]' 
+                                : isLoss 
+                                    ? 'bg-destructive/15 border-destructive/30 text-destructive shadow-[0_0_10px_rgba(239,68,68,0.2)]' 
+                                    : 'bg-muted/50 border-border text-muted-foreground'
+                        }`}>
+                            {computedMarginRoi >= 0 ? '+' : ''}{computedMarginRoi.toFixed(2)}% ROI
                         </span>
-                    )}
+                    </div>
                 </div>
-                <div className={`text-xl md:text-2xl font-bold font-mono pl-2 tracking-tight flex items-center gap-1 ${totalPnl >= 0 ? "text-success" : "text-destructive"}`}>
-                    {totalPnl >= 0 ? <TrendingUp className="w-4 h-4 animate-pulse" /> : <TrendingDown className="w-4 h-4 animate-pulse" />}
+                <div className={`text-xl md:text-2xl font-bold font-mono pl-2 tracking-tight flex items-center gap-1.5 ${
+                    isProfit ? "text-success drop-shadow-[0_0_8px_rgba(34,197,94,0.3)]" : isLoss ? "text-destructive drop-shadow-[0_0_8px_rgba(239,68,68,0.3)]" : "text-foreground"
+                }`}>
+                    {isProfit ? <TrendingUp className="w-4 h-4 animate-pulse text-success" /> : isLoss ? <TrendingDown className="w-4 h-4 animate-pulse text-destructive" /> : null}
                     {isLoading ? <div className="h-6 w-24 bg-muted animate-pulse rounded"></div> : `${totalPnl >= 0 ? "+" : ""}₹${(totalPnl ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
                 </div>
+                {/* Account Impact & Margin Breakdown */}
+                <div className="pl-2 text-[9px] font-mono mt-0.5 flex items-center gap-2 text-muted-foreground">
+                    <span>Acct: <strong className={isProfit ? "text-success font-bold" : isLoss ? "text-destructive font-bold" : "text-foreground font-medium"}>{computedAccountRoi >= 0 ? '+' : ''}{computedAccountRoi.toFixed(2)}%</strong></span>
+                    {computedMargin > 0 && (
+                        <span className="border-l border-border/50 pl-2">Margin: ₹{computedMargin.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
+                    )}
+                </div>
                 {openPositionsCount > 0 && (
-                    <div className="pl-2 text-[9px] font-mono text-muted-foreground mt-0.5">
+                    <div className="pl-2 text-[9px] font-mono text-muted-foreground mt-0.5 border-t border-border/20 pt-0.5">
                         Running: <span className={unrealizedPnl >= 0 ? "text-success font-semibold" : "text-destructive font-semibold"}>{unrealizedPnl >= 0 ? "+" : ""}₹{unrealizedPnl.toFixed(2)}</span> | Realized: {pnl >= 0 ? "+" : ""}₹{pnl.toFixed(2)}
                     </div>
                 )}

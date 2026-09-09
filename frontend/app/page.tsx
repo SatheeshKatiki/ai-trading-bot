@@ -6,6 +6,7 @@ import NewsTicker from "@/components/news-ticker";
 import LiveTicker from "@/components/live-ticker";
 import { BtstPredictor } from "@/components/btst-predictor";
 import { useState, useEffect } from "react";
+import { useLiveMarketStore } from "@/store/useLiveMarketStore";
 import { 
   TrendingUp, 
   TrendingDown, 
@@ -74,6 +75,12 @@ interface AiSignalEntry {
 }
 
 export default function Dashboard() {
+  const wsTotalPnl = useLiveMarketStore(state => state.totalPnl);
+  const wsMarginRoi = useLiveMarketStore(state => state.marginRoi);
+  const wsAccountRoi = useLiveMarketStore(state => state.accountRoi);
+  const wsMarginDeployed = useLiveMarketStore(state => state.marginDeployed);
+  const wsPositionsDetail = useLiveMarketStore(state => state.positionsDetail);
+
   const [equity, setEquity] = useState(100000.0);
   const [pnl, setPnl] = useState(0.0);
   const [trades, setTrades] = useState<DashboardTrade[]>([]);
@@ -87,6 +94,27 @@ export default function Dashboard() {
   const [isEngineLive, setIsEngineLive] = useState(false);
   const [isEngineLoading, setIsEngineLoading] = useState(false);
   const [aiCommentary, setAiCommentary] = useState("System armed. Analyzing market structure...");
+
+  const displayPnl = wsTotalPnl !== 0 ? wsTotalPnl : pnl;
+  const isProfit = displayPnl > 0.009;
+  const isLoss = displayPnl < -0.009;
+
+  // Strictly dynamic ROI calculations (NO hardcoding)
+  const dynamicMargin = wsMarginDeployed > 0 
+    ? wsMarginDeployed 
+    : (wsPositionsDetail.length > 0 
+        ? wsPositionsDetail.reduce((acc, p) => acc + (p.entry_price * p.qty), 0)
+        : (positions.length > 0 
+            ? positions.reduce((acc, p) => acc + (p.average_price * p.quantity), 0)
+            : 0));
+
+  const dynamicMarginRoi = wsMarginRoi !== 0 
+    ? wsMarginRoi 
+    : (dynamicMargin > 0 ? (displayPnl / dynamicMargin) * 100 : (equity > 0 ? (displayPnl / equity) * 100 : 0));
+
+  const dynamicAccountRoi = wsAccountRoi !== 0 
+    ? wsAccountRoi 
+    : (equity > 0 ? (displayPnl / equity) * 100 : 0);
   // Live AI Signal state — sourced from /api/signals
   const [aiSignal, setAiSignal] = useState<{
     confidence: number;
@@ -363,17 +391,46 @@ export default function Dashboard() {
             </div>
 
             {/* Stat Card 2 */}
-            <div className="glass-card rounded-xl p-4 border border-border/20 flex flex-col justify-between">
+            <div className={`glass-card rounded-xl p-4 border transition-all duration-300 flex flex-col justify-between ${
+              isProfit 
+                ? 'border-success/40 bg-success/[0.03] shadow-[0_0_20px_rgba(34,197,94,0.12)]' 
+                : isLoss 
+                  ? 'border-destructive/40 bg-destructive/[0.03] shadow-[0_0_20px_rgba(239,68,68,0.12)]' 
+                  : 'border-border/20'
+            }`}>
               <div className="flex justify-between items-start">
                 <span className="text-[10px] text-muted-foreground font-bold uppercase tracking-widest">Day's Net P&L</span>
-                <TrendingUp className="w-3.5 h-3.5 text-success" />
+                {isProfit ? (
+                  <TrendingUp className="w-4 h-4 text-success animate-pulse" />
+                ) : isLoss ? (
+                  <TrendingDown className="w-4 h-4 text-destructive animate-pulse" />
+                ) : (
+                  <Briefcase className="w-4 h-4 text-muted-foreground" />
+                )}
               </div>
               <div className="mt-2">
-                <div data-testid="metric-daily-pnl" data-pnl-sign={pnl >= 0 ? "positive" : "negative"} className={`text-2xl font-bold font-mono leading-none ${pnl >= 0 ? "text-success" : "text-destructive"}`}>
-                  {pnl >= 0 ? "+" : ""}₹{pnl.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                <div data-testid="metric-daily-pnl" data-pnl-sign={displayPnl >= 0 ? "positive" : "negative"} className={`text-2xl font-bold font-mono leading-none ${isProfit ? "text-success drop-shadow-[0_0_8px_rgba(34,197,94,0.3)]" : isLoss ? "text-destructive drop-shadow-[0_0_8px_rgba(239,68,68,0.3)]" : "text-foreground"}`}>
+                  {displayPnl >= 0 ? "+" : ""}₹{displayPnl.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </div>
-                <p className="text-[10px] text-muted-foreground mt-1 flex items-center gap-1">
-                  {pnl >= 0 ? <ArrowUpRight className="w-3 h-3 text-success" /> : <ArrowDownRight className="w-3 h-3 text-destructive" />}
+
+                {/* Dynamic Dual ROI Badges */}
+                <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+                  <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-bold border transition-colors ${
+                    isProfit 
+                      ? 'bg-success/15 border-success/30 text-success shadow-[0_0_8px_rgba(34,197,94,0.2)]' 
+                      : isLoss 
+                        ? 'bg-destructive/15 border-destructive/30 text-destructive shadow-[0_0_8px_rgba(239,68,68,0.2)]' 
+                        : 'bg-muted/50 border-border text-muted-foreground'
+                  }`}>
+                    {dynamicMarginRoi >= 0 ? '+' : ''}{dynamicMarginRoi.toFixed(2)}% Margin ROI
+                  </span>
+                  <span className={`text-[10px] font-mono font-medium ${isProfit ? 'text-success/90 font-semibold' : isLoss ? 'text-destructive/90 font-semibold' : 'text-muted-foreground'}`}>
+                    Acct: {dynamicAccountRoi >= 0 ? '+' : ''}{dynamicAccountRoi.toFixed(2)}%
+                  </span>
+                </div>
+
+                <p className="text-[10px] text-muted-foreground mt-1.5 flex items-center gap-1">
+                  {displayPnl >= 0 ? <ArrowUpRight className="w-3 h-3 text-success" /> : <ArrowDownRight className="w-3 h-3 text-destructive" />}
                   Realized + Unrealized
                 </p>
               </div>

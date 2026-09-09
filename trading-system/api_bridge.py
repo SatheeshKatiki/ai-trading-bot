@@ -1251,6 +1251,9 @@ async def websocket_broadcaster():
                         else:
                             pos_unrealized = 0.0
 
+                        pos_invested = entry_price * qty
+                        pos_roi = (pos_unrealized / pos_invested * 100.0) if pos_invested > 0 else 0.0
+
                         unrealized_pnl += pos_unrealized
                         positions_detail.append({
                             "symbol": opt_sym,
@@ -1259,6 +1262,8 @@ async def websocket_broadcaster():
                             "qty": qty,
                             "side": eff_side,
                             "unrealized_pnl": round(pos_unrealized, 2),
+                            "invested": round(pos_invested, 2),
+                            "roi": round(pos_roi, 2),
                             "sl": pos.get("stop_loss", 0),
                             "target": pos.get("target", 0),
                         })
@@ -1266,11 +1271,34 @@ async def websocket_broadcaster():
                 logger.debug("[WS] Unrealized P&L calc error: %s", _pnl_err)
 
             total_pnl = realized_pnl + unrealized_pnl
+
+            # Dynamic Dual ROI calculation (Strictly dynamic - NO hardcoding)
+            # 1. Total Margin Deployed (Open Positions + Today's Executed Trades)
+            open_deployed = sum(float(p.get("entry_price", 0)) * int(p.get("qty", 0)) for p in positions_detail)
+            
+            # Deployed margin from today's closed trades:
+            trades_deployed = 0.0
+            for t in websocket_data.get("trades", []):
+                t_price = float(t.get("price", t.get("entry_premium", t.get("entry_price", 0.0))))
+                t_qty = int(t.get("qty", t.get("quantity", 1)))
+                trades_deployed += (t_price * t_qty)
+
+            total_margin_deployed = open_deployed + trades_deployed
+            equity_val = float(websocket_data.get("equity", 100000.0))
+            if equity_val <= 0:
+                equity_val = 100000.0
+
+            margin_roi = (total_pnl / total_margin_deployed * 100.0) if total_margin_deployed > 0 else ((total_pnl / equity_val * 100.0) if equity_val > 0 else 0.0)
+            account_roi = (total_pnl / equity_val * 100.0) if equity_val > 0 else 0.0
+
             websocket_data["pnl"]                  = round(realized_pnl, 2)
             websocket_data["unrealized_pnl"]       = round(unrealized_pnl, 2)
             websocket_data["total_pnl"]            = round(total_pnl, 2)
             websocket_data["open_positions_count"] = open_positions_count
             websocket_data["positions_detail"]     = positions_detail
+            websocket_data["margin_deployed"]      = round(total_margin_deployed, 2)
+            websocket_data["margin_roi"]           = round(margin_roi, 2)
+            websocket_data["account_roi"]          = round(account_roi, 2)
 
             # --- Dynamic Subscription Sync ---
             try:

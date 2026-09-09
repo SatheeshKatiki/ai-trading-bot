@@ -53,6 +53,8 @@ export interface PositionDetail {
     qty: number;
     side: number;
     unrealized_pnl: number;
+    invested?: number;
+    roi?: number;
     sl: number;
     target: number;
 }
@@ -66,6 +68,9 @@ export interface LiveMarketState {
     pnl: number;             // Realized P&L (closed trades today)
     unrealizedPnl: number;   // Unrealized P&L (open positions, mark-to-market)
     totalPnl: number;        // total_pnl = realized + unrealized
+    marginDeployed: number;  // Dynamic invested margin for active/today's trades
+    marginRoi: number;       // (total_pnl / margin_deployed) * 100
+    accountRoi: number;      // (total_pnl / equity) * 100
     equity: number;
     openPositionsCount: number;
     positionsDetail: PositionDetail[];
@@ -85,6 +90,9 @@ export interface LiveMarketState {
     setPnl: (pnl: number | ((prev: number) => number)) => void;
     setUnrealizedPnl: (pnl: number | ((prev: number) => number)) => void;
     setTotalPnl: (pnl: number | ((prev: number) => number)) => void;
+    setMarginDeployed: (val: number | ((prev: number) => number)) => void;
+    setMarginRoi: (val: number | ((prev: number) => number)) => void;
+    setAccountRoi: (val: number | ((prev: number) => number)) => void;
     setEquity: (equity: number | ((prev: number) => number)) => void;
     setOpenPositionsCount: (count: number) => void;
     setPositionsDetail: (positions: PositionDetail[]) => void;
@@ -115,6 +123,9 @@ export const useLiveMarketStore = create<LiveMarketState>((set, get) => ({
     pnl: 0,
     unrealizedPnl: 0,
     totalPnl: 0,
+    marginDeployed: 0,
+    marginRoi: 0,
+    accountRoi: 0,
     equity: 100000.00,
     openPositionsCount: 0,
     positionsDetail: [],
@@ -133,6 +144,9 @@ export const useLiveMarketStore = create<LiveMarketState>((set, get) => ({
     setPnl: (pnl) => set((state) => ({ pnl: typeof pnl === 'function' ? pnl(state.pnl) : pnl })),
     setUnrealizedPnl: (pnl) => set((state) => ({ unrealizedPnl: typeof pnl === 'function' ? pnl(state.unrealizedPnl) : pnl })),
     setTotalPnl: (pnl) => set((state) => ({ totalPnl: typeof pnl === 'function' ? pnl(state.totalPnl) : pnl })),
+    setMarginDeployed: (val) => set((state) => ({ marginDeployed: typeof val === 'function' ? val(state.marginDeployed) : val })),
+    setMarginRoi: (val) => set((state) => ({ marginRoi: typeof val === 'function' ? val(state.marginRoi) : val })),
+    setAccountRoi: (val) => set((state) => ({ accountRoi: typeof val === 'function' ? val(state.accountRoi) : val })),
     setEquity: (equity) => set((state) => ({ equity: typeof equity === 'function' ? equity(state.equity) : equity })),
     setOpenPositionsCount: (count) => set({ openPositionsCount: count }),
     setPositionsDetail: (positions) => set({ positionsDetail: positions }),
@@ -234,6 +248,9 @@ export const useLiveMarketStore = create<LiveMarketState>((set, get) => ({
                     if (data.pnl !== undefined)                  pendingUpdates.pnl                = data.pnl;
                     if (data.unrealized_pnl !== undefined)       pendingUpdates.unrealizedPnl      = data.unrealized_pnl;
                     if (data.total_pnl !== undefined)            pendingUpdates.totalPnl           = data.total_pnl;
+                    if (data.margin_deployed !== undefined)      pendingUpdates.marginDeployed     = data.margin_deployed;
+                    if (data.margin_roi !== undefined)           pendingUpdates.marginRoi          = data.margin_roi;
+                    if (data.account_roi !== undefined)          pendingUpdates.accountRoi         = data.account_roi;
                     if (data.equity !== undefined)               pendingUpdates.equity             = data.equity;
                     if (data.open_positions_count !== undefined) pendingUpdates.openPositionsCount = data.open_positions_count;
                     if (data.positions_detail)                   pendingUpdates.positionsDetail    = data.positions_detail;

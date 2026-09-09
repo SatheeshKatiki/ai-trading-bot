@@ -642,6 +642,16 @@ def generate_and_send_eod_report() -> None:
     win_rate = (wins / total_trades * 100.0) if total_trades > 0 else 0.0
     pnl_formatted = f"+₹{total_pnl:,.2f}" if total_pnl >= 0 else f"-₹{abs(total_pnl):,.2f}"
     
+    # Dual dynamic ROI calculations (Option 1: Margin Deployed, Option 2: Account Capital)
+    capital = 100000.0
+    total_deployed = sum(float(t.get("entry_premium", t.get("entry_price", 0.0))) * int(t.get("quantity", t.get("qty", 1))) for t in trades_detail) if trades_detail else 0.0
+    margin_roi = (total_pnl / total_deployed * 100.0) if total_deployed > 0 else ((total_pnl / capital * 100.0) if capital > 0 else 0.0)
+    account_roi = (total_pnl / capital * 100.0) if capital > 0 else 0.0
+
+    margin_roi_str = f"+{margin_roi:.2f}%" if margin_roi >= 0 else f"{margin_roi:.2f}%"
+    account_roi_str = f"+{account_roi:.2f}%" if account_roi >= 0 else f"{account_roi:.2f}%"
+    roi_indicator = "🟢" if total_pnl >= 0 else "🔴"
+
     # Read configured language
     try:
         from shared.config import CONFIG
@@ -657,6 +667,9 @@ def generate_and_send_eod_report() -> None:
             f"🎯 *వ్యూహం (Strategy)*: `{strat_display}`",
             f"────────────────────────────",
             f"💰 *మొత్తం వర్చువల్ లాభం/నష్టం*: *{pnl_formatted}* ({status_emoji})",
+            f"📈 *మార్జిన్ ROI (Margin ROI)*: *{margin_roi_str}* {roi_indicator} (పెట్టుబడి పై రాబడి)",
+            f"💼 *ఖాతా ఇంపాక్ట్ (Account ROI)*: *{account_roi_str}* {roi_indicator} (మొత్తం క్యాపిటల్ పై)",
+            f"💵 *వినియోగించిన మార్జిన్ (Margin Deployed)*: `₹{total_deployed:,.2f}`",
             f"🎯 *మొత్తం ట్రేడ్స్*: `{total_trades}` (గెలిచినవి: `{wins}` | ఓడినవి: `{losses}`)",
             f"📈 *విన్ రేట్ (Win Rate)*: `{win_rate:.1f}%`",
             f"────────────────────────────",
@@ -667,7 +680,11 @@ def generate_and_send_eod_report() -> None:
                 contract = t.get("contract", t.get("symbol", "N/A"))
                 p = float(t.get("net_pnl", t.get("pnl", 0.0)))
                 p_item = f"+₹{p:,.2f}" if p >= 0 else f"-₹{abs(p):,.2f}"
-                report_lines.append(f"> {i}. `{contract}`: *{p_item}*\n>    👉 కారణం: _{t.get('exit_reason', 'Closed')}_")
+                t_inv = float(t.get("entry_premium", t.get("entry_price", 0.0))) * int(t.get("quantity", t.get("qty", 1)))
+                t_roi = (p / t_inv * 100.0) if t_inv > 0 else 0.0
+                t_roi_str = f"+{t_roi:.1f}%" if t_roi >= 0 else f"{t_roi:.1f}%"
+                t_dot = "🟢" if p >= 0 else "🔴"
+                report_lines.append(f"> {i}. `{contract}`: *{p_item}* ({t_roi_str} ROI) {t_dot}\n>    👉 కారణం: _{t.get('exit_reason', 'Closed')}_")
         else:
             report_lines.append("ℹ️ *మార్కెట్ సారాంశం (Market Summary):*\n> ఈరోజు మార్కెట్ చాపీగా ఉన్నందున AI ఫిల్టర్ ఫాల్స్ సిగ్నల్స్‌ను నివారించి మూలధనాన్ని సురక్షితంగా ఉంచింది.")
         report_lines.extend([
@@ -683,6 +700,9 @@ def generate_and_send_eod_report() -> None:
             f"🎯 *रणनीति (Strategy)*: `{strat_display}`",
             f"────────────────────────────",
             f"💰 *कुल लाभ/हानि (Net P&L)*: *{pnl_formatted}* ({status_emoji})",
+            f"📈 *मार्जिन ROI (Margin ROI)*: *{margin_roi_str}* {roi_indicator} (निवेश पर रिटर्न)",
+            f"💼 *खाता प्रभाव (Account ROI)*: *{account_roi_str}* {roi_indicator} (पूंजी पर रिटर्न)",
+            f"💵 *उपयोग किया गया मार्जिन*: `₹{total_deployed:,.2f}`",
             f"🎯 *कुल ट्रेड्स (Total Trades)*: `{total_trades}` (जीत: `{wins}` | हार: `{losses}`)",
             f"📈 *जीत दर (Win Rate)*: `{win_rate:.1f}%`",
             f"────────────────────────────",
@@ -693,7 +713,11 @@ def generate_and_send_eod_report() -> None:
                 contract = t.get("contract", t.get("symbol", "N/A"))
                 p = float(t.get("net_pnl", t.get("pnl", 0.0)))
                 p_item = f"+₹{p:,.2f}" if p >= 0 else f"-₹{abs(p):,.2f}"
-                report_lines.append(f"> {i}. `{contract}`: *{p_item}*\n>    👉 कारण: _{t.get('exit_reason', 'Closed')}_")
+                t_inv = float(t.get("entry_premium", t.get("entry_price", 0.0))) * int(t.get("quantity", t.get("qty", 1)))
+                t_roi = (p / t_inv * 100.0) if t_inv > 0 else 0.0
+                t_roi_str = f"+{t_roi:.1f}%" if t_roi >= 0 else f"{t_roi:.1f}%"
+                t_dot = "🟢" if p >= 0 else "🔴"
+                report_lines.append(f"> {i}. `{contract}`: *{p_item}* ({t_roi_str} ROI) {t_dot}\n>    👉 कारण: _{t.get('exit_reason', 'Closed')}_")
         else:
             report_lines.append("ℹ️ *मार्केट सारांश (Market Summary):*\n> आज कोई ट्रेड नहीं लिया गया (AI ने चॉपी मार्केट में खराब सिग्नलों को फ़िल्टर किया).")
         report_lines.extend([
@@ -709,6 +733,9 @@ def generate_and_send_eod_report() -> None:
             f"🎯 *Strategy*: `{strat_display}`",
             f"────────────────────────────",
             f"💰 *Total Virtual P&L*: *{pnl_formatted}* ({status_emoji})",
+            f"📈 *Margin ROI (Deployed Capital)*: *{margin_roi_str}* {roi_indicator}",
+            f"💼 *Account ROI (Total Capital)*: *{account_roi_str}* {roi_indicator}",
+            f"💵 *Margin Deployed*: `₹{total_deployed:,.2f}`",
             f"🎯 *Total Trades*: `{total_trades}` (Wins: `{wins}` | Losses: `{losses}`)",
             f"📈 *Win Rate*: `{win_rate:.1f}%`",
             f"────────────────────────────",
@@ -719,7 +746,11 @@ def generate_and_send_eod_report() -> None:
                 contract = t.get("contract", t.get("symbol", "N/A"))
                 p = float(t.get("net_pnl", t.get("pnl", 0.0)))
                 p_item = f"+₹{p:,.2f}" if p >= 0 else f"-₹{abs(p):,.2f}"
-                report_lines.append(f"  {i}. `{contract}`: *{p_item}*\n     👉 Reason: _{t.get('exit_reason', 'Closed')}_")
+                t_inv = float(t.get("entry_premium", t.get("entry_price", 0.0))) * int(t.get("quantity", t.get("qty", 1)))
+                t_roi = (p / t_inv * 100.0) if t_inv > 0 else 0.0
+                t_roi_str = f"+{t_roi:.1f}%" if t_roi >= 0 else f"{t_roi:.1f}%"
+                t_dot = "🟢" if p >= 0 else "🔴"
+                report_lines.append(f"  {i}. `{contract}`: *{p_item}* ({t_roi_str} ROI) {t_dot}\n     👉 Reason: _{t.get('exit_reason', 'Closed')}_")
         else:
             report_lines.append("ℹ️ No trades triggered today (Strict AI Filter avoided chop).")
         report_lines.extend([
