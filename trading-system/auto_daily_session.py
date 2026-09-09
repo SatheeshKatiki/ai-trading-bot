@@ -556,11 +556,22 @@ def start_paper_observer() -> bool:
     # "Market is OPEN" Telegram messages -- enough noise to bury the one
     # alert that actually mattered.
     if observer_sv.launches == 1:
+        strat_display = "EMA 9 / RSI Momentum"
+        try:
+            settings_path = ROOT_DIR / "config" / "settings.json"
+            if settings_path.exists():
+                with open(settings_path, "r", encoding="utf-8") as f:
+                    s_data = json.load(f)
+                    act = s_data.get("active_strategy", "ema9_rsi_momentum")
+                    strat_display = "EMA 9 / RSI Momentum" if act == "ema9_rsi_momentum" else act.replace("_", " ").title()
+        except Exception:
+            pass
+
         send_telegram_notification(
             "🚀 [QuantAI Live] Market is OPEN (09:15 IST).\n"
             "Institutional Paper Trading Observer is Active.\n"
             "• Assets: NIFTY & BANKNIFTY Options\n"
-            "• Strategy: Multi-Timeframe AI Momentum & Strike Selection\n"
+            f"• Strategy: {strat_display}\n"
             "• Capital: ₹1,00,000 (Virtual)"
         )
     return True

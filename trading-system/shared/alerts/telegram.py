@@ -235,6 +235,22 @@ class TelegramAlerter:
             pass
         return os.getenv("ALERT_LANGUAGE", "te").lower()
 
+    def _get_active_strategy_display(self) -> str:
+        """Dynamically fetch active strategy display name from config/settings.json."""
+        try:
+            from pathlib import Path
+            cfg_path = Path(__file__).resolve().parents[2] / "config" / "settings.json"
+            if cfg_path.exists():
+                with open(cfg_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    strat = data.get("active_strategy", "ema9_rsi_momentum")
+                    if strat == "ema9_rsi_momentum":
+                        return "EMA 9 / RSI Momentum"
+                    return strat.replace("_", " ").title()
+        except Exception:
+            pass
+        return "EMA 9 / RSI Momentum"
+
     @staticmethod
     def escape_markdown(text: str) -> str:
         """Sanitize text for dispatch (legacy backwards-compatible helper)."""
@@ -263,7 +279,11 @@ class TelegramAlerter:
         emoji = "🟢" if "BUY" in side.upper() or "CALL" in side.upper() else "🔴"
         conf_pct = round(confidence * 100, 1) if confidence <= 1.0 else round(confidence, 1)
         side_str = side.upper()
-        reason_str = reason or "Multi-Timeframe Momentum & Indicator Confirmation"
+        if reason:
+            reason_str = reason
+        else:
+            strat_name = self._get_active_strategy_display()
+            reason_str = f"{strat_name} Confirmation"
         if lang == "te":
             action_label = "కొనుగోలు (BUY)" if "BUY" in side_str else "అమ్మకం (SELL)"
             msg = (

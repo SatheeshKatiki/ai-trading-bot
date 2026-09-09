@@ -1056,7 +1056,14 @@ async def run_live_bot(symbols: List[str]) -> None:
                 if pos.symbol in active_positions:
                     pos.quantity += actual_scale_qty
                     pos.scales_done += 1
-                    alerter.send_trade_alert(pos.symbol, f"PYRAMID SCALE IN {side_str}", actual_scale_qty, ltp, 1.0)
+                    alerter.send_trade_alert(
+                        symbol=pos.symbol,
+                        side=f"PYRAMID SCALE IN {side_str}",
+                        qty=actual_scale_qty,
+                        price=ltp,
+                        confidence=1.0,
+                        reason="Pyramiding Dynamic Scale In"
+                    )
                     _save_positions(active_positions)
         except Exception as e:
             logger.error("Background Iceberg Scale Failed for %s: %s", pos.symbol, e)
@@ -2190,7 +2197,15 @@ async def run_live_bot(symbols: List[str]) -> None:
                             )
 
                         # ── Send Telegram Alert ────────────────────────────
-                        alerter.send_trade_alert(entry_symbol, side_str, total_quantity // lot_size, entry_premium, confidence)
+                        strat_label = "EMA 9 / RSI Momentum" if strategy_name == "ema9_rsi_momentum" else strategy_name.replace("_", " ").title()
+                        alerter.send_trade_alert(
+                            symbol=entry_symbol,
+                            side=side_str,
+                            qty=total_quantity // lot_size,
+                            price=entry_premium,
+                            confidence=confidence,
+                            reason=f"{strat_label} Signal Trigger"
+                        )
 
                         # ── Track position ─────────────────────────────────
                         if not is_live:

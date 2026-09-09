@@ -449,12 +449,14 @@ def run_session(day_num, date_str, day_name):
                             
                             # Dispatch real-time Telegram Entry Alert
                             if alerter:
+                                entry_reason = f"{strat_label} Signal Confirmation (RSI: {state.get('rsi', 'N/A')})"
                                 alerter.send_trade_alert(
                                     symbol=opt["contract"],
                                     side=direction,
                                     qty=qty,
                                     price=entry_p,
-                                    confidence=(conf / 100.0) if conf > 1 else conf
+                                    confidence=(conf / 100.0) if conf > 1 else conf,
+                                    reason=entry_reason
                                 )
                             
                             print(f"  [{ts}] 🔵 ENTRY {opt['contract']} (Qty: {qty}) @ Rs.{entry_p:.2f} | Spot: {state['spot']} | Conf: {conf}% | Delta: {opt['delta']} | SL: Rs.{sl_p:.2f} | Tgt: Rs.{tgt_p:.2f}")
