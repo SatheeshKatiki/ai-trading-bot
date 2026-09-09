@@ -33,6 +33,8 @@ from typing import Awaitable, Callable, Dict, List, Optional
 
 from shared.config import CONFIG
 
+from shared.fyers_log_hygiene import tame_fyers_sdk_logging
+
 logger = logging.getLogger(__name__)
 
 # Thread pool for blocking REST calls (size=2: enough for concurrent place/cancel)
@@ -79,7 +81,7 @@ class FyersClient:
             return
 
         try:
-            from fyers_apiv3 import fyersModel  # type: ignore[import]
+            from fyers_apiv3 import fyersModel
 
             session = fyersModel.SessionModel(
                 client_id=CONFIG.FYERS_CLIENT_ID,
@@ -127,6 +129,7 @@ class FyersClient:
                 token=self._access_token,
                 log_path="",
             )
+            tame_fyers_sdk_logging()  # bound the SDK's own unbounded log files
             data = {
                 "symbol": symbol,
                 "qty": qty,
