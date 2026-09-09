@@ -1094,11 +1094,15 @@ async def websocket_broadcaster():
                 
             # Only update cache if it is empty OR if 60 seconds passed AND market is open!
             # This ensures we freeze the last score after market hours!
-            from datetime import datetime
-            now = datetime.now()
-            market_open = now.replace(hour=9, minute=15, second=0, microsecond=0)
-            market_close = now.replace(hour=15, minute=30, second=0, microsecond=0)
-            is_market_open = market_open <= now <= market_close and now.weekday() < 5
+            #
+            # Uses the IST-anchored helper rather than re-deriving the window
+            # from `datetime.now()`. The old inline calculation compared
+            # SERVER-LOCAL time against 09:15-15:30, so on any host not set to
+            # IST the market-open window was simply wrong -- and it now also
+            # governs the broadcast cadence below. shared/market_hours.py is
+            # the single definition, already mirrored by the frontend.
+            from shared.market_hours import is_market_open as _nse_is_open
+            is_market_open = _nse_is_open()
             
             if signals_cache["data"] is None:
                 try:
@@ -1299,7 +1303,27 @@ async def websocket_broadcaster():
             for ws in disconnected:
                 active_connections.discard(ws)
                 
-            await asyncio.sleep(0.05) 
+            # ── Adaptive broadcast cadence ──────────────────────────────
+            # This loop used to run at a flat 50ms (20 Hz) unconditionally,
+            # around the clock. It is also the clock for the live engine:
+            # FyersBroker.stream_quotes() turns every frame into an on_tick(),
+            # and main.py re-evaluates the whole feature + strategy + filter
+            # stack on a 200ms trigger off those ticks. So a 50ms broadcast
+            # burned roughly 70% of a CPU core continuously -- overnight, at
+            # weekends, and on holidays, when by definition nothing was
+            # changing and no decision could be taken.
+            #
+            # Full 20 Hz is preserved exactly when it earns its keep: the
+            # market is open and something is actually listening. Note the
+            # engine itself connects as a WebSocket client, so "no clients"
+            # genuinely means nobody -- dashboard or engine -- is consuming.
+            if not active_connections:
+                broadcast_interval = 1.0    # nobody is listening
+            elif is_market_open:
+                broadcast_interval = 0.05   # live trading: unchanged
+            else:
+                broadcast_interval = 2.0    # market shut: nothing to react to
+            await asyncio.sleep(broadcast_interval)
         except Exception as e:
             logger.error("WebSocket Broadcaster Error: %s", e)
             await asyncio.sleep(1)
