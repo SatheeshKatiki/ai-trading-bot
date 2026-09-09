@@ -145,8 +145,59 @@ def fetch_candles(symbol, timeframe="5 Min", limit=40):
         return candles
     return None
 
-def fetch_option_chain(symbol):
-    return fetch_json(f"/api/option-chain?symbol={symbol}")
+#: Short-lived option-chain cache, keyed by symbol -> (fetched_at, payload).
+#: The observer polls every POLL_INTERVAL seconds and now reads the chain
+#: twice per cycle per symbol (once to screen for an entry, once to mark an
+#: open position). Both want the same snapshot, and each miss is a real broker
+#: REST call, so collapse them into one.
+_CHAIN_CACHE: dict = {}
+_CHAIN_TTL_S = 10.0
+
+
+def fetch_option_chain(symbol, max_age_s: float = _CHAIN_TTL_S):
+    """Fetch the option chain for `symbol`, reusing a very recent snapshot."""
+    now = time.time()
+    cached = _CHAIN_CACHE.get(symbol)
+    if cached and (now - cached[0]) <= max_age_s:
+        return cached[1]
+
+    data = fetch_json(f"/api/option-chain?symbol={symbol}")
+    if data:
+        _CHAIN_CACHE[symbol] = (now, data)
+    return data
+
+
+def fetch_live_premium(symbol, strike, opt_type):
+    """The contract's own live quote, or None.
+
+    Returns the real two-sided quote for exactly the strike being held, so an
+    open position can be marked against what the market is actually paying
+    rather than extrapolated from its entry price.
+    """
+    chain_data = fetch_option_chain(symbol)
+    if not chain_data or "chain" not in chain_data:
+        return None
+
+    leg_key = "ce" if str(opt_type).upper() == "CE" else "pe"
+    for row in chain_data.get("chain", []):
+        try:
+            if abs(float(row.get("strike", 0)) - float(strike)) > 0.01:
+                continue
+        except (TypeError, ValueError):
+            continue
+        leg = row.get(leg_key) or {}
+        ltp = float(leg.get("ltp") or 0)
+        if ltp <= 0:
+            return None
+        return {
+            "ltp": ltp,
+            "bid": float(leg.get("bid") or 0),
+            "ask": float(leg.get("ask") or 0),
+            "delta": leg.get("delta"),
+            "theta": leg.get("theta"),
+            "iv": leg.get("iv"),
+        }
+    return None
 
 def ema(vals, p):
     if len(vals) < p: return None
@@ -411,23 +462,47 @@ def run_session(day_num, date_str, day_name):
                         spot_change = cur_spot - pos["entry_spot"]
                         delta = pos["opt_delta"]
                         
-                        # Theta from the chain is per DAY; scale it to the hours
-                        # actually held. This was a flat 0.05/hour (~1.2/day)
-                        # regardless of contract, against a real ATM theta of
-                        # about -13.92/day when measured -- roughly a 10x
-                        # understatement. Every held position therefore looked
-                        # better than it was, and the error grew with time held.
-                        hours_held = (time.time() - pos["entry_time_epoch"]) / 3600.0
-                        theta_per_day = abs(float(pos.get("opt_theta") or 10.0))
-                        time_decay = theta_per_day * (hours_held / 24.0)
-                        premium_change = (spot_change * delta) - time_decay
-                        mid_est = max(0.5, round(pos["entry_premium"] + premium_change, 2))
+                        # ── Mark to the contract's OWN live quote ──────────
+                        # Preferred over any estimate: this is the price the
+                        # market is actually paying for the exact strike held.
+                        # Exit at the BID -- closing a long option means hitting
+                        # the bid, never the mid.
+                        #
+                        # The estimate below is a first-order delta
+                        # extrapolation anchored to the ENTRY price. It ignores
+                        # gamma (delta itself moves), ignores IV changes
+                        # entirely, and compounds its own error the longer a
+                        # position is held. It is a fallback for a missing
+                        # quote, not a pricing model.
+                        live = fetch_live_premium(symbol, pos["strike"], pos["opt_type"])
+                        if live:
+                            est_opt_ltp = round(live["bid"] or live["ltp"], 2)
+                            pos["mark_source"] = "broker"
+                            pos["mark_bid"] = live["bid"]
+                            pos["mark_ask"] = live["ask"]
+                            if live.get("delta") is not None:
+                                pos["opt_delta"] = live["delta"]   # keep delta current
+                            if live.get("theta") is not None:
+                                pos["opt_theta"] = live["theta"]
+                            if live.get("iv") is not None:
+                                pos["mark_iv"] = live["iv"]
+                        else:
+                            # Theta from the chain is per DAY; scale it to the
+                            # hours actually held. This was a flat 0.05/hour
+                            # (~1.2/day) for every contract, against a real ATM
+                            # theta near -13.9/day -- a ~12x understatement that
+                            # made every held position look better than it was.
+                            hours_held = (time.time() - pos["entry_time_epoch"]) / 3600.0
+                            theta_per_day = abs(float(pos.get("opt_theta") or 10.0))
+                            time_decay = theta_per_day * (hours_held / 24.0)
+                            premium_change = (spot_change * delta) - time_decay
+                            mid_est = max(0.5, round(pos["entry_premium"] + premium_change, 2))
 
-                        # Mark to the BID: closing a long option means hitting the
-                        # bid, not the mid. Applies half the entry spread to this
-                        # side, mirroring what the entry already paid.
-                        half_spread_pct = float(pos.get("entry_spread_pct") or 0.0) / 2.0
-                        est_opt_ltp = max(0.5, round(mid_est * (1.0 - half_spread_pct / 100.0), 2))
+                            # Apply half the entry spread to this side, mirroring
+                            # what the entry already paid on the other.
+                            half_spread_pct = float(pos.get("entry_spread_pct") or 0.0) / 2.0
+                            est_opt_ltp = max(0.5, round(mid_est * (1.0 - half_spread_pct / 100.0), 2))
+                            pos["mark_source"] = "model"
                         pos["current_ltp"] = est_opt_ltp
                         pos["highest_premium"] = max(pos.get("highest_premium", pos["entry_premium"]), est_opt_ltp)
                         pos["lowest_premium"] = min(pos.get("lowest_premium", pos["entry_premium"]), est_opt_ltp)

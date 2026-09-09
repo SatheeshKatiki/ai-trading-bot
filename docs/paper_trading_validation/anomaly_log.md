@@ -6,6 +6,71 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-09-09 (later still) — FIX: open positions are now marked to the contract's real bid, not extrapolated from entry
+
+**Why this had to follow the entry-fill fix:** entry was made real (the ask),
+but exits were still modelled — so P&L, which is *exit minus entry*, was still
+half fiction. Fixing only one side leaves the number just as unusable.
+
+**What it was doing:**
+
+```python
+premium_change = (spot_change * delta) - time_decay
+est_opt_ltp    = entry_premium + premium_change
+```
+
+A first-order delta extrapolation anchored to the **entry** price. Its
+weaknesses are structural, not tuning issues:
+
+* **No gamma.** Delta itself moves as spot moves. On one live NIFTY chain,
+  delta ran 0.776 → 0.509 → 0.184 across only ±300 points of strike. A
+  position entered ATM at 0.509 delta that rallies 300 points is really a
+  0.776-delta contract by then; the estimate keeps using 0.509 and understates
+  the move by ~70 points of premium.
+* **No implied volatility.** IV over the same three strikes was 14.0% /
+  11.62% / 11.03%, and intraday IV shifts move premiums on their own. The
+  model cannot see any of it.
+* **Error compounds with time held**, because nothing ever re-anchors it.
+
+**And the real quote was already there.** The observer fetches the chain each
+cycle anyway; the exact held contract (`NSE:NIFTY2691523450CE`, bid 138.15 /
+ask 139.45) sits in it, and the 41-strike window essentially always contains
+the held strike.
+
+**Fix:**
+
+* `fetch_live_premium(symbol, strike, opt_type)` reads the held contract's own
+  two-sided quote out of the chain.
+* Open positions mark to the **bid** — closing a long option means hitting the
+  bid, never the mid. Combined with entry at the ask, a round trip now pays
+  the spread exactly once each way (Rs.139.45 → Rs.138.15 on the ATM CE).
+* Current delta, theta and IV are refreshed onto the position from each mark,
+  so the Greeks stop being frozen at entry.
+* The old estimate survives **only as a fallback** for a missing quote, and
+  every position records which priced it via `mark_source` (`broker` /
+  `model`), so a session's evidence can be filtered on it.
+* `fetch_option_chain()` gained a 10-second TTL cache. The observer now reads
+  the chain twice per cycle per symbol (screening for entries, marking open
+  positions) and each miss is a real broker REST call; both want the same
+  snapshot. This *reduces* broker load versus before.
+
+**Verification:** `test_paper_observer_live_marks.py` (14 tests, new) pins
+that the right strike and leg are selected, that marking uses the bid and is
+strictly below ltp, that a round trip costs exactly bid-to-ask, that unknown /
+zero-priced / missing chains yield no quote rather than a fabricated one, that
+the cache collapses repeated lookups into one fetch, expires, and is
+per-symbol. Two tests pin *why* the estimate was wrong — the gamma gap and the
+growth of error with time held — so the reasoning survives the code. Suite
+**873 passed / 1 skipped / 2 xfailed**.
+
+**Also, unrelated to the above:** removed three dead `risk_icon_col`
+assignments in `shared/alerts/image_generator.py` (ruff F841). Assigned in all
+three P&L branches, never read. Now that CI gates every branch this would have
+turned the next push red. Confirmed the EOD card still renders (207 KB PNG) on
+the loss branch, where the dead variable lived.
+
+---
+
 ## 2026-09-09 (later) — FIX: every paper trade was filled at a hardcoded Rs.100, at the mid, with 12x too little theta
 
 **How it surfaced:** picking up the "model entry at the ask, exit at the bid"

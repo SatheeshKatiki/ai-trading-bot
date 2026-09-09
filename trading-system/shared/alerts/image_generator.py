@@ -389,21 +389,18 @@ def generate_eod_card(
         risk_desc = "Capital Alpha Hedged & Compounding"
         risk_val_col = GREEN_PROFIT
         risk_accent = GREEN_PROFIT
-        risk_icon_col = GREEN_PROFIT
     elif total_pnl < 0:
         risk_val = f"{cap_intact_pct:.2f}% INTACT"
         risk_sub = f"Drawdown: -{drawdown_pct:.2f}% (Limit: 3.0%)"
         risk_desc = "Theta Guard & Hard SL Active"
         risk_val_col = GOLD_BRIGHT if drawdown_pct <= 1.5 else (251, 146, 60, 255)
         risk_accent = GOLD_BRIGHT
-        risk_icon_col = GOLD_BRIGHT
     else:
         risk_val = "100.0% INTACT"
         risk_sub = "Zero Drawdown Incurred"
         risk_desc = "Theta Guard & Hard SL Active"
         risk_val_col = GOLD_BRIGHT
         risk_accent = GOLD_BRIGHT
-        risk_icon_col = GOLD_BRIGHT
 
     kpi_configs = [
         {
