@@ -1,44 +1,52 @@
 import { NextResponse } from 'next/server';
 import { getAuthHeaders, BACKEND_URL } from '@/lib/backend';
 
-export const dynamic = 'force-dynamic';
-
+/**
+ * Proxy for the backend's AI signal scan.
+ *
+ * This route used to answer a backend failure with an invented signal:
+ *
+ *     { symbol: "NIFTY", type: "CALL BUY", bias: "BUY", strength: "Strong",
+ *       confidence: 82, reason: "EMA 9/21 Bullish Momentum Alignment" }
+ *
+ * returned at HTTP 200. That is a *trade recommendation* manufactured at
+ * precisely the moment the system knows nothing at all, and nothing
+ * downstream could tell it from a real scan. A proxy must never invent an
+ * answer -- if the backend cannot be reached, that is the answer.
+ *
+ * The signals page already renders an empty state (`signals.length === 0`),
+ * so an honest failure degrades cleanly.
+ */
 export async function GET(request: Request) {
-  try {
-    const { searchParams } = new URL(request.url);
-    const symbol = searchParams.get('symbol') || 'NIFTY';
-    const pythonApiUrl = `${BACKEND_URL}/api/signals?symbol=${encodeURIComponent(symbol)}`;
+  const { searchParams } = new URL(request.url);
+  const symbol = searchParams.get('symbol') || 'NIFTY';
 
-    const response = await fetch(pythonApiUrl, {
-      headers: await getAuthHeaders(),
-      next: { revalidate: 3 }
-    });
-    
+  try {
+    const response = await fetch(
+      `${BACKEND_URL}/api/signals?symbol=${encodeURIComponent(symbol)}`,
+      { cache: 'no-store', headers: await getAuthHeaders() }
+    );
+
+    const body = await response.json().catch(() => null);
+
     if (!response.ok) {
-      throw new Error(`Backend signals responded with status ${response.status}`);
+      // Forward the backend's own status and detail rather than masking it.
+      return NextResponse.json(
+        body ?? { error: `Signal scan failed (${response.status}).`, signals: [] },
+        { status: response.status }
+      );
     }
-    
-    const result = await response.json();
-    return NextResponse.json(result);
+
+    return NextResponse.json(body);
   } catch (error) {
-    // Graceful fallback during backend restart or offline state
-    return NextResponse.json({
-      confidence: 82,
-      status: "Institutional Momentum Scan Active",
-      bias: "BUY BIAS",
-      signals: [
-        {
-          symbol: "NIFTY",
-          type: "CALL BUY",
-          bias: "BUY",
-          strength: "Strong",
-          confidence: 82,
-          time: "Live Scan",
-          reason: "EMA 9/21 Bullish Momentum Alignment"
-        }
-      ],
-      trendData: []
-    }, { status: 200 });
+    console.error('Signals API proxy error:', error);
+    return NextResponse.json(
+      {
+        error: 'Signal engine unreachable. No scan data available.',
+        signals: [],
+        trendData: [],
+      },
+      { status: 503 }
+    );
   }
 }
-

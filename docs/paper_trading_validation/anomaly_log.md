@@ -6,6 +6,63 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-09-09 (night) — FIX: the UI fabricated trade recommendations when the backend was down
+
+**How it surfaced:** a deliberate sweep of the frontend for hardcoded values
+and broken wiring.
+
+**The two worst were not display data — they were actionable advice, returned
+at HTTP 200 precisely when the system knew nothing:**
+
+* `app/api/signals/route.ts` answered a backend failure with an invented
+  **entry signal**: `{type: "CALL BUY", bias: "BUY", strength: "Strong",
+  confidence: 82, reason: "EMA 9/21 Bullish Momentum Alignment"}`.
+* `app/api/btst/route.ts` answered a backend failure with an invented
+  **overnight carry**: `{action: "CARRY CALL", gapUpProb: 75, gapDownProb: 25,
+  reason: "Strong EOD Momentum (+0.85%) with RSI at 68", metrics: {rsi: 68}}`,
+  commented "mock data for UI demonstration". Carrying overnight is one of the
+  few genuinely irreversible decisions this system surfaces — gap risk cannot
+  be stopped out.
+
+**The rest:**
+
+| Where | What it invented |
+|---|---|
+| `app/api/option-chain/route.ts` | a complete **41-strike chain** — LTP, OI, OI change, volume and all four Greeks per leg from `Math.sin()`-seeded randomness, plus a hardcoded underlying (24200 / 52000 / 21000) and an expiry three days out. **Also on the success path**: overwrote real `oichg` and `pcr` with `deterministicRandom(...)`, forced `maxPain` = ATM |
+| `components/btst-predictor.tsx` | `{gapUpProb: 50, gapDownProb: 50, rsi: 50, reason: "Market scanning active"}` — while nothing was scanning |
+| `app/page.tsx` | five "AI commentary" strings rotated at random; four assert analysis that does not exist anywhere ("Institutional buying pressure observed in IT sector. Positive volume delta.", "Volatility squeeze detected on Bank Nifty... Breakout imminent.") and one cites "9 EMA and 21 SMA" when the active strategy is EMA9/RSI |
+| equity, 4 places | seeded/defaulted to `100000` via `useState(100000.0)`, `equity: 100000.00`, `stateData.equity \|\| 100000.0`, `(equity \|\| 100000.00)`. Equity is the **ROI denominator**, so an invented balance yields an invented ROI — and `\|\| 100000` turned a genuine zero into a plausible one |
+| `option-symbol-selector.tsx` | strike ladder around a hardcoded 24350 spot when the feed was down — ~920 points off with NIFTY near 23431, in the component that picks the contract for a **manual order** |
+| `native-chart.tsx` | volume for zero-volume bars: previous bar × candle range, falling back to a hardcoded 1,500,000. Added *during this audit* |
+
+**Fix — a proxy never invents an answer; failure is the answer.** All three
+routes now forward the backend's own status and detail, and return **503** on
+unreachability instead of 200 with fiction. `signals/page.tsx` already renders
+an empty state, so this degrades cleanly; `btst-predictor.tsx` shows
+"BTST — No Assessment" with the reason. The option chain is passed through
+untouched (the backend already declares `synthetic` / `priceSource` /
+`realFields`, which the Options Desk renders). Dashboard commentary is derived
+solely from values on screen — engine state, real confidence and bias, open
+position count, live mark-to-market — and says "Awaiting data from the trading
+engine" when there is nothing true to say. Equity is taken verbatim and shows
+an em-dash at zero. The strike ladder returns empty without a spot. Zero-volume
+bars stay at zero.
+
+**Verification:** `test_ui_no_fabricated_data.py` (10 tests, new) is a
+repo-wide guard, not a unit test — it scans `app/`, `components/`, `store/`
+and `lib/` for `Math.random()`, `Math.sin(Date.now())`, `deterministicRandom`,
+known hardcoded index levels, invented balances, and API routes returning 200
+from a catch block. It strips comments first, since the fixes deliberately
+document what they replaced. **Negative-tested**: re-injecting
+`{confidence: 82, spot: 24350}` into the signals route makes it fail on two
+counts. Suite **898 passed / 1 skipped / 2 xfailed**; `tsc` clean; build green.
+
+**Why a guard and not just a cleanup:** fabrication was removed from ten places
+earlier the same day and then *reappeared while the audit was still running*
+(the `native-chart.tsx` volume fallback). It is a habit, not an incident.
+
+---
+
 ## 2026-09-09 (evening) — EVIDENCE: 0 of 5 recorded sessions contain a single trade filled at a quoted price
 
 **Not a fix — a measurement.** `scripts/audit_session_fills.py` classifies the

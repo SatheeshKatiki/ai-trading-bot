@@ -1,132 +1,65 @@
-// Force Next.js recompile after syntax fix
 import { NextResponse } from 'next/server';
 import { getAuthHeaders, BACKEND_URL } from '@/lib/backend';
 
-interface OptionLeg {
-    ltp: number;
-    volume: number;
-    oi: number;
-    oichg: number;
-    delta: number;
-    gamma: number;
-    theta: number;
-    vega: number;
-}
-
-// Raw shape from api_bridge.py's GET /api/option-chain
-interface RawChainRow {
-    strike: number;
-    call: OptionLeg;
-    put: OptionLeg;
-}
-interface RawOptionChainResponse {
-    error?: string;
-    symbol: string;
-    underlying_price?: number;
-    atm: number;
-    maxPain: number;
-    pcr: number;
-    expiry: string;
-    chain: RawChainRow[];
-}
-
+/**
+ * Proxy for the backend's option chain.
+ *
+ * Two things were removed here on 2026-09-09, both of which produced numbers
+ * nobody quoted:
+ *
+ * 1. **A complete 41-strike fabricated chain in the catch block**, returned at
+ *    HTTP 200. It invented LTP, open interest, OI change, volume and all four
+ *    Greeks per leg from `Math.sin()`-seeded pseudo-randomness, plus a
+ *    hardcoded underlying (NIFTY 24200 / BANKNIFTY 52000 / else 21000) and a
+ *    made-up expiry three days out. A backend outage therefore rendered as a
+ *    fully populated, plausible-looking options market.
+ *
+ * 2. **A "legacy shape" transform on the success path** which, whenever the
+ *    backend returned the old `call`/`put` row shape, *overwrote real data*:
+ *    `oichg` was replaced with `deterministicRandom(...)`, `pcr` was replaced
+ *    with `deterministicRandom(...)`, `maxPain` was set equal to the ATM
+ *    strike, and a missing underlying defaulted to 24200. The backend now
+ *    emits `ce`/`pe` canonically (with real OI change, a real PCR from
+ *    aggregate open interest, and a properly computed max pain), so this
+ *    block is both unnecessary and actively destructive if it ever fired.
+ *
+ * The chain is now passed through untouched. The backend already declares its
+ * own provenance on the payload (`synthetic`, `priceSource`, `realFields`),
+ * which the Options Desk renders -- so a model chain is labelled as one
+ * rather than silently manufactured here.
+ */
 export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const symbol = searchParams.get('symbol') || 'NIFTY';
 
     try {
-        const response = await fetch(`${BACKEND_URL}/api/option-chain?symbol=${symbol}`, {
-            cache: 'no-store',
-            headers: await getAuthHeaders(),
-        });
-        
+        const response = await fetch(
+            `${BACKEND_URL}/api/option-chain?symbol=${encodeURIComponent(symbol)}`,
+            {
+                cache: 'no-store',
+                headers: await getAuthHeaders(),
+            }
+        );
+
+        const body = await response.json().catch(() => null);
+
         if (!response.ok) {
-            throw new Error(`Backend responded with status: ${response.status}`);
-        }
-        
-        let data: RawOptionChainResponse | Record<string, unknown> = await response.json();
-
-        // Deterministic pseudo-random based on symbol to freeze values off-market
-        const seedStr = symbol;
-        const hash = seedStr.split('').reduce((a,b)=>{a=((a<<5)-a)+b.charCodeAt(0);return a&a},0);
-        const deterministicRandom = (strike: number, salt: number) => {
-            let x = Math.sin(strike + salt + hash) * 10000;
-            return x - Math.floor(x);
-        };
-
-        // If data is from older backend version, transform it to the new format
-        if ('chain' in data && Array.isArray(data.chain) && data.chain.length > 0 && data.chain[0].call) {
-            const raw = data as RawOptionChainResponse;
-            const transformedChain = raw.chain.map((row) => ({
-                strike: row.strike,
-                ce: { ...row.call, oichg: Math.floor(deterministicRandom(row.strike, 1) * 20000 - 5000) },
-                pe: { ...row.put, oichg: Math.floor(deterministicRandom(row.strike, 2) * 20000 - 5000) }
-            }));
-
-            data = {
-                symbol: raw.symbol,
-                expiry: raw.expiry,
-                underlying_price: raw.underlying_price || 24200,
-                atm: Math.round((raw.underlying_price || 24200) / 50) * 50,
-                maxPain: Math.round((raw.underlying_price || 24200) / 50) * 50,
-                pcr: Number((deterministicRandom(raw.underlying_price || 24200, 3) * 0.8 + 0.6).toFixed(2)),
-                chain: transformedChain
-            };
+            // Forward the backend's own status and detail rather than masking it.
+            return NextResponse.json(
+                body ?? { error: `Option chain unavailable (${response.status}).`, chain: [] },
+                { status: response.status }
+            );
         }
 
-        return NextResponse.json(data);
+        return NextResponse.json(body);
     } catch (error) {
         console.error("Option Chain API Proxy Error:", error);
-        
-        const hash = symbol.split('').reduce((a,b)=>{a=((a<<5)-a)+b.charCodeAt(0);return a&a},0);
-        const deterministicRandom = (strike: number, salt: number) => {
-            let x = Math.sin(strike + salt + hash) * 10000;
-            return x - Math.floor(x);
-        };
-
-        // Return deterministic mock data for UI demonstration
-        const base_price = symbol === "NIFTY" ? 24200 : symbol === "BANKNIFTY" ? 52000 : 21000;
-        const atm = symbol === "NIFTY" ? Math.round(base_price / 50) * 50 : Math.round(base_price / 100) * 100;
-        const step = symbol === "NIFTY" ? 50 : 100;
-        
-        const chain = [];
-        for (let i = -20; i <= 20; i++) {
-            const strike = atm + (i * step);
-            const distance = Math.abs(i);
-            
-            chain.push({
-                strike,
-                ce: {
-                    ltp: Math.max(0.5, (5 - distance) * 40 + (deterministicRandom(strike, 4) * 20 - 10)),
-                    oi: Math.floor(deterministicRandom(strike, 5) * 140000 + 10000) * (i > 0 ? 1 : 0.5),
-                    oichg: Math.floor(deterministicRandom(strike, 6) * 20000 - 5000),
-                    volume: Math.floor(deterministicRandom(strike, 7) * 300000 + 50000),
-                    delta: Math.max(0.01, Math.min(0.99, 0.5 - (i * 0.1))),
-                    theta: -(deterministicRandom(strike, 8) * 10 + 5),
-                    gamma: Math.max(0.001, 0.02 - distance * 0.003),
-                    vega: deterministicRandom(strike, 9) * 15 + 5
-                },
-                pe: {
-                    ltp: Math.max(0.5, (5 - distance) * 35 + (deterministicRandom(strike, 10) * 20 - 10)),
-                    oi: Math.floor(deterministicRandom(strike, 11) * 140000 + 10000) * (i < 0 ? 1 : 0.5),
-                    oichg: Math.floor(deterministicRandom(strike, 12) * 20000 - 5000),
-                    volume: Math.floor(deterministicRandom(strike, 13) * 300000 + 50000),
-                    delta: Math.max(0.01, Math.min(0.99, 0.5 - (i * 0.1))) - 1,
-                    theta: -(deterministicRandom(strike, 14) * 10 + 5),
-                    gamma: Math.max(0.001, 0.02 - distance * 0.003),
-                    vega: deterministicRandom(strike, 15) * 15 + 5
-                }
-            });
-        }
-        
-        return NextResponse.json({
-            symbol,
-            expiry: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).replace(/ /g, '-').toUpperCase(),
-            underlying_price: base_price,
-            atm,
-            maxPain: atm,
-            pcr: Number((deterministicRandom(atm, 3) * 0.8 + 0.6).toFixed(2)),
-            chain
-        }, { status: 200 });
+        return NextResponse.json(
+            {
+                error: 'Option chain unreachable. No strike data available.',
+                chain: [],
+            },
+            { status: 503 }
+        );
     }
 }

@@ -126,7 +126,9 @@ export const useLiveMarketStore = create<LiveMarketState>((set, get) => ({
     marginDeployed: 0,
     marginRoi: 0,
     accountRoi: 0,
-    equity: 100000.00,
+    // 0, not an invented 100000: see the note on app/page.tsx's equity state.
+    // A fabricated opening balance yields a fabricated ROI.
+    equity: 0,
     openPositionsCount: 0,
     positionsDetail: [],
     trades: [],

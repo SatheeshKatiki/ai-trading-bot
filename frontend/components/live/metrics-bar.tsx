@@ -87,7 +87,13 @@ function MetricsBarComponent({ isLoading, isMarketOpen }: MetricsBarProps) {
                     </span>
                 </div>
                 <div className="text-xl md:text-2xl font-bold font-mono text-foreground pl-2 tracking-tight">
-                    {isLoading ? <div className="h-6 w-24 bg-muted animate-pulse rounded"></div> : `₹${(equity || 100000.00).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`}
+                    {isLoading
+                        ? <div className="h-6 w-24 bg-muted animate-pulse rounded"></div>
+                        : (equity > 0
+                            ? `₹${equity.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`
+                            /* Not `equity || 100000` -- that rendered an invented
+                               balance whenever the real one was zero or absent. */
+                            : <span className="text-muted-foreground">—</span>)}
                 </div>
             </motion.div>
 

@@ -81,7 +81,11 @@ export default function Dashboard() {
   const wsMarginDeployed = useLiveMarketStore(state => state.marginDeployed);
   const wsPositionsDetail = useLiveMarketStore(state => state.positionsDetail);
 
-  const [equity, setEquity] = useState(100000.0);
+  // Starts at 0, not a plausible 100000. Account ROI is computed against
+  // this figure, so seeding it with an invented balance produced a real-looking
+  // ROI percentage before any backend data had arrived -- and kept producing
+  // one if the backend never answered.
+  const [equity, setEquity] = useState(0);
   const [pnl, setPnl] = useState(0.0);
   const [trades, setTrades] = useState<DashboardTrade[]>([]);
   const [positions, setPositions] = useState<DashboardPosition[]>([]);
@@ -130,26 +134,61 @@ export default function Dashboard() {
     signals: [],
   });
 
-  // AI Live Commentary Logic
+  // ── Live commentary, derived from real state only ──────────────────────
+  //
+  // This used to rotate five pre-written strings at random every 8 seconds,
+  // four of which asserted analysis that does not exist anywhere in this
+  // system: "High liquidity pools detected", "Volatility squeeze detected on
+  // Bank Nifty. Standard deviation contracting. Breakout imminent",
+  // "Institutional buying pressure observed in IT sector. Positive volume
+  // delta", and "Monitoring 9 EMA and 21 SMA" (the active strategy is
+  // EMA9/RSI, and there is no sector or order-book analysis at all). Rendered
+  // beside genuine metrics, invented market claims read as engine output.
+  //
+  // Every line below is now a statement about a value actually on screen.
   useEffect(() => {
-    const commentaries = [
-      `Analyzing order book dynamics across top 50 symbols. High liquidity pools detected.`,
-      `AI Confidence at ${aiSignal?.confidence || 0}%. ${aiSignal?.confidence && aiSignal.confidence > 75 ? "Strong conviction, aggressively scanning for entries." : "Awaiting clear trend confirmation."}`,
-      `Volatility squeeze detected on Bank Nifty. Standard deviation contracting. Breakout imminent.`,
-      `Institutional buying pressure observed in IT sector. Positive volume delta.`,
-      `Monitoring 9 EMA and 21 SMA for potential crossover across portfolio.`
-    ];
+    const conf = aiSignal?.confidence ?? 0;
+    const openCount = wsPositionsDetail?.length ?? positions.length;
 
-    if (pnl > 500 && Math.random() > 0.6) {
-      setAiCommentary(`Current session highly profitable (+₹${pnl.toFixed(2)}). Risk engine protecting gains with trailing stop.`);
-    } else {
-      const interval = setInterval(() => {
-        const randomComm = commentaries[Math.floor(Math.random() * commentaries.length)];
-        setAiCommentary(randomComm);
-      }, 8000);
-      return () => clearInterval(interval);
+    const lines: string[] = [];
+
+    if (!isEngineLive) {
+      lines.push("Engine is stopped. No signals are being evaluated.");
+    } else if (aiSignal?.status && aiSignal.status !== "Initializing...") {
+      lines.push(`${aiSignal.strategy_display ?? "Strategy"}: ${aiSignal.status}`);
     }
-  }, [pnl, aiSignal]);
+
+    if (conf > 0) {
+      lines.push(
+        `AI confidence ${conf.toFixed(0)}% — ${aiSignal?.bias ?? "no bias"}.` +
+        (conf >= 75 ? " Above the entry threshold." : " Below the entry threshold; holding fire.")
+      );
+    }
+
+    if (openCount > 0) {
+      lines.push(
+        `${openCount} open position${openCount === 1 ? "" : "s"}, ` +
+        `mark-to-market ${displayPnl >= 0 ? "+" : ""}₹${displayPnl.toFixed(2)}.`
+      );
+    } else if (isEngineLive) {
+      lines.push("No open positions. Waiting for a qualifying setup.");
+    }
+
+    if (lines.length === 0) {
+      setAiCommentary("Awaiting data from the trading engine.");
+      return;
+    }
+
+    // Cycle only through statements that are currently true.
+    let i = 0;
+    setAiCommentary(lines[0]);
+    if (lines.length === 1) return;
+    const interval = setInterval(() => {
+      i = (i + 1) % lines.length;
+      setAiCommentary(lines[i]);
+    }, 8000);
+    return () => clearInterval(interval);
+  }, [aiSignal, displayPnl, isEngineLive, positions.length, wsPositionsDetail]);
 
   // Active time-range for the equity curve chart
   const [curveRange, setCurveRange] = useState<'1D' | '1W' | '1M' | 'ALL'>('1D');
@@ -189,7 +228,10 @@ export default function Dashboard() {
         }
         
         if (stateData && !stateData.error) {
-          setEquity(stateData.equity || 100000.0);
+          // `|| 100000.0` turned a genuine zero -- a fresh account, or a
+          // backend that answered with nothing -- into a plausible balance.
+          // Take the number the backend actually sent.
+          setEquity(Number(stateData.equity ?? 0));
           setPnl(stateData.pnl || 0.0);
           setTrades(stateData.trades || []);
           

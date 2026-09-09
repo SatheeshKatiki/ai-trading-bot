@@ -80,22 +80,18 @@ function sanitizeCandleSeries(arr: any[]) {
     }
   }
 
-  // Institutional Volume Fallback: ensure no bar has 0 volume (which makes histogram invisible)
-  const positiveVols = strictlyIncreasing.map((c: any) => Number(c.volume) || 0).filter((v: number) => v > 0);
-  const baselineVol = positiveVols.length > 0 
-    ? positiveVols[Math.floor(positiveVols.length / 2)] 
-    : 1500000;
-  
-  for (let i = 0; i < strictlyIncreasing.length; i++) {
-    const c = strictlyIncreasing[i];
-    if (!c.volume || c.volume <= 0) {
-      const prevVol = i > 0 && strictlyIncreasing[i - 1].volume > 0 ? strictlyIncreasing[i - 1].volume : baselineVol;
-      const rng = Math.max(0.5, (c.high || 0) - (c.low || 0));
-      const ratio = Math.max(0.4, Math.min(2.5, rng / 20.0));
-      c.volume = Math.round(prevVol * ratio);
-    }
-  }
-
+  // Bars the feed reports with no volume are left at zero.
+  //
+  // This block previously manufactured a figure for them -- the previous bar's
+  // volume scaled by candle range, falling back to a hardcoded 1,500,000 when
+  // no bar in the window had any volume at all -- so the histogram would never
+  // look empty. A drawn bar is a claim that something traded, and NSE index
+  // series legitimately carry no volume: the honest rendering of "no volume
+  // reported" is no bar, not an invented one.
+  //
+  // This matters beyond the chart. ExitAnalyzerAgent's Factor 4 reads volume
+  // deceleration as a live exit input, so normalising zeros into plausible
+  // numbers teaches the reader to trust a series that can be fabricated.
   return strictlyIncreasing;
 }
 

@@ -23,7 +23,7 @@ interface ContractItem {
 export function OptionSymbolSelector({
   baseSymbol,
   currentSymbol,
-  spotPrice = 24350,
+  spotPrice = 0,
   dualSyncMode,
   onSelectSymbol,
   onResetAiSync,
@@ -47,7 +47,12 @@ export function OptionSymbolSelector({
   // Generate available strikes around current spot price
   const contracts = useMemo(() => {
     const sym = baseSymbol.toUpperCase();
-    const rawSpot = spotPrice > 0 ? spotPrice : sym.includes("BANK") ? 52000 : sym.includes("SENSEX") ? 80000 : 24350;
+    // No spot, no strike ladder. This used to fall back to 52000 / 80000 /
+    // 24350, so with the feed down it offered strikes centred on an invented
+    // ATM -- with NIFTY near 23431 that is roughly 920 points wrong, and this
+    // component picks the contract for a MANUAL order.
+    if (!spotPrice || spotPrice <= 0) return [];
+    const rawSpot = spotPrice;
     const step = sym.includes("BANK") || sym.includes("SENSEX") ? 100 : 50;
     const atmStrike = Math.round(rawSpot / step) * step;
 

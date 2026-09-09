@@ -22,6 +22,7 @@ interface BtstData {
 export function BtstPredictor({ symbol }: BtstPredictorProps) {
     const [data, setData] = useState<BtstData | null>(null);
     const [loading, setLoading] = useState(true);
+    const [unavailable, setUnavailable] = useState<string | null>(null);
     const [isActiveWindow, setIsActiveWindow] = useState(false);
 
     useEffect(() => {
@@ -57,20 +58,34 @@ export function BtstPredictor({ symbol }: BtstPredictorProps) {
                 const res = await fetch(`/api/btst?symbol=${encodeURIComponent(querySymbol)}`, {
                     signal: controller.signal
                 });
-                if (!res.ok) return;
-                const resData = await res.json();
+                const resData = await res.json().catch(() => null);
+                if (!res.ok) {
+                    if (isMounted) {
+                        setData(null);
+                        setUnavailable(resData?.error || `Predictor error (${res.status}).`);
+                        setLoading(false);
+                    }
+                    return;
+                }
                 if (isMounted) {
                     if (resData && !resData.error) {
                         setData(resData);
-                    } else if (resData && resData.error) {
-                        setData({ status: "active", action: "AVOID", gapUpProb: 50, gapDownProb: 50, reason: resData.error, metrics: { momentum: 0, rsi: 50 } });
+                        setUnavailable(null);
+                    } else {
+                        // No assessment is not the same as a neutral assessment.
+                        // This used to synthesise { action: "AVOID", gapUpProb: 50,
+                        // gapDownProb: 50, rsi: 50 } and, in the catch below,
+                        // the reason "Market scanning active" -- while nothing was
+                        // scanning. A 50/50 gap probability rendered beside real
+                        // ones is indistinguishable from a computed result.
+                        setData(null);
+                        setUnavailable(resData?.error || 'Overnight assessment unavailable.');
                     }
                 }
             } catch (error: any) {
-                if (error.name !== 'AbortError') {
-                    if (isMounted) {
-                        setData(prev => prev || { status: "active", action: "AVOID", gapUpProb: 50, gapDownProb: 50, reason: "Market scanning active", metrics: { momentum: 0, rsi: 50 } });
-                    }
+                if (error.name !== 'AbortError' && isMounted) {
+                    setData(null);
+                    setUnavailable('BTST predictor unreachable.');
                 }
             } finally {
                 if (isMounted) setLoading(false);
@@ -106,6 +121,22 @@ export function BtstPredictor({ symbol }: BtstPredictorProps) {
     } else {
         borderColor = "border-warning/40";
         iconColor = "text-warning";
+    }
+
+    if (unavailable && !data) {
+        return (
+            <div className="glass-card border border-border/40 rounded-xl p-4 flex items-center justify-center h-[90px]">
+                <div className="flex items-center gap-3 text-center">
+                    <Moon className="w-5 h-5 text-muted-foreground/50" />
+                    <div className="flex flex-col items-start">
+                        <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                            BTST — No Assessment
+                        </span>
+                        <span className="text-[10px] text-muted-foreground/70">{unavailable}</span>
+                    </div>
+                </div>
+            </div>
+        );
     }
 
     if (loading && !data) {

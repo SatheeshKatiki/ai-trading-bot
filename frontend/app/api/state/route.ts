@@ -69,11 +69,16 @@ export async function GET(request: Request) {
     }
     
     // 1. Read state from Python API Bridge
+    // Zeroed, not seeded with a plausible 100000 balance. This is only used
+    // when the backend does not answer, and a fake opening balance there is
+    // indistinguishable from a real one -- it also drives the dashboard's ROI
+    // denominator. `backendOk` below tells the client which it got.
     let baseState: BackendState = {
-      equity: 100000.0,
+      equity: 0,
       pnl: 0.0,
       trades: []
     };
+    let backendOk = false;
     
     try {
       // Fetch all data in parallel to reduce loading time. Each promise
@@ -90,7 +95,10 @@ export async function GET(request: Request) {
         fetchWithTimeout<FyersQuoteResponse>(`${BACKEND_URL}/api/quote?symbol=${symbol}`, 2000, authHeaders),
       ]);
 
-      if (resState) baseState = resState;
+      if (resState) {
+        baseState = resState;
+        backendOk = true;
+      }
       fundsData = resFunds;
       signalsData = resSignals;
       quoteData = resQuote;
@@ -160,6 +168,8 @@ export async function GET(request: Request) {
     
     return NextResponse.json({
       ...baseState,
+      // False means every field below is a placeholder, not backend state.
+      backendOk,
       chartData,
       currentSymbol: symbol,
       currentPrice,
