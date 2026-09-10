@@ -145,6 +145,47 @@ def fetch_candles(symbol, timeframe="5 Min", limit=40):
         return candles
     return None
 
+def check_reversal_exit(symbol, opt_type, entry_premium, current_premium):
+    """The strategy's own EMA9/EMA20 + RSI reversal exit.
+
+    Per the strategy spec: "even if target or SL has not been hit, if the spot
+    chart reverses and an opposite EMA 9/20 cross appears, exit immediately
+    regardless of profit or loss."
+
+    `ema9_rsi_momentum.evaluate_protective_exit()` implements exactly that and
+    has since v3.13, but nothing ever called it -- neither this module nor
+    main.py -- so the only exits that could actually fire were the 15% stop,
+    the 33% target and the EOD square-off. Over the six recorded sessions that
+    showed up as 5 of 18 trades ending at the EOD cutoff with no management in
+    between.
+
+    Signals are read from the SPOT chart, never the option's own candles, as
+    the strategy requires. Returns a ProtectiveExitResult, or None when there
+    is not enough history to judge.
+    """
+    candles = fetch_candles(symbol, "5 Min", 60)
+    if not candles or len(candles) < 40:
+        return None
+    try:
+        import pandas as pd
+        from trading_bot.strategies.ema9_rsi_momentum import evaluate_protective_exit
+
+        df = pd.DataFrame(candles)
+        for col in ("open", "high", "low", "close"):
+            if col not in df.columns:
+                return None
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        df = df.dropna(subset=["close"])
+        if len(df) < 40:
+            return None
+
+        side = 1 if str(opt_type).upper() == "CE" else -1
+        return evaluate_protective_exit(df, side, entry_premium, current_premium)
+    except Exception as exc:
+        print(f"  [WARN] reversal-exit check failed for {symbol}: {exc}")
+        return None
+
+
 #: Short-lived option-chain cache, keyed by symbol -> (fetched_at, payload).
 #: The observer polls every POLL_INTERVAL seconds and now reads the chain
 #: twice per cycle per symbol (once to screen for an entry, once to mark an
@@ -527,6 +568,24 @@ def run_session(day_num, date_str, day_name):
                                     alerter.send_alert(f"🛡️ *Trailing SL Triggered*\n\nContract: {pos['contract']}\nStop Loss moved to Breakeven @ ₹{pos['entry_premium']:.2f}")
                                 save_session_atomic(session_log, out_file)
                         
+                        # Reversal exit -- the strategy's own protective rule.
+                        # Ranks below SL and target (both are hard limits) but
+                        # above the EOD cutoff, so a broken thesis closes when it
+                        # breaks rather than being carried to 15:15.
+                        if not exit_now:
+                            rev = check_reversal_exit(
+                                symbol, pos.get("opt_type", "CE"),
+                                pos["entry_premium"], est_opt_ltp,
+                            )
+                            if rev is not None and rev.should_exit:
+                                exit_now = True
+                                exit_reason = f"REVERSAL EXIT ({rev.reason.split(':')[0]})"
+                                print(f"  [{ts}] 🔄 {rev.reason}")
+                            elif rev is not None and rev.warning and rev.premium_health:
+                                print(f"  [{ts}] ⚠️  Premium decay {rev.premium_health.decay_level} "
+                                      f"({rev.premium_health.pct_change:+.1f}%) on {pos['contract']} "
+                                      f"— momentum {rev.momentum_strength}, holding.")
+
                         # EOD square-off
                         if not exit_now and ist_time() >= EOD_CUTOFF:
                             exit_now = True

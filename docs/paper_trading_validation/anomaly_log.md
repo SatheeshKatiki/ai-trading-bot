@@ -6,6 +6,90 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-09-11 — FIX: the strategy's reversal exit existed, but could never fire
+
+`ema9_rsi_momentum`'s spec has four ways out of a position: the 15% stop, the
+33% target, an **opposite EMA9/EMA20 cross**, and the 15:15 square-off. Only
+three of them were reachable.
+
+**Defect 1 — nothing called it.** `evaluate_protective_exit()` shipped in
+v3.13 and is a correct implementation of the rule. Neither
+`trading_bot/main.py` nor `paper_observer.py` ever referenced it. Grep for
+the symbol across the whole tree returned the definition, its `__init__`
+re-export, and its own tests — no call site in any running path.
+
+**Defect 2 — it read the entry-filtered arrays.** Inside `premium_health.py`
+the reversal came from `compute_cross_signals()`, whose `bullish`/`bearish`
+arrays are:
+
+```python
+bullish = ema_up & rsi_bullish & adx_ok & time_ok & touch_ce
+bearish = ema_dn & rsi_bearish & adx_ok & time_ok & touch_pe
+```
+
+ADX, the trading window and the EMA-touch guard exist to make **entries**
+selective — take only clean setups. An exit needs the opposite disposition:
+leave whenever the thesis breaks. Sharing one array gave the exit the entry's
+reluctance.
+
+**Measured over 578 NIFTY trading days** (`scripts/measure_signal_edge.py`):
+
+| | genuine reversals | reached the exit test | suppressed |
+|---|---|---|---|
+| bearish | 868 | 327 | **62.3%** |
+| bullish | 861 | 330 | **61.6%** |
+
+390 of the 868 bearish were blocked by ADX alone. Worse in kind than in
+number: ADX below its floor *means* sideways chop — exactly the regime where
+an option buyer bleeds theta fastest and can least afford to be stuck. And
+after 15:00 `time_ok` goes false, so for the last 75 minutes of every session
+no reversal exit was possible at all.
+
+**Corroborating evidence in the recorded sessions:** 18 trades across 6
+sessions closed as STOP LOSS 13, EOD 5, **TARGET 0**. Five positions were
+carried to the 15:15 cutoff with no management in between.
+
+**Fix.** New `compute_reversal_signals()` in `signal_engine.py` carries the
+reversal itself — the EMA crossover plus RSI confirmation, the owner's stated
+rule — and the warm-up mask, which is a correctness requirement rather than a
+selection filter. `premium_health.py` reads that instead.
+`compute_cross_signals()` is deliberately **untouched**, so entry behaviour is
+bit-for-bit unchanged (verified: 99 entries, 46 CE / 53 PE, on the real
+5-minute file both before and after).
+
+`paper_observer.py` gains `check_reversal_exit()`, consulted in the exit
+ladder **below** SL and target (both hard limits, they must not be pre-empted)
+and **above** the EOD cutoff. Signals are read from the SPOT chart, never the
+option's own candles, as the strategy requires. Insufficient history returns
+`None` — no exit, rather than a guessed one.
+
+Verification on the same data:
+
+```
+                            bearish   bullish
+filtered (old exit path)         53        46
+unfiltered (new exit)           138       139
+recovered                       +85       +93
+
+ENTRY signals: 99 (CE 46, PE 53) before AND after
+```
+
+2026-05-11 14:25 — the reversal the strategy chart showed as blocked now
+returns `should_exit=True`, *"EMA9 crossed below EMA20 and RSI14 is below
+RSI-EMA20 (premium −8.1%, decay LOW)"*.
+
+**Premium decay still never forces an exit on its own** — the spec is explicit
+about that, and it remains a warning only.
+
+16 new tests in `test_ema9_reversal_exit.py`, including two that assert the
+wiring itself (the symbol is called, and it ranks between SL and EOD) so this
+cannot silently become dead code again. Full suite: 941 passed.
+
+**Still not wired:** `trading_bot/main.py` — the live engine — only
+`paper_observer.py`. Tracked, not done.
+
+---
+
 ## 2026-09-10 (later) — FIX: the backtest charged the wrong costs, in both directions
 
 **Why now:** with paper fills finally real, the backtest became the odd one

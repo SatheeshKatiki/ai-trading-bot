@@ -27,6 +27,7 @@ from .config import Ema9RsiMomentumConfig
 from .signal_engine import (
     classify_momentum_strength,
     compute_cross_signals,
+    compute_reversal_signals,
     momentum_strength_upgrade,
 )
 
@@ -139,7 +140,11 @@ def evaluate_protective_exit(
     if df is None or len(df) < 2 or side not in (1, -1):
         return ProtectiveExitResult()
 
-    cross = compute_cross_signals(df, cfg)
+    # The reversal is read from the UNFILTERED arrays. Using
+    # compute_cross_signals here meant the exit inherited the entry's ADX,
+    # trading-window and EMA-touch filters, which suppressed 62% of genuine
+    # reversals -- see compute_reversal_signals' docstring.
+    cross = compute_reversal_signals(df, cfg)
     rsi_series = cross.indicators.rsi
     rsi_now = float(rsi_series.iloc[-1]) if not rsi_series.empty else float("nan")
 
