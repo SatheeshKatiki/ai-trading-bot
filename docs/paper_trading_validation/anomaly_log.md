@@ -6,6 +6,84 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-09-10 (later) — FIX: the backtest charged the wrong costs, in both directions
+
+**Why now:** with paper fills finally real, the backtest became the odd one
+out — and it is the engine `grid_search.py`, `/api/backtest` and every tuning
+script use. Any parameter tuned on it was tuned against a different market.
+
+**Two independent errors that partially cancelled**, which is why neither
+showed in the headline numbers:
+
+**1. Friction on the wrong basis.** `slippage_bps` is applied to the
+UNDERLYING (`spot × bps`) and then scaled by delta. The real cost of getting
+in and out of an option is its bid/ask spread, which scales with the
+**premium**. Those grow differently, so the error changes *sign* between NIFTY
+and BANKNIFTY rather than being a constant bias.
+
+**2. No theta whatsoever.** The word did not appear in
+`backtesting_engine/run.py` (`validation_harness/harness.py` has it; the
+production engine did not). For an option **buyer** theta is the dominant
+cost — observed −7.35 to −14.0 per day against premiums of 81 to 490.
+
+**Net effect on a NIFTY ATM contract** — the old model charged a flat
+₹4.22/unit regardless of hold time:
+
+| hold | old model | reality | |
+|---|---|---|---|
+| 0.5 h | ₹4.22 | ₹0.64 | **6.6× too harsh** |
+| 2 h | ₹4.22 | ₹1.51 | 2.8× too harsh |
+| 4 h | ₹4.22 | ₹2.68 | 1.6× too harsh |
+| **6.6 h** | ₹4.22 | ₹4.22 | crossover |
+| full day | ₹4.22 | ₹5.6+ | **too lenient** |
+
+A bias whose direction depends on hold time cannot be corrected for after the
+fact. The strategy's mean hold is ~1.8 h, so it was being charged roughly 3×
+reality — meaning a strategy that looked poor in backtest may not be, and
+vice-versa.
+
+**Fix:** option carrying costs are now modelled on the premium basis and
+charged per trade — spread once each way, theta scaled by hours actually held
+(`entry_bar` → exit bar × `bar_minutes`). Both are reported separately in the
+stats (`totalSpreadCost`, `totalThetaCost`, `optionCostsModelled`,
+`optionCostParams`) so their contribution is never invisible.
+`model_option_costs=False` reproduces pre-2026-09-10 numbers.
+
+**Validated against the four real Day 6 trades:**
+
+```
+old model  Rs.21.82  (405% of reality)
+new model  Rs. 5.34  ( 99% of reality)
+```
+
+**Per-index profiles**, because the two underlyings are not alike:
+
+| | premium % of spot | theta %/day | spread % |
+|---|---|---|---|
+| NIFTY (n=3) | 0.40 | 9.7 | 0.21 |
+| BANKNIFTY (n=1) | 0.87 | 2.1 | 0.35 |
+
+`OPTION_COST_PROFILES` / `option_cost_profile(symbol)` expose these. **These
+are three NIFTY observations from a single day, not a calibration** — the
+docstring says so, and they should be re-derived as usable sessions
+accumulate.
+
+**Verification:** `test_backtest_option_costs.py` (13 tests, new) pins that
+costs are charged and reported, that theta scales with hold time while spread
+does not, that the escape hatch zeroes both, that BANKNIFTY's profile differs
+materially from NIFTY's, that profiles are not shared mutable state, and that
+the model reproduces the observed Day 6 friction within 0.7–1.5×. Suite **925
+passed / 1 skipped / 2 xfailed**.
+
+**Worth noting:** this engine had **no coverage in the active CI suite** —
+its only tests live in the legacy `trading-system/tests/`, which CI does not
+collect. These are the first.
+
+**⚠ All historical backtest numbers change.** Do not compare results across
+this commit without setting `model_option_costs=False`.
+
+---
+
 ## 2026-09-10 — FIRST CLEAN SESSION, and a history bug found while analysing it
 
 ### Day 6 (2026-09-10) — 4 trades, 100% REAL

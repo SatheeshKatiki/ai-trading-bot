@@ -110,12 +110,89 @@ def compute_bs_delta(
     return call_delta if is_call else -(1.0 - call_delta)
 
 
+#: Option carrying-cost parameters per underlying, derived from paper sessions
+#: whose fills came from real quoted prices (see scripts/audit_session_fills.py).
+#:
+#: Sample sizes are small and stated deliberately -- these are the best figures
+#: currently available, not a calibration. Re-derive as sessions accumulate.
+#:
+#:   source: session_Day_6_2026-09-10  (NIFTY n=3, BANKNIFTY n=1)
+OPTION_COST_PROFILES = {
+    "NIFTY": {
+        "option_premium_pct": 0.40,
+        "option_spread_pct": 0.21,
+        "option_theta_pct_per_day": 9.7,
+    },
+    "BANKNIFTY": {
+        "option_premium_pct": 0.87,
+        "option_spread_pct": 0.35,
+        "option_theta_pct_per_day": 2.1,
+    },
+}
+
+
+def option_cost_profile(symbol: str) -> dict:
+    """Cost parameters for `symbol`, falling back to the NIFTY profile."""
+    upper = (symbol or "").upper()
+    if "BANK" in upper:
+        return dict(OPTION_COST_PROFILES["BANKNIFTY"])
+    return dict(OPTION_COST_PROFILES["NIFTY"])
+
+
 def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital: float = 100000.0,
                            slippage_bps: float = 2.0, commission_per_trade: float = 20.0, multiplier: int = 10,
                            options_delta: float = 0.5,
                            options_delta_mode: str = "dynamic",
-                           target_pct: float = 2.0, stoploss_pct: float = 1.0, **kwargs) -> dict:
+                           target_pct: float = 2.0, stoploss_pct: float = 1.0,
+                           model_option_costs: bool = True,
+                           option_premium_pct: float = 0.40,
+                           option_spread_pct: float = 0.21,
+                           option_theta_pct_per_day: float = 9.7,
+                           bar_minutes: float = 5.0,
+                           **kwargs) -> dict:
     """Run a detailed backtest with shorting, slippage, and commission.
+
+    Option carrying costs (added 2026-09-10, on by default)
+    -------------------------------------------------------
+    Measured against the first paper session filled at real quoted prices,
+    this engine's friction model was wrong in two independent ways that
+    partially cancelled, so neither was visible in the headline numbers:
+
+    1. **Wrong basis.** `slippage_bps` is applied to the UNDERLYING
+       (`spot x bps`) and then scaled by delta. The real cost of getting in
+       and out of an option is its bid/ask spread, which scales with the
+       PREMIUM. Those grow differently, so the error changes sign between
+       NIFTY and BANKNIFTY rather than being a constant bias.
+
+    2. **No theta at all.** This engine did not model time decay in any
+       form -- the word did not appear in the file. For an option BUYER
+       theta is the dominant cost. Observed on 2026-09-10: -7.35 to -14.0
+       per day against premiums of 81 to 490.
+
+    Net effect, measured on a NIFTY ATM contract: the old model charged a
+    flat Rs.4.22/unit regardless of hold time, against a real cost of
+    Rs.0.64 at a 30-minute hold rising past Rs.4.22 only beyond ~6.6 hours.
+    It therefore over-penalised short holds by up to 6.6x and under-penalised
+    full-day holds -- a bias whose direction depends on hold time, which
+    cannot be corrected for after the fact.
+
+    The defaults below come from that session's real quotes:
+
+        option_premium_pct        0.40  ATM weekly premium as % of spot
+        option_spread_pct         0.21  round-trip bid/ask as % of premium
+        option_theta_pct_per_day  9.7   premium decay per day as % of premium
+
+    **These defaults are NIFTY values derived from THREE observations on a
+    single day.** They are a starting point, not a calibration. BANKNIFTY
+    behaves materially differently -- premium 0.87% of spot and theta only
+    ~2.1%/day against NIFTY's 0.40% and 9.7% -- so backtesting BANKNIFTY with
+    NIFTY defaults will misprice it. Use `OPTION_COST_PROFILES` below, and
+    re-derive all of them from `paper_obs_logs/` as real sessions accumulate
+    (`scripts/audit_session_fills.py` marks which are usable).
+
+    Pass ``model_option_costs=False`` to reproduce pre-2026-09-10 numbers.
+    Costs are reported separately in the stats dict, so their contribution is
+    always visible rather than silently folded into the P&L.
 
     Known limitation (options_delta): when backtesting an options
     strategy, `df` carries the underlying's price and every point-move
@@ -163,6 +240,8 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
     daily_trades_count  = 0
     total_brokerage     = 0.0
     total_slippage      = 0.0
+    total_spread_cost   = 0.0      # option bid/ask, round trip
+    total_theta_cost    = 0.0      # time decay over the hold
     trading_halted_day  = None                                     # date string when halt triggered
     current_day         = None
     # ─────────────────────────────────────────────────────────────────────
@@ -533,8 +612,36 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
                 # Deduct exit commission directly from capital (entry was already deducted when opened)
                 capital -= commission_per_trade 
                 
+                # ── Option carrying costs ────────────────────────────
+                # base_pnl is already in PREMIUM currency (index points x
+                # delta), so premium-denominated costs subtract directly.
+                trade_spread_cost = 0.0
+                trade_theta_cost = 0.0
+                if model_option_costs and total_qty > 0:
+                    _entry_notional = sum(e_price * qty for e_price, qty in position["entries"])
+                    _avg_entry = _entry_notional / total_qty
+                    _premium = _avg_entry * (option_premium_pct / 100.0)
+
+                    # Round trip: lift the offer on the way in, hit the bid on
+                    # the way out. The underlying-based `slippage_bps` above
+                    # does not represent this and never could.
+                    trade_spread_cost = _premium * (option_spread_pct / 100.0) * total_qty
+
+                    _hold_bars = max(0, i - position.get("entry_bar", i))
+                    _hold_hours = _hold_bars * bar_minutes / 60.0
+                    trade_theta_cost = (
+                        _premium * (option_theta_pct_per_day / 100.0)
+                        * (_hold_hours / 24.0) * total_qty
+                    )
+
+                    total_spread_cost += trade_spread_cost
+                    total_theta_cost += trade_theta_cost
+                    capital -= (trade_spread_cost + trade_theta_cost)
+
                 # Calculate trade net PnL (Base PnL minus total commissions for entry+scales+exit)
-                trade_net_pnl = base_pnl - (commission_per_trade * (len(position["entries"]) + 1))
+                trade_net_pnl = (base_pnl
+                                 - (commission_per_trade * (len(position["entries"]) + 1))
+                                 - trade_spread_cost - trade_theta_cost)
                     
                 # Calculate PnL (Partial Profits vs Full Run)
                 if kwargs.get("enable_partial_profits", False):
@@ -734,6 +841,18 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
         "donchianPeriod": kwargs.get("donchian_period", 10),
         "totalBrokerage": round(total_brokerage, 2),
         "totalSlippage": round(total_slippage, 2),
+        # Option carrying costs, reported separately so their contribution to
+        # the headline P&L is never invisible. Zero when model_option_costs is
+        # off, which reproduces pre-2026-09-10 numbers.
+        "totalSpreadCost": round(total_spread_cost, 2),
+        "totalThetaCost": round(total_theta_cost, 2),
+        "optionCostsModelled": bool(model_option_costs),
+        "optionCostParams": {
+            "premium_pct": option_premium_pct,
+            "spread_pct": option_spread_pct,
+            "theta_pct_per_day": option_theta_pct_per_day,
+            "bar_minutes": bar_minutes,
+        },
         # Root-cause fix (Medium audit finding): Dynamic Capital
         # Compounding scales position size up as running capital grows,
         # which makes headline return metrics path-dependent (a lucky
