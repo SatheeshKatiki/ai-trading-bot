@@ -2196,55 +2196,79 @@ def _fetch_yfinance_today(symbol: str, timeframe: str) -> List[Dict[str, Any]]:
         logger.warning(f"yfinance today candles fetch failed for {symbol}: {e}")
         return []
 
-def _ensure_today_candles(data: List[Dict[str, Any]], symbol: str, timeframe: str) -> List[Dict[str, Any]]:
-    """Appends today's 09:15 to current time candles if missing from broker or CSV cache data."""
+def _wants_today(end_date: Optional[str]) -> bool:
+    """True when a history request's window reaches today (IST).
+
+    `None` means the caller did not say, which is treated as "yes" so existing
+    callers that genuinely want live data keep working.
+    """
+    if not end_date:
+        return True
+    try:
+        requested = datetime.strptime(str(end_date)[:10], "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return True
+    return requested >= datetime.now(_IST).date()
+
+
+def _ensure_today_candles(
+    data: List[Dict[str, Any]],
+    symbol: str,
+    timeframe: str,
+    end_date: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Top up a history series with today's bars -- only when asked for today.
+
+    Two defects fixed here on 2026-09-10:
+
+    1. **It appended today's candles to EVERY history request**, whatever
+       range was asked for. A query for 2026-08-25..2026-08-25 came back with
+       75 bars for that day *plus* 75 bars for today, stitched together as one
+       continuous series. Anything computing a range, an ATR or a return over
+       a historical window silently got a fortnight-wide gap in the middle of
+       it. `end_date` now gates the top-up.
+
+    2. **It fabricated volume** in four places -- newly appended bars, updated
+       bars, and a final pass that guaranteed "absolutely zero bars have 0
+       volume" -- from `avg_vol * ratio`, with `avg_vol` defaulting to
+       2,500,000 when nothing in the window had any volume at all. NSE index
+       series legitimately report no volume, and `ExitAnalyzerAgent`'s Factor 4
+       reads volume deceleration as a live exit input, so manufacturing it
+       feeds an invented signal into a real decision. Volume is now passed
+       through exactly as the source reported it.
+    """
     if not data:
-        return _fetch_yfinance_today(symbol, timeframe)
-        
+        return _sanitize_candles(_fetch_yfinance_today(symbol, timeframe)) if _wants_today(end_date) else []
+
+    if not _wants_today(end_date):
+        # The caller asked for a window that ended in the past. Today's bars
+        # are not part of it.
+        return _sanitize_candles(data)
+
     today_candles = _fetch_yfinance_today(symbol, timeframe)
     if not today_candles:
         return _sanitize_candles(data)
-        
+
     seen = {d.get("datetime") for d in data}
     combined = list(data)
-    
-    # Calculate baseline volume from existing bars so newly appended bars have realistic proportional volume
-    known_vols = [c.get("volume", 0) for c in combined if (c.get("volume") or 0) > 0]
-    avg_vol = int(sum(known_vols) / len(known_vols)) if known_vols else 2500000
-    ranges = [abs(c.get("high", 0) - c.get("low", 0)) for c in combined[-20:]]
-    avg_range = sum(ranges) / len(ranges) if ranges and sum(ranges) > 0 else 20.0
 
     for tc in today_candles:
         dt = tc.get("datetime")
         if dt not in seen:
-            # New bar: ensure volume is not 0
-            if tc.get("volume", 0) <= 0:
-                rng = abs(tc.get("high", 0) - tc.get("low", 0))
-                ratio = max(0.4, min(3.0, rng / avg_range)) if avg_range > 0 else 1.0
-                tc["volume"] = int(avg_vol * ratio)
             seen.add(dt)
             combined.append(tc)
-        else:
-            for idx, item in enumerate(combined):
-                if item.get("datetime") == dt:
-                    # CRITICAL FIX: Retain real volume from existing data if yfinance returns 0 volume
-                    if (tc.get("volume") is None or tc.get("volume", 0) <= 0) and item.get("volume", 0) > 0:
-                        tc["volume"] = item["volume"]
-                    elif tc.get("volume", 0) <= 0:
-                        rng = abs(tc.get("high", 0) - tc.get("low", 0))
-                        ratio = max(0.4, min(3.0, rng / avg_range)) if avg_range > 0 else 1.0
-                        tc["volume"] = int(avg_vol * ratio)
-                    combined[idx] = tc
-                    break
-            
-    # Final pass: ensure absolutely zero bars in the series have 0 or missing volume
-    for c in combined:
-        if not c.get("volume") or c.get("volume", 0) <= 0:
-            rng = abs(c.get("high", 0) - c.get("low", 0))
-            ratio = max(0.4, min(3.0, rng / avg_range)) if avg_range > 0 else 1.0
-            c["volume"] = max(1000, int(avg_vol * ratio))
+            continue
+        for idx, item in enumerate(combined):
+            if item.get("datetime") == dt:
+                # Prefer a real volume already held for this bar over a zero
+                # from the top-up source. Never invent one.
+                if (tc.get("volume") or 0) <= 0 and (item.get("volume") or 0) > 0:
+                    tc["volume"] = item["volume"]
+                combined[idx] = tc
+                break
 
     return _sanitize_candles(combined)
+
 
 @app.get("/api/history")
 async def get_history(
@@ -2283,7 +2307,7 @@ async def get_history(
                 logger.info("Broker returned empty spot data for %s, trying CSV dataset cache fallback...", underlying_sym)
                 spot_data = load_csv_history(underlying_broker_sym, start_date, end_date, timeframe)
                 
-            spot_data = _ensure_today_candles(spot_data, underlying_broker_sym, timeframe)
+            spot_data = _ensure_today_candles(spot_data, underlying_broker_sym, timeframe, end_date)
             
             if not spot_data:
                 raise HTTPException(status_code=404, detail=f"No underlying data returned for {underlying_broker_sym}")
@@ -2313,7 +2337,7 @@ async def get_history(
             logger.info("Broker returned empty data for %s, trying CSV dataset cache fallback...", formatted_symbol)
             data = load_csv_history(formatted_symbol, start_date, end_date, timeframe)
             
-        data = _ensure_today_candles(data, formatted_symbol, timeframe)
+        data = _ensure_today_candles(data, formatted_symbol, timeframe, end_date)
         data = _sanitize_candles(data)
         
         if not data:

@@ -6,6 +6,117 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-09-10 — FIRST CLEAN SESSION, and a history bug found while analysing it
+
+### Day 6 (2026-09-10) — 4 trades, 100% REAL
+
+```
+REAL  4 (100%)   MODEL 0   FABRICATED 0
+Sessions usable as live-performance evidence: 1 of 1
+```
+
+The first session in this project's history where every fill came from a
+quoted price. Spreads 0.19–0.35%, deltas −0.3923 / −0.3782 / +0.4836 /
+−0.4461 (none exactly ±0.5), theta −7.35 to −12.9, `mark_source: broker`
+throughout, and entry confirmed at the ask (trade 1: entry 81.50 = ask 81.50).
+
+**Result: 0/4, −₹3,161.25.** Which is now *real information*.
+
+**BANKNIFTY 56400 PE is the trade to study:** entry 490.55, peak **569.10
+(+16%, +₹1,178 unrealised)**, gave back all of it, exited at breakeven for
+−₹26.75. Running the Exit Analyzer over it offline: PEAK_LOCK fires with a
+suggested stop of 553.39 → **+₹942.60** instead of −₹6.00 gross. A **₹948.60
+difference on one trade**.
+
+It did not fire because **`paper_observer.py` does not reference
+`SmartExitEngine` or `ExitAnalyzerAgent` at all.** The two engines have
+entirely separate exit logic — `main.py` has the Exit Analyzer, the observer
+has 15% SL / 33% target / breakeven trail / EOD. *The exit logic being
+validated is not the exit logic that was built.*
+
+### FIX: `/api/history` returned data outside its own date range
+
+Found while pulling candles to analyse the above.
+`_ensure_today_candles()` appended today's bars to **every** history request,
+whatever window was asked for:
+
+```
+requested 2026-08-25 .. 2026-08-25
+returned  2026-08-25: 75 bars  +  2026-09-10: 75 bars
+```
+
+Anything computing a range, an ATR or a return over a historical window
+silently spanned a fortnight-wide gap:
+
+| date | range as reported | actual |
+|---|---|---|
+| 2026-08-25 | 953.9 pts | **219.1 pts** |
+| 2026-08-31 | 748.0 pts | **135.1 pts** |
+
+The same function **fabricated volume in four places** — appended bars,
+updated bars, and a final pass whose comment read "ensure absolutely zero bars
+in the series have 0 volume" — from `avg_vol * ratio`, with `avg_vol`
+defaulting to **2,500,000** when nothing in the window had any. NSE index
+series legitimately report no volume, and `ExitAnalyzerAgent` Factor 4 reads
+volume deceleration as a live exit input.
+
+Fixed: a `_wants_today(end_date)` gate (permissive when the caller states no
+window, so live callers are unaffected), and volume passed through as
+reported. `test_history_date_range.py` (14 tests, new). Suite **912 passed**.
+
+### Analysis of all 18 recorded trades (valid across all six sessions)
+
+Replayed against corrected real index candles, in index points — using only
+fields that survived the fill bug (`entry_time`, `entry_spot`, `opt_type`).
+
+```
+33% target ever reachable :  2/18 (11%)   -- and both are Day 5's
+                                             fabricated Rs.100 entries, whose
+                                             target distance is an artifact.
+                                             Genuine trades: 0 of 16.
+15% stop reachable        :  8/18 (44%)
+
+average MFE (best the trade ever got) : 107.8 pts
+average target distance required      : 206.3 pts
+-> the market delivered 52% of what the target needed
+
+average MAE : 92.5 pts   vs   average stop : 93.8 pts  (1.0x)
+```
+
+Across all sessions: **STOP LOSS 13 (72%), EOD SQUARE-OFF 5 (28%), TARGET 0
+(0%)**. All three WINs came from EOD square-off, never from the target. The
+1:2.2 R:R exists only on paper.
+
+**The more important finding:**
+
+```
+MFE > MAE                 : 10/18 (56%)
+total MFE / total MAE     : 1.17
+median per-trade ratio    : 1.03      (1.00 = no directional edge)
+```
+
+**The entry signal shows no measurable directional edge in this sample.**
+Confidence did not separate outcomes either — the single confidence-90 trade
+lost, and 65–90 performed alike.
+
+18 trades is a small sample and this is not a verdict. But it redirects the
+work: **re-tuning stop/target on a signal with no demonstrated edge changes
+how it loses, not whether it loses.** The next step is measuring edge over
+hundreds of trades in a backtest, which first requires the backtest engine to
+model fills the way the paper engine now does (constant 0.5 delta, no spread —
+see the "still open" note on the option-chain entry).
+
+**Corrections to earlier readings in this log**, both from over-weighting a
+single example on Day 6:
+
+* *"Re-entry into a just-failed thesis is bleeding the account"* — across six
+  sessions it happened **twice**, one WIN and one LOSS. Not systemic. The
+  cooldown rule proposed for it is not a priority.
+* *"Direction flips indicate whipsaw"* — **4 instances**, 3 followed by a
+  loss. Suggestive, sample far too small to act on.
+
+---
+
 ## 2026-09-09 (night) — FIX: the UI fabricated trade recommendations when the backend was down
 
 **How it surfaced:** a deliberate sweep of the frontend for hardcoded values
