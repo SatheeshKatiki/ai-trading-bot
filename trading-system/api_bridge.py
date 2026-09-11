@@ -1618,8 +1618,11 @@ async def execute_order(req: ExecuteOrderRequest, request: Request):
         response = broker.place_order(order_req)
         fill_price = response.price or exec_price
 
-        # Update config/active_positions.json so UI tracks it live
-        positions_path = Path(__file__).resolve().parent / "config" / "active_positions.json"
+        # Update config/active_positions.json so UI tracks it live. Read from
+        # the module constant, not a path rebuilt inline, so a test can
+        # redirect it: inline, every run of test_order_rate_limit.py planted a
+        # fake "NIFTY-RATELIMIT-TEST" position in the live dashboard file.
+        positions_path = _MAIN_POSITIONS_PATH
         pos_dict = {}
         if positions_path.exists():
             try:

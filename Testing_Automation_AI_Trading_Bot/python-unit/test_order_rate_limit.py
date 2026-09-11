@@ -29,8 +29,10 @@ from unittest.mock import MagicMock, patch
 
 import _bootstrap  # noqa: F401  (side-effect: puts trading-system/ on sys.path)
 
+import pytest
 from fastapi.testclient import TestClient
 
+import api_bridge
 from api_bridge import app
 from shared.security.sessions import create_session, revoke_session
 
@@ -41,6 +43,39 @@ from shared.security.sessions import create_session, revoke_session
 client = TestClient(app, client=("127.0.0.1", 50000))
 
 ORDER_PAYLOAD = {"symbol": "NIFTY-RATELIMIT-TEST", "action": "BUY", "quantity": 1}
+
+#: The live file the dashboard and main.py read.
+_REAL_POSITIONS = Path(api_bridge.__file__).resolve().parent / "config" / "active_positions.json"
+
+
+@pytest.fixture(autouse=True)
+def _isolated_positions_file(tmp_path, monkeypatch):
+    """Redirect the endpoint's positions write away from the live file.
+
+    Same class of leak as the state.db one above, one side effect over: the
+    paper-mode branch also writes config/active_positions.json, at a path the
+    endpoint used to rebuild inline from its own module file. Every run of
+    this file planted a fake "NIFTY-RATELIMIT-TEST" position there; found
+    2026-09-11 still showing on the live dashboard ten hours after the run.
+    """
+    path = tmp_path / "active_positions.json"
+    monkeypatch.setattr(api_bridge, "_MAIN_POSITIONS_PATH", path)
+    return path
+
+
+def test_orders_never_touch_the_live_positions_file(_isolated_positions_file):
+    before = _REAL_POSITIONS.read_bytes() if _REAL_POSITIONS.exists() else None
+    token, headers = _auth_headers()
+    try:
+        with patch("api_bridge.BrokerFactory.get_active_broker", return_value=_fake_broker(paper_mode=True)), \
+             patch("api_bridge._load_config_settings", return_value={"live_trading_mode": False}), \
+             patch("shared.state.record_trade"):
+            assert client.post("/api/order/execute", json=ORDER_PAYLOAD, headers=headers).status_code == 200
+    finally:
+        revoke_session(token)
+    after = _REAL_POSITIONS.read_bytes() if _REAL_POSITIONS.exists() else None
+    assert before == after
+    assert "NIFTY-RATELIMIT-TEST" in _isolated_positions_file.read_text(encoding="utf-8")
 
 
 def _auth_headers():
