@@ -60,6 +60,8 @@ from trading_bot.strategies.premium_selection.options_selector import INSTRUMENT
 from trading_bot.strategies.ema9_rsi_momentum.config import Ema9RsiMomentumConfig
 from trading_bot.strategies.ema9_rsi_momentum.exit_ladder import initial_stop, ratchet_stop, stop_reason
 
+from shared.risk.portfolio_guard import entry_block_reason
+
 #: The owner's exit ladder (SL 15%, stop steps up rung by rung, no fixed target).
 _EMA9_CFG = Ema9RsiMomentumConfig()
 from trading_bot.strategies.ema9_rsi_momentum.config import (
@@ -438,6 +440,26 @@ def save_session_atomic(session_log, out_file):
     except Exception as e:
         print(f"  [WARN] Failed to write session file: {e}")
 
+def portfolio_block(symbol, direction, opt, session_log, active_positions, settings):
+    """The portfolio rule every engine shares (shared/risk/portfolio_guard.py):
+    daily loss stop, one position per direction across the correlated
+    indices, and no trade risking more than the day's whole loss limit.
+    Returns the reason to skip, or None."""
+    entry = round(opt.get("ask") or opt["ltp"], 2)
+    qty = LOT_SIZE.get(symbol, 65)
+    realized = sum(t.get("net_pnl", 0.0) for t in session_log.get("trades", []))
+    unrealized = sum((p.get("current_ltp", p["entry_premium"]) - p["entry_premium"]) * p["quantity"]
+                     for p in active_positions.values())
+    return entry_block_reason(
+        direction=1 if direction == "BUY" else -1,
+        open_directions=[1 if p["direction"] == "BUY" else -1 for p in active_positions.values()],
+        day_pnl=realized + unrealized,
+        capital=CAPITAL,
+        trade_risk=(entry - initial_stop(entry, _EMA9_CFG.initial_sl_pct)) * qty,
+        settings=settings,
+    )
+
+
 def _replace_with_retry(src, dst, attempts=5, delay_s=0.05):
     """``src.replace(dst)``, retried briefly on PermissionError.
 
@@ -736,7 +758,11 @@ def run_session(day_num, date_str, day_name):
                     state = analyze_market_state(symbol, direction)
                     if state:
                         opt = select_best_option(symbol, direction, state["spot"])
-                        if opt and opt["ltp"] > 0:
+                        block = (portfolio_block(symbol, direction, opt, session_log, active_positions, active_settings)
+                                 if opt and opt["ltp"] > 0 else None)
+                        if block:
+                            print(f"  [{ts}] ⛔ {symbol} {direction} signal skipped -- {block}")
+                        if opt and opt["ltp"] > 0 and not block:
                             qty = LOT_SIZE.get(symbol, 65)
                             # Fill at the ASK. A buyer does not get the mid --
                             # they pay the offer. Using ltp (or worse, the old

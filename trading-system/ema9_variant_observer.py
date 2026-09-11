@@ -70,6 +70,7 @@ from shared.closed_bars import (  # noqa: E402
     resample_closed,
 )
 from shared.instruments import resolve_paper_test_instruments  # noqa: E402
+from shared.risk.portfolio_guard import entry_block_reason  # noqa: E402
 from trading_bot.strategies.ema9_rsi_momentum import (  # noqa: E402
     evaluate_protective_exit,
     generate_signals,
@@ -129,6 +130,9 @@ BASE_TIMEFRAME_MINUTES = 5
 
 VARIANTS_DIR = po.LOG_DIR / "variants"
 running = True
+#: The dashboard's settings, read at session start: the portfolio guard uses
+#: the same max_daily_loss_pct / max_same_direction_positions as live.
+RISK_SETTINGS: dict = {}
 
 
 def _stop(_signum, _frame):
@@ -258,6 +262,14 @@ def close_position(pos: dict, price: float, reason: str, now, price_source: str)
     closed["net_return_pct"] = round(closed["net_pnl"] / (pos["entry_premium"] * pos["quantity"]) * 100.0, 2)
     closed["duration_min"] = round((now.timestamp() - pos["entry_time_epoch"]) / 60.0, 1)
     return closed
+
+
+def book_day_pnl(sess: dict) -> float:
+    """This book's P&L today: closed trades plus open positions at their mark."""
+    realized = sum(t.get("net_pnl", 0.0) for t in sess["trades"])
+    unrealized = sum((p.get("current_ltp", p["entry_premium"]) - p["entry_premium"]) * p["quantity"]
+                     for p in sess["open_positions"].values())
+    return realized + unrealized
 
 
 def trades_taken(sess: dict, symbol: str) -> int:
@@ -445,6 +457,21 @@ def consider_entry(sess: dict, symbol: str, cfg: Ema9RsiMomentumConfig, df, now)
               f"-- {record['action']}")
         return True
 
+    entry = round(leg["ask"], 2)
+    block = entry_block_reason(
+        direction=side,
+        open_directions=[p["side"] for p in sess["open_positions"].values()],
+        day_pnl=book_day_pnl(sess),
+        capital=po.CAPITAL,
+        trade_risk=(entry - initial_stop(entry, cfg.initial_sl_pct)) * po.LOT_SIZE.get(symbol, 65),
+        settings=RISK_SETTINGS,
+    )
+    if block:
+        record["action"] = f"skipped: {block}"
+        print(f"  [{now:%H:%M:%S}] {variant} {symbol} {record['side']} signal on the {bar_start:%H:%M} bar "
+              f"-- {record['action']}")
+        return True
+
     pos = new_position(variant, symbol, side, leg, spot, bar_start, now, expiry=chain.get("expiry"))
     sess["open_positions"][symbol] = pos
     record["action"] = f"entered {pos['contract']} @ {pos['entry_premium']:.2f}"
@@ -556,7 +583,10 @@ def run_books(variants) -> dict:
     """Run every book in ``variants`` for today's session, sharing each poll's
     data between them."""
     cfgs = {v: build_config(v) for v in variants}
-    symbols = resolve_paper_test_instruments(po.fetch_json("/api/settings") or {})
+    settings = po.fetch_json("/api/settings") or {}
+    RISK_SETTINGS.clear()
+    RISK_SETTINGS.update(settings)
+    symbols = resolve_paper_test_instruments(settings)
     date_str = po.now_ist().strftime("%Y-%m-%d")
     books = {}
     for v in variants:

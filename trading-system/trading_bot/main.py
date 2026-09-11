@@ -2188,6 +2188,27 @@ async def run_live_bot(symbols: List[str]) -> None:
                         # Pass actual rupee risk so the per-trade risk limit is enforced
                         actual_risk_amount = abs(entry_premium - sl_price) * total_quantity
 
+                        # ── Portfolio guard -- the same rule the paper books use ──
+                        # NIFTY / BANKNIFTY / SENSEX move together, so open CEs on
+                        # all three are one bet taken three times; the day's loss
+                        # limit stops new entries; and no single trade may risk
+                        # more than that whole limit (the minimum-lot override
+                        # below used to let one BANKNIFTY lot through at ~2.4x the
+                        # per-trade policy). See shared/risk/portfolio_guard.py.
+                        if is_option_trade:
+                            from shared.risk.portfolio_guard import entry_block_reason, option_direction
+                            _guard_block = entry_block_reason(
+                                direction=option_direction(entry_symbol),
+                                open_directions=[option_direction(p.symbol) for p in active_positions.values()],
+                                day_pnl=float(getattr(risk_manager, "daily_pnl", 0.0)),
+                                capital=float(risk_manager.initial_capital),
+                                trade_risk=actual_risk_amount,
+                                settings=settings,
+                            )
+                            if _guard_block:
+                                logger.info("Trade BLOCKED for %s: %s", s, _guard_block)
+                                continue
+
                         # An option lot is indivisible: if this is already a
                         # single lot, sizing has no smaller answer to give.
                         # Tell the risk manager so it can allow it with a loud
