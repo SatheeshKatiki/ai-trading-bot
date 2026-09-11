@@ -228,7 +228,9 @@ def test_freshness_window():
 def test_price_exits_and_breakeven_trail():
     pos = {"entry_premium": 100.0, "sl_premium": 85.0, "tgt_premium": 133.0, "trailed": False}
     assert ev.check_price_exits(dict(pos), 84.9) == "STOP LOSS"
-    assert ev.check_price_exits(dict(pos), 133.0) == "TARGET"
+    climb = dict(pos)                                   # no target exit: the ladder climbs
+    assert ev.check_price_exits(climb, 133.0) is None
+    assert climb["sl_premium"] == 115.0 and climb["tgt_premium"] == 150.0
     trail = dict(pos)
     assert ev.check_price_exits(trail, 116.0) is None
     assert trail["trailed"] and trail["sl_premium"] == 100.0
@@ -245,7 +247,7 @@ def test_fresh_signal_opens_an_itm_position_at_the_ask(monkeypatch, tmp_path):
     assert pos["strike"] == 23150 and pos["opt_type"] == "CE" and pos["strike_mode"] == "ITM"
     assert pos["entry_premium"] == 196.65                                 # the ask, not ltp
     assert pos["sl_premium"] == round(196.65 * 0.85, 2)
-    assert pos["tgt_premium"] == round(196.65 * 1.33, 2)
+    assert pos["tgt_premium"] == round(196.65 * 1.15, 2)                  # next rung, not an exit
     assert pos["quantity"] == po.LOT_SIZE["NIFTY"]
 
 

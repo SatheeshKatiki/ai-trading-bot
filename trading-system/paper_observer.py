@@ -57,6 +57,11 @@ except Exception:
 from shared.closed_bars import candles_to_frame, closed_candles, regular_session
 from shared.instruments import DEFAULT_PAPER_TEST_INSTRUMENTS, resolve_paper_test_instruments
 from trading_bot.strategies.premium_selection.options_selector import INSTRUMENT_CONFIG
+from trading_bot.strategies.ema9_rsi_momentum.config import Ema9RsiMomentumConfig
+from trading_bot.strategies.ema9_rsi_momentum.exit_ladder import initial_stop, ratchet_stop, stop_reason
+
+#: The owner's exit ladder (SL 15%, stop steps up rung by rung, no fixed target).
+_EMA9_CFG = Ema9RsiMomentumConfig()
 from trading_bot.strategies.ema9_rsi_momentum.config import (
     TIME_END as _EMA9_TIME_END,
     TIME_START as _EMA9_TIME_START,
@@ -482,7 +487,7 @@ def sync_active_positions(active_positions):
                 "highest_price": float(pos.get("highest_premium", pos.get("entry_premium", 0.0))),
                 "lowest_price": float(pos.get("lowest_premium", pos.get("entry_premium", 0.0))),
                 "stop_loss": float(pos.get("sl_premium", 0.0)),
-                "target": float(pos.get("tgt_premium", 0.0)),
+                "target": float(pos.get("tgt_premium") or 0.0),   # None once the ladder's top rung is passed
                 "strategy": pos.get("strategy_name", "EMA 9 / RSI Momentum")
             }
 
@@ -622,21 +627,23 @@ def run_session(day_num, date_str, day_name):
                         exit_now = False
                         exit_reason = ""
                         
-                        # Stop Loss trigger (15% loss on premium)
+                        # The owner's ladder (ema9_rsi_momentum/exit_ladder.py):
+                        # the stop first, then ratchet it up. There is no target
+                        # exit -- the old fixed 33% target is now just a rung.
                         if est_opt_ltp <= pos["sl_premium"]:
                             exit_now = True
-                            exit_reason = f"STOP LOSS HIT (Premium dropped to Rs.{est_opt_ltp:.2f})"
-                        # Target trigger (33% gain, 1:2.2 R:R)
-                        elif est_opt_ltp >= pos["tgt_premium"]:
-                            exit_now = True
-                            exit_reason = f"TARGET HIT (Premium surged to Rs.{est_opt_ltp:.2f})"
-                        # Trailing protection if in profit > 15%
-                        elif est_opt_ltp >= pos["entry_premium"] * 1.15:
-                            if pos["sl_premium"] < pos["entry_premium"]:
-                                pos["sl_premium"] = pos["entry_premium"]
-                                print(f"  [{ts}] 🛡️ Trailing SL -> Breakeven (Rs.{pos['entry_premium']:.2f}) for {pos['contract']}")
+                            exit_reason = f"{stop_reason(pos['entry_premium'], pos['sl_premium'])} (premium Rs.{est_opt_ltp:.2f})"
+                        else:
+                            old_sl = pos["sl_premium"]
+                            pos["sl_premium"], pos["tgt_premium"] = ratchet_stop(
+                                pos["entry_premium"], old_sl, pos["highest_premium"],
+                                _EMA9_CFG.profit_ladder_pct, _EMA9_CFG.initial_sl_pct,
+                            )
+                            if pos["sl_premium"] > old_sl:
+                                nxt = f"Rs.{pos['tgt_premium']:.2f}" if pos["tgt_premium"] else "none (top rung passed)"
+                                print(f"  [{ts}] 🛡️ Stop ratcheted Rs.{old_sl:.2f} -> Rs.{pos['sl_premium']:.2f} for {pos['contract']} | next rung {nxt}")
                                 if alerter:
-                                    alerter.send_alert(f"🛡️ *Trailing SL Triggered*\n\nContract: {pos['contract']}\nStop Loss moved to Breakeven @ ₹{pos['entry_premium']:.2f}")
+                                    alerter.send_alert(f"🛡️ Stop ratcheted\n\nContract: {pos['contract']}\nStop: ₹{old_sl:.2f} -> ₹{pos['sl_premium']:.2f}\nNext rung: {nxt}")
                                 save_session_atomic(session_log, out_file)
                         
                         # Reversal exit -- the strategy's own protective rule.
@@ -740,8 +747,10 @@ def run_session(day_num, date_str, day_name):
                             # premium -- material against a 15% stop and a 33%
                             # target.
                             entry_p = round(opt.get("ask") or opt["ltp"], 2)
-                            sl_p = round(entry_p * 0.85, 2)       # 15% Stop Loss
-                            tgt_p = round(entry_p * 1.33, 2)      # 33% Target (1:2.2 R:R)
+                            sl_p = initial_stop(entry_p, _EMA9_CFG.initial_sl_pct)          # 15% stop
+                            # Not an exit: the ladder's next rung, shown as the target.
+                            tgt_p = ratchet_stop(entry_p, 0.0, entry_p, _EMA9_CFG.profit_ladder_pct,
+                                                 _EMA9_CFG.initial_sl_pct)[1]
                             
                             trade_obj = {
                                 "symbol": symbol,

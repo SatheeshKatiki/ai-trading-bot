@@ -3,8 +3,9 @@
 EMA9/RSI Momentum -- execution-variant paper books.
 
 Runs the owner's ema9_rsi_momentum rules exactly -- ``generate_signals`` on
-CLOSED spot candles; stop 15%, target 33%, stop to breakeven at +15%, the
-EMA/RSI reversal exit, square-off at 15:15 -- under one or more execution
+CLOSED spot candles; stop 15%, then a stop that ratchets up a ladder of rungs
+with no fixed target (exit_ladder.py), the EMA/RSI reversal exit, square-off
+at 15:15 -- under one or more execution
 *variants* (which chart the rules read, which strike a signal buys), each as
 its own paper book:
 
@@ -74,6 +75,11 @@ from trading_bot.strategies.ema9_rsi_momentum import (  # noqa: E402
     generate_signals,
 )
 from trading_bot.strategies.ema9_rsi_momentum.config import Ema9RsiMomentumConfig  # noqa: E402
+from trading_bot.strategies.ema9_rsi_momentum.exit_ladder import (  # noqa: E402
+    initial_stop,
+    ratchet_stop,
+    stop_reason,
+)
 from trading_bot.strategies.ema9_rsi_momentum.strike_selection import select_strike  # noqa: E402
 
 VARIANTS = {
@@ -97,9 +103,9 @@ BACKTEST_REFERENCE = {
                 "basis": "578 NIFTY sessions 2024-01..2026-09, owner's exits, 1.6% round-trip cost"},
 }
 
-STOP_PCT = 15.0
-TARGET_PCT = 33.0
-TRAIL_TRIGGER_PCT = 15.0         # at +15% the stop moves to breakeven
+# Exits: the owner's ladder -- SL 15%, then the stop steps up rung by rung with
+# no fixed target (Ema9RsiMomentumConfig.initial_sl_pct / profit_ladder_pct;
+# see trading_bot/strategies/ema9_rsi_momentum/exit_ladder.py).
 #: Per index, per book, per day.
 MAX_TRADES_PER_DAY = 3
 POLL_INTERVAL_S = 15
@@ -168,9 +174,26 @@ def is_fresh(bar_close: datetime.datetime, now_naive: datetime.datetime,
     return 0 <= age <= max_age_s
 
 
-def new_position(variant, symbol, side, leg, spot, bar_start, now) -> dict:
+def expiry_info(expiry, now):
+    """(ISO expiry date, whether it expires today) from the chain's dd-mm-YYYY.
+
+    Expiry-day trades are the owner's deliberate 0DTE setups; the scorecard
+    reports them separately so their edge is measured, not assumed.
+    """
+    if not expiry:
+        return None, None
+    try:
+        day = datetime.datetime.strptime(str(expiry), "%d-%m-%Y").date()
+    except ValueError:
+        return str(expiry), None
+    return day.isoformat(), day == now.date()
+
+
+def new_position(variant, symbol, side, leg, spot, bar_start, now, expiry=None) -> dict:
     """A position filled at the leg's ASK -- a buyer lifts the offer."""
     entry = round(leg["ask"], 2)
+    cfg = build_config(variant)
+    expiry_iso, expiry_today = expiry_info(expiry, now)
     return {
         "variant": variant,
         "symbol": symbol,
@@ -194,28 +217,35 @@ def new_position(variant, symbol, side, leg, spot, bar_start, now) -> dict:
         "current_ltp": entry,
         "highest_premium": entry,
         "lowest_premium": entry,
-        "sl_premium": round(entry * (1 - STOP_PCT / 100.0), 2),
-        "tgt_premium": round(entry * (1 + TARGET_PCT / 100.0), 2),
+        "sl_premium": initial_stop(entry, cfg.initial_sl_pct),
+        # Not an exit: the next rung of the ladder, shown as the "target".
+        "tgt_premium": ratchet_stop(entry, 0.0, entry, cfg.profit_ladder_pct, cfg.initial_sl_pct)[1],
         "trailed": False,
+        "expiry": expiry_iso,
+        "expiry_day": expiry_today,
         "quantity": po.LOT_SIZE.get(symbol, 65),
         "entry_time": now.strftime("%H:%M:%S"),
         "entry_time_epoch": now.timestamp(),
     }
 
 
-def check_price_exits(pos: dict, mark: float):
-    """Stop, target, then the breakeven trail -- the observer's order.
+def check_price_exits(pos: dict, mark: float, cfg: Ema9RsiMomentumConfig | None = None):
+    """The stop, then the ladder. There is no target exit.
 
-    Returns an exit reason or None. Moves the stop to breakeven (mutating
-    ``pos``) the first time the mark reaches +15%.
+    Returns an exit reason if the stop is hit. Otherwise ratchets the stop up
+    the owner's ladder from the best premium seen (mutating ``pos``) and sets
+    ``tgt_premium`` to the next rung -- None once the top rung is passed.
     """
     if mark <= pos["sl_premium"]:
-        return "BREAKEVEN STOP" if pos.get("trailed") else "STOP LOSS"
-    if mark >= pos["tgt_premium"]:
-        return "TARGET"
-    if not pos.get("trailed") and mark >= pos["entry_premium"] * (1 + TRAIL_TRIGGER_PCT / 100.0):
-        pos["sl_premium"] = pos["entry_premium"]
+        return stop_reason(pos["entry_premium"], pos["sl_premium"])
+    cfg = cfg or Ema9RsiMomentumConfig()
+    best = max(pos.get("highest_premium", mark), mark)
+    new_stop, next_rung = ratchet_stop(pos["entry_premium"], pos["sl_premium"], best,
+                                       cfg.profit_ladder_pct, cfg.initial_sl_pct)
+    if new_stop > pos["sl_premium"]:
+        pos["sl_premium"] = new_stop
         pos["trailed"] = True
+    pos["tgt_premium"] = next_rung
     return None
 
 
@@ -338,6 +368,10 @@ def build_scorecard(variant: str) -> dict:
     card.update(summarise(trades))
     card["by_symbol"] = {sym: summarise([t for t in trades if t.get("symbol") == sym])
                          for sym in sorted({t.get("symbol") for t in trades if t.get("symbol")})}
+    card["by_expiry_day"] = {
+        "expiry_day": summarise([t for t in trades if t.get("expiry_day") is True]),
+        "other_days": summarise([t for t in trades if t.get("expiry_day") is False]),
+    }
     card["backtest_reference"] = BACKTEST_REFERENCE.get(variant)
 
     if sessions < MIN_SESSIONS_FOR_VERDICT or card["trades"] < MIN_TRADES_FOR_VERDICT:
@@ -411,7 +445,7 @@ def consider_entry(sess: dict, symbol: str, cfg: Ema9RsiMomentumConfig, df, now)
               f"-- {record['action']}")
         return True
 
-    pos = new_position(variant, symbol, side, leg, spot, bar_start, now)
+    pos = new_position(variant, symbol, side, leg, spot, bar_start, now, expiry=chain.get("expiry"))
     sess["open_positions"][symbol] = pos
     record["action"] = f"entered {pos['contract']} @ {pos['entry_premium']:.2f}"
     msg = (f"ENTRY {pos['contract']} @ Rs.{pos['entry_premium']:.2f} (ask) | delta {pos['opt_delta']} | "
@@ -435,11 +469,12 @@ def manage_position(sess: dict, symbol: str, pos: dict, df, is_new_bar: bool, no
         pos["highest_premium"] = max(pos["highest_premium"], mark)
         pos["lowest_premium"] = min(pos["lowest_premium"], mark)
         pos["mark_time"] = now.strftime("%H:%M:%S")
-        was_trailed = pos.get("trailed")
-        reason = check_price_exits(pos, mark)
-        if pos.get("trailed") and not was_trailed:
-            print(f"  [{now:%H:%M:%S}] {sess['variant']} 🛡️ {pos['contract']} +{TRAIL_TRIGGER_PCT:.0f}% -- "
-                  f"stop moved to breakeven Rs.{pos['entry_premium']:.2f}")
+        old_stop = pos["sl_premium"]
+        reason = check_price_exits(pos, mark, build_config(sess["variant"]))
+        if pos["sl_premium"] > old_stop:
+            nxt = f"Rs.{pos['tgt_premium']:.2f}" if pos.get("tgt_premium") else "none (top rung passed)"
+            print(f"  [{now:%H:%M:%S}] {sess['variant']} 🛡️ {pos['contract']} stop ratcheted "
+                  f"Rs.{old_stop:.2f} -> Rs.{pos['sl_premium']:.2f} | next rung {nxt}")
         if reason is None and is_new_bar and len(df) >= 2:
             rev = evaluate_protective_exit(df, pos["side"], pos["entry_premium"], mark)
             if rev.should_exit:
@@ -538,8 +573,9 @@ def run_books(variants) -> dict:
         c, sess = cfgs[v], books[v][0]
         print(f"  {v:8s} {VARIANTS[v]['label']:32s} {c.timeframe_minutes:>2}-min {c.strike_selection:3s} | "
               f"resumed trades {len(sess['trades'])}, open {len(sess['open_positions'])}")
-    print(f"  Exits : SL {STOP_PCT:.0f}% | target {TARGET_PCT:.0f}% | breakeven at +{TRAIL_TRIGGER_PCT:.0f}% "
-          f"| reversal | EOD 15:15")
+    ladder_cfg = cfgs[variants[0]]
+    print(f"  Exits : SL {ladder_cfg.initial_sl_pct:g}%, then ladder "
+          f"{'/'.join(f'{r:g}' for r in ladder_cfg.profit_ladder_pct)} -- no fixed target | reversal | EOD 15:15")
     print(f"  Indices (paper test): {', '.join(symbols)} | max {MAX_TRADES_PER_DAY}/index/book/day")
     print(f"{'=' * 72}")
 

@@ -69,6 +69,12 @@ STRIKE_SELECTION: str = "ATM"         # "ATM" | "ITM" -- see strike_selection.py
 ITM_TARGET_DELTA: float = 0.70        # |delta| an ITM pick aims for
 MAX_ENTRY_SPREAD_PCT: float = 1.0     # refuse a leg whose bid/ask spread is wider
 
+# ─────────────────────────────────────────────────────────────────────
+# Exits: the owner's ratcheting ladder -- see exit_ladder.py
+# ─────────────────────────────────────────────────────────────────────
+INITIAL_SL_PCT: float = 15.0                                            # opening stop, % under entry
+PROFIT_LADDER_PCT: tuple = (15.0, 33.0, 50.0, 75.0, 100.0, 150.0, 200.0)  # rungs; stop steps to the rung below
+
 
 @dataclass(frozen=True)
 class Ema9RsiMomentumConfig:
@@ -101,6 +107,8 @@ class Ema9RsiMomentumConfig:
     strike_selection: str = STRIKE_SELECTION
     itm_target_delta: float = ITM_TARGET_DELTA
     max_entry_spread_pct: float = MAX_ENTRY_SPREAD_PCT
+    initial_sl_pct: float = INITIAL_SL_PCT
+    profit_ladder_pct: tuple = PROFIT_LADDER_PCT
 
     @classmethod
     def from_settings(cls, settings: dict | None = None, **overrides) -> "Ema9RsiMomentumConfig":

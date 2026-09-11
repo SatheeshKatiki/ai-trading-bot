@@ -95,6 +95,10 @@ from trading_bot.strategies.drl_strategy import generate_signals as drl_signals
 from trading_bot.strategies.marl_strategy import generate_signals as marl_signals
 from trading_bot.strategies.ema9_rsi_momentum import STRATEGY_NAME as EMA9_RSI_MOMENTUM_STRATEGY_NAME
 
+#: Last closed bar the ema9 reversal exit was evaluated on, per option
+#: position -- the rule reads a closed candle, so once per bar is enough.
+_EMA9_REVERSAL_CHECKED: dict = {}
+
 _m2m_last_update: float = 0.0
 
 # Import AI / Risk / Exit / Alert Modules
@@ -1438,6 +1442,70 @@ async def run_live_bot(symbols: List[str]) -> None:
                         
                         if open_position.is_partially_booked and qty_pct < 1.0:
                             pass
+                elif strategy_name == EMA9_RSI_MOMENTUM_STRATEGY_NAME and is_opt_pos:
+                    # ── ema9_rsi_momentum option exits: the owner's rules ──
+                    # SL 15% -> breakeven at +15% -> the stop steps up to the
+                    # rung below each rung reached, with NO fixed target; the
+                    # EMA/RSI reversal and the EOD square-off end the trade.
+                    # See trading_bot/strategies/ema9_rsi_momentum/exit_ladder.py.
+                    #
+                    # This replaces SmartExitEngine for these positions. Its
+                    # partial booking at 1R is not the strategy's rule, and its
+                    # trail -- fed the dashboard's 0.5 / 0.35 as % of premium --
+                    # closed every winner within a tick or two of turning green.
+                    # The reversal exit (evaluate_protective_exit) was imported
+                    # here and never called.
+                    from trading_bot.strategies.ema9_rsi_momentum import evaluate_protective_exit
+                    from trading_bot.strategies.ema9_rsi_momentum.config import Ema9RsiMomentumConfig
+                    from trading_bot.strategies.ema9_rsi_momentum.exit_ladder import ratchet_stop, stop_reason
+
+                    _ema9_cfg = Ema9RsiMomentumConfig.from_settings(settings)
+                    _t_only = current_time.split(" ")[-1] if " " in current_time else current_time
+                    open_position.highest_price = max(open_position.highest_price, exit_check_price)
+                    old_stop_loss = open_position.stop_loss
+                    open_position.stop_loss, _next_rung = ratchet_stop(
+                        open_position.entry_price, open_position.stop_loss, open_position.highest_price,
+                        _ema9_cfg.profit_ladder_pct, _ema9_cfg.initial_sl_pct,
+                        float(settings.get("option_sl_tick_size", 0.05)),
+                    )
+
+                    if _t_only >= exit_engine.eod_exit_time:
+                        should_exit, reason, exit_qty = True, "Time-based EOD Exit", open_position.quantity
+                    elif exit_check_price <= open_position.stop_loss:
+                        should_exit = True
+                        reason = (f"{stop_reason(open_position.entry_price, open_position.stop_loss)} "
+                                  f"(LTP {exit_check_price:.2f} <= SL {open_position.stop_loss:.2f})")
+                        exit_qty = open_position.quantity
+                    elif not df.empty:
+                        # Reversal on the UNDERLYING's closed bars of the
+                        # strategy's own timeframe, forming bar dropped; once
+                        # per newly closed bar.
+                        _tf = f"{int(_ema9_cfg.timeframe_minutes)}min"
+                        rev_df = df.resample(_tf, label="right", closed="right").agg({
+                            "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"
+                        }).dropna()
+                        if len(rev_df) > 1:
+                            rev_df = rev_df.iloc[:-1]
+                            last_closed = rev_df.index[-1]
+                            if _EMA9_REVERSAL_CHECKED.get(open_position.symbol) != last_closed:
+                                _EMA9_REVERSAL_CHECKED[open_position.symbol] = last_closed
+                                rev = evaluate_protective_exit(
+                                    rev_df, 1 if open_position.symbol.upper().endswith("CE") else -1,
+                                    open_position.entry_price, exit_check_price, settings,
+                                )
+                                if rev.should_exit:
+                                    should_exit = True
+                                    reason = f"REVERSAL EXIT ({rev.reason.split(':')[0]})"
+                                    exit_qty = open_position.quantity
+
+                    if open_position.stop_loss != old_stop_loss:
+                        logger.info(
+                            "LADDER SL MOVED for %s: %.2f -> %.2f (next rung %s)", sym, old_stop_loss,
+                            open_position.stop_loss, f"{_next_rung:.2f}" if _next_rung else "none",
+                        )
+                        _save_positions(active_positions)
+                        if not broker.paper_mode:
+                            asyncio.create_task(update_exchange_sl(broker, open_position))
                 else:
                     # Dynamically apply Trailing SL settings
                     if settings.get("trailing_sl", False) or settings.get("trailingSl", False):
@@ -2007,6 +2075,17 @@ async def run_live_bot(symbols: List[str]) -> None:
                                 )
                                 continue
                             sl_price = sl_decision.sl_price
+                            if strategy_name == EMA9_RSI_MOMENTUM_STRATEGY_NAME:
+                                # The owner's opening stop: 15% under entry, then
+                                # the exit ladder takes over (exit_ladder.py). The
+                                # band table above still vetoes an untradeable premium.
+                                from trading_bot.strategies.ema9_rsi_momentum.config import Ema9RsiMomentumConfig
+                                from trading_bot.strategies.ema9_rsi_momentum.exit_ladder import initial_stop
+                                sl_price = initial_stop(
+                                    entry_premium,
+                                    Ema9RsiMomentumConfig.from_settings(settings).initial_sl_pct,
+                                    float(settings.get("option_sl_tick_size", 0.05)),
+                                )
 
                             # NO FIXED PROFIT TARGET. 0.0 means "unlimited
                             # upside" to every downstream exit check

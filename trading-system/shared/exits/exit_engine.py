@@ -416,7 +416,15 @@ class SmartExitEngine:
             # extension level could be reached. The ATR trail above stays
             # active: it is scaled in the option's own premium units and
             # acts as a genuine safety net rather than a hair trigger.
-            if not self.use_dynamic_fib_trail:
+            #
+            # Never for an option position, fib trail or not (2026-09-12).
+            # The dashboard's trail settings (0.5 / 0.35) reach here as % of
+            # PREMIUM: on a Rs 120 option that is "start trailing at +Rs 0.60,
+            # exit after a Rs 0.42 give-back" -- inside the bid/ask spread.
+            # With the fib trail off by default, every option winner was
+            # closed within a tick or two of turning green. The ATR trail
+            # above, sized in the option's own premium units, still applies.
+            if not self.use_dynamic_fib_trail and not is_option:
                 position.max_pnl_pct = max(position.max_pnl_pct, profit_pct)
                 if profit_pct <= position.max_pnl_pct - self.trailing_offset_pct:
                     return True, "Trailing Stop-Loss Hit (Offset)", None

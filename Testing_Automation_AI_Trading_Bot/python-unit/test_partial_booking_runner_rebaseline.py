@@ -38,9 +38,17 @@ BIG_ATR = 1000.0
 
 
 def _call_position(entry_price=100.0, stop_loss=95.0, target=9999.0, quantity=65, **overrides):
-    """A bought CALL with a 5-point risk, so 1:1 booking fires at 105."""
+    """A long position with a 5-point risk, so 1:1 booking fires at 105.
+
+    An equity symbol, not an option: since 2026-09-12 the percentage
+    give-back (section 5b) never applies to options -- fed the dashboard's
+    0.5 / 0.35 as % of premium it closed option winners inside the spread
+    -- so the re-baseline these tests pin only matters off options. (INFY,
+    not RELIANCE: the engine's `"CE" in symbol` test reads RELIAN-CE as an
+    option.)
+    """
     defaults = dict(
-        symbol="NSE:NIFTY26AUG24700CE", side=1, entry_price=entry_price,
+        symbol="NSE:INFY-EQ", side=1, entry_price=entry_price,
         quantity=quantity, entry_time="2026-08-03T10:00:00", highest_price=entry_price,
         lowest_price=entry_price, stop_loss=stop_loss, target=target,
     )
@@ -214,3 +222,17 @@ def test_position_that_never_books_is_untouched():
     )
     assert should_exit is True
     assert reason == "Trailing Stop-Loss Hit (Offset)"
+
+
+def test_an_option_runner_is_never_closed_by_the_give_back():
+    """The same path on a bought CALL: the percentage give-back must not
+    fire, whatever the offset -- the ATR trail (premium units) remains."""
+    engine = _engine()
+    pos = _call_position(symbol="NSE:NIFTY26AUG24700CE", stop_loss=0.0)
+
+    engine.evaluate_exit(pos, current_price=104.0, current_time=MORNING, current_atr=BIG_ATR)
+    should_exit, reason, _ = engine.evaluate_exit(
+        pos, current_price=103.5, current_time=MORNING, current_atr=BIG_ATR
+    )
+    assert should_exit is False
+    assert reason != "Trailing Stop-Loss Hit (Offset)"

@@ -242,7 +242,7 @@ def test_reversal_ranks_below_hard_limits_but_above_eod():
     import paper_observer
 
     src = inspect.getsource(paper_observer)
-    sl = src.index("STOP LOSS HIT")
+    sl = src.index('if est_opt_ltp <= pos["sl_premium"]:')      # the ladder's stop check
     rev = src.index("REVERSAL EXIT")
     eod = src.index("EOD CUTOFF 15:15")
     assert sl < rev < eod

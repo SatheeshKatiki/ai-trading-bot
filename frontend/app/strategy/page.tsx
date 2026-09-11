@@ -94,10 +94,13 @@ export default function StrategySettings() {
     ema9_rsi_momentum: {
       active_strategy: "ema9_rsi_momentum",
       timeframe: "5 Min",
-      stoploss_pct: 0.6,
-      target_pct: 2.5,
-      trail_trigger: 0.5,
-      trail_offset: 0.35,
+      // Exits are the strategy's own premium ladder (exit_ladder.py): SL 15%
+      // under entry, breakeven at +15%, then the stop steps up rung by rung
+      // with no fixed target. The values that were here (0.6 / 2.5 / 0.5 /
+      // 0.35) were equity-style percents that the live engine applied to
+      // option PREMIUM -- a trailing stop inside the bid/ask spread.
+      ema9_rsi_initial_sl_pct: 15,
+      ema9_rsi_profit_ladder_pct: [15, 33, 50, 75, 100, 150, 200],
       trailing_sl: true,
       enable_squeeze_filter: true,
       enable_extension_filter: false,

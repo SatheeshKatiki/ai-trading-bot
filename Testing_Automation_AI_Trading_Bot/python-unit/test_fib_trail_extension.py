@@ -266,26 +266,32 @@ def test_only_momentum_15_5_opts_in():
     assert opted == ["momentum_15_5"], opted
 
 
-def test_percentage_giveback_trail_is_suppressed_only_when_fib_is_on():
+def test_percentage_giveback_trail_is_suppressed_under_fib_and_for_options():
     """The two are competing trailing mechanisms and the 0.35pp giveback
     always wins (92.4% of 5-min bars move a premium by more than the whole
     allowance). Leaving it active would cut every runner long before an
-    extension level could be reached — so it is suppressed, but ONLY under
-    the opt-in flag."""
+    extension level could be reached — so it is suppressed under the opt-in
+    flag, and since 2026-09-12 for every option position regardless: with the
+    fib trail off by default it was closing option winners inside the spread."""
     src = inspect.getsource(SmartExitEngine.evaluate_exit)
-    assert "if not self.use_dynamic_fib_trail:" in src
+    assert "if not self.use_dynamic_fib_trail and not is_option:" in src
     assert "Trailing Stop-Loss Hit (Offset)" in src
 
     # Wide stop so 1:1 partial booking cannot fire, large ATR so the ATR
     # trail cannot fire either — isolating the percentage giveback.
-    def _fresh():
-        return _pos(entry=200.0, sl=20.0)
+    def _fresh(symbol="NSE:INFY-EQ"):   # not RELIANCE: `"CE" in symbol` reads RELIAN-CE as an option
+        return _pos(entry=200.0, sl=20.0, symbol=symbol)
 
     off = SmartExitEngine()
     p = _fresh()
     off.evaluate_exit(p, 260.0, "11:00:00", 500.0)          # peak
     fired = off.evaluate_exit(p, 259.0, "11:05:00", 500.0)  # small giveback
     assert fired[1] == "Trailing Stop-Loss Hit (Offset)"
+
+    # An option on the same path, fib off: no giveback exit.
+    opt = _fresh("NSE:NIFTY2680724000CE")
+    off.evaluate_exit(opt, 260.0, "11:00:00", 500.0)
+    assert off.evaluate_exit(opt, 259.0, "11:05:00", 500.0)[1] != "Trailing Stop-Loss Hit (Offset)"
 
     # Fib engine: identical path must NOT produce that exit.
     on = SmartExitEngine(use_dynamic_fib_trail=True)
