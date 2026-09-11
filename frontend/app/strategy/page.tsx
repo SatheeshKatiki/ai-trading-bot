@@ -40,6 +40,23 @@ import ExecutionTab from "./tabs/execution-tab";
 import AdvancedTab from "./tabs/advanced-tab";
 import NotificationsTab from "./tabs/notifications-tab";
 
+// Index instruments the live engine can trade (broker data symbols). Only the
+// ones selected here -- settings.symbols -- are ever traded; with none
+// selected the engine trades nothing. Paper testing uses its own list
+// (settings.paper_test_instruments) so a strategy can be validated on more
+// indices than the owner has chosen to trade.
+const TRADABLE_INDICES = [
+  { name: "NIFTY", symbol: "NSE:NIFTY50-INDEX" },
+  { name: "BANKNIFTY", symbol: "NSE:NIFTYBANK-INDEX" },
+  { name: "SENSEX", symbol: "BSE:SENSEX-INDEX" },
+  { name: "FINNIFTY", symbol: "NSE:FINNIFTY-INDEX" },
+];
+
+function toggleSymbol(current: unknown, symbol: string): string[] {
+  const list = Array.isArray(current) ? (current as string[]) : [];
+  return list.includes(symbol) ? list.filter((s) => s !== symbol) : [...list, symbol];
+}
+
 export default function StrategySettings() {
   const [activeTab, setActiveTab] = useState("Overview");
   const [settings, setSettings] = useState<any>({});
@@ -325,6 +342,43 @@ export default function StrategySettings() {
                   <Zap className="w-4 h-4" />
                   Set Defaults
                 </button>
+              </div>
+              <div className="flex items-center gap-3" data-testid="trading-indices">
+                <label
+                  className="text-sm font-bold text-muted-foreground uppercase tracking-wider whitespace-nowrap"
+                  title={`Live trading uses only the selected indices. Paper testing runs on: ${
+                    Array.isArray(settings.paper_test_instruments)
+                      ? settings.paper_test_instruments.join(", ")
+                      : "NIFTY, BANKNIFTY, SENSEX (default)"
+                  }`}
+                >
+                  Trade Indices:
+                </label>
+                <div className="flex gap-2">
+                  {TRADABLE_INDICES.map((idx) => {
+                    const selected = Array.isArray(settings.symbols) && settings.symbols.includes(idx.symbol);
+                    return (
+                      <button
+                        key={idx.symbol}
+                        type="button"
+                        aria-pressed={selected}
+                        onClick={() =>
+                          setSettings((prev: Record<string, unknown>) => ({ ...prev, symbols: toggleSymbol(prev.symbols, idx.symbol) }))
+                        }
+                        className={`px-3 py-2 rounded-xl text-xs font-bold border transition-all duration-200 whitespace-nowrap ${
+                          selected
+                            ? "bg-primary text-white border-primary shadow-lg shadow-primary/30"
+                            : "bg-background text-muted-foreground border-border hover:bg-muted"
+                        }`}
+                      >
+                        {idx.name}
+                      </button>
+                    );
+                  })}
+                </div>
+                {!(Array.isArray(settings.symbols) && settings.symbols.length > 0) && (
+                  <span className="text-xs font-bold text-amber-500 whitespace-nowrap">None selected -- live engine will not trade</span>
+                )}
               </div>
               <button
                 onClick={() => {

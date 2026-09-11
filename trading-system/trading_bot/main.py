@@ -2706,21 +2706,19 @@ if __name__ == "__main__":
         except Exception:
             pass
 
-    SYMBOLS: List[str] = _boot_settings.get(
-        "symbols",
-        # All four tradeable index instruments. NIFTY and SENSEX listed
-        # first (evaluated first each tick) and trade at the strategy's
-        # normal AI-confidence bar; BANKNIFTY/FINNIFTY trade alongside them
-        # but need a stricter bar by default — see
-        # shared/risk/instrument_focus.py and the "focus_instruments"/
-        # "secondary_instrument_min_confidence" settings.
-        [
-            "NSE:NIFTY50-INDEX",
-            "BSE:SENSEX-INDEX",
-            "NSE:NIFTYBANK-INDEX",
-            "NSE:FINNIFTY-INDEX",
-        ],
-    )
+    # Only the indices the owner selected in the UI (Strategy Settings ->
+    # Trading Indices). This used to fall back to all four indices whenever
+    # "symbols" was missing; the owner's rule is that the engine never
+    # trades an index nobody chose. No selection, no trading.
+    from shared.instruments import resolve_trading_symbols
+    SYMBOLS: List[str] = resolve_trading_symbols(_boot_settings)
+    if not SYMBOLS:
+        logger.error(
+            "No trading indices selected (settings 'symbols' is empty or missing). "
+            "Choose them in Strategy Settings -> Trading Indices; the engine does not "
+            "trade every index by default. Exiting."
+        )
+        raise SystemExit(0)
     logger.info("Starting live bot with symbols: %s", SYMBOLS)
     import time
     _consecutive_fast_failures = 0

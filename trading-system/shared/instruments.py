@@ -50,3 +50,59 @@ def normalize_instrument(symbol: str) -> str:
         .replace("-EQ", "")
     )
     return _INSTRUMENT_REMAP.get(raw, raw)
+
+
+#: Broker (Fyers) data symbol for each index instrument.
+INDEX_BROKER_SYMBOLS: dict[str, str] = {
+    "NIFTY": "NSE:NIFTY50-INDEX",
+    "BANKNIFTY": "NSE:NIFTYBANK-INDEX",
+    "FINNIFTY": "NSE:FINNIFTY-INDEX",
+    "SENSEX": "BSE:SENSEX-INDEX",
+}
+
+#: Indices the PAPER books trade while a strategy is being validated. The
+#: owner asked on 2026-09-11 for SENSEX alongside NIFTY and BANKNIFTY "for
+#: testing"; override with the ``paper_test_instruments`` setting.
+DEFAULT_PAPER_TEST_INSTRUMENTS: tuple[str, ...] = ("NIFTY", "BANKNIFTY", "SENSEX")
+
+
+def resolve_paper_test_instruments(settings: dict | None) -> list[str]:
+    """Canonical instrument keys the paper books trade.
+
+    ``settings["paper_test_instruments"]`` when present (short or broker
+    names, unknown ones dropped), else :data:`DEFAULT_PAPER_TEST_INSTRUMENTS`.
+    """
+    raw = (settings or {}).get("paper_test_instruments")
+    if not isinstance(raw, (list, tuple)):
+        return list(DEFAULT_PAPER_TEST_INSTRUMENTS)
+    out: list[str] = []
+    for name in raw:
+        key = normalize_instrument(str(name))
+        if key in INDEX_BROKER_SYMBOLS and key not in out:
+            out.append(key)
+    return out
+
+
+def resolve_trading_symbols(settings: dict | None) -> list[str]:
+    """Broker symbols the LIVE engine may trade: exactly what the owner
+    selected in the UI (``settings["symbols"]``), and nothing else.
+
+    There is deliberately no default. The engine used to fall back to all
+    four indices whenever ``symbols`` was missing; the owner's rule
+    (2026-09-11) is that only the indices chosen in the UI are ever traded.
+    Index names are accepted short or broker-form and mapped to the broker
+    symbol; any other exchange-prefixed symbol passes through unchanged.
+    """
+    raw = (settings or {}).get("symbols")
+    if not isinstance(raw, (list, tuple)):
+        return []
+    out: list[str] = []
+    for name in raw:
+        text = str(name).strip()
+        if not text:
+            continue
+        key = normalize_instrument(text)
+        symbol = INDEX_BROKER_SYMBOLS.get(key, text if ":" in text else None)
+        if symbol and symbol not in out:
+            out.append(symbol)
+    return out

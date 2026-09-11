@@ -55,6 +55,8 @@ except Exception:
     update_equity = None
 
 from shared.closed_bars import candles_to_frame, closed_candles, regular_session
+from shared.instruments import DEFAULT_PAPER_TEST_INSTRUMENTS, resolve_paper_test_instruments
+from trading_bot.strategies.premium_selection.options_selector import INSTRUMENT_CONFIG
 from trading_bot.strategies.ema9_rsi_momentum.config import (
     TIME_END as _EMA9_TIME_END,
     TIME_START as _EMA9_TIME_START,
@@ -66,8 +68,10 @@ MARKET_CLOSE = datetime.time(15, 30)
 EOD_CUTOFF   = datetime.time(15, 15)
 POLL_INTERVAL = 15  # 15s poll for high-precision live observation
 
-# Active index lot sizes (NIFTY: 65, BANKNIFTY: 15, FINNIFTY: 40)
-LOT_SIZE = {"NIFTY": 65, "BANKNIFTY": 15, "FINNIFTY": 40}
+# Lot sizes from the one exchange-verified table the live strike selector
+# uses. This was a local copy with BANKNIFTY at 15 -- half the real 30 -- so
+# every BANKNIFTY paper P&L was recorded at half size, and SENSEX had none.
+LOT_SIZE = {name: cfg["lot_size"] for name, cfg in INSTRUMENT_CONFIG.items()}
 MAX_TRADES_PER_DAY = 4
 CAPITAL = 100000.0
 
@@ -75,7 +79,10 @@ BASE_URL = "http://127.0.0.1:8000"
 LOG_DIR = ROOT_DIR / "paper_obs_logs"
 LOG_DIR.mkdir(exist_ok=True)
 
-SYMBOLS = ["NIFTY", "BANKNIFTY"]
+#: The paper-test indices; re-read from settings at each session start (see
+#: run_session). Paper books test on these; LIVE trading uses only the indices
+#: selected in the UI -- see shared.instruments.resolve_trading_symbols.
+SYMBOLS = list(DEFAULT_PAPER_TEST_INSTRUMENTS)
 running = True
 
 def _stop(s, f):
@@ -319,19 +326,12 @@ def rsi(closes, p=14):
 def select_best_option(symbol, direction, spot_price):
     """Select optimal strike (ATM or 1 strike OTM) and retrieve real-time premium and Greeks."""
     chain_data = fetch_option_chain(symbol)
-    if not chain_data or "chain" not in chain_data:
-        strike = round(spot_price / 50) * 50 if symbol == "NIFTY" else round(spot_price / 100) * 100
-        opt_type = "CE" if direction == "BUY" else "PE"
-        approx_prem = round(spot_price * 0.0075, 2)
-        return {
-            "contract": f"{symbol} {strike} {opt_type}",
-            "strike": strike,
-            "type": opt_type,
-            "ltp": approx_prem,
-            "delta": 0.50 if opt_type == "CE" else -0.50,
-            "theta": -12.5,
-            "pcr": 1.0
-        }
+    # No real chain, no trade. This used to invent a contract -- premium at
+    # 0.75% of spot, delta 0.50, theta -12.5 -- and the caller filled it,
+    # recording a price no market ever quoted. A synthetic chain is refused
+    # for the same reason.
+    if not chain_data or not chain_data.get("chain") or chain_data.get("synthetic"):
+        return None
     
     chain = chain_data.get("chain", [])
     pcr = chain_data.get("pcr", 1.0)
@@ -433,6 +433,24 @@ def save_session_atomic(session_log, out_file):
     except Exception as e:
         print(f"  [WARN] Failed to write session file: {e}")
 
+def _replace_with_retry(src, dst, attempts=5, delay_s=0.05):
+    """``src.replace(dst)``, retried briefly on PermissionError.
+
+    On Windows the swap fails with WinError 5 while another process holds
+    ``dst`` open -- api_bridge reads active_positions.json on every broadcast
+    -- and the observer logged 28 such failures, each leaving the dashboard
+    a poll behind. The reader's handle lasts milliseconds.
+    """
+    for attempt in range(attempts):
+        try:
+            src.replace(dst)
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(delay_s * (attempt + 1))
+
+
 def sync_active_positions(active_positions):
     """Atomically sync paper observer positions to config/active_positions.json for live UI M2M tracking."""
     pos_file = ROOT_DIR / "config" / "active_positions.json"
@@ -471,7 +489,7 @@ def sync_active_positions(active_positions):
         tmp = pos_file.with_suffix(".tmp")
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(disk_data, f, indent=2)
-        tmp.replace(pos_file)
+        _replace_with_retry(tmp, pos_file)
     except Exception as e:
         print(f"  [WARN] Failed to sync active positions: {e}")
 
@@ -501,6 +519,7 @@ def run_session(day_num, date_str, day_name):
     
     active_settings = fetch_json("/api/settings") or {}
     active_strategy = active_settings.get("active_strategy", "ema9_rsi_momentum")
+    SYMBOLS[:] = resolve_paper_test_instruments(active_settings)   # in place: sync reads it too
     strat_label = "EMA 9 / RSI Momentum" if active_strategy == "ema9_rsi_momentum" else active_strategy.replace("_", " ").title()
 
     # Check if resuming an existing session for today
