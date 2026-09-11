@@ -6,6 +6,69 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-09-11 (evening) — the main book does not trade the strategy; a like-for-like control book; SENSEX; UI-only index selection
+
+### What the main paper book actually follows
+
+Today's four main-book trades, checked bar by bar against the strategy's own
+closed-candle signals:
+
+| trade | P&L | strategy signal? |
+|---|---|---|
+| 09:15 NIFTY PE | −₹1,066.50 | none — no 5-minute candle had closed (startup bug, fixed in `528f708`) |
+| 09:15 BANKNIFTY PE | −₹1,309.25 | none — same |
+| 11:15 BANKNIFTY CE | **+₹4,057.75** | cross at 11:10 — **blocked** by the strategy (ADX 14.5 < 18) |
+| 11:20 NIFTY CE | −₹1,323.25 | cross at 11:15 — **blocked** (ADX 16.4 < 18) |
+
+`paper_observer` enters when `/api/signals`' **bias** flips.
+`compute_signals` scores every candle — 65 when EMA9 > EMA20 *and* RSI >
+RSI-MA, plus points for RSI level, ADX (≥18 +5, ≥25 +10) and an actual
+cross (+10) — and calls it "BUY BIAS" at 70. So the bias is a trend
+**state**, not the crossover **event**; ADX and the EMA-touch rule only add
+or withhold points and never block; and it is scored on the still-forming
+candle. The day's one winner was a trade the strategy refuses. **The main
+book's 22 recorded trades (−₹3,248.50) therefore do not measure
+ema9_rsi_momentum.** One winning trade is not evidence against the ADX
+filter either — it was tested out-of-sample on 578 sessions without
+improving.
+
+The NIFTY CE also shows why a 15% premium stop is tight on an ATM weekly:
+spot moved 14–23 points against it, delta explains −7 to −11 of the −20
+premium drop, theta −0.5, and roughly half came from falling IV.
+
+### Changes
+
+* **Control book.** `ema9_variant_observer.py` now runs **5m_atm** (today's
+  defaults, by the strategy's own rules) beside **15m_itm** in one process,
+  sharing one 5-minute fetch per index per poll. Daily cap is per index;
+  scorecards break results down per index.
+* **SENSEX in paper testing.** Paper books trade `paper_test_instruments`
+  (default NIFTY, BANKNIFTY, SENSEX). Verified after hours against the live
+  bridge: SENSEX 5-minute history complete (75 bars/day), real broker chain
+  (41 strikes, 100-point step, Thursday expiry 17-09), real deltas, signals
+  served, lot 20. Bid/ask read 0 after the close, so the strike picker
+  correctly refused every leg — whether BSE quotes carry bid/ask in market
+  hours is first confirmed on Monday.
+* **Live trades only the UI selection.** `trading_bot/main.py` fell back to
+  **all four indices** when settings had no `symbols`; it now trades exactly
+  the selected ones (`shared.instruments.resolve_trading_symbols`) and exits
+  if none are selected. The UI had no way to choose indices — Strategy
+  Settings now has a **Trade Indices** selector writing `settings.symbols`.
+* **Lot sizes.** `paper_observer` kept its own lot table with **BANKNIFTY at
+  15; the exchange lot is 30** — every BANKNIFTY paper P&L, including
+  today's +₹4,057.75, was recorded at half size — and had no SENSEX. It now
+  reads `options_selector.INSTRUMENT_CONFIG`.
+* **No invented contracts.** With no option chain, `select_best_option`
+  invented one (premium 0.75% of spot, delta 0.50, theta −12.5) and the
+  observer filled it. It now returns None, and refuses a synthetic chain.
+* **Positions-file swap.** Failed with WinError 5 whenever api_bridge was
+  reading the file — 28 times in the observer log, each leaving the
+  dashboard a poll behind. Now retried briefly.
+
+Full suite: 1030 passed; Trade Indices UI specs pass in Chromium (mocked backend).
+
+---
+
 ## 2026-09-11 (midday) — FIX: the broker's history cache persisted forming bars and never corrected them
 
 Found while checking the variant book's warm-up depth: the NIFTY 15-minute
