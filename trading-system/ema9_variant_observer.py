@@ -264,6 +264,17 @@ def close_position(pos: dict, price: float, reason: str, now, price_source: str)
     return closed
 
 
+#: India VIX bands the scorecard reports results by (audit P4: measure before gating).
+VIX_BANDS = ("<12", "12-15", "15-18", "18+", "unknown")
+
+
+def vix_band(vix) -> str:
+    if vix is None:
+        return "unknown"
+    v = float(vix)
+    return "<12" if v < 12 else "12-15" if v < 15 else "15-18" if v < 18 else "18+"
+
+
 def book_day_pnl(sess: dict) -> float:
     """This book's P&L today: closed trades plus open positions at their mark."""
     realized = sum(t.get("net_pnl", 0.0) for t in sess["trades"])
@@ -384,6 +395,8 @@ def build_scorecard(variant: str) -> dict:
         "expiry_day": summarise([t for t in trades if t.get("expiry_day") is True]),
         "other_days": summarise([t for t in trades if t.get("expiry_day") is False]),
     }
+    card["by_entry_vix"] = {band: summarise([t for t in trades if vix_band(t.get("entry_vix")) == band])
+                            for band in VIX_BANDS}
     card["backtest_reference"] = BACKTEST_REFERENCE.get(variant)
 
     if sessions < MIN_SESSIONS_FOR_VERDICT or card["trades"] < MIN_TRADES_FOR_VERDICT:
@@ -458,7 +471,9 @@ def consider_entry(sess: dict, symbol: str, cfg: Ema9RsiMomentumConfig, df, now)
         return True
 
     entry = round(leg["ask"], 2)
+    vix = (chain.get("indiaVix") or {}).get("value")
     block = entry_block_reason(
+        vix=vix,
         direction=side,
         open_directions=[p["side"] for p in sess["open_positions"].values()],
         day_pnl=book_day_pnl(sess),
@@ -473,6 +488,7 @@ def consider_entry(sess: dict, symbol: str, cfg: Ema9RsiMomentumConfig, df, now)
         return True
 
     pos = new_position(variant, symbol, side, leg, spot, bar_start, now, expiry=chain.get("expiry"))
+    pos["entry_vix"] = vix            # with entry_iv, so the VIX gate's threshold can come from data
     sess["open_positions"][symbol] = pos
     record["action"] = f"entered {pos['contract']} @ {pos['entry_premium']:.2f}"
     msg = (f"ENTRY {pos['contract']} @ Rs.{pos['entry_premium']:.2f} (ask) | delta {pos['opt_delta']} | "

@@ -378,7 +378,10 @@ def select_best_option(symbol, direction, spot_price):
         # Theta from the chain is per DAY (Black-Scholes convention).
         "theta": opt_details.get("theta", -10.0),
         "iv": opt_details.get("iv"),
-        "pcr": pcr
+        "pcr": pcr,
+        # India VIX from the same chain snapshot: recorded at entry, and read
+        # by the optional VIX gate (shared/risk/portfolio_guard.py).
+        "vix": (chain_data.get("indiaVix") or {}).get("value"),
     }
 
 def analyze_market_state(symbol, direction):
@@ -457,6 +460,7 @@ def portfolio_block(symbol, direction, opt, session_log, active_positions, setti
         capital=CAPITAL,
         trade_risk=(entry - initial_stop(entry, _EMA9_CFG.initial_sl_pct)) * qty,
         settings=settings,
+        vix=opt.get("vix"),
     )
 
 
@@ -796,6 +800,8 @@ def run_session(day_num, date_str, day_name):
                                 "entry_bid": opt.get("bid", 0.0),
                                 "entry_ask": opt.get("ask", 0.0),
                                 "entry_spread_pct": opt.get("spread_pct"),
+                                "entry_iv": opt.get("iv"),
+                                "entry_vix": opt.get("vix"),
                                 "current_ltp": entry_p,
                                 "highest_premium": entry_p,
                                 "lowest_premium": entry_p,

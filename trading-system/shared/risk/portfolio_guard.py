@@ -56,12 +56,21 @@ def daily_loss_limit(capital: float, settings: Optional[dict] = None) -> float:
 
 
 def entry_block_reason(*, direction: int, open_directions: Iterable[int], day_pnl: float,
-                       capital: float, trade_risk: float, settings: Optional[dict] = None) -> Optional[str]:
+                       capital: float, trade_risk: float, settings: Optional[dict] = None,
+                       vix: Optional[float] = None) -> Optional[str]:
     """Why a new option entry must not be taken, or None if it may.
 
     ``direction`` +1 (CE) / -1 (PE); ``open_directions`` the same for every
     open position; ``day_pnl`` realised + unrealised rupees today;
-    ``trade_risk`` the rupees lost if this trade hits its opening stop.
+    ``trade_risk`` the rupees lost if this trade hits its opening stop;
+    ``vix`` India VIX now, if known.
+
+    4. **Optional VIX gate** (audit P4). ``max_entry_vix`` is OFF unless the
+       owner sets it: a buyer paying up after a gap open loses to falling IV
+       even when direction is right (2026-09-11's NIFTY CE lost about half of
+       its -20 premium that way), but the threshold must come from data --
+       the paper books record entry VIX and group results by it. When the
+       gate is on and VIX is unknown, the trade is refused, not guessed.
     """
     settings = settings or {}
     limit = daily_loss_limit(capital, settings)
@@ -76,4 +85,11 @@ def entry_block_reason(*, direction: int, open_directions: Iterable[int], day_pn
 
     if trade_risk > limit:
         return f"one-lot risk Rs {trade_risk:,.0f} exceeds the day's whole loss limit Rs {limit:,.0f}"
+
+    max_vix = settings.get("max_entry_vix")
+    if max_vix is not None:
+        if vix is None:
+            return f"India VIX unknown and the VIX gate is on (max {float(max_vix):g})"
+        if float(vix) > float(max_vix):
+            return f"India VIX {float(vix):.2f} above the entry gate {float(max_vix):g}"
     return None

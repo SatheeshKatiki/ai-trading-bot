@@ -99,6 +99,28 @@ from trading_bot.strategies.ema9_rsi_momentum import STRATEGY_NAME as EMA9_RSI_M
 #: position -- the rule reads a closed candle, so once per bar is enough.
 _EMA9_REVERSAL_CHECKED: dict = {}
 
+#: India VIX for the optional entry gate (settings "max_entry_vix"; off by
+#: default). Only fetched while the gate is on; cached for a minute.
+_INDIA_VIX_SYMBOL = "NSE:INDIAVIX-INDEX"
+_INDIA_VIX_CACHE: dict = {"at": 0.0, "value": None}
+
+
+async def _india_vix(broker):
+    """India VIX from the broker, or None. None with the gate on refuses the trade."""
+    now = time.monotonic()
+    if _INDIA_VIX_CACHE["value"] is not None and now - _INDIA_VIX_CACHE["at"] < 60.0:
+        return _INDIA_VIX_CACHE["value"]
+    value = None
+    try:
+        quotes = await asyncio.to_thread(broker.get_market_data, [_INDIA_VIX_SYMBOL])
+        quote = (quotes or {}).get(_INDIA_VIX_SYMBOL)
+        if quote is not None and getattr(quote, "ltp", 0) and quote.ltp > 0:
+            value = float(quote.ltp)
+    except Exception as exc:
+        logger.warning("India VIX lookup failed: %s", exc)
+    _INDIA_VIX_CACHE.update(at=now, value=value)
+    return value
+
 _m2m_last_update: float = 0.0
 
 # Import AI / Risk / Exit / Alert Modules
@@ -2204,6 +2226,7 @@ async def run_live_bot(symbols: List[str]) -> None:
                                 capital=float(risk_manager.initial_capital),
                                 trade_risk=actual_risk_amount,
                                 settings=settings,
+                                vix=(await _india_vix(broker)) if settings.get("max_entry_vix") is not None else None,
                             )
                             if _guard_block:
                                 logger.info("Trade BLOCKED for %s: %s", s, _guard_block)
