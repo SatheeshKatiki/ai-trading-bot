@@ -54,6 +54,12 @@ except Exception:
     record_trade = None
     update_equity = None
 
+from shared.closed_bars import candles_to_frame, closed_candles
+from trading_bot.strategies.ema9_rsi_momentum.config import (
+    TIME_END as _EMA9_TIME_END,
+    TIME_START as _EMA9_TIME_START,
+)
+
 IST = pytz.timezone("Asia/Kolkata")
 MARKET_OPEN  = datetime.time(9, 15)
 MARKET_CLOSE = datetime.time(15, 30)
@@ -89,6 +95,55 @@ def is_market_open():
 
 def can_enter():
     return ist_time() < EOD_CUTOFF
+
+
+#: ema9_rsi_momentum's own trading window (09:25-15:00 by default).
+_EMA9_WINDOW = tuple(datetime.time(*map(int, s.split(":"))) for s in (_EMA9_TIME_START, _EMA9_TIME_END))
+
+
+def entry_window_open(active_strategy, t=None):
+    """Whether a NEW position may be opened now.
+
+    Always shut from the EOD cutoff. For ema9_rsi_momentum also shut outside
+    the strategy's own window: its rules exclude 09:15-09:25 (opening-range
+    noise) and after 15:00 (theta crush), but the observer only ever checked
+    the 15:15 cutoff, so it bought at 09:15 -- 7 of the first 20 paper trades
+    were entered before 09:25.
+    """
+    t = t or ist_time()
+    if t >= EOD_CUTOFF:
+        return False
+    if active_strategy == "ema9_rsi_momentum":
+        return _EMA9_WINDOW[0] <= t <= _EMA9_WINDOW[1]
+    return True
+
+
+def signal_observation(sig_res):
+    """This poll's {"bias", "confidence"}, or None if it carries no real bias.
+
+    On a cold cache /api/signals answers with a CALCULATING placeholder that
+    has no "bias" at all. Counting that as an observation would make the next
+    poll's real bias look like a fresh change.
+    """
+    if not sig_res or sig_res.get("bias") is None:
+        return None
+    return {"bias": sig_res["bias"], "confidence": sig_res.get("confidence", 0)}
+
+
+def is_new_entry_trigger(prev, obs):
+    """Whether `obs` is a NEW trigger rather than a bias that was already standing.
+
+    `prev` is the symbol's last real observation, or None if there has not
+    been one. The first observation only seeds state. Before this, `prev` was
+    empty at startup, so ANY standing bias >= 65 counted as "new" and was
+    bought on the very first poll: 6 of the first 20 paper trades were entered
+    at 09:15:1x, before a single 5-minute candle had closed, and together with
+    one more pre-09:25 entry they account for -Rs 4,017 of the -Rs 5,983
+    recorded. A restart mid-session did the same.
+    """
+    if prev is None or obs is None:
+        return False
+    return (obs["bias"] != prev.get("bias")) or (obs["confidence"] - prev.get("confidence", 0) >= 15)
 
 def get_auth_token():
     """Obtain or generate a valid session token."""
@@ -132,9 +187,9 @@ def fetch_json(endpoint, timeout=8):
 def fetch_signals(symbol):
     return fetch_json(f"/api/signals?symbol={symbol}")
 
-def fetch_candles(symbol, timeframe="5 Min", limit=40):
+def fetch_candles(symbol, timeframe="5 Min", limit=40, days=4):
     today = now_ist().strftime("%Y-%m-%d")
-    start = (now_ist() - datetime.timedelta(days=4)).strftime("%Y-%m-%d")
+    start = (now_ist() - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
     tf_encoded = urllib.parse.quote(timeframe)
     endpoint = f"/api/history?symbol={symbol}&start_date={start}&end_date={today}&timeframe={tf_encoded}"
     res = fetch_json(endpoint)
@@ -163,19 +218,16 @@ def check_reversal_exit(symbol, opt_type, entry_premium, current_premium):
     the strategy requires. Returns a ProtectiveExitResult, or None when there
     is not enough history to judge.
     """
-    candles = fetch_candles(symbol, "5 Min", 60)
-    if not candles or len(candles) < 40:
+    # CLOSED bars only. The rule reads the frame's LAST bar, and the last bar
+    # /api/history returns is still forming -- a cross that appears mid-bar
+    # and is gone by its close would otherwise exit the position.
+    candles = closed_candles(fetch_candles(symbol, "5 Min", 61) or [], 5, now_ist())
+    if len(candles) < 40:
         return None
     try:
-        import pandas as pd
         from trading_bot.strategies.ema9_rsi_momentum import evaluate_protective_exit
 
-        df = pd.DataFrame(candles)
-        for col in ("open", "high", "low", "close"):
-            if col not in df.columns:
-                return None
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-        df = df.dropna(subset=["close"])
+        df = candles_to_frame(candles)
         if len(df) < 40:
             return None
 
@@ -647,13 +699,12 @@ def run_session(day_num, date_str, day_name):
                                 update_equity(round(CAPITAL + tot_pnl, 2), tot_pnl)
                 
                 # 2. Check New High-Probability Signal Trigger
-                prev_b = prev_signals.get(symbol, {}).get("bias")
-                prev_c = prev_signals.get(symbol, {}).get("confidence", 0)
+                obs = signal_observation(sig_res)
                 
                 direction = "BUY" if ("BUY" in bias or "BULLISH" in bias) else "SELL" if ("SELL" in bias or "BEARISH" in bias) else None
                 is_high_prob = conf >= 65 and direction is not None
-                is_new_trigger = (bias != prev_b) or (conf - prev_c >= 15)
-                can_take_trade = (symbol not in active_positions) and (daily_trades_count < MAX_TRADES_PER_DAY) and can_enter()
+                is_new_trigger = is_new_entry_trigger(prev_signals.get(symbol), obs)
+                can_take_trade = (symbol not in active_positions) and (daily_trades_count < MAX_TRADES_PER_DAY) and entry_window_open(active_strategy)
                 
                 if is_high_prob and is_new_trigger and can_take_trade:
                     state = analyze_market_state(symbol, direction)
@@ -738,7 +789,8 @@ def run_session(day_num, date_str, day_name):
                             
                             print(f"  [{ts}] 🔵 ENTRY {opt['contract']} (Qty: {qty}) @ Rs.{entry_p:.2f} | Spot: {state['spot']} | Conf: {conf}% | Delta: {opt['delta']} | SL: Rs.{sl_p:.2f} | Tgt: Rs.{tgt_p:.2f}")
                 
-                prev_signals[symbol] = {"bias": bias, "confidence": conf}
+                if obs is not None:
+                    prev_signals[symbol] = obs
                 
             except Exception as e:
                 print(f"  [{ts}] Error in cycle: {e}")
