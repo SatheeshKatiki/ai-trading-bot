@@ -54,7 +54,7 @@ except Exception:
     record_trade = None
     update_equity = None
 
-from shared.closed_bars import candles_to_frame, closed_candles
+from shared.closed_bars import candles_to_frame, closed_candles, regular_session
 from trading_bot.strategies.ema9_rsi_momentum.config import (
     TIME_END as _EMA9_TIME_END,
     TIME_START as _EMA9_TIME_START,
@@ -227,7 +227,7 @@ def check_reversal_exit(symbol, opt_type, entry_premium, current_premium):
     try:
         from trading_bot.strategies.ema9_rsi_momentum import evaluate_protective_exit
 
-        df = candles_to_frame(candles)
+        df = regular_session(candles_to_frame(candles))    # no pre-open bars
         if len(df) < 40:
             return None
 

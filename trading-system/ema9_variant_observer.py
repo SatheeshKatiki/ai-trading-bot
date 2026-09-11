@@ -50,7 +50,12 @@ sys.path.insert(0, str(ROOT_DIR))
 # HTTP, auth and option-chain helpers are paper_observer's, so both books read
 # the market the same way. (Importing it also runs its startup maintenance.)
 import paper_observer as po  # noqa: E402
-from shared.closed_bars import candles_to_frame, closed_candles  # noqa: E402
+from shared.closed_bars import (  # noqa: E402
+    candles_to_frame,
+    closed_candles,
+    regular_session,
+    resample_closed,
+)
 from trading_bot.strategies.ema9_rsi_momentum import (  # noqa: E402
     evaluate_protective_exit,
     generate_signals,
@@ -405,10 +410,28 @@ def manage_position(sess: dict, symbol: str, pos: dict, df, is_new_bar: bool, no
     return True
 
 
+#: The timeframe history is fetched at; coarser bars are built from it.
+BASE_TIMEFRAME_MINUTES = 5
+
+
+def closed_frame(symbol: str, timeframe_minutes: int, now):
+    """Closed, regular-session ``timeframe_minutes`` bars, built from 5-minute history.
+
+    Never read from the broker's own 15-minute series: its local cache held
+    3 of 2026-09-10's 25 bars while the 5-minute cache held all 75, and
+    indicators computed across that hole are not the ones the backtest
+    measured. The backtest built its 15-minute bars from 5-minute ones; so
+    does this.
+    """
+    base = po.fetch_candles(symbol, f"{BASE_TIMEFRAME_MINUTES} Min", limit=5000, days=HISTORY_DAYS)
+    df = regular_session(candles_to_frame(closed_candles(base or [], BASE_TIMEFRAME_MINUTES, now)))
+    if timeframe_minutes == BASE_TIMEFRAME_MINUTES:
+        return df
+    return resample_closed(df, timeframe_minutes, now)
+
+
 def step(sess: dict, symbol: str, cfg: Ema9RsiMomentumConfig, now, path: pathlib.Path) -> None:
-    tf = cfg.timeframe_minutes
-    candles = po.fetch_candles(symbol, f"{tf} Min", limit=400, days=HISTORY_DAYS)
-    df = candles_to_frame(closed_candles(candles or [], tf, now))
+    df = closed_frame(symbol, cfg.timeframe_minutes, now)
     newest = df.index[-1].isoformat() if len(df) else None
     is_new_bar = newest is not None and newest != sess["last_bar"].get(symbol)
 

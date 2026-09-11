@@ -95,3 +95,41 @@ def candles_to_frame(candles: Iterable[dict]) -> pd.DataFrame:
         df[col] = pd.to_numeric(df[col], errors="coerce")
     df = df.dropna(subset=["open", "high", "low", "close"])
     return df[~df.index.duplicated(keep="last")].sort_index()
+
+
+#: NSE's regular session: the first bar starts 09:15, the last 5-minute bar 15:25.
+SESSION_FIRST_BAR = "09:15"
+SESSION_LAST_5M_BAR = "15:25"
+
+
+def regular_session(df: pd.DataFrame) -> pd.DataFrame:
+    """Only the regular-session bars of a 5-minute (or finer) frame.
+
+    The live 5-minute cache carries pre-open bars (09:05 and 09:10 on
+    2026-09-07..09) and the history files a Muhurat evening session
+    (2024-11-01 18:20 onward). The backtest never saw either, and one stray
+    bar shifts every EMA and RSI value after it.
+    """
+    if df.empty:
+        return df
+    t = df.index.strftime("%H:%M")
+    return df[(t >= SESSION_FIRST_BAR) & (t <= SESSION_LAST_5M_BAR)]
+
+
+def resample_closed(df: pd.DataFrame, minutes: int, now: _dt.datetime) -> pd.DataFrame:
+    """``minutes``-bars built from a finer frame, keeping only fully closed ones.
+
+    Left-labelled and left-closed -- exactly how the backtest built its
+    15-minute bars from 5-minute ones -- so the live series and the measured
+    one are the same construction. Feed it CLOSED input bars; an output bar is
+    kept only once its whole interval has elapsed at ``now``.
+    """
+    if minutes <= 0:
+        raise ValueError(f"minutes must be positive, got {minutes}")
+    if df.empty:
+        return df
+    out = df.resample(f"{minutes}min", label="left", closed="left").agg(
+        {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"})
+    out = out.dropna(subset=["open", "high", "low", "close"])
+    cutoff = _naive_ist(now) - _dt.timedelta(minutes=minutes)
+    return out[out.index <= cutoff]

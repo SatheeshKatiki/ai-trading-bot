@@ -394,3 +394,27 @@ def test_teardown_stops_the_variant_book(monkeypatch):
     monkeypatch.setattr(ads, "kill_process_on_ports", lambda ports: None)
     ads.stop_all_subprocesses()
     assert "variant_sv" in stopped
+
+
+# ---------------------------------------------------------------------------
+# Bars come from 5-minute history
+# ---------------------------------------------------------------------------
+
+def test_book_builds_fifteen_minute_bars_from_five_minute_history(monkeypatch):
+    """The broker's 15-min cache held 3 of 2026-09-10's 25 bars; the 5-min
+    cache held all 75. The book must never depend on the former."""
+    asked = []
+    start = datetime.datetime(2026, 9, 10, 9, 10)                 # one pre-open bar first
+    bars = [{"datetime": (start + datetime.timedelta(minutes=5 * k)).strftime("%Y-%m-%d %H:%M:%S"),
+             "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5, "volume": 0} for k in range(76)]
+
+    def fake(symbol, timeframe="5 Min", limit=40, days=4):
+        asked.append(timeframe)
+        return bars
+
+    monkeypatch.setattr(po, "fetch_candles", fake)
+    df = ev.closed_frame("NIFTY", 15, _ist(18, 0, day=10))
+    assert asked == ["5 Min"]
+    assert len(df) == 25
+    assert df.index[0] == pd.Timestamp("2026-09-10 09:15")
+    assert df.index[-1] == pd.Timestamp("2026-09-10 15:15")

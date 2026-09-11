@@ -30,7 +30,7 @@ import pytest
 import pytz
 
 import paper_observer as po
-from shared.closed_bars import candles_to_frame, closed_candles
+from shared.closed_bars import candles_to_frame, closed_candles, regular_session, resample_closed
 
 IST = pytz.timezone("Asia/Kolkata")
 
@@ -172,3 +172,29 @@ def test_reversal_exit_never_reads_the_forming_bar(monkeypatch):
     monkeypatch.setattr(strat, "evaluate_protective_exit", fake_exit)
     po.check_reversal_exit("NIFTY", "CE", 100.0, 101.0)
     assert seen["last"] == pd.Timestamp("2026-09-11 14:10:00") and seen["n"] == 60
+
+
+# ---------------------------------------------------------------------------
+# Regular session + resampling
+# ---------------------------------------------------------------------------
+
+def test_regular_session_drops_pre_open_and_evening_bars():
+    """Live cache: 09:10 pre-open bars on 2026-09-07..09. History: a Muhurat
+    evening session from 2024-11-01 18:20. The backtest saw neither."""
+    df = candles_to_frame([_c("2026-09-08 09:10:00"), _c("2026-09-08 09:15:00"),
+                           _c("2026-09-08 15:25:00"), _c("2024-11-01 18:20:00")])
+    assert [t.strftime("%H:%M") for t in regular_session(df).index] == ["09:15", "15:25"]
+
+
+def test_resample_builds_left_labelled_bars_and_drops_the_forming_one():
+    bars = [_c(f"2026-09-11 10:{m:02d}:00", close=100.0 + k)
+            for k, m in enumerate((0, 5, 10, 15, 20))]
+    out = resample_closed(candles_to_frame(bars), 15, datetime.datetime(2026, 9, 11, 10, 26))
+    assert list(out.index) == [pd.Timestamp("2026-09-11 10:00")]       # 10:15 bar still forming
+    row = out.iloc[0]
+    assert (row["open"], row["high"], row["low"], row["close"]) == (100.0, 103.0, 99.0, 102.0)
+
+
+def test_resample_rejects_a_zero_interval():
+    with pytest.raises(ValueError):
+        resample_closed(candles_to_frame(BARS_5M), 0, datetime.datetime(2026, 9, 11, 11, 0))
