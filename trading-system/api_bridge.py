@@ -2358,171 +2358,115 @@ async def get_history(
         logger.error('Failed to fetch history for %s: %s', symbol, e)
         raise HTTPException(status_code=500, detail=f'Failed to fetch historical data for {symbol}.')
 
+#: Short-lived cache of the real option chain for /api/option-greeks: the
+#: advanced option chart polls every 5 s, and every miss is a broker REST call.
+_GREEKS_CHAIN_CACHE: dict = {}
+_GREEKS_CHAIN_TTL_S = 10.0
+
+
+async def _cached_real_chain(instrument: str):
+    now = time.time()
+    hit = _GREEKS_CHAIN_CACHE.get(instrument)
+    if hit and now - hit[0] <= _GREEKS_CHAIN_TTL_S:
+        return hit[1]
+    chain = await _fetch_real_option_chain(instrument)
+    if chain:
+        _GREEKS_CHAIN_CACHE[instrument] = (now, chain)
+    return chain
+
+
+def _expiry_days_from_chain(expiry, now=None):
+    """Fractional days to the chain's expiry close (15:30 IST), or None."""
+    try:
+        day = datetime.strptime(str(expiry), "%d-%m-%Y")
+    except (TypeError, ValueError):
+        return None
+    close = _IST.localize(day.replace(hour=15, minute=30))
+    now = now or datetime.now(_IST)
+    return max(0.0, (close - now).total_seconds() / 86400.0)
+
+
 @app.get("/api/option-greeks")
 async def get_option_greeks(
-    symbol: str = Query("NIFTY", description="Base symbol (e.g. NIFTY, BANKNIFTY)"),
+    symbol: str = Query("NIFTY", description="Base symbol (e.g. NIFTY, BANKNIFTY, SENSEX)"),
     strike: float = Query(..., description="Strike price"),
     opt_type: str = Query("CE", description="Option type: CE or PE"),
-    spot: float = Query(0, description="Current spot price (0 = auto-fetch)"),
-    expiry_days: float = Query(0, description="Days to expiry (0 = auto-calculate nearest weekly)")
+    spot: float = Query(0, description="Ignored: spot comes from the same chain snapshot as the Greeks"),
+    expiry_days: float = Query(0, description="Ignored: days come from the chain's real expiry"),
 ):
-    """Compute Black-Scholes Greeks for a given option contract."""
-    import math
-    from datetime import datetime, timedelta
+    """Greeks for one contract, read from the broker's REAL option chain.
+
+    This used to price every contract with Black-Scholes on an IV invented
+    from moneyness (0.14 + 0.6 x |S-K|/S), assumed a Thursday expiry for
+    every index (NIFTY and BANKNIFTY expire on Tuesday) and used stale lot
+    sizes (NIFTY 75, SENSEX 10) -- confident, precisely formatted numbers for
+    a contract the market was pricing differently. It now returns the chain's
+    own values: the traded premium, the IV solved from it, and the Greeks at
+    that IV (see _chain_leg). No real chain, no Greeks.
+    """
+    from shared.instruments import normalize_instrument
+    from trading_bot.strategies.premium_selection.options_selector import INSTRUMENT_CONFIG
+
     try:
-        # Auto-fetch spot price if not provided.
-        #
-        # Spot is the single most load-bearing input to Black-Scholes: every
-        # Greek returned below is a function of it. This block used to end in
-        # a hardcoded guess (24250 / 52000 / 80000) and, because the broker
-        # lookup above called an undefined `_get_quote_data` whose NameError
-        # was swallowed by `except Exception: pass`, that guess was the path
-        # actually taken whenever the tick cache also missed. The endpoint
-        # then returned confident, precisely-formatted delta/gamma/theta/vega
-        # for a strike priced off a number nobody supplied.
-        #
-        # Greeks computed on an invented spot are worse than no Greeks, so an
-        # unresolvable spot is now an explicit 503 rather than a plausible
-        # answer.
-        S = spot
-        spot_source = "caller"
-        if S <= 0:
-            try:
-                formatted = format_broker_symbol(symbol)
-                quotes = await _get_quote_data(formatted)
-                if quotes and quotes.get("s") == "ok" and "d" in quotes and len(quotes["d"]) > 0:
-                    S = float(quotes["d"][0].get("v", {}).get("lp", 0) or 0)
-                    spot_source = SRC_BROKER_REST
-            except Exception as quote_err:
-                logger.warning("Spot quote lookup failed for %s: %s", symbol, quote_err)
-            if S <= 0:
-                with market_data_lock:
-                    for key, val in current_market_data.items():
-                        if symbol.upper() in key.upper() and float(val.get("lp") or 0) > 0:
-                            S = float(val["lp"])
-                            spot_source = val.get("src") or "cache"
-                            break
-            if S <= 0:
-                logger.warning(
-                    "Cannot compute Greeks for %s %s %s: no live spot price available.",
-                    symbol, strike, opt_type,
-                )
-                raise HTTPException(
-                    status_code=503,
-                    detail=(
-                        f"No live spot price available for {symbol}. "
-                        "Greeks are not computed against an assumed price."
-                    ),
-                )
+        instrument = normalize_instrument(symbol)
+        chain = await _cached_real_chain(instrument)
+        if not chain or chain.get("synthetic") or not chain.get("chain"):
+            raise HTTPException(status_code=503, detail=(
+                f"No real option chain for {instrument}. Greeks are not modelled against an assumed IV."))
 
-        K = strike
         is_call = opt_type.upper() == "CE"
+        row = next((r for r in chain["chain"] if abs(float(r.get("strike") or 0) - float(strike)) < 0.01), None)
+        if row is None:
+            raise HTTPException(status_code=404, detail=(
+                f"Strike {strike:g} is not in the {instrument} chain for expiry {chain.get('expiry')}."))
+        leg = row.get("ce" if is_call else "pe") or {}
+        premium = float(leg.get("ltp") or 0)
+        days = _expiry_days_from_chain(chain.get("expiry"))
+        if premium <= 0 or leg.get("delta") is None or not leg.get("iv") or days is None:
+            raise HTTPException(status_code=503, detail=(
+                f"No traded premium / implied vol for {instrument} {strike:g} {opt_type.upper()}."))
 
-        # Auto-calculate days to expiry (nearest Thursday for NIFTY weekly)
-        if expiry_days <= 0:
-            now = datetime.now()
-            days_until_thursday = (3 - now.weekday()) % 7
-            if days_until_thursday == 0 and now.hour >= 15:
-                days_until_thursday = 7
-            if days_until_thursday == 0:
-                days_until_thursday = max(0.1, (15.5 - now.hour - now.minute / 60) / 24)
-            expiry_days = max(0.05, days_until_thursday)
-
-        T = max(0.0001, expiry_days / 365.0)
-        r = 0.07  # Risk-free rate
-
-        # Estimate IV from moneyness
-        moneyness = abs(S - K) / max(1, S)
-        iv = 0.14 + moneyness * 0.6 + (0.02 if moneyness < 0.01 else 0)
-        sigma = iv
-
-        # Black-Scholes calculations
-        sqrt_T = math.sqrt(T)
-        d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * sqrt_T)
-        d2 = d1 - sigma * sqrt_T
-
-        def norm_cdf(x):
-            return (1.0 + math.erf(x / math.sqrt(2.0))) / 2.0
-
-        def norm_pdf(x):
-            return math.exp(-0.5 * x * x) / math.sqrt(2.0 * math.pi)
-
-        # Price
-        if is_call:
-            price = S * norm_cdf(d1) - K * math.exp(-r * T) * norm_cdf(d2)
-        else:
-            price = K * math.exp(-r * T) * norm_cdf(-d2) - S * norm_cdf(-d1)
-        price = max(0.05, price)
-
-        # Greeks
-        delta = norm_cdf(d1) if is_call else norm_cdf(d1) - 1
-        gamma = norm_pdf(d1) / (S * sigma * sqrt_T) if (S * sigma * sqrt_T) > 0 else 0
-        theta_annual = (-(S * norm_pdf(d1) * sigma) / (2 * sqrt_T) - r * K * math.exp(-r * T) * (norm_cdf(d2) if is_call else norm_cdf(-d2)))
-        theta = theta_annual / 365.0  # Per day
-        vega = S * norm_pdf(d1) * sqrt_T / 100.0  # Per 1% IV move
-
-        # Intrinsic & Extrinsic
-        intrinsic = max(0, S - K) if is_call else max(0, K - S)
-        extrinsic = max(0, price - intrinsic)
-
-        # Moneyness status
-        if abs(S - K) <= (50 if "BANK" not in symbol.upper() and "SENSEX" not in symbol.upper() else 100) / 2:
-            status = "ATM"
-        elif (is_call and S > K) or (not is_call and S < K):
-            status = "ITM"
-        else:
-            status = "OTM"
-
-        # Breakeven
-        breakeven = K + price if is_call else K - price
-
-        # Lot size
-        lot_map = {"NIFTY": 75, "BANKNIFTY": 30, "FINNIFTY": 40, "SENSEX": 10, "MIDCPNIFTY": 50}
-        lot_size = 75
-        for k_name, v_lot in lot_map.items():
-            if k_name in symbol.upper():
-                lot_size = v_lot
-                break
-
-        theta_per_lot = abs(theta) * lot_size
+        S, K = float(chain["underlying_price"]), float(strike)
+        spec = INSTRUMENT_CONFIG.get(instrument, INSTRUMENT_CONFIG["NIFTY"])
+        lot_size = int(spec["lot_size"])
+        step = float(chain.get("strike_step") or spec["strike_step"])
+        intrinsic = max(0.0, S - K) if is_call else max(0.0, K - S)
+        status = "ATM" if abs(S - K) <= step / 2 else ("ITM" if intrinsic > 0 else "OTM")
+        theta = float(leg.get("theta") or 0.0)
 
         return {
-            "symbol": symbol,
+            "symbol": instrument,
             "strike": K,
             "opt_type": opt_type.upper(),
             "spot": round(S, 2),
-            # Where the spot used for every Greek below came from. Callers can
-            # tell a broker-sourced valuation from a cached or stale one.
-            "spot_source": spot_source,
-            "premium": round(price, 2),
+            "spot_source": chain.get("priceSource", "broker_option_chain"),
+            "premium": round(premium, 2),
+            "bid": leg.get("bid"),
+            "ask": leg.get("ask"),
             "intrinsic": round(intrinsic, 2),
-            "extrinsic": round(extrinsic, 2),
+            "extrinsic": round(max(0.0, premium - intrinsic), 2),
             "status": status,
-            "breakeven": round(breakeven, 2),
-            "expiry_days": round(expiry_days, 2),
-            "iv": round(iv * 100, 2),
+            "breakeven": round(K + premium if is_call else K - premium, 2),
+            "expiry": chain.get("expiry"),
+            "expiry_days": round(days, 2),
+            "iv": float(leg["iv"]),
+            "iv_source": "solved from the traded premium (broker option chain)",
             "greeks": {
-                "delta": round(delta, 4),
-                "gamma": round(gamma, 6),
-                "theta": round(theta, 4),
-                "vega": round(vega, 4),
-                "theta_per_lot": round(theta_per_lot, 2),
+                "delta": float(leg["delta"]),
+                "gamma": float(leg.get("gamma") or 0.0),
+                "theta": theta,
+                "vega": float(leg.get("vega") or 0.0),
+                "theta_per_lot": round(abs(theta) * lot_size, 2),
             },
             "lot_size": lot_size,
             "distance_points": round(abs(S - K), 2),
-            "distance_pct": round(abs(S - K) / max(1, S) * 100, 2),
+            "distance_pct": round(abs(S - K) / max(1.0, S) * 100, 2),
         }
     except HTTPException:
-        # Deliberate, already-meaningful responses (e.g. the 503 above when no
-        # live spot exists) must not be re-wrapped into a generic 500 by the
-        # catch-all below.
         raise
     except Exception as e:
-        logger.error("Option Greeks calculation error for %s %s %s: %s",
-                     symbol, strike, opt_type, e, exc_info=True)
-        # Log server-side, return a client-safe message -- same policy as the
-        # other 14 handlers in this file (audit Medium #21).
-        raise HTTPException(status_code=500, detail="Failed to compute option Greeks.")
+        logger.error("Option Greeks lookup error for %s %s %s: %s", symbol, strike, opt_type, e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to read option Greeks.")
 
 @app.get("/api/inspect")
 def inspect_broker():
@@ -2683,20 +2627,39 @@ async def get_backtest(
         
         from fastapi.concurrency import run_in_threadpool
         
-        results = await run_in_threadpool(
-            run_intraday_backtest,
-            df, 
-            signals, 
-            initial_capital=initial_capital,
-            slippage_bps=2.0, 
-            commission_per_trade=20.0,
-            multiplier=quantity,       # Dynamic quantity from UI
-            options_delta=0.5,         # Simulate ATM Options
-            stoploss_pct=stoploss_pct,
-            target_pct=target_pct,
-            rejection_logs=rejection_logs,
-            **backtest_settings
-        )
+        if strategy == "ema9_rsi_momentum":
+            # The strategy's OWN exits on the option premium -- SL 15%, the
+            # ratcheting ladder, the EMA/RSI reversal, 15:15 -- not the
+            # generic engine's underlying-% stop/target (the dashboard's
+            # 0.6% / 2.5%), which tested a strategy nobody trades.
+            from backtesting_engine.premium_ladder import run_premium_ladder_backtest
+            results = await run_in_threadpool(
+                run_premium_ladder_backtest,
+                df,
+                signals,
+                symbol=symbol,
+                initial_capital=initial_capital,
+                quantity=quantity,
+                max_daily_trades=max_daily_trades,
+                max_daily_loss_pct=max_daily_loss_pct,
+                settings=settings,
+                rejection_logs=rejection_logs,
+            )
+        else:
+            results = await run_in_threadpool(
+                run_intraday_backtest,
+                df, 
+                signals, 
+                initial_capital=initial_capital,
+                slippage_bps=2.0, 
+                commission_per_trade=20.0,
+                multiplier=quantity,       # Dynamic quantity from UI
+                options_delta=0.5,         # Simulate ATM Options
+                stoploss_pct=stoploss_pct,
+                target_pct=target_pct,
+                rejection_logs=rejection_logs,
+                **backtest_settings
+            )
         
         # Sanitize all results to remove numpy int64/float64 for JSON serialization
         results = convert_numpy_types(results)

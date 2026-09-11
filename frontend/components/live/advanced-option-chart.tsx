@@ -41,7 +41,7 @@ interface OptionGreeksResponse {
 }
 
 interface AdvancedOptionChartProps {
-  symbol: string;       // Full option symbol e.g. "NIFTY 24250 CE"
+  symbol: string;       // Full option symbol e.g. "NIFTY 23300 CE"
   livePrice: number;    // Live premium price from ticker
   spotPrice: number;    // Live underlying spot price
   timeframe: string;

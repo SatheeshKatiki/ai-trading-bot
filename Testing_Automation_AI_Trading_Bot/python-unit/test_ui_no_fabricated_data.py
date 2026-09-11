@@ -125,6 +125,7 @@ def test_no_deterministic_random_generators():
 @pytest.mark.parametrize("value,what", [
     (r"\b24350\b", "hardcoded NIFTY spot (strike-ladder fallback)"),
     (r"\b24200\b", "hardcoded NIFTY spot (option-chain fallback)"),
+    (r"\b24250\b", "hardcoded NIFTY spot (option-greeks fallback)"),
     (r"\b23820\.35\b", "hardcoded NIFTY tick"),
     (r"\b76015\.28\b", "hardcoded SENSEX tick"),
 ])
