@@ -6,6 +6,73 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-09-11 (midday) — FIX: the broker's history cache persisted forming bars and never corrected them
+
+Found while checking the variant book's warm-up depth: the NIFTY 15-minute
+series had **3 of 2026-09-10's 25 bars**. Tracing it to
+`FyersBroker.get_historical_data`'s CSV cache (`data/<symbol>_<tf>.csv`,
+which most history callers read — in paper mode the endpoint falls back to
+it) and comparing the NIFTY 5-minute cache bar by bar with yfinance:
+
+| day | bars off by > 2 pts | mean \|close error\| |
+|---|---|---|
+| 2026-09-04 .. 09-09 | 0–2 per day | ≤ 0.26 |
+| **2026-09-10** | **25 of 75** | **3.15** |
+| **2026-09-11** | **23 of 23** | **8.35** |
+
+Four defects: (1) a request at 10:30:05 returned the 10:30 bar five seconds
+old and it was **persisted as final**; (2) the merge was
+`drop_duplicates(subset=["datetime"])`, which keeps the FIRST row — **the
+stale cached one always won** over the completed bar; (3) the incremental
+fetch began at `cache_max_date + 1 day`, so **a day first cached
+mid-session was never completed** (the 15-minute hole); (4) **non-atomic
+writes** left a truncated `2026-07-2,,,,,` row, later sorted into the middle
+of the file.
+
+Today's API responses were unaffected — `_ensure_today_candles` overlays
+today's bars from yfinance — but from Monday today's stubs would have been
+served as history into every EMA/RSI/ADX in both books.
+
+Fixed in `f7a0cc5`: fresh bars win (`keep="last"`), only finished bars are
+persisted, the last cached day is re-fetched in full, writes are atomic,
+truncated rows are dropped on read. `CACHE_DIR` is now a module attribute so
+tests write to `tmp_path`, not the live cache. Independently, the variant
+book stopped reading 15-minute history at all (`c0d8605`): it builds its
+bars from 5-minute ones exactly as the backtest did, and drops pre-open bars
+(09:05/09:10 on 09-07..09) the backtest never saw.
+
+**Known gap, left as is:** a request whose range ends in the past is still
+served from cache if the cache reaches its end date, even when that day was
+cached partially. Live requests always end today, so they heal the last
+cached day on their next call.
+
+**Deployment** (api_bridge must restart to load the broker; it was held
+while the main book had BANKNIFTY 56200 CE open from 11:15:22 — the first
+entry since the startup fix, 21 minutes after the restart and inside the
+window, as intended):
+
+At 14:36:31 IST, with both books flat: api_bridge stopped, the three
+affected caches trimmed to end 2026-09-08 (plus the one truncated row), and
+the orchestrator's supervisor relaunched api_bridge on the fixed broker at
+14:36:56 (25 s). One history request per cache rebuilt 09-09..09-11 from
+Fyers. Re-verified against yfinance:
+
+| cache | before | after |
+|---|---|---|
+| NIFTY 5-min, 2026-09-10 | 25/75 off, mean \|Δclose\| 3.15 | **2/75, 0.30** |
+| NIFTY 5-min, 2026-09-11 | 23/23 off, mean 8.35 | **1/64, 0.00** |
+| NIFTY 15-min, 2026-09-10 | **3 of 25 bars** | **25 of 25** |
+
+Today's rebuilt cache ends at the 14:30 bar — the last one closed at
+14:37 — so no forming bar was persisted. BANKNIFTY 5-minute shows 5–9 bars
+a day beyond 2 points on every day including 09-04, which was never
+repaired, at a mean |Δclose| of 0.3–0.4 on a ~56,000 index: a vendor
+difference between Fyers and yfinance, not staleness.
+
+Cache backups: `scratchpad/cache_backup_20260911/` (session-local).
+
+---
+
 ## 2026-09-11 (market hours) — ema9 15-min/ITM variant book launched; three main-book defects fixed; a test that planted a fake position in the live dashboard
 
 ### Why a variant book
