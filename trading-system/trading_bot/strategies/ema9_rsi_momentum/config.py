@@ -56,6 +56,19 @@ MIN_PEAK_PROFIT_PTS: float = 30.0
 MAX_GIVEBACK_PCT: float = 20.0
 URGENCY_THRESHOLD: float = 0.70
 
+# ─────────────────────────────────────────────────────────────────────
+# Execution: which chart the rules read, and which strike a signal buys
+# ─────────────────────────────────────────────────────────────────────
+# Defaults are today's behaviour (5-minute chart, ATM strike). The 15-minute
+# / ITM combination measured +1.99% of premium per trade over 578 NIFTY
+# sessions after costs (n=170) against -3.20% for 5-minute / ATM, but is NOT
+# yet proven -- 10- and 20-minute charts lose, 2024 was flat, SENSEX loses.
+# It is paper-tested by ema9_variant_observer.py before any default changes.
+TIMEFRAME_MINUTES: int = 5
+STRIKE_SELECTION: str = "ATM"         # "ATM" | "ITM" -- see strike_selection.py
+ITM_TARGET_DELTA: float = 0.70        # |delta| an ITM pick aims for
+MAX_ENTRY_SPREAD_PCT: float = 1.0     # refuse a leg whose bid/ask spread is wider
+
 
 @dataclass(frozen=True)
 class Ema9RsiMomentumConfig:
@@ -84,6 +97,10 @@ class Ema9RsiMomentumConfig:
     min_peak_profit_pts: float = MIN_PEAK_PROFIT_PTS
     max_giveback_pct: float = MAX_GIVEBACK_PCT
     urgency_threshold: float = URGENCY_THRESHOLD
+    timeframe_minutes: int = TIMEFRAME_MINUTES
+    strike_selection: str = STRIKE_SELECTION
+    itm_target_delta: float = ITM_TARGET_DELTA
+    max_entry_spread_pct: float = MAX_ENTRY_SPREAD_PCT
 
     @classmethod
     def from_settings(cls, settings: dict | None = None, **overrides) -> "Ema9RsiMomentumConfig":

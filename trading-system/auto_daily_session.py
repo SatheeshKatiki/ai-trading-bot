@@ -507,6 +507,16 @@ observer_sv = ServiceSupervisor(
     # complete, nothing to trade). Honour that -- see the incident note above.
     restart_on_clean_exit=False,
 )
+# A second, isolated paper book: ema9_rsi_momentum's exact rules on the
+# 15-minute chart with an ITM strike -- see ema9_variant_observer.py. It
+# writes only under paper_obs_logs/variants/, never to state.db or the
+# dashboard's positions, and ends its own session at the close.
+variant_sv = ServiceSupervisor(
+    "ema9 Variant Book (15m ITM)",
+    lambda: [sys.executable, "-u", str(ROOT_DIR / "ema9_variant_observer.py"), "--variant", "15m_itm"],
+    "ema9_variant_observer_stdout.log",
+    restart_on_clean_exit=False,
+)
 
 
 def start_backend_service() -> bool:
@@ -538,6 +548,18 @@ def start_backend_service() -> bool:
 
     logger.warning("API Bridge did not return 200 within %ds, proceeding with watchdog.", max_wait)
     return True
+
+
+def start_variant_book() -> bool:
+    """Launch the ema9 execution-variant paper book (15-minute chart, ITM strike).
+
+    Independent of the main observer: a failure here is logged and supervised
+    like any other child, but never blocks or alters the main paper book.
+    """
+    logger.info("==========================================")
+    logger.info("STEP 4b: Launching ema9 Variant Paper Book (15-min / ITM)")
+    logger.info("==========================================")
+    return variant_sv.start()
 
 
 def start_paper_observer() -> bool:
@@ -827,6 +849,7 @@ def stop_all_subprocesses() -> None:
 
     # Supervisor.stop() terminates (then kills) the child AND closes its
     # stdout handle, which the previous implementation never did.
+    variant_sv.stop()
     observer_sv.stop()
     backend_sv.stop()
     observer_proc = observer_sv.proc
@@ -863,6 +886,7 @@ def run_session_flow(force_now: bool = False) -> None:
     # singletons and outlive a single session in --daemon mode).
     backend_sv.reset()
     observer_sv.reset()
+    variant_sv.reset()
 
     logger.info("=====================================================")
     logger.info("🚀 STARTING AUTOMATED DAILY TRADING SESSION: %s", today_date)
@@ -886,8 +910,9 @@ def run_session_flow(force_now: bool = False) -> None:
             logger.info("Pre-market initialized. Waiting %d seconds for market open (09:14 AM)...", max(int(time_left), 5))
             time.sleep(min(max(int(time_left), 5), 60))
             
-    # 4. Start Paper Observer
+    # 4. Start Paper Observer, and the ema9 variant book alongside it
     start_paper_observer()
+    start_variant_book()
     
     # 5. Market Hours Watchdog Loop
     logger.info("Entering Market Watchdog Loop (09:15 - 15:30 IST)...")
@@ -903,6 +928,10 @@ def run_session_flow(force_now: bool = False) -> None:
         # restarting, and pace any restart behind the backoff ladder. They
         # are safe to call on every tick.
         backend_sv.supervise()
+        # Supervised through the close: it squares off at 15:15 itself and
+        # refuses new entries after it, so a late restart can only finish
+        # managing a position, never open one.
+        variant_sv.supervise()
 
         # Only keep the observer up while it can still open new positions.
         if curr_t < EOD_SQUAREOFF_TIME:

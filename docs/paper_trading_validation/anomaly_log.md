@@ -6,6 +6,105 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-09-11 (market hours) — ema9 15-min/ITM variant book launched; three main-book defects fixed; a test that planted a fake position in the live dashboard
+
+### Why a variant book
+
+With the owner's exits held fixed, **only the entry side** was varied over 578
+NIFTY sessions (costs included, 70/30 chronological split):
+
+| execution | n | NET / trade | first 70% | last 30% |
+|---|---|---|---|---|
+| 5-min, ATM (today) | 656 | −3.20% | −2.92% | −3.75% |
+| 5-min, ITM | 656 | −1.47% | −1.36% | −1.71% |
+| **15-min, ITM** | **170** | **+1.99%** | **+0.88%** | **+4.81%** |
+
+ITM beat ATM at every timeframe and on both NIFTY and SENSEX — structural
+(theta and spread are a smaller share of an ITM premium), not fitted.
+15-min/ITM survives a 3% round-trip cost (+0.59%) and every SL/target pair
+around 15%/33% is positive.
+
+**Not proven**, and recorded so nobody reads it as more: 10-min −1.49% and
+20-min −2.70% (an edge should not vanish 5 minutes either side); 2024 alone
+was flat (−0.18%) and most of the profit is 2026's 37 trades; SENSEX 15-min
+loses (−1.52%). About 24 variants were tried, so one positive cell is
+expected by chance.
+
+Hence a paper book, not a default change: `Ema9RsiMomentumConfig` gained
+`timeframe_minutes` / `strike_selection` / `itm_target_delta` /
+`max_entry_spread_pct` whose **defaults are today's behaviour**, and
+`ema9_variant_observer.py --variant 15m_itm` trades the variant live.
+
+**It runs the strategy's own rules, which the main book does not.**
+`paper_observer.py` enters on `/api/signals`' bias and confidence, never on
+this strategy's closed-candle cross — so its results could not validate a
+rule measured against the strategy. The variant book calls `generate_signals`
+on closed 15-min spot bars and uses the owner's exits (SL 15%, target 33%,
+breakeven at +15%, reversal, EOD 15:15). ITM is picked by the chain's **real**
+delta (0.70 target) and skipped — never guessed — when no leg carries one.
+Fills at the ask, marks at the bid.
+
+Isolated from the main book: no `state.db`, no `active_positions.json`, logs
+under `paper_obs_logs/variants/15m_itm/` (the orchestrator's EOD glob is
+non-recursive — verified live: it sees only `session_Day_7_2026-09-11_Friday.json`),
+Telegram prefixed "SHADOW TEST". Launched by the orchestrator from the next
+session; started by hand at 10:52 IST today (PID 3024).
+
+Live smoke test at 10:48: 186 15-min candles, forming 10:45 bar dropped, ITM
+CE 23150 (Δ 0.73) / ITM PE 23450 (Δ −0.69), premium 0.87% of spot (the
+backtest assumed 0.9%), spreads 0.2–0.25%.
+
+**Parity: the live book fires on exactly the backtest's bars.** Replaying all
+578 sessions bar by bar through `ema9_variant_observer.latest_closed_signal`,
+fed only the trailing window of CLOSED bars a live poll sees: with 175 bars,
+**170 of 170 backtest signals matched — 0 missed, 0 extra**. With only 100
+bars all 170 still matched but 6 extra signals appeared (EMA/RSI/ADX warm-up
+drift). So the book fetches 15 calendar days (~275 bars) and takes no signal
+below 150 closed bars — after a long holiday stretch it sits out rather than
+trade on unconverged indicators.
+
+**Expect it to be slow.** 170 trades in 578 sessions is ~0.3 per session —
+one live signal in the preceding 185 closed bars. 20 trades is roughly
+60 sessions (~3 months). `scorecard.json` withholds a verdict until 20
+sessions AND 20 trades, and carries the backtest's numbers as its yardstick.
+
+### Main-book defects found while wiring it
+
+1. **A standing bias was bought at startup.** The "new trigger" test compared
+   each poll with the last — and at startup there was no last, so ANY bias
+   ≥ 65 counted as new. **6 of the first 20 paper trades were entered at
+   09:15:1x**, on the first poll, before one 5-minute candle had closed.
+   Today it bought NIFTY and BANKNIFTY PE at 09:15:15; both stopped out
+   (−₹2,375.75). A cold-cache `/api/signals` placeholder (no `bias` key)
+   made even a seeded first poll unsafe, so a placeholder is now not an
+   observation at all.
+2. **The strategy's window was ignored.** ema9 excludes 09:15–09:25 and after
+   15:00; the observer checked only 15:15. **7 of 20 trades were entered
+   before 09:25, and those 7 account for −₹4,017 of the −₹5,983 recorded
+   (67%).**
+3. **The reversal exit wired this morning read the forming candle.**
+   `/api/history` returns the open bar last; `evaluate_protective_exit` reads
+   the frame's last bar. `shared/closed_bars.py` now drops it (the same rule
+   `trading_bot/main.py` already applies to its own frames).
+
+The observer was restarted onto the fixed code at 10:54:23 IST with no open
+positions (its supervisor relaunched it, launch #2); it resumed today's two
+recorded trades and did not buy on its first poll.
+
+### A test planted a fake position in the live dashboard
+
+`config/active_positions.json` held **"NIFTY-RATELIMIT-TEST"**, entry
+00:35:06 — the previous night's test run. `test_order_rate_limit.py` mocked
+`record_trade` (a 2026-08-05 fix for the same leak into `state.db`) but the
+paper-mode branch of `/api/order/execute` also writes the positions file, at a
+path the endpoint rebuilt inline from its own module file — unpatchable.
+Confirmed by re-running the suite: the row was rewritten at 10:50:03. The
+endpoint now reads the existing `_MAIN_POSITIONS_PATH` constant, the test
+redirects it to `tmp_path`, and a guard test asserts the live file's bytes are
+unchanged by an order. The fake row was removed.
+
+---
+
 ## 2026-09-11 — FIX: the strategy's reversal exit existed, but could never fire
 
 `ema9_rsi_momentum`'s spec has four ways out of a position: the 15% stop, the
