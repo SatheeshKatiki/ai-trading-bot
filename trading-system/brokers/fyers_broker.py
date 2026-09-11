@@ -596,15 +596,18 @@ class FyersBroker(BaseBroker):
             import os
             import pandas as pd
             
+            from . import history_cache as _history_cache
+            from .history_cache import clean_cache_frame, closed_rows, write_cache_atomic
+
             # Check CSV Cache First
             clean_sym = symbol.replace(':', '_')
             clean_tf = timeframe.replace(' ', '')
-            csv_path = os.path.join(os.path.dirname(__file__), "..", "data", f"{clean_sym}_{clean_tf}.csv")
+            csv_path = os.path.join(_history_cache.CACHE_DIR, f"{clean_sym}_{clean_tf}.csv")
             
             if os.path.exists(csv_path):
                 self.logger.info("FyersBroker: Checking historical data from cache %s", csv_path)
                 try:
-                    df = pd.read_csv(csv_path)
+                    df = clean_cache_frame(pd.read_csv(csv_path))
                     
                     # Verify if the cache covers the requested start_date
                     cache_min_date = df['datetime'].min()[:10]  # Get YYYY-MM-DD
@@ -624,10 +627,11 @@ class FyersBroker(BaseBroker):
                         self.logger.info(f"Cache max date ({cache_max_date}). Fetching fresh data for remaining/ongoing days.")
                         
                         # Adjust start_dt so we don't refetch everything!
-                        if cache_max_date < today_str:
-                            missing_start_dt = datetime.strptime(cache_max_date, '%Y-%m-%d') + timedelta(days=1)
-                        else:
-                            missing_start_dt = datetime.strptime(cache_max_date, '%Y-%m-%d')
+                        # Re-fetch the LAST cached day in full, never just the
+                        # day after it: a day first cached mid-session is
+                        # incomplete, and starting at cache_max + 1 left
+                        # 2026-09-10's 15-minute bars at 3 of 25 for good.
+                        missing_start_dt = datetime.strptime(cache_max_date, '%Y-%m-%d')
                             
                         if missing_start_dt <= end_dt:
                             start_dt = missing_start_dt
@@ -715,8 +719,11 @@ class FyersBroker(BaseBroker):
                     os.makedirs(os.path.dirname(csv_path), exist_ok=True)
                     if df is not None and not df.empty:
                         # Append to existing cache and drop duplicates
-                        combined_df = pd.concat([df, new_df]).drop_duplicates(subset=['datetime']).sort_values('datetime')
-                        combined_df.to_csv(csv_path, index=False)
+                        # Fresh bars win. keep='first' kept the OLD row, so a
+                        # bar cached while still forming was never corrected;
+                        # and only finished bars are persisted at all.
+                        combined_df = pd.concat([df, new_df]).drop_duplicates(subset=['datetime'], keep='last').sort_values('datetime')
+                        write_cache_atomic(closed_rows(combined_df, resolution), csv_path)
                         self.logger.info("Appended missing Fyers historical data to cache: %s", csv_path)
                         
                         # Apply start/end filter on the COMBINED dataset
@@ -724,7 +731,7 @@ class FyersBroker(BaseBroker):
                         final_filtered = combined_df.loc[mask]
                         return final_filtered.to_dict(orient='records')
                     else:
-                        new_df.to_csv(csv_path, index=False)
+                        write_cache_atomic(closed_rows(new_df, resolution), csv_path)
                         self.logger.info("Saved Fyers historical data to fresh cache: %s", csv_path)
                         
                         # Apply start/end filter on the fresh dataset
