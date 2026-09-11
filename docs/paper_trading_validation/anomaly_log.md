@@ -6,6 +6,64 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-09-12 — deep audit (options-buyer view); P1 fixed: the owner's exit ladder everywhere, no option hair-trigger trail
+
+Read-only audit of signals, exits, strikes/expiry, risk, fills, data and UI.
+The headline: **the strategy existed in three versions** — the variant books
+followed the spec, the main paper book its own rules, and the live engine a
+third set with the most dangerous rules.
+
+### Fixed now (P1)
+
+| defect | effect | fix |
+|---|---|---|
+| Live option exits ran through SmartExitEngine's percentage give-back, fed the dashboard's 0.5 / 0.35 as **% of premium** | on a ₹120 option: trail from +₹0.60, exit after a ₹0.42 give-back — inside the spread; every winner closed within a tick or two (the repo's own measurement: 92.4% of 5-min bars exceed the allowance) | give-back never applies to an option position (all strategies); ATR trail in premium units remains |
+| ema9 reversal exit imported into `main.py`, never called | a broken thesis rode to SL or EOD | dedicated ema9 option exit branch: EOD, ladder, reversal on closed bars, SL-M moved at the exchange |
+| Live opening stop from a generic band table | not the spec's 15% | 15% for ema9 (band table still vetoes untradeable premiums) |
+| UI "Set Defaults" for ema9 wrote equity-style 0.6 / 2.5 / 0.5 / 0.35 | the source of the hair trigger | writes the ladder instead |
+
+**The owner's exit design** (stated 2026-09-12): no fixed target — the stop
+and the target keep moving up while the move has room, until the market
+reverses. Ladder `15/33/50/75/100/150/200`: reaching a rung moves the stop to
+the rung below (breakeven at +15%). Measured first on 578 NIFTY sessions:
+15-min ITM **+1.99% → +2.25%/trade** (best trade +31% → +106%); 5-min ATM
+−3.20% → −2.89%. Four other trail ladders were tested too; the single
+breakeven step was the best of the fixed-target variants, so the trail itself
+was not a defect.
+
+**0DTE on expiry days is the owner's deliberate choice** (premium can
+multiply fast on small capital; owner reports 60–70% wins from manual
+checks, recorded paper trades so far 26–39% overall). Not blocked: the
+variant books now tag every trade expiry-day / normal and the scorecard
+reports both, so the data settles it.
+
+### Found, not changed (for the P2–P4 decision)
+
+* **Correlated exposure.** 61% of signals have a same-direction signal on
+  another index within 15 min; 5-min return correlation 0.75–0.91. The
+  per-index cap allows three simultaneous same-direction positions — about
+  ₹6,500 (6.5% of capital) at stop in one move. **No daily loss limit in
+  the paper books.**
+* **Risk per trade.** 1% (₹1,000) policy; one BANKNIFTY lot risks ~₹2,400
+  and passes via the minimum-lot override.
+* **UI backtest** (`/api/backtest`, grid_search) uses underlying-% stop /
+  target with delta scaling — not the strategy's premium exits.
+* **`/api/option-greeks`** (UI advanced option chart) estimates IV from
+  moneyness, assumes Thursday expiry for NIFTY (Tuesday) and stale lots
+  (NIFTY 75, SENSEX 10).
+* **No IV / VIX gate** — the 2026-09-11 NIFTY CE lost about half of its
+  −20 premium to falling IV; India VIX is in the chain payload, unused.
+* Live-engine paper fills at LTP, not ask/bid. No event-day awareness.
+  Today's bars come from a yfinance overlay. BANKNIFTY/SENSEX have no
+  backtest evidence for this strategy.
+* `"CE" in symbol` is how the engine recognises an option, so RELIAN-CE
+  counts as one. Index symbols contain neither CE nor PE — trading
+  unaffected.
+
+Full suite 1051 passed; Trade Indices UI specs pass in Chromium.
+
+---
+
 ## 2026-09-11 (evening) — the main book does not trade the strategy; a like-for-like control book; SENSEX; UI-only index selection
 
 ### What the main paper book actually follows
