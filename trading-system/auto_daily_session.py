@@ -507,13 +507,14 @@ observer_sv = ServiceSupervisor(
     # complete, nothing to trade). Honour that -- see the incident note above.
     restart_on_clean_exit=False,
 )
-# A second, isolated paper book: ema9_rsi_momentum's exact rules on the
-# 15-minute chart with an ITM strike -- see ema9_variant_observer.py. It
-# writes only under paper_obs_logs/variants/, never to state.db or the
-# dashboard's positions, and ends its own session at the close.
+# Isolated paper books running ema9_rsi_momentum's exact rules -- 5-minute /
+# ATM (today's defaults, the control) and 15-minute / ITM -- in one process
+# that shares each poll's data. See ema9_variant_observer.py. They write only
+# under paper_obs_logs/variants/, never to state.db or the dashboard's
+# positions, and end their own session at the close.
 variant_sv = ServiceSupervisor(
-    "ema9 Variant Book (15m ITM)",
-    lambda: [sys.executable, "-u", str(ROOT_DIR / "ema9_variant_observer.py"), "--variant", "15m_itm"],
+    "ema9 Variant Books (5m ATM + 15m ITM)",
+    lambda: [sys.executable, "-u", str(ROOT_DIR / "ema9_variant_observer.py"), "--variants", "5m_atm,15m_itm"],
     "ema9_variant_observer_stdout.log",
     restart_on_clean_exit=False,
 )

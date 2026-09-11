@@ -1,35 +1,46 @@
 #!/usr/bin/env python3
 """
-EMA9/RSI Momentum -- execution-variant paper book.
+EMA9/RSI Momentum -- execution-variant paper books.
 
 Runs the owner's ema9_rsi_momentum rules exactly -- ``generate_signals`` on
 CLOSED spot candles; stop 15%, target 33%, stop to breakeven at +15%, the
-EMA/RSI reversal exit, square-off at 15:15 -- under an execution *variant*
-(which chart the rules read, which strike a signal buys), as its own paper
-book.
+EMA/RSI reversal exit, square-off at 15:15 -- under one or more execution
+*variants* (which chart the rules read, which strike a signal buys), each as
+its own paper book:
 
-Why not paper_observer.py: that observer enters on /api/signals' bias and
-confidence, not on this strategy's closed-candle cross, so its results cannot
-validate a change that was measured against the strategy's own rules. This
-book enters on the same bars the backtest did.
+  5m_atm   5-minute chart, ATM strike -- today's defaults: the CONTROL
+  15m_itm  15-minute chart, ITM strike (real delta ~0.70) -- the CANDIDATE
+
+Why not paper_observer.py: that observer enters when /api/signals' "bias"
+flips. The bias is a trend STATE -- EMA9 above EMA20 and RSI above its
+average, scored on the still-forming candle -- in which ADX and the EMA-touch
+rule only add or withhold points; they never block. So it takes trades the
+strategy refuses: on 2026-09-11 both of its afternoon entries came on crosses
+the strategy blocked (ADX 14.5 and 16.4 < 18). Its results cannot measure the
+strategy. These books enter on the strategy's own signals, so 5m_atm vs
+15m_itm is a like-for-like comparison.
+
+Both books run in one process and share each poll's data: one 5-minute
+history fetch per index, from which the 15-minute bars are built exactly as
+the backtest built them.
+
+Indices: the paper-test set (``paper_test_instruments`` setting; default
+NIFTY, BANKNIFTY, SENSEX). Live trading, later, uses only the indices chosen
+in the UI -- see ``shared.instruments.resolve_trading_symbols``.
 
 Isolated from the main paper book:
-  * no state.db writes, no config/active_positions.json -- the dashboard,
-    equity curve and EOD report stay the main book's alone
+  * no state.db writes, no config/active_positions.json
   * logs in paper_obs_logs/variants/<variant>/ -- a subdirectory, so the
     orchestrator's EOD report (which globs paper_obs_logs/*<date>*.json)
-    never mixes the two books
+    never mixes them in
   * Telegram messages are prefixed "SHADOW TEST"
 
-Evidence for the one variant defined, 15m_itm (578 NIFTY sessions,
-2024-01..2026-09, owner's exits, costs included): +1.99% of premium per
-trade, n=170, positive in both halves of the data and still positive at a 3%
-round-trip cost -- against -3.20% for today's 5-minute / ATM. NOT proven:
-10- and 20-minute charts lose, 2024 alone was flat, and SENSEX loses under
-the same rules. This book exists to find out on live quotes before any
-default changes.
+Backtest yardsticks (578 NIFTY sessions, owner's exits, costs included):
+5m_atm -3.20% of premium per trade (n=656); 15m_itm +1.99% (n=170), not
+proven -- 10/20-minute lose, 2024 flat, SENSEX loses. BANKNIFTY and SENSEX
+have no comparable backtest here; their live numbers are new information.
 
-Usage:  python ema9_variant_observer.py --variant 15m_itm
+Usage:  python ema9_variant_observer.py --variants 5m_atm,15m_itm
 """
 
 from __future__ import annotations
@@ -47,8 +58,9 @@ from collections import Counter
 ROOT_DIR = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT_DIR))
 
-# HTTP, auth and option-chain helpers are paper_observer's, so both books read
-# the market the same way. (Importing it also runs its startup maintenance.)
+# HTTP, auth and option-chain helpers are paper_observer's, so every book
+# reads the market the same way. (Importing it also runs its startup
+# maintenance.)
 import paper_observer as po  # noqa: E402
 from shared.closed_bars import (  # noqa: E402
     candles_to_frame,
@@ -56,6 +68,7 @@ from shared.closed_bars import (  # noqa: E402
     regular_session,
     resample_closed,
 )
+from shared.instruments import resolve_paper_test_instruments  # noqa: E402
 from trading_bot.strategies.ema9_rsi_momentum import (  # noqa: E402
     evaluate_protective_exit,
     generate_signals,
@@ -64,25 +77,30 @@ from trading_bot.strategies.ema9_rsi_momentum.config import Ema9RsiMomentumConfi
 from trading_bot.strategies.ema9_rsi_momentum.strike_selection import select_strike  # noqa: E402
 
 VARIANTS = {
+    "5m_atm": {
+        "label": "EMA9/RSI 5-min ATM (control)",
+        "config": {"timeframe_minutes": 5, "strike_selection": "ATM"},
+    },
     "15m_itm": {
         "label": "EMA9/RSI 15-min ITM",
         "config": {"timeframe_minutes": 15, "strike_selection": "ITM"},
-        # NIFTY only: the one index the result was measured on with enough
-        # history. SENSEX lost under the same rules; BANKNIFTY had 2.5 months
-        # of data -- too little to judge either way.
-        "symbols": ["NIFTY"],
     },
 }
+DEFAULT_VARIANTS = ("5m_atm", "15m_itm")
 
 #: What the backtest measured, so every scorecard carries its own yardstick.
+#: NIFTY only -- the one index with enough history to measure.
 BACKTEST_REFERENCE = {
-    "15m_itm": {"trades": 170, "avg_net_return_pct": 1.99, "win_rate_pct": 39.4,
+    "5m_atm": {"symbol": "NIFTY", "trades": 656, "avg_net_return_pct": -3.20, "win_rate_pct": 26.7,
+               "basis": "578 NIFTY sessions 2024-01..2026-09, owner's exits, 3.0% round-trip cost"},
+    "15m_itm": {"symbol": "NIFTY", "trades": 170, "avg_net_return_pct": 1.99, "win_rate_pct": 39.4,
                 "basis": "578 NIFTY sessions 2024-01..2026-09, owner's exits, 1.6% round-trip cost"},
 }
 
 STOP_PCT = 15.0
 TARGET_PCT = 33.0
 TRAIL_TRIGGER_PCT = 15.0         # at +15% the stop moves to breakeven
+#: Per index, per book, per day.
 MAX_TRADES_PER_DAY = 3
 POLL_INTERVAL_S = 15
 #: A signal bar is acted on only if it closed within this many seconds, so a
@@ -100,6 +118,8 @@ MIN_BARS = 150
 #: A verdict needs this many sessions AND this many trades.
 MIN_SESSIONS_FOR_VERDICT = 20
 MIN_TRADES_FOR_VERDICT = 20
+#: The timeframe history is fetched at; coarser bars are built from it.
+BASE_TIMEFRAME_MINUTES = 5
 
 VARIANTS_DIR = po.LOG_DIR / "variants"
 running = True
@@ -121,13 +141,13 @@ def _install_signal_handlers() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Rules -- pure functions, so the book can be tested without a market
+# Rules -- pure functions, so the books can be tested without a market
 # ---------------------------------------------------------------------------
 
 def build_config(variant: str) -> Ema9RsiMomentumConfig:
     """Strategy defaults plus the variant's execution overrides.
 
-    Deliberately NOT read from settings.json: the book must run exactly the
+    Deliberately NOT read from settings.json: the books must run exactly the
     rules that were measured, whatever the dashboard is set to.
     """
     return Ema9RsiMomentumConfig(**VARIANTS[variant]["config"])
@@ -210,6 +230,40 @@ def close_position(pos: dict, price: float, reason: str, now, price_source: str)
     return closed
 
 
+def trades_taken(sess: dict, symbol: str) -> int:
+    """Trades this book has opened on ``symbol`` today, closed or open."""
+    return (sum(1 for t in sess["trades"] if t.get("symbol") == symbol)
+            + (1 if symbol in sess["open_positions"] else 0))
+
+
+# ---------------------------------------------------------------------------
+# Market data
+# ---------------------------------------------------------------------------
+
+def base_frame(symbol: str, now):
+    """Closed, regular-session 5-minute bars for ``symbol`` -- one fetch per
+    index per poll, shared by every book."""
+    base = po.fetch_candles(symbol, f"{BASE_TIMEFRAME_MINUTES} Min", limit=5000, days=HISTORY_DAYS)
+    return regular_session(candles_to_frame(closed_candles(base or [], BASE_TIMEFRAME_MINUTES, now)))
+
+
+def frame_for(df5, timeframe_minutes: int, now):
+    """The book's own timeframe, built from 5-minute bars.
+
+    Never read from the broker's 15-minute series: its local cache once held
+    3 of a session's 25 bars while the 5-minute cache held all 75. The
+    backtest built its 15-minute bars from 5-minute ones; so does this.
+    """
+    if timeframe_minutes == BASE_TIMEFRAME_MINUTES:
+        return df5
+    return resample_closed(df5, timeframe_minutes, now)
+
+
+def closed_frame(symbol: str, timeframe_minutes: int, now):
+    """Fetch and build in one call -- for a single book or a one-off check."""
+    return frame_for(base_frame(symbol, now), timeframe_minutes, now)
+
+
 # ---------------------------------------------------------------------------
 # Persistence
 # ---------------------------------------------------------------------------
@@ -235,6 +289,7 @@ def load_session(path: pathlib.Path, variant: str, date_str: str) -> dict:
         "label": VARIANTS[variant]["label"],
         "date": date_str,
         "config": VARIANTS[variant]["config"],
+        "symbols": [],
         "session_start": None,
         "session_end": None,
         "trades": [],
@@ -269,7 +324,8 @@ def summarise(trades: list) -> dict:
 
 
 def build_scorecard(variant: str) -> dict:
-    """Every session this variant has run, against the backtest's yardstick."""
+    """Every session this book has run, overall and per index, against the
+    backtest's yardstick."""
     trades, sessions = [], 0
     for f in sorted(variant_dir(variant).glob("session_*.json")):
         try:
@@ -280,6 +336,8 @@ def build_scorecard(variant: str) -> dict:
             continue
     card = {"variant": variant, "label": VARIANTS[variant]["label"], "sessions": sessions}
     card.update(summarise(trades))
+    card["by_symbol"] = {sym: summarise([t for t in trades if t.get("symbol") == sym])
+                         for sym in sorted({t.get("symbol") for t in trades if t.get("symbol")})}
     card["backtest_reference"] = BACKTEST_REFERENCE.get(variant)
 
     if sessions < MIN_SESSIONS_FOR_VERDICT or card["trades"] < MIN_TRADES_FOR_VERDICT:
@@ -333,7 +391,7 @@ def consider_entry(sess: dict, symbol: str, cfg: Ema9RsiMomentumConfig, df, now)
     if now.time() >= po.EOD_CUTOFF:
         record["action"] = "skipped: after the EOD cutoff"
         return True
-    if len(sess["trades"]) + len(sess["open_positions"]) >= MAX_TRADES_PER_DAY:
+    if trades_taken(sess, symbol) >= MAX_TRADES_PER_DAY:
         record["action"] = "skipped: daily trade cap"
         return True
 
@@ -349,7 +407,7 @@ def consider_entry(sess: dict, symbol: str, cfg: Ema9RsiMomentumConfig, df, now)
                         cfg.itm_target_delta, cfg.max_entry_spread_pct)
     if leg is None:
         record["action"] = f"skipped: no tradeable {cfg.strike_selection} strike"
-        print(f"  [{now:%H:%M:%S}] {symbol} {record['side']} signal on the {bar_start:%H:%M} bar "
+        print(f"  [{now:%H:%M:%S}] {variant} {symbol} {record['side']} signal on the {bar_start:%H:%M} bar "
               f"-- {record['action']}")
         return True
 
@@ -359,7 +417,7 @@ def consider_entry(sess: dict, symbol: str, cfg: Ema9RsiMomentumConfig, df, now)
     msg = (f"ENTRY {pos['contract']} @ Rs.{pos['entry_premium']:.2f} (ask) | delta {pos['opt_delta']} | "
            f"spot {pos['entry_spot']} | {cfg.timeframe_minutes}-min bar {bar_start:%H:%M} | "
            f"SL Rs.{pos['sl_premium']:.2f} | Tgt Rs.{pos['tgt_premium']:.2f}")
-    print(f"  [{now:%H:%M:%S}] 🔵 {msg}")
+    print(f"  [{now:%H:%M:%S}] {variant} 🔵 {msg}")
     notify(variant, msg)
     return True
 
@@ -380,8 +438,8 @@ def manage_position(sess: dict, symbol: str, pos: dict, df, is_new_bar: bool, no
         was_trailed = pos.get("trailed")
         reason = check_price_exits(pos, mark)
         if pos.get("trailed") and not was_trailed:
-            print(f"  [{now:%H:%M:%S}] 🛡️ {pos['contract']} +{TRAIL_TRIGGER_PCT:.0f}% -- stop moved to "
-                  f"breakeven Rs.{pos['entry_premium']:.2f}")
+            print(f"  [{now:%H:%M:%S}] {sess['variant']} 🛡️ {pos['contract']} +{TRAIL_TRIGGER_PCT:.0f}% -- "
+                  f"stop moved to breakeven Rs.{pos['entry_premium']:.2f}")
         if reason is None and is_new_bar and len(df) >= 2:
             rev = evaluate_protective_exit(df, pos["side"], pos["entry_premium"], mark)
             if rev.should_exit:
@@ -405,33 +463,13 @@ def manage_position(sess: dict, symbol: str, pos: dict, df, is_new_bar: bool, no
     msg = (f"EXIT {closed['contract']} | {reason} | Rs.{price:.2f} ({source}) | "
            f"net Rs.{closed['net_pnl']:+.2f} ({closed['net_return_pct']:+.2f}%) | {closed['duration_min']}m\n"
            f"Book so far: {card['trades']} trades, net Rs.{card['net_pnl']:+.2f}")
-    print(f"  [{now:%H:%M:%S}] {'💰' if closed['net_pnl'] > 0 else '🛑'} {msg}")
+    print(f"  [{now:%H:%M:%S}] {sess['variant']} {'💰' if closed['net_pnl'] > 0 else '🛑'} {msg}")
     notify(sess["variant"], msg)
     return True
 
 
-#: The timeframe history is fetched at; coarser bars are built from it.
-BASE_TIMEFRAME_MINUTES = 5
-
-
-def closed_frame(symbol: str, timeframe_minutes: int, now):
-    """Closed, regular-session ``timeframe_minutes`` bars, built from 5-minute history.
-
-    Never read from the broker's own 15-minute series: its local cache held
-    3 of 2026-09-10's 25 bars while the 5-minute cache held all 75, and
-    indicators computed across that hole are not the ones the backtest
-    measured. The backtest built its 15-minute bars from 5-minute ones; so
-    does this.
-    """
-    base = po.fetch_candles(symbol, f"{BASE_TIMEFRAME_MINUTES} Min", limit=5000, days=HISTORY_DAYS)
-    df = regular_session(candles_to_frame(closed_candles(base or [], BASE_TIMEFRAME_MINUTES, now)))
-    if timeframe_minutes == BASE_TIMEFRAME_MINUTES:
-        return df
-    return resample_closed(df, timeframe_minutes, now)
-
-
-def step(sess: dict, symbol: str, cfg: Ema9RsiMomentumConfig, now, path: pathlib.Path) -> None:
-    df = closed_frame(symbol, cfg.timeframe_minutes, now)
+def step(sess: dict, symbol: str, cfg: Ema9RsiMomentumConfig, df, now, path: pathlib.Path) -> None:
+    """One book, one index, one poll, on an already-built frame."""
     newest = df.index[-1].isoformat() if len(df) else None
     is_new_bar = newest is not None and newest != sess["last_bar"].get(symbol)
 
@@ -449,42 +487,10 @@ def step(sess: dict, symbol: str, cfg: Ema9RsiMomentumConfig, now, path: pathlib
 
 
 # ---------------------------------------------------------------------------
-# Session
+# Sessions
 # ---------------------------------------------------------------------------
 
-def run_session(variant: str) -> dict:
-    spec = VARIANTS[variant]
-    cfg = build_config(variant)
-    date_str = po.now_ist().strftime("%Y-%m-%d")
-    path = session_file(variant, date_str)
-    sess = load_session(path, variant, date_str)
-    sess["session_start"] = sess["session_start"] or po.now_ist().isoformat()
-
-    print(f"\n{'=' * 70}")
-    print(f"  SHADOW BOOK: {spec['label']}  ({variant})  {date_str}")
-    print(f"  Rules : ema9_rsi_momentum on CLOSED {cfg.timeframe_minutes}-min spot bars")
-    print(f"  Strike: {cfg.strike_selection} (target |delta| {cfg.itm_target_delta}), "
-          f"spread cap {cfg.max_entry_spread_pct}%")
-    print(f"  Exits : SL {STOP_PCT:.0f}% | target {TARGET_PCT:.0f}% | breakeven at +{TRAIL_TRIGGER_PCT:.0f}% "
-          f"| reversal | EOD 15:15")
-    print(f"  Symbols: {', '.join(spec['symbols'])} | resumed trades: {len(sess['trades'])}, "
-          f"open: {len(sess['open_positions'])}")
-    print(f"{'=' * 70}")
-    po.save_session_atomic(sess, path)
-
-    while running and po.is_market_open():
-        now = po.now_ist()
-        for symbol in spec["symbols"]:
-            try:
-                step(sess, symbol, cfg, now, path)
-            except Exception as exc:
-                print(f"  [{now:%H:%M:%S}] {symbol}: cycle error: {exc}")
-        for _ in range(POLL_INTERVAL_S):
-            if not running:
-                break
-            time.sleep(1)
-
-    market_closed = not po.is_market_open()
+def finish_book(variant: str, sess: dict, path: pathlib.Path, market_closed: bool) -> None:
     if market_closed:
         # EOD normally closed everything at 15:15; this only fires if every
         # quote was missing through the close.
@@ -495,38 +501,108 @@ def run_session(variant: str) -> dict:
             del sess["open_positions"][symbol]
         sess["session_end"] = po.now_ist().isoformat()
     sess["summary"] = summarise(sess["trades"])
+    sess["summary"]["by_symbol"] = {sym: summarise([t for t in sess["trades"] if t.get("symbol") == sym])
+                                    for sym in sess["symbols"]}
     po.save_session_atomic(sess, path)
     card = write_scorecard(variant)
 
     s = sess["summary"]
-    print(f"\n  SESSION {date_str}: {s['trades']} trades, {s['wins']} wins, net Rs.{s['net_pnl']:+.2f}")
-    print(f"  BOOK: {card['sessions']} sessions, {card['trades']} trades, net Rs.{card['net_pnl']:+.2f}, "
-          f"avg {card['avg_net_return_pct']}%/trade -- {card['verdict']}")
+    print(f"\n  [{variant}] SESSION {sess['date']}: {s['trades']} trades, {s['wins']} wins, net Rs.{s['net_pnl']:+.2f}")
+    print(f"  [{variant}] BOOK: {card['sessions']} sessions, {card['trades']} trades, "
+          f"net Rs.{card['net_pnl']:+.2f}, avg {card['avg_net_return_pct']}%/trade -- {card['verdict']}")
     if market_closed:
-        notify(variant, f"Session {date_str}: {s['trades']} trades, net Rs.{s['net_pnl']:+.2f}\n"
+        per_index = ", ".join(f"{k} {v['trades']}t Rs.{v['net_pnl']:+.0f}" for k, v in s["by_symbol"].items())
+        notify(variant, f"Session {sess['date']}: {s['trades']} trades, net Rs.{s['net_pnl']:+.2f} ({per_index})\n"
                         f"Book: {card['sessions']} sessions, {card['trades']} trades, "
                         f"net Rs.{card['net_pnl']:+.2f}\n{card['verdict']}")
-    return sess
+
+
+def run_books(variants) -> dict:
+    """Run every book in ``variants`` for today's session, sharing each poll's
+    data between them."""
+    cfgs = {v: build_config(v) for v in variants}
+    symbols = resolve_paper_test_instruments(po.fetch_json("/api/settings") or {})
+    date_str = po.now_ist().strftime("%Y-%m-%d")
+    books = {}
+    for v in variants:
+        path = session_file(v, date_str)
+        sess = load_session(path, v, date_str)
+        sess["symbols"] = symbols
+        sess["session_start"] = sess["session_start"] or po.now_ist().isoformat()
+        po.save_session_atomic(sess, path)
+        books[v] = (sess, path)
+
+    print(f"\n{'=' * 72}")
+    print(f"  SHADOW BOOKS  {date_str}  -- ema9_rsi_momentum rules on CLOSED spot bars")
+    for v in variants:
+        c, sess = cfgs[v], books[v][0]
+        print(f"  {v:8s} {VARIANTS[v]['label']:32s} {c.timeframe_minutes:>2}-min {c.strike_selection:3s} | "
+              f"resumed trades {len(sess['trades'])}, open {len(sess['open_positions'])}")
+    print(f"  Exits : SL {STOP_PCT:.0f}% | target {TARGET_PCT:.0f}% | breakeven at +{TRAIL_TRIGGER_PCT:.0f}% "
+          f"| reversal | EOD 15:15")
+    print(f"  Indices (paper test): {', '.join(symbols)} | max {MAX_TRADES_PER_DAY}/index/book/day")
+    print(f"{'=' * 72}")
+
+    while running and po.is_market_open():
+        now = po.now_ist()
+        for symbol in symbols:
+            try:
+                df5 = base_frame(symbol, now)
+            except Exception as exc:
+                print(f"  [{now:%H:%M:%S}] {symbol}: history fetch failed: {exc}")
+                continue
+            for v in variants:
+                sess, path = books[v]
+                try:
+                    step(sess, symbol, cfgs[v], frame_for(df5, cfgs[v].timeframe_minutes, now), now, path)
+                except Exception as exc:
+                    print(f"  [{now:%H:%M:%S}] {v} {symbol}: cycle error: {exc}")
+        for _ in range(POLL_INTERVAL_S):
+            if not running:
+                break
+            time.sleep(1)
+
+    market_closed = not po.is_market_open()
+    for v in variants:
+        finish_book(v, *books[v], market_closed)
+    return {v: books[v][0] for v in variants}
+
+
+def run_session(variant: str) -> dict:
+    """A single book -- kept for callers that run one variant."""
+    return run_books([variant])[variant]
+
+
+def parse_variants(text: str) -> list:
+    names = [v.strip() for v in (text or "").split(",") if v.strip()]
+    unknown = [v for v in names if v not in VARIANTS]
+    if unknown or not names:
+        raise SystemExit(f"unknown or empty --variants {text!r}; choose from {sorted(VARIANTS)}")
+    return list(dict.fromkeys(names))
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--variant", default="15m_itm", choices=sorted(VARIANTS))
+    ap.add_argument("--variants", default=",".join(DEFAULT_VARIANTS),
+                    help=f"comma-separated, from {sorted(VARIANTS)}")
+    ap.add_argument("--variant", default=None, help="a single variant (older spelling of --variants)")
     args = ap.parse_args(argv)
+    variants = parse_variants(args.variant or args.variants)
     _install_signal_handlers()
 
     from shared.singleton_lock import acquire_singleton_lock
-    acquire_singleton_lock(f"ema9_variant_{args.variant}", "ema9_variant_observer.py")
+    acquire_singleton_lock("ema9_variant_books", "ema9_variant_observer.py")
 
     now = po.now_ist()
     if now.weekday() >= 5 or now.time() >= po.MARKET_CLOSE:
         print(f"  [VARIANT] Market closed ({now:%a %H:%M} IST) -- nothing to do.")
-        write_scorecard(args.variant)
+        for v in variants:
+            write_scorecard(v)
         return 0
     while running and po.ist_time() < po.MARKET_OPEN:
         time.sleep(5)
     if running:
-        run_session(args.variant)
+        run_books(variants)
     return 0
 
 

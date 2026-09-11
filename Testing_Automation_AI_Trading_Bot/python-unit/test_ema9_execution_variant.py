@@ -33,6 +33,7 @@ import pytz
 import auto_daily_session as ads
 import ema9_variant_observer as ev
 import paper_observer as po
+from shared.closed_bars import candles_to_frame
 from trading_bot.strategies.ema9_rsi_momentum import generate_signals
 from trading_bot.strategies.ema9_rsi_momentum.config import Ema9RsiMomentumConfig
 from trading_bot.strategies.ema9_rsi_momentum.strike_selection import select_strike
@@ -268,7 +269,7 @@ def test_entry_guards(monkeypatch, tmp_path, setup, expected):
     sess = _session(tmp_path)
     bar, now = "2026-09-11 10:15", _ist(10, 31)
     if setup == "cap":
-        sess["trades"] = [{}] * ev.MAX_TRADES_PER_DAY
+        sess["trades"] = [{"symbol": "NIFTY"}] * ev.MAX_TRADES_PER_DAY
     if setup == "eod":
         bar, now = "2026-09-11 15:00", _ist(15, 15, 30)
     ev.consider_entry(sess, "NIFTY", ev.build_config("15m_itm"), _bar_frame(bar), now)
@@ -380,7 +381,7 @@ def test_variant_logs_are_invisible_to_the_main_eod_report():
 def test_orchestrator_launches_the_variant_book():
     argv = ads.variant_sv._launcher()
     assert any(str(a).endswith("ema9_variant_observer.py") for a in argv)
-    assert argv[-2:] == ["--variant", "15m_itm"]
+    assert argv[-2:] == ["--variants", "5m_atm,15m_itm"]
     assert ads.variant_sv._restart_on_clean_exit is False
     src = inspect.getsource(ads)
     assert "start_variant_book()" in src and "variant_sv.supervise()" in src
@@ -418,3 +419,59 @@ def test_book_builds_fifteen_minute_bars_from_five_minute_history(monkeypatch):
     assert len(df) == 25
     assert df.index[0] == pd.Timestamp("2026-09-10 09:15")
     assert df.index[-1] == pd.Timestamp("2026-09-10 15:15")
+
+
+# ---------------------------------------------------------------------------
+# Two books, three indices, one process
+# ---------------------------------------------------------------------------
+
+def test_the_control_book_runs_todays_defaults():
+    cfg = ev.build_config("5m_atm")
+    assert (cfg.timeframe_minutes, cfg.strike_selection) == (5, "ATM")
+    assert ev.DEFAULT_VARIANTS == ("5m_atm", "15m_itm")
+    assert ev.BACKTEST_REFERENCE["5m_atm"]["trades"] == 656
+
+
+def test_variant_list_parsing():
+    assert ev.parse_variants("5m_atm, 15m_itm,5m_atm") == ["5m_atm", "15m_itm"]
+    with pytest.raises(SystemExit):
+        ev.parse_variants("30m_otm")
+
+
+def test_the_daily_cap_is_per_index(tmp_path):
+    sess = _session(tmp_path)
+    sess["trades"] = [{"symbol": "NIFTY"}] * ev.MAX_TRADES_PER_DAY
+    assert ev.trades_taken(sess, "NIFTY") == ev.MAX_TRADES_PER_DAY
+    assert ev.trades_taken(sess, "SENSEX") == 0
+
+
+def test_one_fetch_per_index_feeds_every_book(monkeypatch):
+    start = datetime.datetime(2026, 9, 11, 9, 15)
+    df5 = candles_to_frame([{"datetime": (start + datetime.timedelta(minutes=5 * k)).strftime("%Y-%m-%d %H:%M:%S"),
+                             "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5, "volume": 0} for k in range(21)])
+    fetched, stepped = [], []
+    monkeypatch.setattr(ev, "base_frame", lambda sym, now: fetched.append(sym) or df5)
+    monkeypatch.setattr(ev, "step", lambda sess, sym, cfg, df, now, path:
+                        stepped.append((sess["variant"], sym, cfg.timeframe_minutes, len(df))))
+    monkeypatch.setattr(po, "fetch_json", lambda *a, **k: {"paper_test_instruments": ["NIFTY", "SENSEX"]})
+    opens = iter([True])
+    monkeypatch.setattr(po, "is_market_open", lambda: next(opens, False))
+    monkeypatch.setattr(po, "now_ist", lambda: _ist(11, 0))
+    monkeypatch.setattr(ev, "POLL_INTERVAL_S", 0)
+    books = ev.run_books(["5m_atm", "15m_itm"])
+    assert fetched == ["NIFTY", "SENSEX"]                          # once per index, not per book
+    assert {(v, s) for v, s, *_ in stepped} == {("5m_atm", "NIFTY"), ("15m_itm", "NIFTY"),
+                                                ("5m_atm", "SENSEX"), ("15m_itm", "SENSEX")}
+    assert {tf: n for _, _, tf, n in stepped} == {5: 21, 15: 7}      # 15-min built from the same 5-min
+    assert books["5m_atm"]["symbols"] == ["NIFTY", "SENSEX"]
+
+
+def test_scorecard_breaks_results_down_by_index():
+    with open(ev.session_file("5m_atm", "2026-09-14"), "w", encoding="utf-8") as f:
+        json.dump({"trades": [
+            {"symbol": "NIFTY", "net_pnl": 100.0, "net_return_pct": 1.0, "exit_reason": "TARGET"},
+            {"symbol": "SENSEX", "net_pnl": -50.0, "net_return_pct": -0.5, "exit_reason": "STOP LOSS"},
+        ]}, f)
+    card = ev.build_scorecard("5m_atm")
+    assert card["by_symbol"]["NIFTY"]["net_pnl"] == 100.0
+    assert card["by_symbol"]["SENSEX"]["trades"] == 1
