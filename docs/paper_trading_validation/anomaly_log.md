@@ -6,6 +6,54 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-09-12 (later) — audit P2–P4 fixed: portfolio guard, honest Greeks and backtest, IV/VIX measured
+
+### P2 — one portfolio rule for every engine (`f0e19fa`)
+
+`shared/risk/portfolio_guard.py`, called with the same inputs by the live
+engine, the main paper book and the variant books. Measured on the 49
+sessions with all three indices (5-min / ATM, the ladder, one lot, ₹1 lakh):
+
+| rule | worst day | max drawdown | days < −3% |
+|---|---|---|---|
+| no cap (per-index rule only) | −₹10,282 | −₹53,899 | 12 |
+| max 1 same-direction position | −₹6,861 | −₹41,446 | 6 |
+| + 3% daily loss stop | **−₹4,736** | −₹35,538 | 8 |
+
+* at most **one open position per direction** across NIFTY/BANKNIFTY/SENSEX
+  (5-min correlation 0.75–0.91; 61% of signals have a same-direction twin);
+* the **daily loss stop** — the paper books had none;
+* **no single trade may risk more than the whole day's limit** — the live
+  minimum-lot override let one BANKNIFTY lot through at ~2.4× policy. At
+  ₹1 lakh / 3% this refuses the 15-min book's BANKNIFTY ITM lot (~₹4,900 at
+  stop); raising capital or the limit is the owner's call.
+
+### P3 — the UI shows the market's numbers and the strategy's backtest (`40799d5`)
+
+* **Greeks panel.** `/api/option-greeks` invented IV from moneyness, assumed
+  a Thursday expiry for every index and used lots NIFTY 75 / SENSEX 10; its
+  Next.js proxy answered a backend failure with made-up Greeks (spot 24250)
+  at HTTP 200. Now: the broker chain's premium, solved IV, Greeks, real
+  expiry and lot sizes; 503/404 with no real data; the proxy forwards the
+  status. The UI guard now forbids 24250.
+* **Backtest.** ema9 ran through the generic engine's underlying-% exits
+  (0.6% / 2.5%). `backtesting_engine/premium_ladder.py` applies the
+  strategy's own premium exits (SL 15%, ladder, reversal, 15:15, daily cap
+  and loss stop, spread + theta). On 578 NIFTY sessions: 554 trades, the
+  ladder visible in the exit mix, best +136.6%, mean −2.30%/trade — the UI
+  backtest now tells the truth about 5-min / ATM.
+
+### P4 — IV and VIX measured before any gate
+
+Both paper books record entry IV and India VIX; the variant scorecard
+groups results by VIX band beside the expiry-day split. The guard gains
+`max_entry_vix`, **off by default**; with it on and VIX unknown the trade is
+refused. The live engine fetches India VIX only while the gate is on.
+
+Full suite: 1087 passed.
+
+---
+
 ## 2026-09-12 — deep audit (options-buyer view); P1 fixed: the owner's exit ladder everywhere, no option hair-trigger trail
 
 Read-only audit of signals, exits, strikes/expiry, risk, fills, data and UI.
