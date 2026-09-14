@@ -6,6 +6,78 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-09-14 — a full session ran into a CLOSED exchange (Ganesh Chaturthi); nothing traded, but only by luck
+
+NSE and BSE were shut all day for Ganesh Chaturthi — the only weekday market
+holiday in September 2026. The orchestrator ran the complete lifecycle
+anyway: auto-auth, api_bridge up at 09:00, both paper books launched, the
+main book scanning **4,357** times against Friday's last bars, an EOD report
+and Telegram summary at 15:30.
+
+**Surface cause.** `2026-09-14` was missing from `auto_daily_session.py`'s
+hardcoded `NSE_HOLIDAYS[2026]` (it jumps 09-04 Milad-un-Nabi → 10-02 Gandhi
+Jayanti), so `is_trading_day()` returned True. The year-keyed calendar guard
+only fires when a whole YEAR is missing, not when one date is.
+
+**Nothing traded — and that was luck, not a rule:**
+
+| book | result | why |
+|---|---|---|
+| main paper book | 0 trades, 4,357 scans | the "new trigger" fix (`528f708`): a stale, unchanging bias never counts as new |
+| 5m_atm / 15m_itm | 0 trades, 0 signals | the bar-freshness rule refused Friday's bars; `last_bar` stayed 2026-09-11 15:25 |
+
+Confirmed closed by the exchange's own silence: **zero candles for
+2026-09-14** in every cache (NIFTY/BANKNIFTY/SENSEX 5-min and NIFTY 15-min
+all still end at 2026-09-11 15:25).
+
+**Fixes.** A hardcoded calendar cannot be the only defence — an unlisted
+holiday, a feed outage and a dropped broker session look identical from
+inside, and the answer to all three is the same:
+
+* `2026-09-14` added to the calendar.
+* `shared/market_hours.latest_bar_is_fresh()` — a bar must be from TODAY and
+  no older than 15 minutes. Gates NEW entries only in **all three engines**
+  (live engine, main paper book, variant books); open positions keep full
+  exit management, as with every other gate there.
+* The orchestrator stands down for the day — log + Telegram — when the
+  history cache holds no candles for today by 10:00 IST. It reads the cache
+  the books already fill, so it needs no broker session and cannot itself go
+  stale.
+
+**Also in this pass** (the audit's remaining items): option detection now
+reads the CE/PE **suffix** (`shared.instruments.is_option_symbol`) at 14
+call sites — `"CE" in symbol` matched RELIAN-CE, so an equity position took
+the option branch in the exit engine and the live engine (index symbols
+contain neither, so index trading is unchanged); the four ESLint errors in
+`advanced-option-chart.tsx` are fixed (a `Math.random()` id generated during
+render, and three setState-inside-effect sites now a ref plus scheduled
+updates); and SENSEX gets its own backtest cost profile — premium 0.76% of
+spot, measured from the 2026-09-11 live BSE chain, with spread and theta
+carried over from NIFTY and marked PROVISIONAL until SENSEX paper fills
+exist.
+
+**A crash fixed on the way.** `LiveMarketChartContainer` read its fallback
+price inside a `||` short-circuit, so the store hook was skipped as soon as a
+tick carried a price. React counts hooks per render, threw "Rendered fewer
+hooks than expected" and unmounted the page — it broke precisely when the
+feed started working. Fixed; the liveTrading shell spec passes again.
+
+Full Python suite 1110 passed, 1 skipped, 2 xfailed. UI specs (Chromium, **serial**): 40 passed, 3
+failed — the three dashboard P&L tile specs, already failing before this pass
+and left open deliberately: the tile shows the WebSocket's `total_pnl`
+(realized + unrealized, 2481.90) while the specs assert `/api/state`'s
+realized-only `pnl` (−74.35), and `wsTotalPnl !== 0 ? wsTotalPnl : pnl` mixes
+the two meanings depending on tick timing. Which number that tile should
+carry is the owner's call, not a test-tidying decision.
+
+**Run the UI suite with `--workers=1`.** `fullyParallel` against
+`npm run dev` has several workers requesting uncompiled routes at once; the
+dev server serialises the compiles and pages sit on the auth loading state
+past the 10s expect. The same unchanged tree gave 14 failures in parallel and
+3 serially — 11 false reds, including all six auth-gate specs.
+
+---
+
 ## 2026-09-12 (later) — audit P2–P4 fixed: portfolio guard, honest Greeks and backtest, IV/VIX measured
 
 ### P2 — one portfolio rule for every engine (`f0e19fa`)
