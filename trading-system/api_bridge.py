@@ -135,6 +135,7 @@ from trading_bot.strategies.meta_agent_strategy import generate_signals as meta_
 from trading_bot.strategies.buy_the_dip_strategy import generate_signals as buy_dip_signals
 from trading_bot.strategies.ema9_rsi_momentum import generate_signals as ema9_rsi_signals
 from trading_bot.strategies.marl_strategy import generate_signals as marl_signals
+from shared.instruments import is_option_symbol
 
 # Register strategies for the API
 registry.register("ema_rsi",      ema_rsi_signals)
@@ -1221,7 +1222,7 @@ async def websocket_broadcaster():
                         side        = int(pos.get("side", 1))   # 1=long, -1=short
                         opt_sym     = pos.get("symbol", base_sym)
 
-                        is_option = "CE" in opt_sym or "PE" in opt_sym
+                        is_option = is_option_symbol(opt_sym)
 
                         # Find the live price for this position's underlying symbol
                         ltp = 0.0
@@ -1640,7 +1641,7 @@ async def execute_order(req: ExecuteOrderRequest, request: Request):
             e_price = float(existing_pos.get("entry_price", fill_price))
             e_qty = int(existing_pos.get("quantity", req.quantity))
             e_side = int(existing_pos.get("side", 1))
-            is_opt = "CE" in req.symbol or "PE" in req.symbol
+            is_opt = is_option_symbol(req.symbol)
             realized_delta = (fill_price - e_price) * min(e_qty, req.quantity) * (1 if is_opt else e_side)
             del pos_dict[clean_key]
             

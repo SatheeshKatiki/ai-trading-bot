@@ -101,6 +101,9 @@ _EMA9_REVERSAL_CHECKED: dict = {}
 
 #: India VIX for the optional entry gate (settings "max_entry_vix"; off by
 #: default). Only fetched while the gate is on; cached for a minute.
+#: Last stale bar reported per symbol, so a closed market logs once a bar.
+_STALE_DATA_LOGGED: dict = {}
+
 _INDIA_VIX_SYMBOL = "NSE:INDIAVIX-INDEX"
 _INDIA_VIX_CACHE: dict = {"at": 0.0, "value": None}
 
@@ -138,6 +141,7 @@ from shared.security import install_log_sanitizer, audit, validator
 from shared.security.audit_log import AuditEvent
 from shared.security.rate_limiter import ORDER_LIMITER, DATA_LIMITER
 from shared.security.validator import ValidationError
+from shared.instruments import is_option_symbol
 
 # Install log sanitizer first — ensures API keys never appear in any log output
 install_log_sanitizer()
@@ -1013,7 +1017,7 @@ async def run_live_bot(symbols: List[str]) -> None:
             # not the traded instrument -- checking it for "CE"/"PE" would
             # always be False for an option position. Use the actual traded
             # symbol from the order request instead.
-            is_opt = "CE" in exit_req.symbol or "PE" in exit_req.symbol
+            is_opt = is_option_symbol(exit_req.symbol)
             # `side` encodes the directional bet for options (CE=+1/PE=-1),
             # not "long vs short the contract" -- this system only ever BUYS
             # options, so the side-flip below is only correct for a genuine
@@ -1185,7 +1189,7 @@ async def run_live_bot(symbols: List[str]) -> None:
             if open_position.is_exiting:
                 return
 
-            is_opt_pos = "CE" in open_position.symbol or "PE" in open_position.symbol
+            is_opt_pos = is_option_symbol(open_position.symbol)
 
             # For an option position, `ltp` here is the underlying index's
             # price (that's what the tick is), not the option's own price —
@@ -1588,7 +1592,7 @@ async def run_live_bot(symbols: List[str]) -> None:
                         logger.warning("EXIT order rate-limited for %s — will retry on next tick.", sym)
                         return  # Return immediately so position isn't removed; it will retry on next tick
                     else:
-                        is_opt = "CE" in open_position.symbol or "PE" in open_position.symbol
+                        is_opt = is_option_symbol(open_position.symbol)
                         exit_side = OrderSide.SELL if is_opt else (OrderSide.SELL if open_position.side == 1 else OrderSide.BUY)
                         
                         # Marketable Limit Order (MLO) Bypass for Exit
@@ -1650,7 +1654,7 @@ async def run_live_bot(symbols: List[str]) -> None:
                         open_position.symbol, trade_side,
                         open_position.entry_price, exit_check_price, pnl, datetime.now(_IST).isoformat()
                     ))
-                    is_opt = "CE" in open_position.symbol or "PE" in open_position.symbol
+                    is_opt = is_option_symbol(open_position.symbol)
                     state_action = "SELL" if is_opt else ("SELL" if open_position.side == 1 else "BUY")
                     record_trade(open_position.symbol, state_action, exit_check_price, datetime.now(_IST).isoformat(), qty=qty_to_close)
                     record_journal_entry(
@@ -1715,7 +1719,7 @@ async def run_live_bot(symbols: List[str]) -> None:
                         if not ORDER_LIMITER.allow(broker.BROKER_ID):
                             logger.warning("SCALE order rate-limited for %s — skipping.", sym)
                         else:
-                            is_opt = "CE" in pos.symbol or "PE" in pos.symbol
+                            is_opt = is_option_symbol(pos.symbol)
                             scale_req = OrderRequest(
                                 symbol=pos.symbol,
                                 quantity=scale_qty,
@@ -1779,6 +1783,24 @@ async def run_live_bot(symbols: List[str]) -> None:
                         )
                         df = aggregator.get_latest_dataframe(s)
                         if len(df) < 50:  # Need enough warmup bars
+                            continue
+
+                        # ── Data freshness (NEW entries only) ──────────────
+                        # An unlisted holiday, a feed outage and a dropped
+                        # broker session look identical from here, and the
+                        # answer to all three is the same: do not open a
+                        # position against a price nobody is quoting. The
+                        # market-hours gate above has no holiday calendar --
+                        # 2026-09-14 (Ganesh Chaturthi) ran a full session
+                        # into a closed exchange. See shared/market_hours.py.
+                        from shared.market_hours import latest_bar_is_fresh
+                        if not latest_bar_is_fresh(df.index[-1]):
+                            if _STALE_DATA_LOGGED.get(s) != df.index[-1]:
+                                _STALE_DATA_LOGGED[s] = df.index[-1]
+                                logger.warning(
+                                    "No fresh data for %s (last bar %s) -- no new entries.",
+                                    s, df.index[-1],
+                                )
                             continue
 
                         # ── AI Confidence Gate (computed first, needed by premium engine) ──
@@ -1995,7 +2017,7 @@ async def run_live_bot(symbols: List[str]) -> None:
                         entry_premium = df["close"].iloc[-1] # Default to index price
                         side_str = "BUY CALL" if latest_signal == 1 else "BUY PUT"
 
-                        is_option_trade = "CE" in entry_symbol or "PE" in entry_symbol
+                        is_option_trade = is_option_symbol(entry_symbol)
 
                         if is_option_trade:
                             # Root-cause fix (found running live paper trading):
@@ -2272,7 +2294,7 @@ async def run_live_bot(symbols: List[str]) -> None:
                                 )
                                 continue
                             # Input validation gate
-                            is_option = "CE" in entry_symbol or "PE" in entry_symbol
+                            is_option = is_option_symbol(entry_symbol)
                             
                             # Marketable Limit Order (MLO) Bypass for Options
                             # We send a Limit order 5% worse than LTP to guarantee execution while bypassing Broker Market Blocks
@@ -2378,7 +2400,7 @@ async def run_live_bot(symbols: List[str]) -> None:
             for position in active_positions.values():
                 entry_premium = position.entry_price
                 total_quantity = position.quantity
-                is_option = "CE" in position.symbol or "PE" in position.symbol
+                is_option = is_option_symbol(position.symbol)
 
                 # Get the live premium for this specific position
                 if position.symbol == sym:
@@ -2741,7 +2763,7 @@ def _stale_option_candle_symbols(tracked_symbols, open_position_symbols) -> List
     open_set = set(open_position_symbols)
     return [
         sym for sym in tracked_symbols
-        if ("CE" in sym or "PE" in sym) and sym not in open_set
+        if is_option_symbol(sym) and sym not in open_set
     ]
 
 
@@ -2781,7 +2803,7 @@ def _count_trades_already_executed_today(trades: List[Dict[str, Any]], today_str
         1 for t in trades
         if str(t.get("time", "")).startswith(today_str)
         and t.get("side") == "SELL"
-        and ("CE" in str(t.get("symbol", "")) or "PE" in str(t.get("symbol", "")))
+        and is_option_symbol(str(t.get("symbol", "")))
     )
 
 

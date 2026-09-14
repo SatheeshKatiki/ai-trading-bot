@@ -103,6 +103,68 @@ def is_market_open(
     return MARKET_OPEN_TIME <= current_time < MARKET_CLOSE_TIME
 
 
+#: A bar older than this is no longer "now" for an entry decision.
+MAX_BAR_AGE_MINUTES = 15.0
+
+
+def _naive_ist(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(IST).replace(tzinfo=None)
+
+
+def latest_bar_is_fresh(
+    last_bar: Any,
+    now: Optional[datetime] = None,
+    max_age_minutes: float = MAX_BAR_AGE_MINUTES,
+) -> bool:
+    """True when ``last_bar`` is from TODAY and no older than ``max_age_minutes``.
+
+    Root cause / why this exists
+    -----------------------------
+    2026-09-14 (Ganesh Chaturthi) was missing from the orchestrator's
+    hardcoded NSE holiday list, so a full session ran into a closed
+    exchange: api_bridge up from 09:00, the main book scanning 4,357 times,
+    every engine polling all day against Friday's last bars. Nothing traded
+    -- the variant books' bar-freshness rule refused the stale bars and the
+    main book's bias never changed -- but nothing REFUSED on the grounds
+    that the data was stale either, which is luck, not a rule.
+
+    A hardcoded calendar cannot be the only defence: an unlisted holiday, a
+    feed outage and a dropped broker session all look the same from here,
+    and the answer to all three is the same -- do not open a position
+    against a price nobody is quoting. Gates NEW entries only; an open
+    position keeps full exit management, as with every other gate here.
+
+    Accepts a datetime, a pandas Timestamp or an ISO / "YYYY-MM-DD HH:MM:SS"
+    string. Anything unreadable is treated as NOT fresh.
+    """
+    if last_bar is None:
+        return False
+    value = last_bar
+    if isinstance(value, str):
+        text = value.strip()
+        try:
+            value = datetime.fromisoformat(text)
+        except ValueError:
+            try:
+                value = datetime.strptime(text, "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                return False
+    to_datetime = getattr(value, "to_pydatetime", None)
+    if callable(to_datetime):
+        value = to_datetime()
+    if not isinstance(value, datetime):
+        return False
+
+    bar = _naive_ist(value)
+    reference = _naive_ist(now) if now is not None else datetime.now(IST).replace(tzinfo=None)
+    if bar.date() != reference.date():
+        return False
+    age_s = (reference - bar).total_seconds()
+    return -60.0 <= age_s <= max_age_minutes * 60.0
+
+
 def is_before_eod_cutoff(
     now: Optional[datetime] = None,
     settings: Optional[Mapping[str, Any]] = None,

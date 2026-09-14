@@ -99,6 +99,10 @@ NSE_HOLIDAYS: Dict[int, set] = {
         "2026-06-26",  # Muharram
         "2026-08-15",  # Independence Day
         "2026-09-04",  # Milad-un-Nabi
+        "2026-09-14",  # Ganesh Chaturthi (was missing: a full session ran
+                       # into a closed exchange on 2026-09-14; confirmed
+                       # against the NSE/BSE circulars and by zero exchange
+                       # data for the day)
         "2026-10-02",  # Mahatma Gandhi Jayanti
         "2026-10-20",  # Dussehra
         "2026-11-09",  # Diwali Laxmi Pujan
@@ -373,6 +377,28 @@ def is_trading_day(dt: Optional[datetime.date] = None) -> bool:
     if holidays and check_date.strftime("%Y-%m-%d") in holidays:
         return False
     return True
+
+
+def cache_has_today_bars(symbol_file: str = "NSE_NIFTY50-INDEX_5Min.csv") -> Optional[bool]:
+    """Did the exchange print any candles today? None if the check itself fails.
+
+    Reads the history cache the books fill on every poll, so it needs no
+    broker session and no auth. A hardcoded holiday calendar is one list
+    away from being wrong (2026-09-14, Ganesh Chaturthi, was missing and the
+    orchestrator ran a full session into a closed exchange); the exchange's
+    own silence is the check that cannot go stale.
+    """
+    path = ROOT_DIR / "data" / symbol_file
+    today = now_ist().strftime("%Y-%m-%d")
+    try:
+        if not path.is_file():
+            return None
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            tail = f.readlines()[-400:]
+    except OSError as exc:
+        logger.warning("Data-freshness check could not read %s: %s", path.name, exc)
+        return None
+    return any(line.startswith(today) for line in tail)
 
 
 def send_telegram_notification(message: str) -> None:
@@ -917,8 +943,28 @@ def run_session_flow(force_now: bool = False) -> None:
     
     # 5. Market Hours Watchdog Loop
     logger.info("Entering Market Watchdog Loop (09:15 - 15:30 IST)...")
+    freshness_checked = False
     while is_running:
         curr_t = now_ist().time()
+
+        # ── Is the exchange actually open? ────────────────────────────
+        # The holiday list is one missing line away from running a whole
+        # session into a closed market (2026-09-14). By 10:00 a real
+        # session has printed 45 minutes of candles; silence means closed,
+        # or a feed that cannot be traded on either way.
+        if not force_now and not freshness_checked and curr_t >= datetime.time(10, 0):
+            freshness_checked = True
+            if cache_has_today_bars() is False:
+                logger.error(
+                    "No market data for %s by 10:00 IST -- the exchange appears closed "
+                    "(holiday missing from NSE_HOLIDAYS?). Standing down for the day.",
+                    now_ist().date(),
+                )
+                send_telegram_notification(
+                    f"⚠️ [QuantAI] No market data on {now_ist().date()} by 10:00 IST — the exchange "
+                    f"appears closed (holiday not in the calendar?). Standing down for the day."
+                )
+                break
         
         # Check if market has closed
         if not force_now and curr_t >= MARKET_CLOSE_TIME:

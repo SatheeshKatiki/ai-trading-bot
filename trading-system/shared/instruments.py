@@ -52,6 +52,18 @@ def normalize_instrument(symbol: str) -> str:
     return _INSTRUMENT_REMAP.get(raw, raw)
 
 
+def is_option_symbol(symbol: str) -> bool:
+    """True for an option contract, read from the CE/PE SUFFIX.
+
+    ``"CE" in symbol`` -- the test this replaces -- also matches RELIAN-CE,
+    so an equity position took the option branch in the exit engine and the
+    live engine. The index symbols this system trades contain neither, so
+    nothing about index trading changes.
+    """
+    text = str(symbol or "").strip().upper()
+    return text.endswith("CE") or text.endswith("PE")
+
+
 #: Broker (Fyers) data symbol for each index instrument.
 INDEX_BROKER_SYMBOLS: dict[str, str] = {
     "NIFTY": "NSE:NIFTY50-INDEX",

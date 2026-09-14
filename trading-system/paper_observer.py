@@ -60,7 +60,11 @@ from trading_bot.strategies.premium_selection.options_selector import INSTRUMENT
 from trading_bot.strategies.ema9_rsi_momentum.config import Ema9RsiMomentumConfig
 from trading_bot.strategies.ema9_rsi_momentum.exit_ladder import initial_stop, ratchet_stop, stop_reason
 
+from shared.market_hours import latest_bar_is_fresh
 from shared.risk.portfolio_guard import entry_block_reason
+
+#: Last stale bar reported per symbol, so a closed market logs once, not every poll.
+_STALE_DATA_LOGGED: dict = {}
 
 #: The owner's exit ladder (SL 15%, stop steps up rung by rung, no fixed target).
 _EMA9_CFG = Ema9RsiMomentumConfig()
@@ -406,6 +410,7 @@ def analyze_market_state(symbol, direction):
     
     return {
         "spot": round(spot, 2),
+        "bar_time": candles[-1].get("datetime"),     # for the data-freshness gate
         "ema9": round(e9, 2) if e9 else spot,
         "ema21": round(e21, 2) if e21 else spot,
         "atr": round(at, 2),
@@ -760,6 +765,15 @@ def run_session(day_num, date_str, day_name):
                 
                 if is_high_prob and is_new_trigger and can_take_trade:
                     state = analyze_market_state(symbol, direction)
+                    # No fresh data, no entry. On 2026-09-14 (Ganesh Chaturthi,
+                    # missing from the holiday list) this book scanned 4,357
+                    # times against Friday's last bars.
+                    if state and not latest_bar_is_fresh(state.get("bar_time")):
+                        if _STALE_DATA_LOGGED.get(symbol) != state.get("bar_time"):
+                            _STALE_DATA_LOGGED[symbol] = state.get("bar_time")
+                            print(f"  [{ts}] ⛔ {symbol}: last bar {state.get('bar_time')} is not fresh "
+                                  f"-- market closed or feed down; not trading.")
+                        state = None
                     if state:
                         opt = select_best_option(symbol, direction, state["spot"])
                         block = (portfolio_block(symbol, direction, opt, session_log, active_positions, active_settings)

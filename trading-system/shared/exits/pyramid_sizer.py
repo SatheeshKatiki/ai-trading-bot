@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from typing import Tuple
+from shared.instruments import is_option_symbol
 
 from .exit_engine import Position
 
@@ -65,7 +66,7 @@ class PyramidSizer:
         # 2026-08-04 when a PUT position scaled in at a price BELOW entry,
         # logged as "Profit hit +0.36%" -- i.e. it would have added to a
         # losing position believing it was compounding a winner.
-        is_option = "CE" in position.symbol or "PE" in position.symbol
+        is_option = is_option_symbol(position.symbol)
         effective_side = 1 if is_option else position.side
 
         # Calculate profit in points

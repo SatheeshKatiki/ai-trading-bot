@@ -31,7 +31,9 @@ def test_calendar_is_keyed_by_year():
 
 def test_2026_calendar_is_present_and_complete():
     assert ads.holiday_calendar_covers(2026)
-    assert len(ads.NSE_HOLIDAYS[2026]) == 17
+    # 18 since 2026-09-14 (Ganesh Chaturthi) was added: it was missing, and a
+    # full session ran into a closed exchange that day.
+    assert len(ads.NSE_HOLIDAYS[2026]) == 18
 
 
 def test_backwards_compatible_alias_still_resolves():
@@ -50,7 +52,7 @@ def test_every_date_belongs_to_its_own_year():
 # is_trading_day
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("day", ["2026-01-26", "2026-08-15", "2026-11-09", "2026-12-25"])
+@pytest.mark.parametrize("day", ["2026-01-26", "2026-08-15", "2026-09-14", "2026-11-09", "2026-12-25"])
 def test_known_holidays_are_not_trading_days(day):
     d = datetime.datetime.strptime(day, "%Y-%m-%d").date()
     if d.weekday() >= 5:

@@ -133,6 +133,8 @@ running = True
 #: The dashboard's settings, read at session start: the portfolio guard uses
 #: the same max_daily_loss_pct / max_same_direction_positions as live.
 RISK_SETTINGS: dict = {}
+#: Last stale bar reported per (book, index), so a closed market logs once.
+_STALE_DATA_LOGGED: dict = {}
 
 
 def _stop(_signum, _frame):
@@ -436,6 +438,13 @@ def consider_entry(sess: dict, symbol: str, cfg: Ema9RsiMomentumConfig, df, now)
         return False
     bar_start = df.index[-1].to_pydatetime()
     bar_close = bar_start + datetime.timedelta(minutes=cfg.timeframe_minutes)
+    if bar_start.date() != now.date():
+        # Market closed or the feed is down -- say so once, then sit out.
+        if _STALE_DATA_LOGGED.get((sess["variant"], symbol)) != bar_start:
+            _STALE_DATA_LOGGED[(sess["variant"], symbol)] = bar_start
+            print(f"  [{now:%H:%M:%S}] {sess['variant']} {symbol}: last closed bar is "
+                  f"{bar_start:%Y-%m-%d %H:%M} -- no data for today; not trading.")
+        return False
     if not is_fresh(bar_close, now.replace(tzinfo=None)):
         return False
     side = latest_closed_signal(df, cfg)

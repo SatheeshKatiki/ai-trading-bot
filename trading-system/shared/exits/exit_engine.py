@@ -74,6 +74,7 @@ def plan_fib_levels(swing_high: float, swing_low: float, direction: int):
 
 
 from shared.exits.exit_analyzer import ExitAnalyzerAgent
+from shared.instruments import is_option_symbol
 
 
 class SmartExitEngine:
@@ -178,7 +179,7 @@ class SmartExitEngine:
         # any in-band price for a PUT, since its stop_loss sits BELOW entry
         # (option convention) while this function expected it ABOVE entry
         # (short-underlying convention).
-        is_option = "CE" in position.symbol or "PE" in position.symbol
+        is_option = is_option_symbol(position.symbol)
         effective_side = 1 if is_option else position.side
 
         # 1. Update position extremes for trailing stop
