@@ -113,7 +113,9 @@ function IVGauge({ iv }: { iv: number }) {
   const strokeOffset = arcLen * (1 - pct);
   const ivLevel = getIVLevel(iv);
 
-  const gradientId = `iv-gauge-${Math.random().toString(36).substr(2, 9)}`;
+  // Derived from the value it paints, not Math.random(): an id generated
+  // during render is impure and changes on every re-render.
+  const gradientId = `iv-gauge-${Math.round(iv * 100)}`;
 
   return (
     <div className="flex flex-col items-center gap-0.5">
@@ -240,7 +242,9 @@ export function AdvancedOptionChart({
 }: AdvancedOptionChartProps) {
   const [greeksData, setGreeksData] = useState<OptionGreeksResponse | null>(null);
   const [thetaHistory, setThetaHistory] = useState<number[]>([]);
-  const [prevPremium, setPrevPremium] = useState(0);
+  // A ref, not state: the previous premium is only ever compared against, so
+  // storing it in state made every tick set state from inside an effect.
+  const prevPremiumRef = useRef(0);
   const [premiumFlash, setPremiumFlash] = useState<"up" | "down" | null>(null);
   const [showGreeksPanel, setShowGreeksPanel] = useState(true);
   const [showAutoSignals, setShowAutoSignals] = useState(true);
@@ -274,26 +278,32 @@ export function AdvancedOptionChart({
   }, [parsed, spotPrice]);
 
   useEffect(() => {
-    fetchGreeks();
+    // Kicked off after the commit, so the first Greeks response cannot set
+    // state synchronously inside the effect.
+    const first = setTimeout(fetchGreeks, 0);
     fetchIntervalRef.current = setInterval(fetchGreeks, 5000);
     return () => {
+      clearTimeout(first);
       if (fetchIntervalRef.current) clearInterval(fetchIntervalRef.current);
     };
   }, [fetchGreeks]);
 
-  // Premium flash effect
+  // Premium flash: the previous premium lives in a ref, so remembering it
+  // costs no render, and the flash itself is scheduled rather than set
+  // synchronously inside the effect.
   useEffect(() => {
-    if (livePrice > 0 && prevPremium > 0) {
-      if (livePrice > prevPremium) setPremiumFlash("up");
-      else if (livePrice < prevPremium) setPremiumFlash("down");
-      const t = setTimeout(() => setPremiumFlash(null), 400);
-      return () => clearTimeout(t);
-    }
-    if (livePrice > 0) setPrevPremium(livePrice);
-  }, [livePrice]);
+    if (livePrice <= 0) return;
+    const previous = prevPremiumRef.current;
+    prevPremiumRef.current = livePrice;
+    if (previous <= 0 || livePrice === previous) return;
 
-  useEffect(() => {
-    if (livePrice > 0) setPrevPremium(livePrice);
+    const direction = livePrice > previous ? "up" : "down";
+    const show = setTimeout(() => setPremiumFlash(direction), 0);
+    const hide = setTimeout(() => setPremiumFlash(null), 400);
+    return () => {
+      clearTimeout(show);
+      clearTimeout(hide);
+    };
   }, [livePrice]);
 
   const premium = livePrice > 0 ? livePrice : greeksData?.premium || 0;

@@ -128,6 +128,16 @@ OPTION_COST_PROFILES = {
         "option_spread_pct": 0.35,
         "option_theta_pct_per_day": 2.1,
     },
+    # SENSEX: only `option_premium_pct` is measured -- the live BSE chain on
+    # 2026-09-11 quoted the ATM CE at 568.65 against spot 74,781.76 (0.76%).
+    # No SENSEX paper fills exist yet, so spread and theta are carried over
+    # from NIFTY and are PROVISIONAL; re-derive both once the books have
+    # filled SENSEX trades (scripts/audit_session_fills.py).
+    "SENSEX": {
+        "option_premium_pct": 0.76,
+        "option_spread_pct": 0.21,
+        "option_theta_pct_per_day": 9.7,
+    },
 }
 
 
@@ -136,6 +146,8 @@ def option_cost_profile(symbol: str) -> dict:
     upper = (symbol or "").upper()
     if "BANK" in upper:
         return dict(OPTION_COST_PROFILES["BANKNIFTY"])
+    if "SENSEX" in upper:
+        return dict(OPTION_COST_PROFILES["SENSEX"])
     return dict(OPTION_COST_PROFILES["NIFTY"])
 
 
