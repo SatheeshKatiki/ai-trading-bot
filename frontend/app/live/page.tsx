@@ -450,7 +450,13 @@ function LiveMarketChartContainer({
     showDynamicTrend,
 }: LiveMarketChartContainerProps) {
     const mainTicker = useLiveMarketStore(state => state.tickerData[urlSymbol] || state.tickerData[urlSymbol.replace('NSE:', '').replace('BSE:', '').replace('-INDEX', '')]);
-    const mainLivePrice = mainTicker?.lp || useLiveMarketStore(state => state.currentPrice) || 0;
+    // Both selectors run on EVERY render. The fallback used to sit on the
+    // right of `mainTicker?.lp || ...`, so the hook was skipped as soon as a
+    // tick carried a price -- React counts hooks per render, and the drop
+    // threw "Rendered fewer hooks than expected", crashing this whole page
+    // the moment the feed delivered its first priced tick.
+    const fallbackPrice = useLiveMarketStore(state => state.currentPrice);
+    const mainLivePrice = mainTicker?.lp || fallbackPrice || 0;
     const mainLiveVolume = mainTicker?.vol_traded_today || mainTicker?.vol || 0;
 
     return (
