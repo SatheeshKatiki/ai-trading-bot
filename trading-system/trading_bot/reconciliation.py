@@ -19,6 +19,7 @@ from typing import Dict, List, Optional
 from brokers import OrderSide, OrderStatus
 from brokers.models import OrderBookEntry, Position as BrokerPosition
 from shared.exits import Position
+from shared.instruments import is_option_symbol
 
 
 @dataclass
@@ -41,8 +42,7 @@ def _exit_side_for(symbol: str, position_side: int) -> OrderSide:
     """Matches the same exit-side convention the live exit path uses:
     options are always closed with a SELL; index/equity closes opposite
     the position's own side."""
-    is_option = "CE" in symbol or "PE" in symbol
-    if is_option:
+    if is_option_symbol(symbol):
         return OrderSide.SELL
     return OrderSide.SELL if position_side == 1 else OrderSide.BUY
 
@@ -126,7 +126,9 @@ def compute_reconciliation(
                 is_estimate = True
                 exit_price = local_pos.stop_loss
 
-        is_option = "CE" in traded_symbol or "PE" in traded_symbol
+        # Suffix, not substring: `"CE" in symbol` also matched RELIAN-CE, so an
+        # equity position was reconciled with an option's P&L sign and exit side.
+        is_option = is_option_symbol(traded_symbol)
         # `side` only flips the sign for a genuine short position in the
         # underlying -- this system always BUYS options (CE/PE already
         # encodes the directional bet), so a bought option's PnL must never

@@ -47,6 +47,40 @@ def _order_book_fill(symbol, side, traded_price, status=OrderStatus.COMPLETE):
     )
 
 
+def test_equity_symbol_containing_ce_is_not_treated_as_an_option():
+    """Option detection reads the CE/PE SUFFIX, not a substring.
+
+    `"CE" in symbol` also matches RELIAN-CE. A SHORT equity position must
+    exit with a BUY and take its P&L sign from `side`; under the substring
+    bug the exit side was forced to SELL, so the real BUY fill below never
+    matched and the trade was recorded from the stop-loss ESTIMATE with an
+    option's (never sign-flipped) P&L -- turning a 1,000 profit into a loss.
+    """
+    local = _local_short(symbol="NSE:RELIANCE-EQ", entry_price=1_400.0,
+                         quantity=50, stop_loss=1_430.0)
+    book = [_order_book_fill("NSE:RELIANCE-EQ", OrderSide.BUY, 1_380.0)]
+
+    [result] = compute_reconciliation({"NSE:RELIANCE-EQ": local}, [], book)
+
+    assert result.is_estimate is False, "the real BUY fill must be matched"
+    assert result.exit_price == 1_380.0
+    assert result.state_action == "BUY"
+    assert result.trade_side == "SHORT"
+    assert result.pnl == 1_000.0   # short from 1,400, covered at 1,380
+
+
+def test_a_real_option_still_exits_with_a_sell():
+    """The suffix fix must not change genuine option behaviour."""
+    local = _local_long(symbol="NSE:NIFTY25AUG24000PE")
+    book = [_order_book_fill("NSE:NIFTY25AUG24000PE", OrderSide.SELL, 120.0)]
+
+    [result] = compute_reconciliation({"NSE:NIFTY50-INDEX": local}, [], book)
+
+    assert result.is_estimate is False
+    assert result.state_action == "SELL"
+    assert result.pnl == (120.0 - 100.0) * 65   # bought option: never sign-flipped
+
+
 def test_position_still_open_on_broker_is_not_reconciled():
     """Broker still reports the position open — must be left completely alone."""
     local = _local_long()
