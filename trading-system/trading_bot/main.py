@@ -684,6 +684,66 @@ def _cancel_orphaned_stop(broker, pos, symbol: str, order_book) -> None:
             logger.error("Orphaned-SL alert failed for %s: %s", symbol, exc)
 
 
+async def _close_requested_positions(broker, active_positions, risk_manager, portfolio_risk,
+                                     symbols: List[str]) -> None:
+    """Close positions the owner exited from the dashboard.
+
+    api_bridge has already placed the counter-order at the broker; this closes
+    THIS engine's book for it -- cancel the exchange stop, record the trade at
+    a real price, drop the position. Without it main.py keeps managing a
+    position that no longer exists: it would try to exit it again (a double
+    sell) and leave its stop working against nothing, until the 60-second
+    reconciler eventually noticed.
+
+    Matches on the TRADED contract (``pos.symbol``), falling back to the dict
+    key: active_positions is keyed by the UNDERLYING, so matching on the key
+    alone would never find an option position.
+
+    Module-level, like _reconcile_broker_state and for the same reason: as a
+    closure inside run_live_bot it could only ever be source-asserted, never
+    actually exercised. run_live_bot keeps a thin wrapper.
+    """
+    for wanted in symbols:
+        found = next(((k, p) for k, p in active_positions.items()
+                      if p.symbol == wanted or k == wanted), None)
+        if found is None:
+            logger.info("Exit request for %s: no such open position (already closed?).", wanted)
+            continue
+        key, pos = found
+        pos.is_exiting = True   # keep on_tick's exit path off it meanwhile
+
+        live_prices: Dict[str, float] = {}
+        try:
+            quotes = await asyncio.to_thread(broker.get_market_data, [pos.symbol])
+            quote = quotes.get(pos.symbol)
+            if quote and quote.ltp > 0:
+                live_prices[pos.symbol] = quote.ltp
+        except Exception as e:
+            logger.error("Exit request for %s: could not fetch a live price: %s", pos.symbol, e)
+
+        # The stop is cancelled BEFORE the position is dropped -- the same
+        # reason reconciliation does it there (see _cancel_orphaned_stop).
+        _cancel_orphaned_stop(broker, pos, pos.symbol, [])
+
+        for result in compute_reconciliation({key: pos}, broker_positions=[], order_book=[],
+                                             live_prices=live_prices):
+            portfolio_risk.update_pnl(result.pnl, risk_manager.current_equity)
+            risk_manager.record_trade(TradeRecord(
+                result.symbol, result.trade_side,
+                result.entry_price, result.exit_price, result.pnl, datetime.now(_IST).isoformat()
+            ))
+            record_trade(result.symbol, result.state_action, result.exit_price,
+                         datetime.now(_IST).isoformat(), qty=result.quantity)
+            update_equity(risk_manager.current_equity, risk_manager.daily_pnl)
+            logger.warning(
+                "DASHBOARD EXIT: closed %s at %.2f%s.", result.symbol, result.exit_price,
+                " (ESTIMATE — no live quote)" if result.is_estimate else "",
+            )
+            del active_positions[result.local_key]
+
+        _save_positions(active_positions)
+
+
 async def _reconcile_broker_state(broker, active_positions, risk_manager, portfolio_risk) -> None:
     """Re-syncs locally tracked positions against the broker's own record
     after a WebSocket reconnect. Pulled out of run_live_bot's
@@ -2586,58 +2646,11 @@ async def run_live_bot(symbols: List[str]) -> None:
         await _reconcile_broker_state(broker, active_positions, risk_manager, portfolio_risk)
 
     async def close_requested_positions(symbols: List[str]) -> None:
-        """Close positions the owner exited from the dashboard.
-
-        api_bridge has already placed the counter-order at the broker; this
-        closes THIS engine's book for it -- cancel the exchange stop, record
-        the trade at a real price, drop the position. Without it main.py keeps
-        managing a position that no longer exists: it would try to exit it
-        again (a double sell) and leave its stop working against nothing,
-        until the 60-second reconciler eventually noticed.
-
-        Matches on the TRADED contract (``pos.symbol``), falling back to the
-        dict key: active_positions is keyed by the UNDERLYING, so matching on
-        the key alone would never find an option position.
-        """
-        for wanted in symbols:
-            found = next(((k, p) for k, p in active_positions.items()
-                          if p.symbol == wanted or k == wanted), None)
-            if found is None:
-                logger.info("Exit request for %s: no such open position (already closed?).", wanted)
-                continue
-            key, pos = found
-            pos.is_exiting = True   # keep on_tick's exit path off it meanwhile
-
-            live_prices: Dict[str, float] = {}
-            try:
-                quotes = await asyncio.to_thread(broker.get_market_data, [pos.symbol])
-                quote = quotes.get(pos.symbol)
-                if quote and quote.ltp > 0:
-                    live_prices[pos.symbol] = quote.ltp
-            except Exception as e:
-                logger.error("Exit request for %s: could not fetch a live price: %s", pos.symbol, e)
-
-            # The stop is cancelled BEFORE the position is dropped -- the same
-            # reason reconciliation does it there (see _cancel_orphaned_stop).
-            _cancel_orphaned_stop(broker, pos, pos.symbol, [])
-
-            for result in compute_reconciliation({key: pos}, broker_positions=[], order_book=[],
-                                                 live_prices=live_prices):
-                portfolio_risk.update_pnl(result.pnl, risk_manager.current_equity)
-                risk_manager.record_trade(TradeRecord(
-                    result.symbol, result.trade_side,
-                    result.entry_price, result.exit_price, result.pnl, datetime.now(_IST).isoformat()
-                ))
-                record_trade(result.symbol, result.state_action, result.exit_price,
-                             datetime.now(_IST).isoformat(), qty=result.quantity)
-                update_equity(risk_manager.current_equity, risk_manager.daily_pnl)
-                logger.warning(
-                    "DASHBOARD EXIT: closed %s at %.2f%s.", result.symbol, result.exit_price,
-                    " (ESTIMATE — no live quote)" if result.is_estimate else "",
-                )
-                del active_positions[result.local_key]
-
-            _save_positions(active_positions)
+        """Thin wrapper -- the logic lives in _close_requested_positions so it
+        is testable without running the live engine (same split as
+        sync_broker_state / _reconcile_broker_state)."""
+        await _close_requested_positions(broker, active_positions, risk_manager,
+                                         portfolio_risk, symbols)
 
     async def emergency_flatten_all_positions(reason: str) -> None:
         """Force-close every open position right now, at a real market

@@ -103,27 +103,155 @@ def test_an_exit_request_is_honoured_even_when_the_engine_is_halted():
     assert consume < halt, "exit requests must be handled before the is_active halt"
 
 
-def test_the_stop_is_cancelled_before_the_position_is_dropped():
+# ---------------------------------------------------------------------------
+# _close_requested_positions -- exercised for real
+#
+# Extracted out of run_live_bot's closure for exactly this reason: as a nested
+# function it could only ever be source-asserted. Same split as
+# sync_broker_state / _reconcile_broker_state.
+# ---------------------------------------------------------------------------
+
+class _Quote:
+    def __init__(self, ltp):
+        self.ltp = ltp
+
+
+class _ExitBroker:
+    def __init__(self, quotes=None, order_status=None):
+        self.paper_mode = False
+        self._quotes = quotes or {}
+        self._order_status = order_status
+        self.cancelled = []
+
+    def get_market_data(self, symbols):
+        return {s: _Quote(self._quotes[s]) for s in symbols if s in self._quotes}
+
+    def get_order_status(self, order_id):
+        return self._order_status
+
+    def cancel_order(self, order_id):
+        self.cancelled.append(order_id)
+        return {"status": "ok"}
+
+
+class _Risk:
+    def __init__(self):
+        self.current_equity = 100_000.0
+        self.daily_pnl = 0.0
+        self.recorded_trades = []
+
+    def record_trade(self, t):
+        self.recorded_trades.append(t)
+
+
+class _Portfolio:
+    def __init__(self):
+        self.pnl_updates = []
+
+    def update_pnl(self, pnl, equity):
+        self.pnl_updates.append((pnl, equity))
+
+
+def _position(symbol="NSE:NIFTY2681824400PE", entry=90.9, stop=76.8, qty=260):
+    from shared.exits import Position
+    pos = Position(symbol=symbol, side=-1, entry_price=entry, quantity=qty,
+                   entry_time="2026-09-16T10:00:00", highest_price=entry,
+                   lowest_price=entry, stop_loss=stop, target=0.0)
+    pos.sl_order_id = "SL-1"
+    return pos
+
+
+def _run_close(broker, active_positions, symbols, monkeypatch, risk=None, portfolio=None):
+    import asyncio
+    monkeypatch.setattr(main_module, "record_trade", lambda *a, **kw: None)
+    monkeypatch.setattr(main_module, "update_equity", lambda *a, **kw: None)
+    monkeypatch.setattr(main_module, "_save_positions", lambda positions: None)
+    monkeypatch.setattr(main_module, "alerter",
+                        type("_A", (), {"send_alert": staticmethod(lambda m: None)})())
+    risk = risk or _Risk()
+    portfolio = portfolio or _Portfolio()
+    asyncio.run(main_module._close_requested_positions(
+        broker, active_positions, risk, portfolio, symbols))
+    return risk, portfolio
+
+
+def test_the_stop_is_cancelled_and_the_position_dropped(monkeypatch):
     """Dropping first would discard sl_order_id and orphan the stop."""
-    src = inspect.getsource(main_module.run_live_bot)
-    body = src[src.index("async def close_requested_positions"):]
-    body = body[:body.index("async def emergency_flatten_all_positions")]
-    assert "_cancel_orphaned_stop(" in body
-    assert body.index("_cancel_orphaned_stop(") < body.index("del active_positions[")
+    pos = _position()
+    active = {pos.symbol: pos}
+    broker = _ExitBroker(quotes={pos.symbol: 120.0})
+
+    risk, _ = _run_close(broker, active, [pos.symbol], monkeypatch)
+
+    assert broker.cancelled == ["SL-1"], "the exchange stop must be cancelled"
+    assert active == {}, "the position must be dropped from the book"
+    assert len(risk.recorded_trades) == 1, "the exit must be recorded once"
 
 
-def test_the_request_matches_the_traded_contract_not_the_dict_key():
+def test_it_matches_the_traded_contract_not_the_dict_key(monkeypatch):
     """active_positions is keyed by the UNDERLYING; matching the key alone
     would never find an option position."""
-    src = inspect.getsource(main_module.run_live_bot)
-    body = src[src.index("async def close_requested_positions"):]
-    assert "p.symbol == wanted or k == wanted" in body
+    pos = _position(symbol="NSE:NIFTY2681824400PE")
+    active = {"NSE:NIFTY50-INDEX": pos}          # keyed by the underlying
+    broker = _ExitBroker(quotes={pos.symbol: 120.0})
+
+    _run_close(broker, active, ["NSE:NIFTY2681824400PE"], monkeypatch)
+
+    assert active == {}, "the request names the contract, the dict is keyed by the index"
+    assert broker.cancelled == ["SL-1"]
+
+
+def test_an_unknown_symbol_is_ignored(monkeypatch):
+    """Already closed elsewhere -- must be a quiet no-op, never a crash."""
+    pos = _position()
+    active = {pos.symbol: pos}
+    broker = _ExitBroker(quotes={pos.symbol: 120.0})
+
+    risk, _ = _run_close(broker, active, ["SOMETHING-ELSE-CE"], monkeypatch)
+
+    assert active == {pos.symbol: pos}
+    assert broker.cancelled == []
+    assert risk.recorded_trades == []
+
+
+def test_a_missing_quote_still_closes_the_position(monkeypatch):
+    """No live price is not a reason to keep managing a position that is gone;
+    compute_reconciliation falls back to the stop as a flagged ESTIMATE."""
+    pos = _position()
+    active = {pos.symbol: pos}
+    broker = _ExitBroker(quotes={})              # no quote available
+
+    risk, _ = _run_close(broker, active, [pos.symbol], monkeypatch)
+
+    assert active == {}
+    assert len(risk.recorded_trades) == 1
+
+
+def test_a_broker_that_raises_on_quotes_does_not_abort_the_close(monkeypatch):
+    class _Angry(_ExitBroker):
+        def get_market_data(self, symbols):
+            raise RuntimeError("quote feed down")
+
+    pos = _position()
+    active = {pos.symbol: pos}
+    broker = _Angry()
+
+    _run_close(broker, active, [pos.symbol], monkeypatch)
+
+    assert active == {}, "the book must still be closed"
+    assert broker.cancelled == ["SL-1"]
 
 
 def test_the_position_is_locked_against_the_tick_exit_path():
+    """is_exiting is set before any await, so on_tick cannot race this."""
+    src = inspect.getsource(main_module._close_requested_positions)
+    assert "pos.is_exiting = True" in src
+    assert src.index("pos.is_exiting = True") < src.index("await asyncio.to_thread")
+
+
+def test_run_live_bot_delegates_to_the_module_level_routine():
     src = inspect.getsource(main_module.run_live_bot)
-    body = src[src.index("async def close_requested_positions"):]
-    assert "pos.is_exiting = True" in body
+    assert "await _close_requested_positions(" in src
 
 
 # ---------------------------------------------------------------------------
