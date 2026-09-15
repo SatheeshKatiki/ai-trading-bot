@@ -1,6 +1,6 @@
 "use client";
 import { useState } from "react";
-import { useLiveMarketStore, type Trade } from "@/store/useLiveMarketStore";
+import { useLiveMarketStore, type PositionDetail } from "@/store/useLiveMarketStore";
 import { XCircle, Clock, CheckCircle2, AlertTriangle, X, Zap } from "lucide-react";
 import { toast } from "sonner";
 import { extractApiError } from "@/lib/api-error";
@@ -67,13 +67,18 @@ export function LivePositions({ urlSymbol }: { urlSymbol: string }) {
     const [isExecuting, setIsExecuting] = useState(false);
     const [showTodayOnly, setShowTodayOnly] = useState(true);
     const [squareOffConfirm, setSquareOffConfirm] = useState(false);
-    const [exitConfirm, setExitConfirm] = useState<Trade | null>(null);
+    const [exitConfirm, setExitConfirm] = useState<PositionDetail | null>(null);
 
     const trades = useLiveMarketStore(state => state.trades);
-    const tickerData = useLiveMarketStore(state => state.tickerData);
-    const pnl = useLiveMarketStore(state => state.pnl);
-
-    const openTrades = trades.filter(t => t.status === "Entered");
+    // Open positions come from the live positions frame, NOT the trade log.
+    // state.db trade records carry no `status` field at all (shared.state's
+    // load_state builds {symbol, side, price, time, qty}), so the previous
+    // `trades.filter(t => t.status === "Entered")` matched nothing, ever --
+    // this table was permanently empty and its EXIT button unreachable while
+    // positions were genuinely open. positionsDetail is the live frame the
+    // backend already computes, with the traded contract, qty, SL and a
+    // server-side mark-to-market.
+    const openPositions = useLiveMarketStore(state => state.positionsDetail);
     const todayIST = getTodayISTDateString();
 
     const orderHistory = showTodayOnly
@@ -99,32 +104,35 @@ export function LivePositions({ urlSymbol }: { urlSymbol: string }) {
         }
     };
 
-    const doExit = async (trade: Trade) => {
+    const doExit = async (position: PositionDetail) => {
         setExitConfirm(null);
         if (isExecuting) return;
         setIsExecuting(true);
         try {
-            toast.loading(`Exiting ${trade.symbol}...`, { id: "exit" });
+            toast.loading(`Exiting ${position.symbol}...`, { id: "exit" });
 
-            const payload = {
-                symbol: trade.symbol,
-                action: trade.side === "BUY" ? "SELL" : "BUY",
-                quantity: trade.quantity,
-                order_type: "MARKET",
-                product_type: "INTRADAY"
-            };
-
-            const res = await fetch("/api/order/execute", {
+            // Deliberately NOT /api/order/execute. That places a counter-order
+            // at the broker and stops there -- and main.py runs in a separate
+            // process, so it would never learn the position is gone: it would
+            // keep managing it, try to exit it again (a double sell), and
+            // leave its exchange stop-loss working against a position no
+            // longer held. /api/positions/exit does both halves: it places the
+            // order AND tells the engine to cancel the stop and close its book.
+            const res = await fetch("/api/positions/exit", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(payload)
+                body: JSON.stringify({
+                    symbol: position.symbol,
+                    quantity: position.qty,
+                    side: position.side === 1 ? "BUY" : "SELL",
+                })
             });
 
             const data = await res.json();
             if (res.ok) {
-                toast.success(`Exited: ${data.order_id || 'Success'}`, { id: "exit" });
+                toast.success(`Exit placed for ${position.symbol}`, { id: "exit" });
             } else {
-                toast.error(extractApiError(data, "Execution failed"), { id: "exit" });
+                toast.error(extractApiError(data, "Exit failed"), { id: "exit" });
             }
         } catch (e) {
             toast.error(e instanceof Error ? e.message : "Error", { id: "exit" });
@@ -133,21 +141,11 @@ export function LivePositions({ urlSymbol }: { urlSymbol: string }) {
         }
     };
 
-    // Compute real MTM for a trade using live ticker data
-    const computeMTM = (trade: Trade): number | null => {
-        const sym = trade.symbol;
-        // Try exact match first, then partial match
-        const ticker = tickerData[sym] || Object.entries(tickerData).find(([k]) => sym.includes(k) || k.includes(sym))?.[1];
-        if (ticker && ticker.lp && trade.price) {
-            const ltp = ticker.lp;
-            const qty = trade.quantity || 0;
-            const side = trade.side === 'BUY' ? 1 : -1;
-            return (ltp - trade.price) * qty * side;
-        }
-        // Fallback to global pnl when only 1 position open
-        if (openTrades.length === 1) return pnl;
-        return null;
-    };
+    // computeMTM is gone: positionsDetail already carries a server-side
+    // mark-to-market (unrealized_pnl / invested / roi), computed from the same
+    // prices the engine trades on. Deriving it again in the browser from
+    // ticker data -- with a "fall back to the global P&L if only one position
+    // is open" guess -- could disagree with the engine about the same trade.
 
     const todayTradesCount = trades.filter(t => isTradeFromTodayIST(t.time, todayIST)).length;
 
@@ -168,7 +166,7 @@ export function LivePositions({ urlSymbol }: { urlSymbol: string }) {
             {exitConfirm && (
                 <ConfirmModal
                     title={`Exit ${exitConfirm.symbol}`}
-                    message={`This will place a ${exitConfirm.side === 'BUY' ? 'SELL' : 'BUY'} market order for ${exitConfirm.quantity} qty of ${exitConfirm.symbol}.`}
+                    message={`This will place a ${exitConfirm.side === 1 ? 'SELL' : 'BUY'} market order for ${exitConfirm.qty} qty of ${exitConfirm.symbol}, cancel its stop-loss, and close it in the engine.`}
                     confirmLabel="Yes, Exit Position"
                     onConfirm={() => doExit(exitConfirm)}
                     onCancel={() => setExitConfirm(null)}
@@ -183,7 +181,7 @@ export function LivePositions({ urlSymbol }: { urlSymbol: string }) {
                             onClick={() => setTab("positions")}
                             className={`py-3 text-sm font-bold border-b-2 transition-all ${tab === "positions" ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}
                         >
-                            Live Positions ({openTrades.length})
+                            Live Positions ({openPositions.length})
                         </button>
                         <button
                             onClick={() => setTab("orders")}
@@ -209,7 +207,7 @@ export function LivePositions({ urlSymbol }: { urlSymbol: string }) {
                                 {showTodayOnly ? "Today Only" : "All History"}
                             </button>
                         )}
-                        {tab === "positions" && openTrades.length > 0 && (
+                        {tab === "positions" && openPositions.length > 0 && (
                             <button
                                 onClick={() => setSquareOffConfirm(true)}
                                 disabled={isExecuting}
@@ -242,7 +240,7 @@ export function LivePositions({ urlSymbol }: { urlSymbol: string }) {
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-border/30">
-                                {openTrades.length === 0 ? (
+                                {openPositions.length === 0 ? (
                                     <tr>
                                         <td colSpan={7} className="px-4 py-16 text-center text-muted-foreground">
                                             <div className="flex flex-col items-center justify-center">
@@ -255,27 +253,28 @@ export function LivePositions({ urlSymbol }: { urlSymbol: string }) {
                                         </td>
                                     </tr>
                                 ) : (
-                                    openTrades.map((trade, i) => {
-                                        const mtm = computeMTM(trade);
-                                        const qty = trade.quantity || 1;
-                                        const invested = trade.price * qty;
-                                        const roi = (mtm !== null && invested > 0) ? (mtm / invested) * 100 : null;
+                                    openPositions.map((position) => {
+                                        // Marked to market by the backend on every frame.
+                                        const mtm = position.unrealized_pnl ?? null;
+                                        const qty = position.qty || 1;
+                                        const invested = position.invested ?? position.entry_price * qty;
+                                        const roi = position.roi ?? ((mtm !== null && invested > 0) ? (mtm / invested) * 100 : null);
                                         const isProfit = mtm !== null && mtm > 0.009;
                                         const isLoss = mtm !== null && mtm < -0.009;
 
                                         return (
-                                            <tr key={i} className={`transition-colors ${isProfit ? 'hover:bg-success/[0.04] bg-success/[0.01]' : isLoss ? 'hover:bg-destructive/[0.04] bg-destructive/[0.01]' : 'hover:bg-muted/30'}`}>
+                                            <tr key={position.symbol} className={`transition-colors ${isProfit ? 'hover:bg-success/[0.04] bg-success/[0.01]' : isLoss ? 'hover:bg-destructive/[0.04] bg-destructive/[0.01]' : 'hover:bg-muted/30'}`}>
                                                 <td className="px-4 py-3 font-semibold text-foreground flex items-center gap-2">
                                                     <span className={`w-2 h-2 rounded-full ${isProfit ? 'bg-success animate-pulse' : isLoss ? 'bg-destructive animate-pulse' : 'bg-muted-foreground'}`}></span>
-                                                    {trade.symbol}
+                                                    {position.symbol}
                                                 </td>
                                                 <td className="px-4 py-3">
-                                                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${trade.side === 'BUY' ? 'bg-emerald-500/15 text-emerald-500 border border-emerald-500/30' : 'bg-rose-500/15 text-rose-500 border border-rose-500/30'}`}>
-                                                        {trade.side}
+                                                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${position.side === 1 ? 'bg-emerald-500/15 text-emerald-500 border border-emerald-500/30' : 'bg-rose-500/15 text-rose-500 border border-rose-500/30'}`}>
+                                                        {position.side === 1 ? 'BUY' : 'SELL'}
                                                     </span>
                                                 </td>
-                                                <td className="px-4 py-3 text-right font-mono">{trade.quantity || '-'}</td>
-                                                <td className="px-4 py-3 text-right font-mono">₹{trade.price.toFixed(2)}</td>
+                                                <td className="px-4 py-3 text-right font-mono">{position.qty || '-'}</td>
+                                                <td className="px-4 py-3 text-right font-mono">₹{position.entry_price.toFixed(2)}</td>
                                                 <td className="px-4 py-3 text-right font-mono text-muted-foreground">₹{invested.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                                                 <td className="px-4 py-3 text-right font-mono">
                                                     <div className="flex items-center justify-end gap-1.5">
@@ -297,7 +296,7 @@ export function LivePositions({ urlSymbol }: { urlSymbol: string }) {
                                                 </td>
                                                 <td className="px-4 py-3 flex items-center justify-center">
                                                     <button
-                                                        onClick={() => setExitConfirm(trade)}
+                                                        onClick={() => setExitConfirm(position)}
                                                         disabled={isExecuting}
                                                         className="px-3 py-1 bg-background hover:bg-rose-500/10 border border-border hover:border-rose-500/30 hover:text-rose-500 rounded text-[10px] font-bold text-muted-foreground transition-all disabled:opacity-50"
                                                     >

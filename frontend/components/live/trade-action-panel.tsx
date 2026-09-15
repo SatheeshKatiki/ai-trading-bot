@@ -93,8 +93,13 @@ export function TradeActionPanel({ urlSymbol, defaultBaseQty }: TradeActionPanel
         maxDailyTrades, setMaxDailyTrades
     } = useLiveSettingsStore();
 
-    const trades = useLiveMarketStore(state => state.trades);
-    const openTrades = trades.filter(t => t.status === "Entered");
+    // Open positions come from the live positions frame, NOT the trade log.
+    // state.db trade records carry no `status` field at all (shared.state's
+    // load_state builds {symbol, side, price, time, qty}), so the previous
+    // `trades.filter(t => t.status === "Entered")` matched nothing, ever:
+    // this guard never fired, and the warning below always read
+    // "0 open position(s)" while positions were actually open.
+    const openPositions = useLiveMarketStore(state => state.positionsDetail);
 
     const strategyNames: Record<string, string> = {
         "ema_rsi": "EMA + RSI (Classic)",
@@ -153,7 +158,7 @@ export function TradeActionPanel({ urlSymbol, defaultBaseQty }: TradeActionPanel
 
     // Handle Strategy Change with open-position warning
     const handleStrategyChange = async (newStrategy: string) => {
-        if (openTrades.length > 0) {
+        if (openPositions.length > 0) {
             setStrategyChangeWarning(newStrategy);
             return;
         }
@@ -377,7 +382,7 @@ export function TradeActionPanel({ urlSymbol, defaultBaseQty }: TradeActionPanel
                 <ConfirmModal
                     title="Strategy Change Warning"
                     lines={[
-                        `You have ${openTrades.length} open position(s).`,
+                        `You have ${openPositions.length} open position(s).`,
                         `Switching to "${strategyNames[strategyChangeWarning] || strategyChangeWarning}" while positions are open may cause unexpected exit behaviour.`,
                         'Are you sure you want to proceed?'
                     ]}
