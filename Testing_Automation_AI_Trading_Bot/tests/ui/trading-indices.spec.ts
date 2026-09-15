@@ -33,7 +33,8 @@ test.describe('Trade Indices selector', () => {
     await page.getByRole('button', { name: 'Save Settings' }).click();
     await page.getByRole('button', { name: 'Save', exact: true }).click();
     await expect.poll(() => mockBackend.requestsTo(ProxyRoutes.settings, 'POST').length).toBe(1);
-    const body = JSON.parse(mockBackend.requestsTo(ProxyRoutes.settings, 'POST')[0].postData ?? '{}');
+    const [saveRequest] = mockBackend.requestsTo(ProxyRoutes.settings, 'POST');
+    const body = JSON.parse(saveRequest?.postData ?? '{}');
     expect(body.symbols).toEqual([NIFTY, SENSEX]);
   });
 
