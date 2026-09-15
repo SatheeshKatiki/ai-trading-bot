@@ -578,6 +578,85 @@ class CandleAggregator:
         return self.candles[symbol]
 
 
+#: Order states that mean the order is still working at the exchange.
+_WORKING_ORDER_STATES = ("PENDING", "OPEN", "PARTIAL")
+#: The stop-loss order types this engine places (see update_exchange_sl).
+_STOP_ORDER_TYPES = (OrderType.SL, OrderType.SL_M)
+#: Terminal states -- the order is already done, there is nothing to cancel.
+_FINISHED_ORDER_STATES = ("COMPLETE", "FILLED", "TRADED", "CANCELLED", "REJECTED")
+
+
+def _cancel_orphaned_stop(broker, pos, symbol: str, order_book) -> None:
+    """Cancel the exchange-resident stop-loss of a position the broker has
+    already closed -- a manual exit in the broker app, or any close this
+    engine did not perform itself.
+
+    The normal exit path cancels the hard SL before it sells (see the
+    "Cancelled Hard SL order ... before exit" branch). Reconciliation had no
+    such step: it deleted the local position -- and with it the only copy of
+    ``sl_order_id`` -- leaving an SL working at the exchange for an instrument
+    no longer held. On a bought option that stop is a SELL, so triggering it
+    would OPEN a naked short rather than close anything.
+
+    Best-effort by design: a broker hiccup here must never abort the
+    reconciliation that is recording the trade.
+    """
+    if not hasattr(broker, "cancel_order"):
+        return
+
+    cancelled: List[str] = []
+    sl_id = getattr(pos, "sl_order_id", None) if pos is not None else None
+
+    if sl_id:
+        try:
+            status = broker.get_order_status(sl_id) if hasattr(broker, "get_order_status") else None
+            state = getattr(status, "status", None)
+            if state in _FINISHED_ORDER_STATES:
+                # It already fired -- that stop WAS the exit. Nothing to do.
+                logger.info("Stop-loss %s for %s is already %s — nothing to cancel.", sl_id, symbol, state)
+            else:
+                # No status at all means we cannot prove it is dead. Cancelling
+                # a finished order is a harmless no-op at the broker; leaving a
+                # live one working is not.
+                broker.cancel_order(sl_id)
+                cancelled.append(str(sl_id))
+            if pos is not None:
+                pos.sl_order_id = None
+        except Exception as exc:
+            logger.error("Failed to cancel stop-loss %s for %s: %s", sl_id, symbol, exc)
+
+    # Belt and braces: a restart can lose sl_order_id, and update_exchange_sl
+    # replaces the stop by cancelling and re-placing it, so a stale id is
+    # possible. Scoped to STOP orders on this instrument only — a LIMIT or
+    # MARKET order the owner placed by hand must never be cancelled here.
+    for entry in order_book or []:
+        if getattr(entry, "symbol", None) != symbol or str(getattr(entry, "order_id", "")) in cancelled:
+            continue
+        if entry.order_type not in _STOP_ORDER_TYPES or entry.status not in _WORKING_ORDER_STATES:
+            continue
+        try:
+            broker.cancel_order(entry.order_id)
+            cancelled.append(str(entry.order_id))
+        except Exception as exc:
+            logger.error("Failed to cancel stray stop order %s for %s: %s", entry.order_id, symbol, exc)
+
+    if cancelled:
+        logger.warning(
+            "ORPHANED STOP-LOSS cancelled for %s (order(s): %s) — the position was closed "
+            "outside this engine, so its exchange stop was still working.",
+            symbol, ", ".join(cancelled),
+        )
+        try:
+            alerter.send_alert(
+                f"🧹 **Orphaned Stop-Loss Cancelled**\n\nInstrument: {symbol}\n"
+                f"Order(s): {', '.join(cancelled)}\n"
+                f"Reason: the position was closed outside this engine "
+                f"(manual exit / broker-side close), leaving its stop working."
+            )
+        except Exception as exc:
+            logger.error("Orphaned-SL alert failed for %s: %s", symbol, exc)
+
+
 async def _reconcile_broker_state(broker, active_positions, risk_manager, portfolio_risk) -> None:
     """Re-syncs locally tracked positions against the broker's own record
     after a WebSocket reconnect. Pulled out of run_live_bot's
@@ -648,6 +727,12 @@ async def _reconcile_broker_state(broker, active_positions, risk_manager, portfo
                 result.entry_price, result.exit_price, result.pnl, datetime.now(_IST).isoformat()
             ))
             record_trade(result.symbol, result.state_action, result.exit_price, datetime.now(_IST).isoformat(), qty=result.quantity)
+
+            # The broker is flat, but this position's exchange stop may still
+            # be working. Cancel it BEFORE the del below, which discards the
+            # only object holding sl_order_id -- after that the orphan cannot
+            # be found again.
+            _cancel_orphaned_stop(broker, active_positions.get(result.local_key), result.symbol, order_book)
 
             del active_positions[result.local_key]
             _save_positions(active_positions)

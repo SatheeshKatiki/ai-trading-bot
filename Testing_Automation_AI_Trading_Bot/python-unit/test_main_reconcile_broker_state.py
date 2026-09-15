@@ -22,7 +22,8 @@ not just computed and discarded.
 """
 import _bootstrap  # noqa: F401  (side-effect: puts trading-system/ on sys.path)
 
-from brokers.models import Position as BrokerPosition, PositionSide
+from brokers import OrderSide, OrderStatus
+from brokers.models import OrderBookEntry, OrderType, Position as BrokerPosition, PositionSide
 from shared.exits import Position
 from trading_bot.main import _reconcile_broker_state
 import trading_bot.main as main_module
@@ -54,16 +55,43 @@ class _FakePortfolioRisk:
 
 
 class _FakeBroker:
-    def __init__(self, paper_mode, positions=None, order_book=None):
+    def __init__(self, paper_mode, positions=None, order_book=None,
+                 order_status=None, cancel_raises=False):
         self.paper_mode = paper_mode
         self._positions = positions if positions is not None else []
         self._order_book = order_book if order_book is not None else []
+        self._order_status = order_status
+        self._cancel_raises = cancel_raises
+        self.cancelled = []
 
     def get_positions(self):
         return self._positions
 
     def get_order_book(self):
         return self._order_book
+
+    def get_order_status(self, order_id):
+        return self._order_status
+
+    def cancel_order(self, order_id):
+        if self._cancel_raises:
+            raise RuntimeError("broker refused the cancel")
+        self.cancelled.append(order_id)
+        return {"status": "ok"}
+
+
+def _working_order(order_id, symbol, order_type=OrderType.SL_M, status=OrderStatus.OPEN):
+    """An order still working at the exchange."""
+    return OrderBookEntry(
+        order_id=order_id, symbol=symbol, side=OrderSide.SELL, quantity=260,
+        price=0.0, status=status, order_type=order_type, traded_price=0.0,
+    )
+
+
+class _FinishedStatus:
+    def __init__(self, status):
+        self.status = status
+        self.traded_price = 0.0
 
 
 async def _run(coro):
@@ -76,6 +104,111 @@ def _call(broker, active_positions, risk_manager=None, portfolio_risk=None):
     portfolio_risk = portfolio_risk or _FakePortfolioRisk()
     asyncio.run(_run(_reconcile_broker_state(broker, active_positions, risk_manager, portfolio_risk)))
     return risk_manager, portfolio_risk
+
+
+# ---------------------------------------------------------------------------
+# Orphaned exchange stop-losses
+#
+# The owner exits a live trade manually -- in the broker app or here. The
+# broker goes flat, reconciliation notices and drops the local position. But
+# the exchange-resident stop that position placed is STILL WORKING, and `del`
+# discards the only copy of sl_order_id, so after that the orphan can never be
+# found again. On a bought option that stop is a SELL: if it triggers against
+# a position no longer held, it OPENS a naked short.
+# ---------------------------------------------------------------------------
+
+def _quiet(monkeypatch):
+    """No real Telegram, no writes to the live positions file."""
+    monkeypatch.setattr(main_module, "record_trade", lambda *a, **kw: None)
+    monkeypatch.setattr(main_module, "_save_positions", lambda positions: None)
+    sent = []
+    monkeypatch.setattr(main_module, "alerter",
+                        type("_A", (), {"send_alert": staticmethod(lambda m: sent.append(m))})())
+    return sent
+
+
+def test_an_orphaned_stop_is_cancelled_when_the_broker_closed_the_position(monkeypatch):
+    sent = _quiet(monkeypatch)
+    position = _open_position()
+    position.sl_order_id = "SL-1"
+    active_positions = {position.symbol: position}
+    broker = _FakeBroker(paper_mode=False, positions=[])   # broker is flat
+
+    _call(broker, active_positions)
+
+    assert broker.cancelled == ["SL-1"], "the working stop must be cancelled"
+    assert active_positions == {}, "the position is still reconciled away"
+    assert sent and "Orphaned Stop-Loss Cancelled" in sent[0]
+
+
+def test_a_stop_that_already_executed_is_not_cancelled(monkeypatch):
+    """If the stop itself fired, that WAS the exit -- cancelling is wrong."""
+    _quiet(monkeypatch)
+    position = _open_position()
+    position.sl_order_id = "SL-1"
+    broker = _FakeBroker(paper_mode=False, positions=[],
+                         order_status=_FinishedStatus("COMPLETE"))
+
+    _call(broker, {position.symbol: position})
+
+    assert broker.cancelled == []
+
+
+def test_a_stray_stop_order_on_the_same_instrument_is_swept(monkeypatch):
+    """A restart loses sl_order_id, and trailing replaces the stop -- so a
+    working stop with an id we no longer track has to be swept too."""
+    _quiet(monkeypatch)
+    position = _open_position()
+    position.sl_order_id = None                      # id lost across a restart
+    stray = _working_order("SL-STRAY", position.symbol)
+    broker = _FakeBroker(paper_mode=False, positions=[], order_book=[stray])
+
+    _call(broker, {position.symbol: position})
+
+    assert broker.cancelled == ["SL-STRAY"]
+
+
+def test_a_manual_limit_order_is_never_cancelled(monkeypatch):
+    """The sweep is scoped to STOP orders.
+
+    An owner-placed LIMIT/MARKET order on the same instrument must survive --
+    cancelling someone's pending entry would be its own incident.
+    """
+    _quiet(monkeypatch)
+    position = _open_position()
+    position.sl_order_id = None
+    manual = _working_order("MY-LIMIT", position.symbol, order_type=OrderType.LIMIT)
+    broker = _FakeBroker(paper_mode=False, positions=[], order_book=[manual])
+
+    _call(broker, {position.symbol: position})
+
+    assert broker.cancelled == [], "a manual limit order must never be swept"
+
+
+def test_a_cancel_failure_never_aborts_the_reconciliation(monkeypatch):
+    """Best-effort: recording the trade matters more than the cancel."""
+    _quiet(monkeypatch)
+    position = _open_position()
+    position.sl_order_id = "SL-1"
+    active_positions = {position.symbol: position}
+    broker = _FakeBroker(paper_mode=False, positions=[], cancel_raises=True)
+
+    risk_manager, _ = _call(broker, active_positions)
+
+    assert active_positions == {}, "the position must still be reconciled away"
+    assert len(risk_manager.recorded_trades) == 1, "the trade must still be recorded"
+
+
+def test_paper_mode_cancels_nothing(monkeypatch):
+    """Paper short-circuits before any of this -- nothing real to cancel."""
+    _quiet(monkeypatch)
+    position = _open_position()
+    position.sl_order_id = "SL-1"
+    broker = _FakeBroker(paper_mode=True)
+
+    _call(broker, {position.symbol: position})
+
+    assert broker.cancelled == []
 
 
 # ---------------------------------------------------------------------------
