@@ -703,10 +703,20 @@ async def _reconcile_broker_state(broker, active_positions, risk_manager, portfo
             logger.error("Could not fetch order book during reconciliation: %s", ob_exc)
             order_book = []
 
+        # A position with an exit already IN FLIGHT is never reconciled. Its
+        # own exit path has placed an order the broker may already have
+        # filled, so "the broker is flat" here means "we are closing it", not
+        # "someone else closed it". Reconciling anyway would record the trade
+        # a second time, delete the position out from under the in-flight
+        # exit, and cancel the stop that exit still relies on. Mirrors
+        # on_tick's own "skip if a background exit is in flight" gate.
+        reconcilable = {key: pos for key, pos in active_positions.items()
+                        if not getattr(pos, "is_exiting", False)}
+
         # Pure decision logic lives in trading_bot.reconciliation so it's
         # unit-testable without a live broker or this function's state —
         # see test_reconciliation.py.
-        for result in compute_reconciliation(active_positions, broker_positions, order_book):
+        for result in compute_reconciliation(reconcilable, broker_positions, order_book):
             logger.warning("STATE MISMATCH: Local position %s exists but broker is flat. Resolving locally.", result.symbol)
             if result.is_estimate:
                 logger.error(
@@ -2771,6 +2781,38 @@ async def run_live_bot(symbols: List[str]) -> None:
             await asyncio.sleep(_HEARTBEAT_WRITE_INTERVAL_S)
 
     asyncio.create_task(heartbeat_writer())
+
+    # ----------------------------------------------------------------
+    # Position reconciler
+    # ----------------------------------------------------------------
+    # Reconciliation used to have exactly ONE trigger: a WebSocket reconnect
+    # (stream_quotes' on_reconnect below). So a position closed outside this
+    # engine -- the owner exiting in the broker app, or a broker-side square
+    # off -- went unnoticed for as long as the socket stayed healthy, which
+    # on a good day is the entire session. Meanwhile the engine kept managing
+    # a position that no longer existed and kept its exchange stop working
+    # against nothing.
+    #
+    # This poll closes that gap on a fixed cadence. It is deliberately silent
+    # when there is nothing to do: flat means no broker calls at all, and
+    # paper mode is skipped here as well as inside _reconcile_broker_state
+    # (which stays the authority on that rule) purely to keep a paper session
+    # from logging a skip line every minute.
+    _RECONCILE_INTERVAL_S = 60.0
+
+    async def position_reconciler() -> None:
+        while True:
+            await asyncio.sleep(_RECONCILE_INTERVAL_S)
+            try:
+                if getattr(broker, "paper_mode", False) or not active_positions:
+                    continue
+                await sync_broker_state()
+            except Exception as e:
+                # Never let one bad poll kill the task -- a dead reconciler is
+                # precisely the silent gap this exists to close.
+                logger.error("Periodic reconciliation failed: %s", e)
+
+    asyncio.create_task(position_reconciler())
 
     logger.info("Starting live stream for symbols: %s", ", ".join(symbols))
     await broker.stream_quotes(symbols, on_tick, on_reconnect=sync_broker_state)

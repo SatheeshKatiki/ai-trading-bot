@@ -212,6 +212,65 @@ def test_paper_mode_cancels_nothing(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# An exit already in flight must never be reconciled
+#
+# Reconciliation used to run only on a WebSocket reconnect -- i.e. while the
+# stream was down -- so it never raced on_tick. Polling it on a timer does, and
+# the dangerous interleaving is an exit mid-flight: the engine has placed the
+# order, the broker already reads flat, and reconciliation would then record
+# the same trade twice, delete the position out from under the exit, and
+# cancel the stop that exit still relies on.
+# ---------------------------------------------------------------------------
+
+def test_a_position_with_an_exit_in_flight_is_not_reconciled(monkeypatch):
+    _quiet(monkeypatch)
+    position = _open_position()
+    position.sl_order_id = "SL-1"
+    position.is_exiting = True            # our own exit is mid-flight
+    active_positions = {position.symbol: position}
+    broker = _FakeBroker(paper_mode=False, positions=[])   # broker already flat
+
+    risk_manager, _ = _call(broker, active_positions)
+
+    assert active_positions == {position.symbol: position}, "the in-flight exit owns this position"
+    assert risk_manager.recorded_trades == [], "must not record the trade a second time"
+    assert broker.cancelled == [], "must not cancel the stop the exit is still using"
+
+
+def test_other_positions_still_reconcile_while_one_exit_is_in_flight(monkeypatch):
+    """The guard is per-position, not a blanket skip."""
+    _quiet(monkeypatch)
+    in_flight = _open_position(symbol="NSE:NIFTY2681824400PE")
+    in_flight.is_exiting = True
+    closed = _open_position(symbol="NSE:BANKNIFTY2681852000CE")
+    active_positions = {in_flight.symbol: in_flight, closed.symbol: closed}
+    broker = _FakeBroker(paper_mode=False, positions=[])
+
+    risk_manager, _ = _call(broker, active_positions)
+
+    assert in_flight.symbol in active_positions
+    assert closed.symbol not in active_positions
+    assert len(risk_manager.recorded_trades) == 1
+
+
+def test_reconciliation_is_polled_not_only_triggered_by_a_reconnect():
+    """The gap this closes: a manual exit while the socket stays healthy.
+
+    on_reconnect alone meant a position closed in the broker app could go
+    unnoticed for the whole session.
+    """
+    import inspect
+    src = inspect.getsource(main_module.run_live_bot)
+
+    assert "async def position_reconciler()" in src
+    assert "asyncio.create_task(position_reconciler())" in src
+    # Flat or paper: no broker calls at all.
+    assert 'if getattr(broker, "paper_mode", False) or not active_positions:' in src
+    # Still wired to the reconnect too -- the poll adds a trigger, not replaces one.
+    assert "on_reconnect=sync_broker_state" in src
+
+
+# ---------------------------------------------------------------------------
 # Paper mode -- the mode this system actually runs in today
 # ---------------------------------------------------------------------------
 
