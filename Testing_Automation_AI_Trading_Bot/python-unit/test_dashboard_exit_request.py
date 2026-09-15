@@ -34,6 +34,8 @@ from __future__ import annotations
 import inspect
 import json
 
+import pytest
+
 import _bootstrap  # noqa: F401  (side-effect: puts trading-system/ on sys.path)
 
 import trading_bot.main as main_module
@@ -122,3 +124,121 @@ def test_the_position_is_locked_against_the_tick_exit_path():
     src = inspect.getsource(main_module.run_live_bot)
     body = src[src.index("async def close_requested_positions"):]
     assert "pos.is_exiting = True" in body
+
+
+# ---------------------------------------------------------------------------
+# POST /api/positions/exit -- the endpoint itself
+# ---------------------------------------------------------------------------
+
+def _client(tmp_path, monkeypatch, execute=None):
+    """A TestClient whose order placement is stubbed, in an isolated cwd.
+
+    /api/positions/exit sits behind the auth middleware, so the client carries
+    a real session token. execute_order is stubbed because the real one reaches
+    BrokerFactory -- what is under test here is the endpoint's own contract:
+    which side it exits on, and that the engine gets told.
+    """
+    from fastapi.testclient import TestClient
+
+    import api_bridge
+    from api_bridge import app
+    from shared.security.sessions import create_session
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config").mkdir(exist_ok=True)
+
+    placed = []
+
+    async def _default(req, request):
+        placed.append(req)
+        return {"status": "success", "order_id": "MOCK-1"}
+
+    monkeypatch.setattr(api_bridge, "execute_order", execute or _default)
+
+    token = create_session("exit-endpoint-test-user")
+    client = TestClient(app, client=("127.0.0.1", 50001))
+    client.headers.update({"Authorization": f"Bearer {token}"})
+    return client, placed, tmp_path / "config" / "exit_requests.json"
+
+
+def test_a_long_is_exited_with_a_sell_and_the_engine_is_told(tmp_path, monkeypatch):
+    client, placed, requests_file = _client(tmp_path, monkeypatch)
+
+    res = client.post("/api/positions/exit",
+                      json={"symbol": "NSE:NIFTY2681824400PE", "quantity": 65, "side": "BUY"})
+
+    assert res.status_code == 200
+    assert [p.action for p in placed] == ["SELL"]
+    assert [p.symbol for p in placed] == ["NSE:NIFTY2681824400PE"]
+    assert json.loads(requests_file.read_text(encoding="utf-8")) == ["NSE:NIFTY2681824400PE"]
+
+
+def test_a_short_is_exited_with_a_buy(tmp_path, monkeypatch):
+    client, placed, _ = _client(tmp_path, monkeypatch)
+
+    client.post("/api/positions/exit",
+                json={"symbol": "NSE:BANKNIFTY2681852000CE", "quantity": 30, "side": "SELL"})
+
+    assert [p.action for p in placed] == ["BUY"]
+
+
+def test_nothing_is_queued_when_the_order_could_not_be_placed(tmp_path, monkeypatch):
+    """Placing comes FIRST on purpose.
+
+    If the request were queued and the order then failed, the engine would drop
+    a position the broker still holds -- unrecoverable without manual help. The
+    other way round, the 60s reconciler catches it.
+    """
+    async def _refuse(req, request):
+        raise RuntimeError("broker rejected the order")
+
+    client, _placed, requests_file = _client(tmp_path, monkeypatch, execute=_refuse)
+
+    with pytest.raises(RuntimeError):
+        client.post("/api/positions/exit",
+                    json={"symbol": "NSE:NIFTY2681824400PE", "quantity": 65, "side": "BUY"})
+
+    assert not requests_file.exists(), "a failed exit must not tell the engine the position is gone"
+
+
+def test_two_exits_queue_both_symbols(tmp_path, monkeypatch):
+    client, _placed, requests_file = _client(tmp_path, monkeypatch)
+
+    client.post("/api/positions/exit", json={"symbol": "A-CE", "quantity": 1, "side": "BUY"})
+    client.post("/api/positions/exit", json={"symbol": "B-PE", "quantity": 1, "side": "BUY"})
+
+    assert json.loads(requests_file.read_text(encoding="utf-8")) == ["A-CE", "B-PE"]
+
+
+def test_the_same_symbol_is_never_queued_twice(tmp_path, monkeypatch):
+    """A double-click must not make the engine act on it twice."""
+    client, _placed, requests_file = _client(tmp_path, monkeypatch)
+
+    client.post("/api/positions/exit", json={"symbol": "A-CE", "quantity": 1, "side": "BUY"})
+    client.post("/api/positions/exit", json={"symbol": "A-CE", "quantity": 1, "side": "BUY"})
+
+    assert json.loads(requests_file.read_text(encoding="utf-8")) == ["A-CE"]
+
+
+def test_the_endpoint_is_localhost_only(tmp_path, monkeypatch):
+    """It places real orders -- it must not be reachable from the network."""
+    from fastapi.testclient import TestClient
+
+    import api_bridge
+    from api_bridge import app
+    from shared.security.sessions import create_session
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config").mkdir(exist_ok=True)
+    monkeypatch.setattr(api_bridge, "execute_order",
+                        lambda req, request: (_ for _ in ()).throw(AssertionError("must not place")))
+
+    token = create_session("exit-endpoint-remote-user")
+    remote = TestClient(app, client=("10.0.0.9", 50002))
+    remote.headers.update({"Authorization": f"Bearer {token}"})
+
+    res = remote.post("/api/positions/exit",
+                      json={"symbol": "A-CE", "quantity": 1, "side": "BUY"})
+
+    assert res.status_code == 403
+    assert not (tmp_path / "config" / "exit_requests.json").exists()
