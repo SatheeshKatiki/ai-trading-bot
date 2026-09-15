@@ -122,12 +122,15 @@ export default function Dashboard() {
             ? positions.reduce((acc, p) => acc + (p.average_price * p.quantity), 0)
             : 0));
 
-  const dynamicMarginRoi = wsMarginRoi !== 0 
-    ? wsMarginRoi 
+  // Same rule as displayPnl above: pick the SOURCE by whether the socket is
+  // connected, never by whether its value happens to be zero. A genuinely
+  // flat ROI is a real reading, not a missing one.
+  const dynamicMarginRoi = wsConnected
+    ? wsMarginRoi
     : (dynamicMargin > 0 ? (displayPnl / dynamicMargin) * 100 : (equity > 0 ? (displayPnl / equity) * 100 : 0));
 
-  const dynamicAccountRoi = wsAccountRoi !== 0 
-    ? wsAccountRoi 
+  const dynamicAccountRoi = wsConnected
+    ? wsAccountRoi
     : (equity > 0 ? (displayPnl / equity) * 100 : 0);
   // Live AI Signal state — sourced from /api/signals
   const [aiSignal, setAiSignal] = useState<{
