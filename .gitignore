@@ -42,3 +42,6 @@ Testing_Automation_AI_Trading_Bot/.auth/
 Testing_Automation_AI_Trading_Bot/.cache/
 Testing_Automation_AI_Trading_Bot/**/*.tsbuildinfo
 .pytest_cache/
+
+# One-off analysis scripts kept beside the system but never part of it.
+trading-system/scratch/
