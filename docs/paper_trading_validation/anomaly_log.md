@@ -6,6 +6,80 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-09-15 — first profitable session (+₹7,249.50); a shadow-book signal went missing; a re-entry cooldown was measured and REJECTED
+
+**Result.** Main paper book: 3 trades, 2 wins, net **+₹7,249.50** (66.7%), all
+BANKNIFTY PE. Book to date: 9 sessions, 25 trades, 24.0% win rate, PF 1.38,
+net **+₹4,001**. Today alone carried it: the previous 8 sessions were
+**−₹3,248.50** combined. One good session is not evidence — the sample is tiny.
+
+| # | entry | exit | peak | net |
+|---|---|---|---|---|
+| 1 | 09:45 56400 PE @ 497.65 | 13:19 @ 611.65 REVERSAL | 683.60 | +3,398.50 |
+| 2 | 13:23 56200 PE @ 541.65 | 13:23 @ 538.45 REVERSAL (19s) | 541.65 | −117.50 |
+| 3 | 13:24 56200 PE @ 541.15 | 15:14 @ 674.15 EOD | 723.60 | +3,968.50 |
+
+The portfolio guard blocked 34 co-directional signals ("1 PE position already
+open — the indices move together") and one on size ("one-lot risk ₹3,328
+exceeds the day's whole loss limit ₹3,000"). Without it NIFTY, BANKNIFTY and
+SENSEX would all have stacked the same PE direction.
+
+**A re-entry cooldown was measured and rejected.** Trade 2 was a whipsaw —
+in and out in 19 seconds, then back in 51 seconds later — which looks like an
+obvious case for a cooldown after an exit. Replaying all 7 sessions that have
+trades says otherwise:
+
+| cooldown | kept | blocked | net |
+|---|---|---|---|
+| **0m (actual)** | 25 | 0 | **+₹4,001.00** |
+| 1–3m | 23 | 2 | −₹374.55 |
+| 5m | 22 | 3 | −₹257.05 |
+| 10–15m | 21 | 4 | −₹2,631.80 |
+| 30m | 19 | 6 | −₹1,471.50 |
+
+The whipsaw it prevents costs −₹117.50; the same rule blocks +₹3,968.50
+(today's re-entry, the biggest winner of the book), +₹407.05 and +₹2,374.75.
+**Every window turns a profitable book into a losing one.** Not implemented.
+Recorded here so it is not proposed again without new evidence.
+
+**A shadow-book signal went missing — cause still unknown.** Both variant
+books wrote `signals: []` for the whole session. Replaying the same session's
+cached bars through those very rules found:
+
+* `5m_atm` — 0 actionable signals on all three indices (962 fresh polls,
+  749-bar frames, nothing suppressed). Its zero-trade day was legitimate.
+* `15m_itm` NIFTY/BANKNIFTY — 0. Also legitimate.
+* `15m_itm` SENSEX — **one genuine PE signal on the 11:15 bar**, first
+  visible 11:30:00 and live across 13 consecutive polls inside the 180s
+  freshness window, on a 250-bar frame.
+
+`consider_entry` appends the signal record *before* every skip check, so even
+a declined signal should have appeared. Ruled out afterwards: MIN_BARS (never
+suppressed), `is_fresh`, the timezone of `now` (naive vs aware `resample_closed`
+is byte-identical), duplicate bars (SENSEX cache: 19,291 rows, 0 duplicates),
+and cache-write contention (SENSEX save failures fell only in hours 09 and 15,
+none near 11:30). What remains is that the live broker/api_bridge response at
+11:30 differed from the end-of-day CSV — and nothing logged it.
+
+So the books now record **why** each poll did nothing (bar, frame length, age
+against the freshness window, outcome) into `sess["diagnostics"]`, and the
+next occurrence can be read rather than reconstructed.
+
+**Infrastructure.** 194 failed cache saves today (NIFTYBANK 172, SENSEX 17,
+NIFTY50 5) — Windows `.tmp → .csv` rename collisions from several processes
+writing the same cache files; 4,965 history fetches and 6,379 cache appends
+in one session; `api_bridge_stdout.log` has reached **329.9 MB** with no
+rotation. Disk is fine (138 GB free).
+
+**Stale engine stopped.** `trading_bot/main.py` (PIDs 18520/22880, started
+2026-09-11 22:31) was still running pre-fix code and had failed to reach the
+API bridge **868 times**. Its entire log for the day was reconciliation and
+retry lines — no trades, no positions (`active_positions.json` was `{}`) — so
+it was stopped. Note the orchestrator does NOT supervise `main.py`; only the
+backend, `paper_observer.py` and `ema9_variant_observer.py`.
+
+---
+
 ## 2026-09-14 — a full session ran into a CLOSED exchange (Ganesh Chaturthi); nothing traded, but only by luck
 
 NSE and BSE were shut all day for Ganesh Chaturthi — the only weekday market
