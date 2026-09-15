@@ -1571,6 +1571,51 @@ class ExecuteOrderRequest(BaseModel):
     product_type: str = "INTRADAY"
     price: float = 0.0
 
+
+class ExitPositionRequest(BaseModel):
+    symbol: str                 # the TRADED contract, e.g. NSE:NIFTY...CE
+    quantity: int
+    side: str = "BUY"           # the position's own side; the exit is its opposite
+
+
+@app.post("/api/positions/exit")
+async def exit_position(req: ExitPositionRequest, request: Request):
+    """Exit ONE open position from the dashboard, safely.
+
+    Two steps, in this order on purpose:
+
+    1. Place the counter-order through the same path a manual order takes, so
+       paper mode, the rate limiter and price resolution all behave
+       identically -- no second copy of order-placement logic.
+    2. Tell main.py -- a SEPARATE process -- that this position is gone, so it
+       cancels the exchange stop-loss, records the trade and drops the
+       position from its book.
+
+    Without step 2 the engine keeps managing a position that no longer exists:
+    it tries to exit it again (a double sell) and leaves its stop working
+    against nothing, which on a bought option is a SELL that would open a
+    naked short.
+
+    If step 2 ran first and step 1 then failed, the engine would forget a
+    position the broker still holds -- unrecoverable without manual help. In
+    this order, a failure after the fill is caught by the engine's 60-second
+    reconciler instead. The recoverable direction is the safe one.
+    """
+    if request.client and request.client.host not in ["127.0.0.1", "localhost", "::1"]:
+        raise HTTPException(status_code=403, detail="Forbidden: Localhost access only")
+
+    exit_action = "SELL" if str(req.side).upper() in ("BUY", "LONG", "1") else "BUY"
+    placed = await execute_order(
+        ExecuteOrderRequest(symbol=req.symbol, action=exit_action, quantity=req.quantity),
+        request,
+    )
+    _queue_exit_request(req.symbol)
+    logger.warning(
+        "Dashboard exit for %s (%s %d) — counter-order placed, engine notified.",
+        req.symbol, exit_action, req.quantity,
+    )
+    return {"status": "success", "symbol": req.symbol, "exit": placed}
+
 @app.post("/api/order/execute")
 async def execute_order(req: ExecuteOrderRequest, request: Request):
     """Executes a manual order from the UI."""
@@ -1687,27 +1732,79 @@ async def execute_order(req: ExecuteOrderRequest, request: Request):
         logger.error(f"Order Execution Failed: {e}")
         raise HTTPException(status_code=500, detail='Order execution failed.')
 
-def _set_emergency_stop(active: bool) -> None:
-    """Atomically set/clear the `emergency_stop` flag in config/settings.json
-    -- the cross-process signal main.py's on_tick() checks every tick to
-    force-close all open positions (see emergency_flatten_all_positions()
-    in trading_bot/main.py for the full incident/design writeup). Scoped to
-    just this one key (its own tempfile+rename, not routed through the much
-    larger /api/settings endpoint) so this dangerous, time-critical action
-    never depends on unrelated credential-handling logic in that path.
+def _write_settings_flag(key: str, value) -> None:
+    """Atomically write ONE key into config/settings.json.
+
+    settings.json is the only channel api_bridge has to main.py: they are
+    separate processes sharing nothing else, and main.py re-reads this file
+    every tick (mtime-cached), so a key written here reaches the engine on its
+    next tick. Each cross-process flag gets its own scoped tempfile+rename
+    rather than going through the much larger /api/settings endpoint, so these
+    dangerous, time-critical writes never depend on unrelated
+    credential-handling logic in that path.
+
+    Read-modify-write: every other setting is preserved.
     """
+    global _config_last_mtime
     import tempfile
     settings_path = "config/settings.json"
     existing = {}
     if os.path.exists(settings_path):
         with open(settings_path, "r", encoding="utf-8") as f:
             existing = json.load(f)
-    existing["emergency_stop"] = active
+    existing[key] = value
     os.makedirs("config", exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(dir="config", prefix="settings_tmp_", suffix=".json")
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(existing, f, indent=4)
     os.replace(tmp_path, settings_path)
+    # The cached reader keys off mtime; force the next read to re-open so a
+    # write is never reported back stale within the same mtime tick.
+    _config_last_mtime = 0.0
+
+
+def _set_emergency_stop(active: bool) -> None:
+    """Set/clear the `emergency_stop` flag -- the cross-process signal
+    main.py's on_tick() checks every tick to force-close all open positions
+    (see emergency_flatten_all_positions() in trading_bot/main.py for the full
+    incident/design writeup).
+    """
+    _write_settings_flag("emergency_stop", active)
+
+
+#: Per-position exit requests, appended here and consumed by main.py.
+_EXIT_REQUESTS_PATH = "config/exit_requests.json"
+
+
+def _queue_exit_request(symbol: str) -> None:
+    """Ask the engine to close ONE position, named by its traded contract.
+
+    Deliberately its own file rather than another settings.json key: this flag
+    has to be TRUNCATED by whoever consumes it, and settings.json has exactly
+    one writer today (this process). Two processes doing read-modify-write on
+    the same file is how an unrelated setting silently disappears. So
+    api_bridge only ever appends here; main.py owns emptying it.
+
+    Why a request at all, rather than just firing the counter-order: main.py
+    runs in a SEPARATE process and would otherwise never learn the position is
+    gone. It would keep managing it, try to exit it again (a double sell), and
+    leave its exchange stop-loss working against a position no longer held.
+    """
+    import tempfile
+    pending = []
+    if os.path.exists(_EXIT_REQUESTS_PATH):
+        try:
+            with open(_EXIT_REQUESTS_PATH, "r", encoding="utf-8") as f:
+                pending = json.load(f) or []
+        except (OSError, ValueError):
+            pending = []
+    if symbol not in pending:
+        pending.append(symbol)
+    os.makedirs("config", exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir="config", prefix="exit_req_tmp_", suffix=".json")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(pending, f, indent=2)
+    os.replace(tmp_path, _EXIT_REQUESTS_PATH)
 
 
 def _set_engine_active(active: bool) -> None:
@@ -1719,22 +1816,7 @@ def _set_engine_active(active: bool) -> None:
     engine could see: it reported "Engine Off" while the engine kept trading.
     Same scoped tempfile+rename as _set_emergency_stop, for the same reason.
     """
-    global _config_last_mtime
-    import tempfile
-    settings_path = "config/settings.json"
-    existing = {}
-    if os.path.exists(settings_path):
-        with open(settings_path, "r", encoding="utf-8") as f:
-            existing = json.load(f)
-    existing["is_active"] = active
-    os.makedirs("config", exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(dir="config", prefix="settings_tmp_", suffix=".json")
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(existing, f, indent=4)
-    os.replace(tmp_path, settings_path)
-    # The cached reader keys off mtime; force the next read to re-open so a
-    # toggle is never reported back stale within the same mtime tick.
-    _config_last_mtime = 0.0
+    _write_settings_flag("is_active", active)
 
 
 @app.post("/api/panic-exit")
