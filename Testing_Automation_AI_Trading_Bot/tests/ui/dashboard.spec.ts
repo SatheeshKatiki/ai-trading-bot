@@ -17,20 +17,40 @@ import {
   flatState,
 } from '@mocks/scenarios';
 
+/**
+ * The P&L tile is "Day's Net P&L" = realized + unrealized.
+ *
+ * Its two sources measure different things: the live socket's `total_pnl`
+ * already includes open mark-to-market, while `/api/state`'s `pnl` is
+ * realized only. These specs used to assert the realized-only figure, which
+ * passed for the wrong reason -- the page preferred the socket and only fell
+ * back to REST when the socket's total was exactly zero, so the tile silently
+ * changed meaning with tick timing. Assert the total, and drive the socket
+ * when a flat or losing day is what is being described.
+ */
 test.describe('Dashboard metrics', () => {
   test('equity and P&L tiles show the backend values @smoke', async ({ dashboardPage }) => {
     await dashboardPage.goto();
 
     const state = buildState();
+    const unrealized = buildPositionsResponse().positions.reduce(
+      (sum, position) => sum + position.unrealized_pnl,
+      0,
+    );
+
     await dashboardPage.expectEquity(state.equity);
-    await dashboardPage.expectDailyPnl(state.pnl);
+    // realized (-74.35) + open mark-to-market, not realized alone.
+    await dashboardPage.expectDailyPnl(state.pnl + unrealized);
   });
 
-  test('a losing day is presented as a loss', async ({ dashboardPage }) => {
+  test('a losing day is presented as a loss', async ({ dashboardPage, mockBackend }) => {
+    // A losing day means the TOTAL is negative; the socket is what the tile
+    // reads while it is connected, so the loss has to come from the tick.
+    await mockBackend.setTick({ pnl: -74.35, unrealized_pnl: -1_200.4, total_pnl: -1_274.75 });
+
     await dashboardPage.goto();
 
-    // buildState()'s pnl is -74.35 — the sign must survive formatting.
-    await dashboardPage.expectDailyPnl(-74.35);
+    await dashboardPage.expectDailyPnl(-1_274.75);
     expect(await dashboardPage.dailyPnl()).toBeLessThan(0);
     expect(await dashboardPage.dailyPnlSign()).toBe('negative');
   });
@@ -41,6 +61,14 @@ test.describe('Dashboard metrics', () => {
   }) => {
     await mockBackend.override(ProxyRoutes.state, flatState);
     await mockBackend.override(ProxyRoutes.positions, emptyPositions);
+    await mockBackend.setTick({
+      pnl: 0,
+      unrealized_pnl: 0,
+      total_pnl: 0,
+      equity: 100_000,
+      open_positions_count: 0,
+      positions_detail: [],
+    });
 
     await dashboardPage.goto();
 

@@ -80,6 +80,7 @@ export default function Dashboard() {
   const wsAccountRoi = useLiveMarketStore(state => state.accountRoi);
   const wsMarginDeployed = useLiveMarketStore(state => state.marginDeployed);
   const wsPositionsDetail = useLiveMarketStore(state => state.positionsDetail);
+  const wsConnected = useLiveMarketStore(state => state.isWsConnected);
 
   // Starts at 0, not a plausible 100000. Account ROI is computed against
   // this figure, so seeding it with an invented balance produced a real-looking
@@ -99,7 +100,16 @@ export default function Dashboard() {
   const [isEngineLoading, setIsEngineLoading] = useState(false);
   const [aiCommentary, setAiCommentary] = useState("System armed. Analyzing market structure...");
 
-  const displayPnl = wsTotalPnl !== 0 ? wsTotalPnl : pnl;
+  // This tile is "Day's Net P&L" = realized + unrealized. Its two sources
+  // measure DIFFERENT things: the WebSocket's total_pnl already includes open
+  // mark-to-market, while /api/state's `pnl` is realized only. Choosing
+  // between them with `wsTotalPnl !== 0` therefore switched the tile's
+  // MEANING whenever the socket's total happened to be exactly zero --
+  // including before the first tick ever arrived, and on any genuinely flat
+  // day. Pick by whether the socket is actually connected, and make the REST
+  // fallback carry the same meaning instead of a different one.
+  const restUnrealizedPnl = positions.reduce((acc, p) => acc + (p.unrealized_pnl || 0), 0);
+  const displayPnl = wsConnected ? wsTotalPnl : pnl + restUnrealizedPnl;
   const isProfit = displayPnl > 0.009;
   const isLoss = displayPnl < -0.009;
 

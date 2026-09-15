@@ -108,6 +108,8 @@ export class MockBackend {
   private readonly rules = defaultRules();
   private readonly recorded: RecordedRequest[] = [];
   private installed = false;
+  /** Overrides the live-tick frame; null means send defaultTick(). */
+  private tickOverride: Record<string, unknown> | null = null;
 
   constructor(private readonly page: Page) {}
 
@@ -170,9 +172,21 @@ export class MockBackend {
   private async installWebSocket(): Promise<void> {
     await this.page.routeWebSocket('**/ws/live**', (ws: WebSocketRoute) => {
       log.debug('WebSocket connected (mocked)');
-      ws.send(JSON.stringify(defaultTick()));
-      ws.onMessage(() => ws.send(JSON.stringify(defaultTick())));
+      const frame = () => JSON.stringify(this.tickOverride ?? defaultTick());
+      ws.send(frame());
+      ws.onMessage(() => ws.send(frame()));
     });
+  }
+
+  /**
+   * Replace the live-tick frame, merged over the default one.
+   *
+   * Overriding `/api/state` alone cannot describe a flat or losing day: the
+   * dashboard's P&L tile reads the socket while it is connected, so the tick
+   * is the thing that has to say so. Call before `goto()`.
+   */
+  async setTick(patch: Record<string, unknown>): Promise<void> {
+    this.tickOverride = { ...defaultTick(), ...patch };
   }
 
   /** Replace one route's payload. Pass a function for per-request behaviour. */
