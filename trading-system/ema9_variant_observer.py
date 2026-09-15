@@ -431,25 +431,64 @@ def notify(variant: str, text: str) -> None:
 # One poll
 # ---------------------------------------------------------------------------
 
+def _record_diag(sess: dict, symbol: str, now, bar_start, frame_len: int,
+                 age_s, outcome: str, side: int = 0) -> None:
+    """Why this poll did or did not act, per (book, index).
+
+    2026-09-15: the 15m_itm book recorded no signals at all, while replaying
+    that same session's cached bars through these very rules found a SENSEX PE
+    on the 11:15 bar -- visible for 13 consecutive polls inside the freshness
+    window. MIN_BARS, is_fresh, the timezone of ``now`` and cache contention
+    were each ruled out afterwards, but the run itself had logged nothing, so
+    the cause could only be guessed at.
+
+    consider_entry has two silent exits -- a bar that is not fresh, and a bar
+    that carries no signal -- and both look identical from the session file.
+    Each one now leaves a trace, so the next occurrence is read, not
+    reconstructed.
+    """
+    sess.setdefault("diagnostics", {})[symbol] = {
+        "at": now.strftime("%H:%M:%S"),
+        "bar": bar_start.isoformat() if bar_start is not None else None,
+        "frame_len": frame_len,
+        "min_bars": MIN_BARS,
+        "age_s": None if age_s is None else round(age_s, 1),
+        "fresh_window_s": FRESH_BAR_S,
+        "outcome": outcome,
+        "side": side,
+    }
+    bar_txt = f"{bar_start:%H:%M}" if bar_start is not None else "--:--"
+    age_txt = "--" if age_s is None else f"{age_s:.0f}s"
+    print(f"  [{now:%H:%M:%S}] {sess['variant']:8s} {symbol:9s} bar {bar_txt} "
+          f"| frame {frame_len} | age {age_txt} | {outcome}")
+
+
 def consider_entry(sess: dict, symbol: str, cfg: Ema9RsiMomentumConfig, df, now) -> bool:
     """Open a position if the bar that JUST closed carries a signal. Returns
     True if the session changed."""
     if len(df) == 0:
+        _record_diag(sess, symbol, now, None, 0, None, "empty frame")
         return False
     bar_start = df.index[-1].to_pydatetime()
     bar_close = bar_start + datetime.timedelta(minutes=cfg.timeframe_minutes)
+    age_s = (now.replace(tzinfo=None) - bar_close).total_seconds()
     if bar_start.date() != now.date():
         # Market closed or the feed is down -- say so once, then sit out.
         if _STALE_DATA_LOGGED.get((sess["variant"], symbol)) != bar_start:
             _STALE_DATA_LOGGED[(sess["variant"], symbol)] = bar_start
             print(f"  [{now:%H:%M:%S}] {sess['variant']} {symbol}: last closed bar is "
                   f"{bar_start:%Y-%m-%d %H:%M} -- no data for today; not trading.")
+        _record_diag(sess, symbol, now, bar_start, len(df), age_s, "bar is not from today")
         return False
     if not is_fresh(bar_close, now.replace(tzinfo=None)):
+        _record_diag(sess, symbol, now, bar_start, len(df), age_s, "bar not fresh")
         return False
     side = latest_closed_signal(df, cfg)
     if side == 0:
+        _record_diag(sess, symbol, now, bar_start, len(df), age_s,
+                     "frame below MIN_BARS" if len(df) < MIN_BARS else "no signal")
         return False
+    _record_diag(sess, symbol, now, bar_start, len(df), age_s, "SIGNAL", side)
 
     record = {"symbol": symbol, "bar": bar_start.isoformat(), "side": "CE" if side == 1 else "PE",
               "seen_at": now.strftime("%H:%M:%S")}
