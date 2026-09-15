@@ -1,18 +1,28 @@
 #!/usr/bin/env python3
 """
 =============================================================================
-  QUANT AI — ZERO-TOUCH DAILY SESSION ORCHESTRATOR (Phase 1 Paper Engine)
+  QUANT AI — ZERO-TOUCH DAILY SESSION ORCHESTRATOR
 =============================================================================
 Perspective : 20+ Years Options System Architect & Floor Trader
 Mission     : 100% Autonomous, zero-manual-intervention execution lifecycle
              from 08:45 AM Pre-Market to 03:35 PM Post-Market EOD Reporting.
+
+Paper or live is decided by the dashboard's Live/Paper toggle
+(`live_trading_mode` in settings.json), read once per session by
+live_trading_mode() and defaulting to PAPER on any doubt. Exactly one book
+runs: the paper observer OR trading_bot/main.py, never both -- they share
+config/active_positions.json and both write equity, so the pair corrupts each
+other's account view. The ema9 variant books are isolated research books and
+run in either mode.
 
 Daily Automation Lifecycle:
   1. [08:45 AM] Pre-Market Wakeup & Holiday / Weekend Filter
   2. [08:46 AM] Headless Auto-Authentication (Fyers TOTP / PIN token generation)
   3. [08:50 AM] Port Cleanup (8000, 3000) & System Maintenance / Log Rotation
   4. [09:00 AM] Boot FastAPI Backend (api_bridge.py) & Wait for Health Check
-  5. [09:14 AM] Launch Institutional Paper Trading Observer (paper_observer.py)
+  5. [09:14 AM] Launch today's book — Paper Observer (paper_observer.py) or,
+                with the toggle set to LIVE, the real-order engine
+                (trading_bot/main.py) — plus the ema9 variant books
   6. [09:15 AM - 15:15 PM] Continuous Process Watchdog & Auto-Recovery
   7. [15:15 PM] Trigger Auto EOD Square-off
   8. [15:30 PM] Generate Institutional Performance Report (Win rate, P&L, Trades)
@@ -544,6 +554,75 @@ variant_sv = ServiceSupervisor(
     "ema9_variant_observer_stdout.log",
     restart_on_clean_exit=False,
 )
+# The LIVE engine -- the only process in the system that places real broker
+# orders. Started INSTEAD OF the paper observer, never alongside it: both
+# treat config/active_positions.json as the authoritative position store, and
+# both write equity through shared.state with different bases (the observer
+# uses CAPITAL + today's P&L, the engine uses risk_manager.current_equity), so
+# running the pair corrupts each other's view of the account.
+engine_sv = ServiceSupervisor(
+    "Live Trading Engine",
+    lambda: [sys.executable, "-u", str(ROOT_DIR / "trading_bot" / "main.py")],
+    "main_engine_stdout.log",
+    restart_on_clean_exit=False,
+)
+
+
+def live_trading_mode() -> bool:
+    """Whether the dashboard's Live/Paper toggle is set to LIVE.
+
+    Fails CLOSED: a missing file, unreadable JSON or an absent key all mean
+    PAPER. A bug in here must never be the reason real orders start flowing.
+    """
+    try:
+        with open(ROOT_DIR / "config" / "settings.json", "r", encoding="utf-8") as f:
+            return bool(json.load(f).get("live_trading_mode", False))
+    except (OSError, ValueError) as exc:
+        logger.warning("Could not read live_trading_mode (%s) -- assuming PAPER.", exc)
+        return False
+
+
+def start_live_engine() -> bool:
+    """Launch trading_bot/main.py -- the real-order engine."""
+    logger.info("==========================================")
+    logger.info("STEP 4: Launching LIVE TRADING ENGINE (real orders)")
+    logger.info("==========================================")
+    started = engine_sv.start()
+    if started and engine_sv.launches == 1:
+        send_telegram_notification(
+            "🔴 [QuantAI] LIVE TRADING ENGINE started — real orders are enabled "
+            "for this session. Auto/Manual is set by the dashboard's "
+            "auto_trade_enabled toggle."
+        )
+    return started
+
+
+def start_session_books(live: bool) -> None:
+    """Start the books for today's mode.
+
+    Live and paper are mutually exclusive by construction -- see engine_sv's
+    note above. The variant books run in EITHER mode: they are isolated
+    research books writing only under paper_obs_logs/variants/ (no state.db,
+    no config/active_positions.json), so they cannot collide with either.
+    """
+    if live:
+        start_live_engine()
+    else:
+        start_paper_observer()
+    start_variant_book()
+
+
+def supervise_session_books(live: bool, curr_t: datetime.time) -> None:
+    """One watchdog tick for whichever book is meant to be running today.
+
+    The book that was never started is never supervised, so its absence is
+    not mistaken for a crash and restarted into the other one's session.
+    """
+    if live:
+        engine_sv.supervise()
+    elif curr_t < EOD_SQUAREOFF_TIME:
+        # Only keep the observer up while it can still open new positions.
+        observer_sv.supervise()
 
 
 def start_backend_service() -> bool:
@@ -877,6 +956,7 @@ def stop_all_subprocesses() -> None:
     # Supervisor.stop() terminates (then kills) the child AND closes its
     # stdout handle, which the previous implementation never did.
     variant_sv.stop()
+    engine_sv.stop()
     observer_sv.stop()
     backend_sv.stop()
     observer_proc = observer_sv.proc
@@ -914,6 +994,7 @@ def run_session_flow(force_now: bool = False) -> None:
     backend_sv.reset()
     observer_sv.reset()
     variant_sv.reset()
+    engine_sv.reset()
 
     logger.info("=====================================================")
     logger.info("🚀 STARTING AUTOMATED DAILY TRADING SESSION: %s", today_date)
@@ -937,9 +1018,14 @@ def run_session_flow(force_now: bool = False) -> None:
             logger.info("Pre-market initialized. Waiting %d seconds for market open (09:14 AM)...", max(int(time_left), 5))
             time.sleep(min(max(int(time_left), 5), 60))
             
-    # 4. Start Paper Observer, and the ema9 variant book alongside it
-    start_paper_observer()
-    start_variant_book()
+    # 4. Start today's books -- the LIVE engine or the paper observer, never
+    # both -- plus the ema9 variant books, which run in either mode.
+    live = live_trading_mode()
+    logger.info(
+        "Trading mode for this session: %s",
+        "LIVE (real orders)" if live else "PAPER (simulated fills)",
+    )
+    start_session_books(live)
     
     # 5. Market Hours Watchdog Loop
     logger.info("Entering Market Watchdog Loop (09:15 - 15:30 IST)...")
@@ -980,9 +1066,7 @@ def run_session_flow(force_now: bool = False) -> None:
         # managing a position, never open one.
         variant_sv.supervise()
 
-        # Only keep the observer up while it can still open new positions.
-        if curr_t < EOD_SQUAREOFF_TIME:
-            observer_sv.supervise()
+        supervise_session_books(live, curr_t)
 
         time.sleep(20)
         

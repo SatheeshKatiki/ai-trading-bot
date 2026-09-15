@@ -1710,6 +1710,33 @@ def _set_emergency_stop(active: bool) -> None:
     os.replace(tmp_path, settings_path)
 
 
+def _set_engine_active(active: bool) -> None:
+    """Atomically set the `is_active` halt flag in config/settings.json.
+
+    main.py's on_tick() halts on `settings.get("is_active", True)` -- it reads
+    the FILE. This flag used to live only in api_bridge's in-memory
+    `engine_state`, so the dashboard's START/STOP button changed nothing the
+    engine could see: it reported "Engine Off" while the engine kept trading.
+    Same scoped tempfile+rename as _set_emergency_stop, for the same reason.
+    """
+    global _config_last_mtime
+    import tempfile
+    settings_path = "config/settings.json"
+    existing = {}
+    if os.path.exists(settings_path):
+        with open(settings_path, "r", encoding="utf-8") as f:
+            existing = json.load(f)
+    existing["is_active"] = active
+    os.makedirs("config", exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir="config", prefix="settings_tmp_", suffix=".json")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(existing, f, indent=4)
+    os.replace(tmp_path, settings_path)
+    # The cached reader keys off mtime; force the next read to re-open so a
+    # toggle is never reported back stale within the same mtime tick.
+    _config_last_mtime = 0.0
+
+
 @app.post("/api/panic-exit")
 async def panic_exit(request: Request):
     """Nuclear Option: Immediately cancels all orders and squares off all positions."""
@@ -1860,28 +1887,40 @@ async def panic_exit_clear(request: Request):
 
 @app.get("/api/engine/status")
 async def get_engine_status():
-    return engine_state
+    """The engine's halt flag as MAIN.PY sees it, not as this process remembers it.
+
+    `is_active` is read from settings.json with the same default main.py uses
+    (`True` when the key is absent = not halted), so the dashboard's indicator
+    describes the engine's real state and survives an api_bridge restart.
+    """
+    settings = _load_config_settings()
+    return {**engine_state, "is_active": bool(settings.get("is_active", True))}
 
 @app.post("/api/engine/toggle")
 async def toggle_engine(request: Request):
     if request.client and request.client.host not in ["127.0.0.1", "localhost", "::1"]:
         raise HTTPException(status_code=403, detail="Forbidden: Localhost access only")
-        
-    global engine_state
-    engine_state["is_active"] = not engine_state["is_active"]
-    if engine_state["is_active"]:
+
+    # Flip what is actually on disk -- main.py polls the file, so that is the
+    # source of truth. The in-memory dict only carries the display fields
+    # (it is mutated in place, never rebound, so no `global` is needed).
+    current = bool(_load_config_settings().get("is_active", True))
+    new_state = not current
+    _set_engine_active(new_state)
+    engine_state["is_active"] = new_state
+    if new_state:
         engine_state["last_start_time"] = datetime.now().isoformat()
         logger.info(">>> TRADING ENGINE STARTED <<<")
     else:
         logger.info("<<< TRADING ENGINE STOPPED >>>")
-    
+
     # Log the event
     log_file = "fyersApi.log"
-    status = "STARTED" if engine_state["is_active"] else "STOPPED"
+    status = "STARTED" if new_state else "STOPPED"
     with open(log_file, "a") as f:
         f.write(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] SYSTEM: Trading Engine {status}\n")
-        
-    return engine_state
+
+    return {**engine_state, "is_active": new_state}
 
 @app.get("/api/funds")
 async def get_funds():

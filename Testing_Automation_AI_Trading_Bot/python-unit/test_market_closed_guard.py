@@ -93,7 +93,11 @@ def test_orchestrator_stands_down_when_the_exchange_is_silent():
     assert "cache_has_today_bars() is False" in src
     assert "Standing down for the day" in src
     stand_down = src.index("cache_has_today_bars() is False")
-    assert src.index("break", stand_down) < src.index("observer_sv.supervise()", stand_down)
+    # Since the live/paper split (2026-09-16) the books are supervised through
+    # supervise_session_books(), which picks the engine or the observer for
+    # today's mode. The property under test is unchanged: standing down must
+    # break out of the watchdog loop BEFORE anything restarts a book.
+    assert src.index("break", stand_down) < src.index("supervise_session_books(", stand_down)
 
 
 # ---------------------------------------------------------------------------
