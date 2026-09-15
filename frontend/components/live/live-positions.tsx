@@ -328,7 +328,7 @@ export function LivePositions({ urlSymbol }: { urlSymbol: string }) {
                                             <div className="flex flex-col items-center justify-center">
                                                 <Clock className="w-8 h-8 opacity-30 mb-3" />
                                                 <p className="font-semibold text-foreground">No Order History</p>
-                                                {showTodayOnly && <p className="text-xs mt-1 opacity-70">Switch to "All History" to see older orders</p>}
+                                                {showTodayOnly && <p className="text-xs mt-1 opacity-70">Switch to &quot;All History&quot; to see older orders</p>}
                                             </div>
                                         </td>
                                     </tr>
