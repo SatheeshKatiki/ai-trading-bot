@@ -6,6 +6,44 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-09-16 — a Wi-Fi outage was read as a holiday; the session stood down on a trading day
+
+**What happened.** Today was a normal trading Wednesday. No trades and no
+Telegram messages all day.
+
+* **The network was unstable.** The laptop never slept, but its Wi-Fi
+  disconnected/reconnected ~60 times, worst between 09:30 and 11:49 (every 1–2
+  minutes). The Fyers feed died at 09:24 (`Connection timed out`, then
+  `getaddrinfo failed`). Several drops follow a charger plug/unplug within
+  seconds (power-source change 09:46:16 → Wi-Fi drop 09:46:20; 13:53:30 →
+  13:53:34): the active power plan runs the Intel AX201 at **Max Performance
+  on AC but Medium Power Saving on battery**.
+* **Every Telegram send failed** for the same reason (SSL handshake timeouts,
+  then DNS failures) — the alerts were generated, they just could not leave
+  the machine.
+* **The 10:00 stand-down fired on the outage.** It read an empty **NIFTY**
+  cache at 10:00:04 while DNS was failing, concluded "exchange closed", and
+  stopped every book for the day — although SENSEX had already cached three of
+  that morning's bars (09:15–09:25), and the network was usable again for
+  roughly 11:49–13:53 and 14:19–15:30. That is ~3.5 hours of tradeable session
+  lost to the guard added on 2026-09-14.
+
+**Fix.** Silence only means "closed" over a working network, sustained:
+
+* `cache_has_today_bars()` checks **all three** index caches — any one printing
+  today proves the exchange is open.
+* `network_reachable()` — DNS + TCP connect to the Fyers API host.
+* `exchange_verdict()` — pure decision: `closed` only if the caches are
+  readable, every index is silent, the network is **up**, and that has held for
+  **10 minutes**. Any doubt is `wait`, re-checked on the next loop; an outage
+  logs a warning every 5 minutes instead of ending the session.
+
+**Owner action (machine, not code).** Set the wireless adapter to Max
+Performance on battery too, keep the charger connected during market hours,
+and check the charger connection (power source changed 10 times today).
+
+---
+
 ## 2026-09-15 — first profitable session (+₹7,249.50); a shadow-book signal went missing; a re-entry cooldown was measured and REJECTED
 
 **Result.** Main paper book: 3 trades, 2 wins, net **+₹7,249.50** (66.7%), all

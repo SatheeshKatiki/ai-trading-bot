@@ -39,6 +39,7 @@ import logging
 import os
 import pathlib
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -389,26 +390,84 @@ def is_trading_day(dt: Optional[datetime.date] = None) -> bool:
     return True
 
 
-def cache_has_today_bars(symbol_file: str = "NSE_NIFTY50-INDEX_5Min.csv") -> Optional[bool]:
-    """Did the exchange print any candles today? None if the check itself fails.
+#: The index caches the books fill. The exchange is open if ANY of them has
+#: printed a candle today -- one index's feed can lag or fail on its own.
+INDEX_CACHE_FILES = (
+    "NSE_NIFTY50-INDEX_5Min.csv",
+    "NSE_NIFTYBANK-INDEX_5Min.csv",
+    "BSE_SENSEX-INDEX_5Min.csv",
+)
 
-    Reads the history cache the books fill on every poll, so it needs no
+
+def cache_has_today_bars(symbol_files: tuple = INDEX_CACHE_FILES) -> Optional[bool]:
+    """Did the exchange print any candles today? None if no cache could be read.
+
+    Reads the history caches the books fill on every poll, so it needs no
     broker session and no auth. A hardcoded holiday calendar is one list
     away from being wrong (2026-09-14, Ganesh Chaturthi, was missing and the
     orchestrator ran a full session into a closed exchange); the exchange's
     own silence is the check that cannot go stale.
+
+    Any index counts. On 2026-09-16 this read NIFTY's cache alone, found
+    nothing, and concluded "closed" -- while SENSEX had already cached three
+    of that morning's bars before the Wi-Fi dropped.
     """
-    path = ROOT_DIR / "data" / symbol_file
     today = now_ist().strftime("%Y-%m-%d")
+    readable = 0
+    for name in symbol_files:
+        path = ROOT_DIR / "data" / name
+        try:
+            if not path.is_file():
+                continue
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                tail = f.readlines()[-400:]
+        except OSError as exc:
+            logger.warning("Data-freshness check could not read %s: %s", path.name, exc)
+            continue
+        readable += 1
+        if any(line.startswith(today) for line in tail):
+            return True
+    return False if readable else None
+
+
+#: Where "is the network up?" is asked: the broker's own API host.
+NETWORK_PROBE = ("api-t1.fyers.in", 443)
+#: How long the exchange must stay silent, over a WORKING network, before the
+#: orchestrator believes it is closed for the day.
+STAND_DOWN_CONFIRM_S = 600.0
+
+
+def network_reachable(host: str = NETWORK_PROBE[0], port: int = NETWORK_PROBE[1],
+                      timeout: float = 3.0) -> bool:
+    """Can this machine reach the broker at all? DNS plus a TCP connect.
+
+    Separates the two things an empty cache can mean. A closed exchange is
+    silent over a working network; an outage is silent because nothing gets
+    through. 2026-09-16 was the second -- the Wi-Fi dropped ~60 times and DNS
+    was failing at 10:00 -- and was read as the first.
+    """
     try:
-        if not path.is_file():
-            return None
-        with open(path, "r", encoding="utf-8", errors="ignore") as f:
-            tail = f.readlines()[-400:]
-    except OSError as exc:
-        logger.warning("Data-freshness check could not read %s: %s", path.name, exc)
-        return None
-    return any(line.startswith(today) for line in tail)
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def exchange_verdict(has_bars: Optional[bool], network_up: bool, silent_for_s: float) -> str:
+    """What the post-10:00 freshness check means: 'open', 'wait' or 'closed'.
+
+    'closed' needs ALL of: the caches were readable, no index printed a candle
+    today, the network is demonstrably up, and that has held continuously for
+    STAND_DOWN_CONFIRM_S. Anything short of that is 'wait', re-checked on the
+    next loop -- because the two ways to be wrong are not symmetric. Standing
+    down during an outage throws away a trading day that comes back; waiting
+    on a real holiday costs ten idle minutes.
+    """
+    if has_bars:
+        return "open"
+    if has_bars is None or not network_up:
+        return "wait"
+    return "closed" if silent_for_s >= STAND_DOWN_CONFIRM_S else "wait"
 
 
 def send_telegram_notification(message: str) -> None:
@@ -1030,27 +1089,50 @@ def run_session_flow(force_now: bool = False) -> None:
     # 5. Market Hours Watchdog Loop
     logger.info("Entering Market Watchdog Loop (09:15 - 15:30 IST)...")
     freshness_checked = False
+    silent_since: Optional[float] = None
+    last_outage_log = 0.0
     while is_running:
         curr_t = now_ist().time()
 
         # ── Is the exchange actually open? ────────────────────────────
         # The holiday list is one missing line away from running a whole
-        # session into a closed market (2026-09-14). By 10:00 a real
-        # session has printed 45 minutes of candles; silence means closed,
-        # or a feed that cannot be traded on either way.
+        # session into a closed market (2026-09-14). By 10:00 a real session
+        # has printed 45 minutes of candles -- but silence alone is not proof.
+        # On 2026-09-16 the Wi-Fi dropped ~60 times; this check read an empty
+        # NIFTY cache at 10:00:04 while DNS was failing, stood down, and threw
+        # the whole day away although the network was usable again by noon.
+        # So silence only means "closed" over a working network, sustained;
+        # otherwise wait and ask again on the next loop.
         if not force_now and not freshness_checked and curr_t >= datetime.time(10, 0):
-            freshness_checked = True
-            if cache_has_today_bars() is False:
+            has_bars = cache_has_today_bars()
+            network_up = network_reachable() if has_bars is False else True
+            if has_bars is False and network_up:
+                silent_since = silent_since or time.monotonic()
+            else:
+                silent_since = None
+            verdict = exchange_verdict(
+                has_bars, network_up,
+                time.monotonic() - silent_since if silent_since else 0.0,
+            )
+            if verdict == "open":
+                freshness_checked = True
+            elif verdict == "closed":
                 logger.error(
-                    "No market data for %s by 10:00 IST -- the exchange appears closed "
-                    "(holiday missing from NSE_HOLIDAYS?). Standing down for the day.",
-                    now_ist().date(),
+                    "No market data for %s and the broker is REACHABLE -- the exchange has been "
+                    "silent for %d min (holiday missing from NSE_HOLIDAYS?). Standing down for the day.",
+                    now_ist().date(), int(STAND_DOWN_CONFIRM_S // 60),
                 )
                 send_telegram_notification(
-                    f"⚠️ [QuantAI] No market data on {now_ist().date()} by 10:00 IST — the exchange "
-                    f"appears closed (holiday not in the calendar?). Standing down for the day."
+                    f"⚠️ [QuantAI] No market data on {now_ist().date()} although the network is up — "
+                    f"the exchange appears closed (holiday not in the calendar?). Standing down for the day."
                 )
                 break
+            elif not network_up and time.monotonic() - last_outage_log >= 300:
+                last_outage_log = time.monotonic()
+                logger.warning(
+                    "No market data yet and the broker is UNREACHABLE -- a network outage, not a "
+                    "closed exchange. Not standing down; re-checking."
+                )
         
         # Check if market has closed
         if not force_now and curr_t >= MARKET_CLOSE_TIME:

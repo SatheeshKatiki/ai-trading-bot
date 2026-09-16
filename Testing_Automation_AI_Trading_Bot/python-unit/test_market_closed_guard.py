@@ -88,11 +88,60 @@ def test_cache_freshness_check(tmp_path, monkeypatch):
     assert ads.cache_has_today_bars() is None          # cannot tell != closed
 
 
+def test_any_index_proves_the_exchange_is_open(tmp_path, monkeypatch):
+    """2026-09-16: NIFTY's cache had nothing, SENSEX had three of the day's bars."""
+    monkeypatch.setattr(ads, "ROOT_DIR", tmp_path)
+    data = tmp_path / "data"
+    data.mkdir()
+    today = ads.now_ist().strftime("%Y-%m-%d")
+    (data / "NSE_NIFTY50-INDEX_5Min.csv").write_text(
+        "datetime,open,high,low,close,volume\n2026-09-15 15:25:00,1,1,1,1,0\n", encoding="utf-8")
+    (data / "BSE_SENSEX-INDEX_5Min.csv").write_text(
+        f"datetime,open,high,low,close,volume\n{today} 09:25:00,1,1,1,1,0\n", encoding="utf-8")
+
+    assert ads.cache_has_today_bars() is True
+
+
+@pytest.mark.parametrize("has_bars,network_up,silent_for_s,expected", [
+    (True,  True,  0,    "open"),
+    (True,  False, 0,    "open"),     # bars are bars, however the network is now
+    (None,  True,  9999, "wait"),     # cannot tell != closed
+    (False, False, 9999, "wait"),     # an outage, however long, is not a holiday
+    (False, True,  60,   "wait"),     # silent over a working network -- not for long enough yet
+    (False, True,  600,  "closed"),
+])
+def test_exchange_verdict(has_bars, network_up, silent_for_s, expected):
+    assert ads.exchange_verdict(has_bars, network_up, silent_for_s) == expected
+
+
+def test_the_2026_09_16_outage_is_not_read_as_a_holiday():
+    """10:00:04 that day: empty NIFTY cache, DNS failing (getaddrinfo failed)."""
+    assert ads.exchange_verdict(has_bars=False, network_up=False, silent_for_s=0) == "wait"
+
+
+def test_network_reachable(monkeypatch):
+    class _Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(ads.socket, "create_connection", lambda addr, timeout: _Conn())
+    assert ads.network_reachable() is True
+
+    def _dns_down(addr, timeout):
+        raise OSError("[Errno 11001] getaddrinfo failed")
+
+    monkeypatch.setattr(ads.socket, "create_connection", _dns_down)
+    assert ads.network_reachable() is False
+
+
 def test_orchestrator_stands_down_when_the_exchange_is_silent():
     src = inspect.getsource(ads.run_session_flow)
-    assert "cache_has_today_bars() is False" in src
+    assert "exchange_verdict(" in src
     assert "Standing down for the day" in src
-    stand_down = src.index("cache_has_today_bars() is False")
+    stand_down = src.index('elif verdict == "closed":')
     # Since the live/paper split (2026-09-16) the books are supervised through
     # supervise_session_books(), which picks the engine or the observer for
     # today's mode. The property under test is unchanged: standing down must
