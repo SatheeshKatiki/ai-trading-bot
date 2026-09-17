@@ -6,6 +6,47 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-09-17 — the laptop slept through 08:45; no session ran all day
+
+**What happened.** A normal trading Thursday (the NIFTY cache holds all 74 of
+the day's bars). No session, no books, no Telegram.
+
+* **The scheduled start was missed.** Task Scheduler recorded
+  `NumberOfMissedRuns: 1`; the last run is still 2026-09-16 08:45. The laptop
+  was in Modern Standby (S0 low-power idle — the only standby this machine
+  supports) from ~07:53 to 09:01. The task has `WakeToRun` and
+  `StartWhenAvailable`, but the active power plan **disables wake timers on
+  battery**, and the missed run was not caught up after waking. Task Scheduler
+  history logging is off, so Windows kept no reason.
+* **No Telegram** follows directly: every message comes from the
+  orchestrator, which never started.
+* **A stray engine was running.** A `main.py` started by hand at 22:07 the
+  night before (paper, NIFTY only) stalled at 09:15 with no ticks and logged
+  "no fresh data" all day — 0 trades, no positions. Had the orchestrator
+  started, it would have launched the paper observer beside it, both writing
+  `config/active_positions.json`. Stopped at 21:52 (positions `{}`).
+
+**Fix (code).** Recovering a missed start needs extra triggers, which are only
+safe if the orchestrator:
+
+* **cannot run twice** — it now takes the singleton lock (`main.py`,
+  `api_bridge.py` and the variant books already did);
+* **cannot re-run a finished day** — `run/session_done_<date>.flag` is written
+  only when a session reaches its end, so an early setup failure stays
+  retryable;
+* **cannot start a book beside a stray** — `clear_stray_books()` stops a
+  leftover `main.py`/`paper_observer.py`, but only while no position is open.
+  With open or unreadable positions it refuses, alerts on Telegram, and starts
+  no book (a supervisor that never started is never restarted).
+
+**Owner action — needs administrator.** Adding a 15-minute catch-up
+repetition (08:45–14:45) to `QuantAI_Daily_Trader` was attempted and refused
+(`Access is denied`); the task still fires once at 08:45. Until it is added,
+a start missed to standby is still lost. Optional: enable wake timers on
+battery, and turn on Task Scheduler history for diagnosis.
+
+---
+
 ## 2026-09-16 — a Wi-Fi outage was read as a holiday; the session stood down on a trading day
 
 **What happened.** Today was a normal trading Wednesday. No trades and no

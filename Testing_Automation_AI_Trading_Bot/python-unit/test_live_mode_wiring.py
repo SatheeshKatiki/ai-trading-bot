@@ -65,6 +65,8 @@ def books(monkeypatch):
     for name, fake in fakes.items():
         monkeypatch.setattr(ads, name, fake)
     monkeypatch.setattr(ads, "send_telegram_notification", lambda _m: None)
+    # Never scan (or stop) real processes on the machine running the suite.
+    monkeypatch.setattr(ads, "clear_stray_books", lambda: True)
     return fakes
 
 

@@ -38,6 +38,7 @@ import json
 import logging
 import os
 import pathlib
+import re
 import signal
 import socket
 import subprocess
@@ -656,6 +657,114 @@ def start_live_engine() -> bool:
     return started
 
 
+# ── Recovering a missed start ─────────────────────────────────────────────
+# 2026-09-17: the 08:45 trigger fell while the laptop sat in Modern Standby on
+# battery (wake timers are disabled on battery), the task logged a missed run,
+# and no session started all day. The cure is extra catch-up triggers -- but
+# those are only safe if this process cannot run twice (the singleton lock in
+# main()), cannot re-run a session that already finished (the marker below),
+# and cannot start a book beside one left running from before
+# (clear_stray_books).
+
+def session_marker_path(day: datetime.date) -> pathlib.Path:
+    """Flag written when a session runs to its end for ``day``."""
+    return ROOT_DIR / "run" / f"session_done_{day.isoformat()}.flag"
+
+
+def session_already_ran(day: datetime.date) -> bool:
+    return session_marker_path(day).is_file()
+
+
+def mark_session_done(day: datetime.date) -> None:
+    path = session_marker_path(day)
+    try:
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(now_ist().isoformat(), encoding="utf-8")
+    except OSError as exc:
+        logger.warning("Could not write the session-done marker %s: %s", path.name, exc)
+
+
+#: Processes that own config/active_positions.json. The variant books do not
+#: (they write only under paper_obs_logs/variants/), so they are never strays.
+_BOOK_PATTERNS = (
+    re.compile(r"trading_bot[\\/]+main\.py"),
+    re.compile(r"paper_observer\.py"),
+)
+
+
+def find_stray_books() -> List[Any]:
+    """Running trading books that this orchestrator did not start."""
+    import psutil
+
+    me = os.getpid()
+    strays = []
+    for proc in psutil.process_iter(["pid", "cmdline"]):
+        try:
+            if proc.info["pid"] == me:
+                continue
+            cmdline = " ".join(proc.info.get("cmdline") or [])
+        except (psutil.Error, TypeError):
+            continue
+        if any(pattern.search(cmdline) for pattern in _BOOK_PATTERNS):
+            strays.append(proc)
+    return strays
+
+
+def positions_are_flat() -> Optional[bool]:
+    """True if no position is open, False if one is, None if unreadable."""
+    path = ROOT_DIR / "config" / "active_positions.json"
+    try:
+        if not path.is_file():
+            return True
+        return not json.loads(path.read_text(encoding="utf-8").strip() or "{}")
+    except (OSError, ValueError):
+        return None
+
+
+def clear_stray_books() -> bool:
+    """Stop trading books left running from an earlier session. True = clear to start.
+
+    2026-09-17: a main.py started by hand the night before was still running
+    when the day began. With the paper observer started beside it, both would
+    have written config/active_positions.json. A stray is only ever stopped
+    when no position is open -- an engine holding positions is managing real
+    risk, and killing it is worse than a lost day, so then this refuses and
+    alerts instead.
+    """
+    strays = find_stray_books()
+    if not strays:
+        return True
+    desc = ", ".join(f"PID {proc.pid}" for proc in strays)
+    flat = positions_are_flat()
+    if flat is not True:
+        state = "OPEN" if flat is False else "UNREADABLE"
+        logger.error(
+            "A trading book is already running (%s) and positions are %s -- refusing to "
+            "start today's book beside it.", desc, state,
+        )
+        send_telegram_notification(
+            f"🛑 [QuantAI] A trading book was already running ({desc}) with {state.lower()} "
+            f"positions. Today's book was NOT started beside it — check it manually."
+        )
+        return False
+
+    import psutil
+
+    for proc in strays:
+        try:
+            proc.terminate()
+        except psutil.Error:
+            pass
+    _gone, alive = psutil.wait_procs(strays, timeout=10)
+    for proc in alive:
+        try:
+            proc.kill()
+        except psutil.Error:
+            pass
+    logger.warning("Stopped trading book(s) left running from an earlier session: %s", desc)
+    return True
+
+
 def start_session_books(live: bool) -> None:
     """Start the books for today's mode.
 
@@ -663,11 +772,16 @@ def start_session_books(live: bool) -> None:
     note above. The variant books run in EITHER mode: they are isolated
     research books writing only under paper_obs_logs/variants/ (no state.db,
     no config/active_positions.json), so they cannot collide with either.
+
+    A book left running from an earlier session is cleared first. If it cannot
+    be (positions open), today's book is not started at all -- and since a
+    supervisor that never started never restarts, the watchdog leaves it off.
     """
-    if live:
-        start_live_engine()
-    else:
-        start_paper_observer()
+    if clear_stray_books():
+        if live:
+            start_live_engine()
+        else:
+            start_paper_observer()
     start_variant_book()
 
 
@@ -1048,6 +1162,11 @@ def run_session_flow(force_now: bool = False) -> None:
         logger.info("Today (%s) is a Weekend or NSE Holiday. Skipping session.", today_date)
         return
 
+    # A catch-up trigger after today's session already ran to its end.
+    if not force_now and session_already_ran(today_date):
+        logger.info("Today's session (%s) already ran to completion. Nothing to do.", today_date)
+        return
+
     # Fresh restart budgets for this trading day (the supervisors are module
     # singletons and outlive a single session in --daemon mode).
     backend_sv.reset()
@@ -1156,6 +1275,10 @@ def run_session_flow(force_now: bool = False) -> None:
     time.sleep(5)  # allow logs to flush
     generate_and_send_eod_report()
     stop_all_subprocesses()
+    # Only a session that reached its end is marked -- an early setup failure
+    # returns above without it, so the next trigger (or --daemon) retries.
+    if not force_now:
+        mark_session_done(today_date)
     logger.info("Daily session completed successfully.")
 
 
@@ -1244,9 +1367,24 @@ def main():
     elif args.test_eod:
         generate_and_send_eod_report()
     elif args.daemon:
+        _guard_single_instance()
         run_daemon_loop()
     else:
+        _guard_single_instance()
         run_session_flow(force_now=args.now)
+
+
+def _guard_single_instance() -> None:
+    """Exit if another orchestrator is already running.
+
+    Every other long-running process here (main.py, api_bridge.py, the variant
+    books) already held this lock; the orchestrator did not. That made extra
+    scheduler triggers unsafe -- and extra triggers are how a start missed to
+    Modern Standby (2026-09-17) gets recovered.
+    """
+    from shared.singleton_lock import acquire_singleton_lock
+
+    acquire_singleton_lock("daily_orchestrator", script_hint="auto_daily_session.py")
 
 
 if __name__ == "__main__":
