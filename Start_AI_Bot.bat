@@ -7,6 +7,34 @@ echo          QUANT AI TRADING SYSTEM LAUNCHER
 echo ====================================================
 echo.
 
+rem -- Refuse to hijack a session that is already running -----------------
+rem The port cleanup below force-kills whatever owns 8000/3000. While the
+rem zero-touch orchestrator is running that is ITS api_bridge and dashboard:
+rem on 2026-09-18 this killed a healthy bridge at 10:16, the supervisor's
+rem five restarts were all refused by the new instance's singleton lock, and
+rem the session ran the rest of the day orphaned on stale code. The main.py
+rem started below also adopted the paper observer's open position and then
+rem warned "has not ticked in never" because it streams a different symbol.
+rem One session, one set of books.
+rem Name -eq 'python.exe' matters: without it the powershell process running
+rem this very check matches its own command line and the launcher refuses
+rem every time.
+powershell -NoProfile -Command "if (Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'python.exe' -and ($_.CommandLine -like '*auto_daily_session.py*' -or $_.CommandLine -like '*paper_observer.py*') }) { exit 1 }"
+if errorlevel 1 (
+    color 0C
+    echo.
+    echo  !! A TRADING SESSION IS ALREADY RUNNING.
+    echo.
+    echo  Starting a second copy would kill its API bridge and dashboard,
+    echo  and run two trading books against the same positions file.
+    echo  NOTHING has been started.
+    echo.
+    echo  The dashboard is already up: http://localhost:3000
+    echo.
+    pause
+    exit /b 1
+)
+
 echo -^> Cleaning up old ports (8000, 3000) to prevent errors...
 for /f "tokens=5" %%a in ('netstat -aon ^| findstr :8000') do (
     if not "%%a"=="0" taskkill /PID %%a /F 2>nul

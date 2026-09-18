@@ -6,6 +6,51 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-09-18 (later) — the real cause: Start_AI_Bot.bat hijacked a running session
+
+The dashboard crash came back after the fix was committed, because the fix
+was not running. Root cause, proven from the logs:
+
+`Start_AI_Bot.bat` begins by force-killing whatever owns ports 8000 and 3000:
+
+    for /f "tokens=5" %%a in ('netstat -aon ^| findstr :8000') do taskkill /PID %%a /F
+
+Double-clicked at **10:15:57** while the 08:45 zero-touch session was running,
+it killed that session's healthy API bridge (`exited with code 1 after
+5456s`), started its own in its place, and started `trading_bot/main.py`
+beside the orchestrator's paper observer.
+
+Everything else followed from that one launch:
+
+* the orchestrator's supervisor tried five restarts; each was refused by the
+  intruder's singleton lock (`FATAL: another api_bridge instance is already
+  running (PID 26612)`), hit the ceiling at 10:20:24 and gave up — so the
+  bridge ran **unsupervised and orphaned** for the rest of the day;
+* that orphan was started *before* the `_normalize_paper_positions` fix, so it
+  kept serving raw rows and the dashboard kept crashing;
+* `main.py` read the shared positions file, logged "Loaded 1 active positions
+  from disk state recovery", and adopted the observer's BANKNIFTY 56200 CE —
+  a position it could never exit, since it streams only NIFTY (stopped 10:35);
+* the orchestrator itself was killed at 14:45 by the task's
+  `StopAtDurationEnd`, so no EOD report and no Telegram summary. The paper
+  observer ran its own session to 15:30 and squared off all 4 trades (0 open,
+  net −3,631.50), so nothing was left hanging.
+
+**Fix.** The launcher now refuses to start while a session is running — it
+checks for a live `auto_daily_session.py`/`paper_observer.py` python process
+*before* the port cleanup, and exits without touching anything. Verified in
+all three states (idle → allows, session present → refuses, session gone →
+allows). The check is restricted to `python.exe` on purpose: without that the
+PowerShell process running the check matches its own command line and the
+launcher would refuse every time.
+
+The API bridge was restarted on current code at 20:21.
+
+**Still open.** `StopAtDurationEnd = True` on the scheduled task — one
+elevated `Set-ScheduledTask` call, or 14:45 keeps killing the session.
+
+---
+
 ## 2026-09-18 — the dashboard crashed on its own positions; two engines claimed one position
 
 **The crash.** With a real BANKNIFTY position open, the dashboard died with

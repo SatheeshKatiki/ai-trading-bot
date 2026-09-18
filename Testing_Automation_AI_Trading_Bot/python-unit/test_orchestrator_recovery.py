@@ -182,6 +182,27 @@ def test_a_refused_clear_starts_no_book_but_the_research_books_still_run(monkeyp
 # Single instance
 # ---------------------------------------------------------------------------
 
+def test_the_manual_launcher_refuses_while_a_session_is_running():
+    """Start_AI_Bot.bat force-kills ports 8000/3000 before starting.
+
+    Run while the orchestrator owns the session (2026-09-18) that killed its
+    healthy API bridge, every supervised restart was refused by the new
+    instance's singleton lock, and the day carried on orphaned on stale code
+    -- with main.py adopting the paper observer's open position. The guard
+    must come BEFORE the taskkill, or it has already done the damage.
+    """
+    import pathlib
+
+    # ads.ROOT_DIR is trading-system/; the launcher sits beside it at the root.
+    bat = pathlib.Path(ads.ROOT_DIR).resolve().parent / "Start_AI_Bot.bat"
+    src = bat.read_text(encoding="utf-8", errors="ignore")
+
+    assert "auto_daily_session.py" in src and "paper_observer.py" in src
+    assert "exit /b 1" in src
+    assert src.index("auto_daily_session.py") < src.index("taskkill"), \
+        "the guard must run before the port cleanup"
+
+
 def test_both_run_modes_take_the_singleton_lock():
     src = inspect.getsource(ads.main)
     assert src.count("_guard_single_instance()") == 2
