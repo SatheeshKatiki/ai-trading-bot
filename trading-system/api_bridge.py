@@ -3233,6 +3233,53 @@ async def get_state(live: bool = Query(False)):
         logger.error('Failed to fetch state: %s', e)
         raise HTTPException(status_code=500, detail='Failed to fetch state.')
 
+def _normalize_paper_positions(data: dict) -> list:
+    """Return active_positions.json as the Position shape the dashboard reads.
+
+    That file has TWO writers with different field names -- paper_observer.py
+    (entry_price/current_price/ltp) and trading_bot/main.py (entry_price, no
+    ltp at all) -- and neither carries `average_price`, `unrealized_pnl` or
+    `realized_pnl`. This endpoint used to return the raw rows, so the
+    dashboard's `pos.average_price.toFixed(2)` threw on undefined and took the
+    whole page down (2026-09-18, with one BANKNIFTY position open).
+
+    A price that is not known stays None, never 0.0: the UI renders "—" for
+    it. Printing a zero here would be inventing a price, and a P&L computed
+    from an invented price is worse than a blank.
+    """
+    out = []
+    for key, row in (data or {}).items():
+        if not isinstance(row, dict):
+            continue
+        entry = row.get("entry_price")
+        ltp = row.get("ltp", row.get("current_price"))
+        qty = row.get("quantity")
+        side = row.get("side", 1)
+        try:
+            direction = 1 if int(side) >= 0 else -1
+        except (TypeError, ValueError):
+            direction = 1
+
+        unrealized = None
+        if isinstance(entry, (int, float)) and isinstance(ltp, (int, float)) and isinstance(qty, (int, float)):
+            unrealized = round((float(ltp) - float(entry)) * float(qty) * direction, 2)
+
+        out.append({
+            "symbol": row.get("symbol", key),
+            "underlying": row.get("underlying", key),
+            "side": "BUY" if direction == 1 else "SELL",
+            "quantity": qty,
+            "average_price": entry,
+            "ltp": ltp,
+            "unrealized_pnl": unrealized,
+            "realized_pnl": 0.0,
+            "stop_loss": row.get("stop_loss"),
+            "target": row.get("target"),
+            "strategy": row.get("strategy"),
+        })
+    return out
+
+
 @app.get("/api/positions")
 async def get_positions():
     """Fetches active positions from the current broker."""
@@ -3253,7 +3300,7 @@ async def get_positions():
                     with open(positions_path, "r", encoding="utf-8") as f:
                         data = json.load(f)
                         # data is dict: { "SYMBOL": { ...position details... } }
-                        positions_data = list(data.values())
+                        positions_data = _normalize_paper_positions(data)
                 except Exception as e:
                     logger.error(f"Failed to read paper positions: {e}")
             return {"status": "success", "positions": positions_data}

@@ -55,10 +55,20 @@ interface DashboardPosition {
   symbol: string;
   side: string;
   quantity: number;
-  average_price: number;
-  ltp: number;
-  unrealized_pnl: number;
-  realized_pnl: number;
+  // Nullable on purpose. In paper mode these come from active_positions.json,
+  // which has two writers and does not always carry a mark-to-market price;
+  // the backend sends null rather than a made-up 0, and the table renders "—".
+  average_price: number | null;
+  ltp: number | null;
+  unrealized_pnl: number | null;
+  realized_pnl: number | null;
+}
+
+/** ₹ amount, or "—" when the number is genuinely unknown (never ₹0.00). */
+function rupees(value: number | null | undefined): string {
+  return typeof value === "number" && Number.isFinite(value)
+    ? `₹${value.toFixed(2)}`
+    : "—";
 }
 
 interface EquityCurvePoint {
@@ -118,9 +128,19 @@ export default function Dashboard() {
     ? wsMarginDeployed 
     : (wsPositionsDetail.length > 0 
         ? wsPositionsDetail.reduce((acc, p) => acc + (p.entry_price * p.qty), 0)
-        : (positions.length > 0 
-            ? positions.reduce((acc, p) => acc + (p.average_price * p.quantity), 0)
+        : (positions.length > 0
+            ? positions.reduce((acc, p) => acc + ((p.average_price ?? 0) * p.quantity), 0)
             : 0));
+
+  // Portfolio exposure, from the positions whose price is actually known.
+  // It used to read `total || (equity * 0.1)` -- so a genuinely flat book (or
+  // one whose rows carry no LTP) displayed 10% of equity as "exposure", a
+  // number nothing had measured. Unknown now shows "—".
+  const exposureKnown = positions.some((p) => typeof p.ltp === "number");
+  const portfolioExposure = positions.reduce(
+    (acc, p) => acc + (typeof p.ltp === "number" ? p.quantity * p.ltp : 0),
+    0,
+  );
 
   // Same rule as displayPnl above: pick the SOURCE by whether the socket is
   // connected, never by whether its value happens to be zero. A genuinely
@@ -371,7 +391,7 @@ export default function Dashboard() {
           <div className="flex justify-between items-center">
             <div>
               <h1 className="font-display font-extrabold text-2xl text-foreground tracking-tight">Institutional Terminal</h1>
-              <p className="text-xs text-muted-foreground">Portfolio Exposure: <span className="text-primary font-bold">₹{((positions.reduce((acc, p) => acc + (p.quantity * p.ltp), 0)) || (equity * 0.1)).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span> | Risk Level: <span className="text-success font-bold">OPTIMAL</span></p>
+              <p className="text-xs text-muted-foreground">Portfolio Exposure: <span data-testid="portfolio-exposure" className="text-primary font-bold">{exposureKnown ? `₹${portfolioExposure.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}</span></p>
             </div>
             
             <div className="flex items-center gap-2">
@@ -613,10 +633,12 @@ export default function Dashboard() {
                       {positions.map((pos, i) => (
                         <tr key={i} data-testid="position-row" data-symbol={pos.symbol} className="hover:bg-primary/5 transition-colors group">
                           <td data-testid="position-symbol" className="px-4 py-3 font-bold text-foreground">{pos.symbol}</td>
-                          <td data-testid="position-avg-price" className="px-4 py-3 font-mono text-right text-muted-foreground">₹{pos.average_price.toFixed(2)}</td>
-                          <td data-testid="position-ltp" className="px-4 py-3 font-mono text-right font-bold text-foreground">₹{pos.ltp.toFixed(2)}</td>
-                          <td data-testid="position-pnl" data-pnl-sign={pos.unrealized_pnl >= 0 ? "positive" : "negative"} className={`px-4 py-3 font-mono font-bold text-right ${pos.unrealized_pnl >= 0 ? "text-success" : "text-destructive"}`}>
-                            {pos.unrealized_pnl >= 0 ? "+" : ""}₹{pos.unrealized_pnl.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          <td data-testid="position-avg-price" className="px-4 py-3 font-mono text-right text-muted-foreground">{rupees(pos.average_price)}</td>
+                          <td data-testid="position-ltp" className="px-4 py-3 font-mono text-right font-bold text-foreground">{rupees(pos.ltp)}</td>
+                          <td data-testid="position-pnl" data-pnl-sign={typeof pos.unrealized_pnl !== "number" ? "unknown" : pos.unrealized_pnl >= 0 ? "positive" : "negative"} className={`px-4 py-3 font-mono font-bold text-right ${typeof pos.unrealized_pnl !== "number" ? "text-muted-foreground" : pos.unrealized_pnl >= 0 ? "text-success" : "text-destructive"}`}>
+                            {typeof pos.unrealized_pnl === "number" && Number.isFinite(pos.unrealized_pnl)
+                              ? `${pos.unrealized_pnl >= 0 ? "+" : ""}₹${pos.unrealized_pnl.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                              : "—"}
                           </td>
                         </tr>
                       ))}

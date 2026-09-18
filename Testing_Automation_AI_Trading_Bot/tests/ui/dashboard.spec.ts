@@ -78,6 +78,39 @@ test.describe('Dashboard metrics', () => {
 });
 
 test.describe('Active positions table', () => {
+  test('a position with no known price renders as unknown, not zero', async ({
+    dashboardPage,
+    mockBackend,
+    page,
+  }) => {
+    // 2026-09-18: paper-mode rows come from active_positions.json, whose two
+    // writers do not always carry a mark-to-market price. The table did
+    // `pos.average_price.toFixed(2)` and threw on undefined, taking the whole
+    // dashboard down while a real position was open. An unknown price must
+    // render as "—" -- never ₹0.00, which would be an invented price.
+    await mockBackend.override(ProxyRoutes.positions, {
+      status: 'success',
+      positions: [
+        {
+          symbol: 'BANKNIFTY 56000 CE',
+          side: 'BUY',
+          quantity: 30,
+          average_price: 412.5,
+          ltp: null,
+          unrealized_pnl: null,
+          realized_pnl: 0,
+        },
+      ],
+    });
+
+    await dashboardPage.goto();
+
+    await expect(dashboardPage.positionsTable).toBeVisible();
+    await expect(page.getByTestId('position-avg-price')).toHaveText('₹412.50');
+    await expect(page.getByTestId('position-ltp')).toHaveText('—');
+    await expect(page.getByTestId('position-pnl')).toHaveText('—');
+  });
+
   test('renders one row per open position @smoke', async ({ dashboardPage }) => {
     await dashboardPage.goto();
 

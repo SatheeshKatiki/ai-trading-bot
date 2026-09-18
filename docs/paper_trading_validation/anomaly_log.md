@@ -6,6 +6,53 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-09-18 — the dashboard crashed on its own positions; two engines claimed one position
+
+**The crash.** With a real BANKNIFTY position open, the dashboard died with
+`Cannot read properties of undefined (reading 'toFixed')` at
+`pos.average_price.toFixed(2)`.
+
+`config/active_positions.json` has TWO writers with different field names —
+`paper_observer.py` (`entry_price`/`current_price`/`ltp`) and
+`trading_bot/main.py` (`entry_price`, no `ltp` at all) — and neither carries
+`average_price`, `unrealized_pnl` or `realized_pnl`, which is exactly what the
+position table renders. In paper mode `/api/positions` returned those rows
+verbatim. So the page white-screened precisely when there was something to
+show.
+
+`_normalize_paper_positions()` now maps either writer's shape onto the
+documented contract. An unknown price stays `None` and renders as "—", never
+`0.00`: a zero is an invented price, and a P&L derived from one is worse than
+a blank.
+
+**Two fabrications removed while fixing it.** Making the fields nullable made
+the compiler point at two more places. "Portfolio Exposure" read
+`total || (equity * 0.1)`, so a flat book displayed **10% of equity** as
+exposure — a number nothing had measured. Beside it, "Risk Level: OPTIMAL" was
+static text, claiming optimal risk whatever the book held. Both gone.
+
+**Two engines, one position.** `main.py` was started by hand at 10:16, read
+the shared file and logged "Loaded 1 active positions from disk state
+recovery" — adopting the observer's BANKNIFTY 56200 CE (entered 09:35:54 @
+645.00). It streams only `NSE:NIFTY50-INDEX`, so it could never receive a
+BANKNIFTY tick and warned "has not ticked in never" every five minutes while
+believing it owned a position it structurally could not exit. Either process
+could have overwritten the other's row. Stopped at 10:35; the observer's
+position survived and kept marking to market.
+
+The orchestrator's own `clear_stray_books()` only runs at session start, so a
+book started by hand mid-session is not caught — worth closing later.
+
+**Working as intended.** The 10:15 catch-up trigger fired and was refused
+(`0x800710E0`) because the 08:45 session was still running: `IgnoreNew` doing
+its job.
+
+**Still open.** The task's repetition carries `StopAtDurationEnd = True`, so
+Windows will kill a running session at 14:45 — no square-off, no EOD report,
+no marker. Needs one elevated `Set-ScheduledTask` call.
+
+---
+
 ## 2026-09-17 — the laptop slept through 08:45; no session ran all day
 
 **What happened.** A normal trading Thursday (the NIFTY cache holds all 74 of
