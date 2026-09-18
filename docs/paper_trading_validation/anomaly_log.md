@@ -6,6 +6,56 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-09-19 — the 15:00 entry cutoff was measured and KEPT; EOD square-off no longer depends on ticks
+
+**The question.** Extend the entry cutoff from 15:00 to 15:15/15:30 to catch
+late spikes, on the reasoning that the stop-loss caps any reversal.
+
+**Measured over 582 sessions** (2024-01-01 → 2026-09-18, the owner's own exits,
+premium path, measured spread + theta):
+
+| cutoff | trades | net | vs 15:00 |
+|---|---|---|---|
+| **15:00 (current)** | 556 | −₹1,04,226 | — |
+| 15:05 | 570 | −₹1,05,518 | −₹1,292 |
+| 15:10 | 579 | −₹1,06,563 | −₹2,336 |
+| 15:15 | 579 | −₹1,06,563 | −₹2,336 |
+
+The 23 extra trades a later cutoff adds are net **−₹2,336**, −0.91% per trade.
+Their exits: **22 of 23 were the 15:15 forced square-off**, only ONE was a
+stop-loss. Win rate on them was 47.8% — nearly half were directionally right
+and still lost money.
+
+So the stop-loss argument holds (it did its job) but does not decide this: the
+loss is not from reversals, it is that a trade entered at 15:05 has ten
+minutes to cover theta and spread before being closed regardless. Extending
+the entry cutoff without also moving the square-off cannot work, and moving
+the square-off past 15:15 runs into the broker's own MIS auto-square-off
+(15:20–15:30) at whatever spread the close offers. **Kept at 15:00.**
+
+**A real gap found while confirming the square-off.** Both paper engines close
+at 15:15 correctly (their loops are time-driven). The LIVE engine's EOD exit
+lives inside `on_tick` — in two places — so it only fires when a tick arrives.
+A feed that goes quiet before the close (Wi-Fi drop, dropped broker socket,
+both repeatedly seen here) means nothing closes the position and it is carried
+**overnight**: gap risk plus a night of theta on a possibly next-day-expiry
+contract. The tick-staleness watchdog only warns.
+
+`eod_squareoff_watchdog()` now runs on a 30-second timer and, past
+`eod_exit_time`, fetches a fresh quote and drives `on_tick` directly — reusing
+the one exit path rather than growing a second one, so the stop cancel, the
+order and the bookkeeping stay together. No price means no exit from there
+either, so that case escalates loudly instead of silently. The decision of
+which positions still need closing is the pure `positions_needing_eod_exit()`,
+which also refuses to re-fire an exit already in flight.
+
+**Confirmation added.** Both engines now send "✅ All opened positions are
+closed" once, only past the cutoff, only with nothing left open, and only on a
+day that actually had trades — so silence never has to be read as "probably
+fine".
+
+---
+
 ## 2026-09-18 (night) — the holiday calendar now comes from the exchange
 
 The hardcoded `NSE_HOLIDAYS` table was checked against the exchange's own

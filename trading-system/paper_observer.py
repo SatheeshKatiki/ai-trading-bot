@@ -583,6 +583,8 @@ def run_session(day_num, date_str, day_name):
     active_positions = {}
     prev_signals = {}
     daily_trades_count = len(session_log["trades"])
+    #: Sent once, when the EOD cutoff has closed the last open position.
+    eod_confirmed = False
     
     print(f"  [SYS] Active Strategy Engine: {strat_label} ({active_strategy})")
     print(f"  [SYS] Monitoring live candles, momentum strength, and Greeks...")
@@ -590,6 +592,28 @@ def run_session(day_num, date_str, day_name):
     
     while running and is_market_open():
         ts = now_ist().strftime("%H:%M:%S")
+
+        # Confirm the square-off explicitly: past the cutoff with nothing left
+        # open. Sent once, and only when the day actually had positions, so
+        # silence never has to be read as "probably fine".
+        if (not eod_confirmed and ist_time() >= EOD_CUTOFF
+                and not active_positions and session_log["trades"]):
+            eod_confirmed = True
+            _closed = len(session_log["trades"])
+            _net = sum(t.get("net_pnl", 0.0) for t in session_log["trades"])
+            print(f"  [{ts}] ✅ EOD square-off complete — {_closed} trade(s) closed, "
+                  f"net Rs.{_net:+.2f}")
+            if alerter:
+                try:
+                    alerter.send_alert(
+                        "✅ **All opened positions are closed**\n\n"
+                        f"🕒 EOD square-off at {ts} IST\n"
+                        f"📊 Trades closed today: {_closed}\n"
+                        f"💰 Net P&L: ₹{_net:+,.2f}\n\n"
+                        "No position is carried overnight."
+                    )
+                except Exception as _alert_exc:
+                    print(f"  [{ts}] ⚠️  EOD confirmation alert failed: {_alert_exc}")
         
         for symbol in SYMBOLS:
             try:

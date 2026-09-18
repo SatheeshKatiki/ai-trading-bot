@@ -605,6 +605,18 @@ class CandleAggregator:
         return self.candles[symbol]
 
 
+def positions_needing_eod_exit(active_positions: dict, now_hms: str, eod_time: str) -> List[str]:
+    """Which positions must still be squared off at the EOD cutoff.
+
+    Pure, so the rule is testable without running the engine: nothing before
+    the cutoff, and never a position whose exit is already in flight.
+    """
+    if now_hms < eod_time:
+        return []
+    return [key for key, pos in active_positions.items()
+            if not getattr(pos, "is_exiting", False)]
+
+
 def _market_closed_reason() -> Optional[str]:
     """Why no order may be placed right now, or None when the market is open.
 
@@ -2944,6 +2956,90 @@ async def run_live_bot(symbols: List[str]) -> None:
                 logger.error("Periodic reconciliation failed: %s", e)
 
     asyncio.create_task(position_reconciler())
+
+    # ----------------------------------------------------------------
+    # EOD square-off safety net
+    # ----------------------------------------------------------------
+    # Every exit -- including the 15:15 cutoff -- lives inside on_tick, so it
+    # only ever runs when a tick arrives. If the feed goes quiet before the
+    # close (a Wi-Fi drop or a dropped broker socket; both have happened on
+    # this machine repeatedly) nothing closes the position and it is carried
+    # OVERNIGHT: gap risk plus a full night of theta on a contract that may
+    # expire the next day. The tick-staleness watchdog only warns.
+    #
+    # This drives the existing exit path rather than duplicating it: it feeds
+    # on_tick a real, freshly fetched price, so the stop cancel, the order and
+    # the bookkeeping all stay in one place. If no price can be fetched the
+    # position cannot be exited from here either -- that is escalated loudly
+    # so it can be squared off in the broker app by hand.
+    _EOD_CHECK_INTERVAL_S = 30.0
+
+    async def eod_squareoff_watchdog() -> None:
+        escalated = False
+        confirmed = False
+        had_positions = False
+        while True:
+            await asyncio.sleep(_EOD_CHECK_INTERVAL_S)
+            try:
+                now_hms = datetime.now(_IST).strftime("%H:%M:%S")
+                if active_positions:
+                    had_positions = True
+                pending = positions_needing_eod_exit(
+                    active_positions, now_hms, exit_engine.eod_exit_time)
+                if not pending:
+                    if now_hms < exit_engine.eod_exit_time:
+                        escalated = confirmed = had_positions = False   # a new day
+                    elif had_positions and not active_positions and not confirmed:
+                        # Past the cutoff with nothing left open: say so, once.
+                        confirmed = True
+                        logger.info("EOD square-off complete -- no position is carried overnight.")
+                        try:
+                            alerter.send_alert(
+                                "✅ **All opened positions are closed**\n\n"
+                                f"🕒 EOD square-off at {now_hms} IST\n"
+                                "No position is carried overnight."
+                            )
+                        except Exception as exc:
+                            logger.error("EOD confirmation alert failed: %s", exc)
+                    continue
+
+                for sym in pending:
+                    ltp = None
+                    try:
+                        quotes = await asyncio.to_thread(broker.get_market_data, [sym])
+                        quote = (quotes or {}).get(sym)
+                        if quote and getattr(quote, "ltp", 0) > 0:
+                            ltp = float(quote.ltp)
+                    except Exception as exc:
+                        logger.error("EOD square-off: no quote for %s: %s", sym, exc)
+
+                    if ltp is None:
+                        continue
+                    logger.warning(
+                        "EOD SQUARE-OFF: %s is still open past %s and no tick has closed it "
+                        "-- driving the exit path directly.", sym, exit_engine.eod_exit_time)
+                    await on_tick({"symbol": sym, "ltp": ltp})
+
+                still_open = positions_needing_eod_exit(
+                    active_positions, now_hms, exit_engine.eod_exit_time)
+                if still_open and not escalated and now_hms >= "15:20:00":
+                    escalated = True
+                    logger.error("EOD SQUARE-OFF FAILED for %s -- square off manually.", still_open)
+                    try:
+                        alerter.send_alert(
+                            "🚨 **EOD square-off could not complete**\n\n"
+                            f"Still open after {exit_engine.eod_exit_time}: "
+                            f"{', '.join(still_open)}\n"
+                            "The feed or the broker could not be reached. Square these off "
+                            "in the broker app — otherwise they are carried overnight."
+                        )
+                    except Exception as exc:
+                        logger.error("EOD escalation alert failed: %s", exc)
+            except Exception as exc:
+                # A dead safety net is the very thing this exists to prevent.
+                logger.error("EOD square-off watchdog error: %s", exc)
+
+    asyncio.create_task(eod_squareoff_watchdog())
 
     logger.info("Starting live stream for symbols: %s", ", ".join(symbols))
     await broker.stream_quotes(symbols, on_tick, on_reconnect=sync_broker_state)
