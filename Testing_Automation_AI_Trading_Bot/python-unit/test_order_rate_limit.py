@@ -68,6 +68,7 @@ def test_orders_never_touch_the_live_positions_file(_isolated_positions_file):
     token, headers = _auth_headers()
     try:
         with patch("api_bridge.BrokerFactory.get_active_broker", return_value=_fake_broker(paper_mode=True)), \
+             patch("api_bridge._market_closed_reason", return_value=None), \
              patch("api_bridge._load_config_settings", return_value={"live_trading_mode": False}), \
              patch("shared.state.record_trade"):
             assert client.post("/api/order/execute", json=ORDER_PAYLOAD, headers=headers).status_code == 200
@@ -83,6 +84,10 @@ def _auth_headers():
     return token, {"Authorization": f"Bearer {token}"}
 
 
+# The live-mode specs below pin the market OPEN: since 2026-09-18
+# /api/order/execute refuses outright when the exchange calendar (or the
+# broker) says the market is shut, which would 409 before the limiter is ever
+# consulted. Market-closed behaviour is covered in test_market_calendar.py.
 def _fake_broker(paper_mode: bool):
     broker = MagicMock()
     broker.paper_mode = paper_mode
@@ -97,6 +102,7 @@ def test_paper_mode_order_ignores_rate_limiter_entirely():
     token, headers = _auth_headers()
     try:
         with patch("api_bridge.BrokerFactory.get_active_broker", return_value=_fake_broker(paper_mode=True)), \
+             patch("api_bridge._market_closed_reason", return_value=None), \
              patch("api_bridge._load_config_settings", return_value={"live_trading_mode": False}), \
              patch("api_bridge.ORDER_LIMITER.allow") as mock_allow, \
              patch("shared.state.record_trade") as mock_record_trade:
@@ -112,6 +118,7 @@ def test_live_mode_order_allowed_by_limiter_succeeds():
     token, headers = _auth_headers()
     try:
         with patch("api_bridge.BrokerFactory.get_active_broker", return_value=_fake_broker(paper_mode=False)), \
+             patch("api_bridge._market_closed_reason", return_value=None), \
              patch("api_bridge._load_config_settings", return_value={"live_trading_mode": True}), \
              patch("api_bridge.ORDER_LIMITER.allow", return_value=True) as mock_allow, \
              patch("shared.state.record_trade") as mock_record_trade:
@@ -133,6 +140,7 @@ def test_live_mode_order_denied_by_limiter_returns_429_not_500():
     try:
         fake_broker = _fake_broker(paper_mode=False)
         with patch("api_bridge.BrokerFactory.get_active_broker", return_value=fake_broker), \
+             patch("api_bridge._market_closed_reason", return_value=None), \
              patch("api_bridge._load_config_settings", return_value={"live_trading_mode": True}), \
              patch("api_bridge.ORDER_LIMITER.allow", return_value=False):
             resp = client.post("/api/order/execute", json=ORDER_PAYLOAD, headers=headers)

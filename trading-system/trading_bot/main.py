@@ -605,6 +605,22 @@ class CandleAggregator:
         return self.candles[symbol]
 
 
+def _market_closed_reason() -> Optional[str]:
+    """Why no order may be placed right now, or None when the market is open.
+
+    The exchange calendar answers "is today a trading day"; the broker's
+    market_status answers "is it open right now" and catches an unscheduled
+    closure. "Unknown" is never treated as open. api_bridge applies the very
+    same check to manual orders, so both workflows obey one source of truth.
+    """
+    try:
+        from shared import market_calendar
+    except Exception as exc:                      # pragma: no cover - import guard
+        logger.debug("Market calendar unavailable: %s", exc)
+        return None
+    return market_calendar.market_closed_now()
+
+
 #: Order states that mean the order is still working at the exchange.
 _WORKING_ORDER_STATES = ("PENDING", "OPEN", "PARTIAL")
 #: The stop-loss order types this engine places (see update_exchange_sl).
@@ -2467,6 +2483,16 @@ async def run_live_bot(symbols: List[str]) -> None:
 
                         if not settings.get("auto_trade_enabled", True):
                             logger.info("Auto trades disabled (Manual Mode) - Skipping execution for %s.", s)
+                            continue
+
+                        # Never send an order into a closed exchange. The same
+                        # calendar gates the dashboard's manual orders, so both
+                        # workflows obey one source of truth (2026-09-14: a
+                        # holiday missing from the hardcoded table ran a whole
+                        # session against a shut market).
+                        _closed = _market_closed_reason()
+                        if _closed:
+                            logger.warning("Entry for %s skipped -- market is closed (%s).", s, _closed)
                             continue
 
                         # ── Execute (Live or Paper) ────────────────────────

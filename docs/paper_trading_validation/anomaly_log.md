@@ -6,6 +6,54 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-09-18 (night) — the holiday calendar now comes from the exchange
+
+The hardcoded `NSE_HOLIDAYS` table was checked against the exchange's own
+calendar for the first time. It was wrong **seven** ways:
+
+**Missing three WEEKDAY holidays** — days the system would have tried to trade
+into a shut market, exactly like 2026-09-14:
+
+| date | day | occasion |
+|---|---|---|
+| 2026-01-15 | Thu | Municipal Corporation Election - Maharashtra |
+| 2026-03-26 | Thu | Shri Ram Navami |
+| 2026-03-31 | Tue | Shri Mahavir Jayanti |
+
+**Claiming four holidays the exchange does not have** — real sessions the
+system would have sat out: 2026-03-20, 2026-03-27, 2026-09-04 and
+2026-11-09 (the exchange closes 11-08 and 11-10, not the 9th).
+
+**What now happens.** `shared/market_calendar.py` fetches the exchange's
+trading-holiday list, caches it to `config/market_holidays.json`, and refreshes
+it at the start of every session — so a holiday added upstream is known in
+advance instead of being discovered by an empty data feed at 10:00. Exchange
+data REPLACES the hardcoded table for any year it covers; a union would keep
+skipping those four real trading days. The table survives only for a year
+never fetched, and a failed fetch keeps the last cache rather than reporting
+"no holidays".
+
+**One gate, both workflows.** `market_closed_now()` answers three questions,
+narrowest last: is today a trading day (exchange calendar), is it within
+09:15-15:30, and does the broker's own `market_status()` agree it is open --
+with "unknown" never read as "open". The autonomous engine calls it before an
+entry; every manual dashboard order goes through the same check in
+`/api/order/execute` (which `/api/positions/exit` also routes through).
+`/api/panic-exit` deliberately does NOT, so an emergency flatten is never
+blocked.
+
+**Note on sourcing.** Fyers publishes no holiday-calendar endpoint — only
+`market_status()`, which is today-only. The forward calendar therefore comes
+from the exchange itself, which is what brokers republish.
+
+**Found while verifying.** A manual order at 21:00 on a trading day was
+accepted: the calendar said "trading day", and paper mode made the broker
+status "unknown". Session hours are now part of the same gate; re-verified
+live at 22:20, both manual paths return 409 "Market is closed (outside market
+hours)".
+
+---
+
 ## 2026-09-18 (evening) — the Options Desk crashed on the fallback chain; Telegram alerts could still be lost
 
 **Options Desk crash.** `Cannot read properties of undefined (reading 'oi')` at

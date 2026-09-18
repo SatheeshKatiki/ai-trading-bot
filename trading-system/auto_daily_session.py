@@ -385,6 +385,19 @@ def is_trading_day(dt: Optional[datetime.date] = None) -> bool:
     # 5 = Saturday, 6 = Sunday
     if check_date.weekday() in (5, 6):
         return False
+
+    # The exchange's own calendar wins when we have it. Checked on 2026-09-18,
+    # the hardcoded table below was wrong seven ways -- three weekday holidays
+    # missing and four dates that are not holidays at all. See
+    # shared/market_calendar.py.
+    try:
+        from shared import market_calendar
+        exchange = market_calendar.holidays_for(check_date.year)
+        if exchange:
+            return check_date.isoformat() not in exchange
+    except Exception as exc:
+        logger.debug("Exchange calendar unavailable (%s) -- using the fallback table.", exc)
+
     holidays = NSE_HOLIDAYS.get(check_date.year)
     if holidays and check_date.strftime("%Y-%m-%d") in holidays:
         return False
@@ -1170,6 +1183,22 @@ def run_session_flow(force_now: bool = False) -> None:
     """Run one single daily market session lifecycle."""
     current_ist = now_ist()
     today_date = current_ist.date()
+
+    # Refresh the exchange calendar BEFORE deciding whether to trade today, so
+    # a holiday added since the last run is known in advance rather than
+    # discovered by an empty data feed at 10:00.
+    try:
+        from shared import market_calendar
+        refreshed, detail = market_calendar.refresh()
+        logger.info("Market calendar: %s", detail)
+        upcoming = market_calendar.next_holidays(today_date, limit=3)
+        if upcoming:
+            logger.info(
+                "Next market closures: %s",
+                ", ".join(f"{d.isoformat()} ({desc or 'holiday'})" for d, desc in upcoming),
+            )
+    except Exception as exc:
+        logger.warning("Could not refresh the exchange calendar: %s", exc)
 
     # Surfaces a stale holiday calendar before anything else happens today.
     assert_holiday_calendar_current(today_date)

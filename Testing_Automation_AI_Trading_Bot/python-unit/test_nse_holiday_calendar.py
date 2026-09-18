@@ -52,8 +52,14 @@ def test_every_date_belongs_to_its_own_year():
 # is_trading_day
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("day", ["2026-01-26", "2026-08-15", "2026-09-14", "2026-11-09", "2026-12-25"])
+@pytest.mark.parametrize("day", ["2026-01-26", "2026-08-15", "2026-09-14", "2026-11-24", "2026-12-25"])
 def test_known_holidays_are_not_trading_days(day):
+    # 2026-11-09 used to be in this list. It came from the hardcoded table and
+    # is WRONG: the exchange's own calendar has no holiday that day (it lists
+    # 11-08 Diwali Laxmi Pujan and 11-10 Balipratipada), so the system was
+    # sitting out a real trading session. Since is_trading_day() prefers the
+    # exchange calendar (2026-09-18) that date correctly reads as open, and the
+    # date checked here is one both sources agree on.
     d = datetime.datetime.strptime(day, "%Y-%m-%d").date()
     if d.weekday() >= 5:
         pytest.skip(f"{day} falls on a weekend anyway")
@@ -67,6 +73,20 @@ def test_weekends_are_never_trading_days():
 
 def test_an_ordinary_weekday_is_a_trading_day():
     assert ads.is_trading_day(datetime.date(2026, 9, 9)) is True    # Wednesday
+
+
+def test_the_exchange_calendar_corrects_the_hardcoded_table():
+    """The table is a fallback, not the truth.
+
+    2026-11-09 sits in the hardcoded table but is NOT a holiday at the
+    exchange, so the system used to skip a real trading day. Once the exchange
+    calendar is available it wins.
+    """
+    from shared import market_calendar
+
+    assert "2026-11-09" in ads.NSE_HOLIDAYS[2026], "precondition: the old table still lists it"
+    if market_calendar.holidays_for(2026):
+        assert ads.is_trading_day(datetime.date(2026, 11, 9)) is True
 
 
 def test_lookup_uses_the_dates_own_year(monkeypatch):

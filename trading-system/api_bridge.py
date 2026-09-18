@@ -1622,9 +1622,14 @@ async def execute_order(req: ExecuteOrderRequest, request: Request):
     if request.client and request.client.host not in ["127.0.0.1", "localhost", "::1"]:
         raise HTTPException(status_code=403, detail="Forbidden: Localhost access only")
         
+    closed = _market_closed_reason()
+    if closed:
+        logger.warning("Manual order refused for %s -- %s", req.symbol, closed)
+        raise HTTPException(status_code=409, detail=f"Market is closed ({closed}). No order was placed.")
+
     try:
         broker = BrokerFactory.get_active_broker()
-        
+
         # Ensure paper mode is set correctly from settings
         settings = _load_config_settings()
         broker.paper_mode = not settings.get("live_trading_mode", False)
@@ -3232,6 +3237,29 @@ async def get_state(live: bool = Query(False)):
     except Exception as e:
         logger.error('Failed to fetch state: %s', e)
         raise HTTPException(status_code=500, detail='Failed to fetch state.')
+
+def _market_closed_reason() -> Optional[str]:
+    """Why no order may be placed right now, or None when the market is open.
+
+    Applies to BOTH workflows: the autonomous engine checks the same calendar
+    before it enters, and every manual order from the dashboard goes through
+    here. An order sent into a closed exchange is rejected by the broker at
+    best; at worst it rests and fills on the next open, which is not what
+    anyone clicking a button at 9pm on a holiday intends.
+
+    The exchange calendar answers "is today a trading day". The broker's own
+    market_status answers "is it open right now" and catches an unscheduled
+    closure no calendar knows about -- but only when it can be reached, and
+    "unknown" is never treated as "open".
+    """
+    try:
+        from shared import market_calendar
+    except Exception as exc:                       # pragma: no cover - import guard
+        logger.debug("Market calendar unavailable: %s", exc)
+        return None
+
+    return market_calendar.market_closed_now()
+
 
 def _normalize_paper_positions(data: dict) -> list:
     """Return active_positions.json as the Position shape the dashboard reads.
