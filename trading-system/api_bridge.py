@@ -4057,7 +4057,7 @@ async def get_option_chain(symbol: str = "NSE:NIFTY50-INDEX"):
             
             chain.append({
                 "strike": strike,
-                "call": {
+                "ce": {
                     "ltp": round(c_price, 2),
                     "volume": int(deterministic_random(strike, 3, 10000, 500000)),
                     "oi": int(deterministic_random(strike, 4, 50000, 2000000)),
@@ -4067,7 +4067,7 @@ async def get_option_chain(symbol: str = "NSE:NIFTY50-INDEX"):
                     "theta": round(c_theta, 2),
                     "vega": round(c_vega, 2)
                 },
-                "put": {
+                "pe": {
                     "ltp": round(p_price, 2),
                     "volume": int(deterministic_random(strike, 5, 10000, 500000)),
                     "oi": int(deterministic_random(strike, 6, 50000, 2000000)),

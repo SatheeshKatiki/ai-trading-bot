@@ -23,12 +23,25 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import threading
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Optional, Union, Dict, Any
 
 from shared.config import CONFIG
 
 logger = logging.getLogger(__name__)
+
+#: Messages that could not be delivered, kept until they can be. Alerts about
+#: money must survive a Wi-Fi blink -- see the outbox note in _do_send_fast.
+_OUTBOX_PATH = Path(__file__).resolve().parents[2] / "run" / "telegram_outbox.jsonl"
+#: Serialises outbox read-modify-write across the dispatch worker threads.
+_OUTBOX_LOCK = threading.Lock()
+#: Older than this and a retry is just noise -- a "market is OPEN" from
+#: yesterday helps nobody. Long enough to cover a whole session.
+_OUTBOX_TTL_S = 12 * 3600
+#: Hard cap, so a long outage cannot grow the spool without bound.
+_OUTBOX_MAX = 200
 
 
 
@@ -150,10 +163,110 @@ class TelegramAlerter:
 
         return formatted
 
+    # ------------------------------------------------------------------
+    # Durable outbox
+    # ------------------------------------------------------------------
+    # Every send used to be fire-and-forget: two attempts, and on failure the
+    # message was gone. On 2026-09-16 the Wi-Fi dropped ~60 times and DNS was
+    # failing -- so "Market is OPEN", the stand-down warning and the whole EOD
+    # report were generated, logged as "queued", and never arrived. The owner
+    # only learned the session had died by asking.
+    #
+    # Alerts about money must not evaporate because a laptop's Wi-Fi blinked.
+    # A failed send is spooled to disk and retried ahead of the next message,
+    # and on the next process start.
+
+    @property
+    def _outbox_path(self) -> Path:
+        return _OUTBOX_PATH
+
+    def _spool(self, text: str, parse_mode: str) -> None:
+        """Keep a message that could not be delivered."""
+        try:
+            _OUTBOX_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with _OUTBOX_LOCK:
+                # Cap the spool so a long outage cannot grow it without bound.
+                existing = self._read_outbox()
+                existing.append({"ts": time.time(), "text": text, "parse_mode": parse_mode})
+                if len(existing) > _OUTBOX_MAX:
+                    existing = existing[-_OUTBOX_MAX:]
+                with open(_OUTBOX_PATH, "w", encoding="utf-8") as fh:
+                    for item in existing:
+                        fh.write(json.dumps(item, ensure_ascii=False) + "\n")
+            logger.warning("Telegram undeliverable -- spooled for retry (%d pending).", len(existing))
+        except Exception as exc:
+            logger.error("Telegram outbox write failed: %s", exc)
+
+    def _read_outbox(self) -> list:
+        items = []
+        try:
+            if _OUTBOX_PATH.is_file():
+                with open(_OUTBOX_PATH, "r", encoding="utf-8") as fh:
+                    for line in fh:
+                        line = line.strip()
+                        if line:
+                            try:
+                                items.append(json.loads(line))
+                            except ValueError:
+                                continue
+        except OSError as exc:
+            logger.error("Telegram outbox read failed: %s", exc)
+        return items
+
+    def flush_outbox(self) -> int:
+        """Retry everything spooled. Returns how many were delivered.
+
+        Safe to call often: it does nothing when the spool is empty, and stops
+        at the first failure so a still-broken network is not hammered.
+        """
+        if not self.is_enabled:
+            return 0
+        with _OUTBOX_LOCK:
+            pending = self._read_outbox()
+            if not pending:
+                return 0
+            fresh = [p for p in pending if time.time() - float(p.get("ts", 0)) <= _OUTBOX_TTL_S]
+            dropped = len(pending) - len(fresh)
+            delivered, leftover = 0, []
+            for i, item in enumerate(fresh):
+                if leftover:                      # a send already failed: keep the rest
+                    leftover.append(item)
+                    continue
+                age_min = int((time.time() - float(item.get("ts", 0))) // 60)
+                prefix = f"⏱ (delayed {age_min}m)\n" if age_min >= 2 else ""
+                if self._deliver(prefix + item.get("text", ""), item.get("parse_mode", "HTML")):
+                    delivered += 1
+                else:
+                    leftover.append(item)
+            try:
+                if leftover:
+                    with open(_OUTBOX_PATH, "w", encoding="utf-8") as fh:
+                        for item in leftover:
+                            fh.write(json.dumps(item, ensure_ascii=False) + "\n")
+                elif _OUTBOX_PATH.is_file():
+                    _OUTBOX_PATH.unlink()
+            except OSError as exc:
+                logger.error("Telegram outbox rewrite failed: %s", exc)
+        if delivered or dropped:
+            logger.info("Telegram outbox: %d delivered, %d still pending, %d expired.",
+                        delivered, len(leftover), dropped)
+        return delivered
+
     def _do_send_fast(self, text: str, parse_mode: str = "HTML") -> None:
-        """Execute high-speed HTTP POST dispatch with robust HTML payload."""
+        """Deliver one message, retrying anything the spool still holds first."""
         if not self.is_enabled:
             return
+        try:
+            self.flush_outbox()
+        except Exception as exc:
+            logger.debug("Telegram outbox flush skipped: %s", exc)
+        if not self._deliver(text, parse_mode):
+            self._spool(text, parse_mode)
+
+    def _deliver(self, text: str, parse_mode: str = "HTML") -> bool:
+        """One delivery attempt. True only when Telegram accepted the message."""
+        if not self.is_enabled:
+            return False
 
         url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
 
@@ -180,7 +293,7 @@ class TelegramAlerter:
         try:
             with urllib.request.urlopen(req, timeout=6) as resp:
                 if resp.status == 200:
-                    return
+                    return True
         except urllib.error.HTTPError as he:
             logger.debug("Telegram HTML parse failed (%s), retrying as clean plain text...", he.code)
         except Exception as exc:
@@ -207,8 +320,11 @@ class TelegramAlerter:
             with urllib.request.urlopen(req_fb, timeout=6) as resp:
                 if resp.status != 200:
                     logger.error("Telegram fallback HTTP error: %s", resp.status)
+                    return False
+                return True
         except Exception as exc:
             logger.error("Telegram fallback dispatch failed: %s", exc)
+            return False
 
     def _enqueue(self, text: str, parse_mode: str = "HTML") -> None:
         """Immediately dispatch message to concurrent thread pool without blocking."""

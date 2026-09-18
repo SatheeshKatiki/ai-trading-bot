@@ -18,7 +18,10 @@ interface OptionData {
     spread?: number | null; spread_pct?: number | null;
     symbol?: string; chg?: number; chg_pct?: number; oichg_pct?: number;
 }
-interface StrikeRow { strike: number; ce: OptionData; pe: OptionData; }
+/** A side can be absent: the broker chain fills only the strikes it quotes,
+ *  and a row is kept even when one side is missing. Declaring these
+ *  non-optional is what let `r.ce.oi` compile and then crash the page. */
+interface StrikeRow { strike: number; ce?: OptionData; pe?: OptionData; }
 interface OptionChain {
     symbol: string; expiry: string; atm: number;
     maxPain: number | null; pcr: number | null; chain: StrikeRow[];
@@ -481,11 +484,11 @@ export function OptionsDesk({ symbol }: { symbol: string }) {
                                 <p className="text-[9px] font-bold tracking-widest uppercase text-muted-foreground/90 dark:text-muted-foreground/80 mb-3">Key Levels</p>
                                 <div className="space-y-0.5 mb-3">
                                     <p className="text-[8px] text-rose-600 dark:text-rose-400/70 font-bold uppercase tracking-wider mb-1">Resistance</p>
-                                    {topCe.map((r, i) => <KeyLevelRow key={r.strike} rank={i + 1} strike={r.strike} oi={r.ce.oi} type="ce" />)}
+                                    {topCe.map((r, i) => <KeyLevelRow key={r.strike} rank={i + 1} strike={r.strike} oi={r.ce?.oi ?? 0} type="ce" />)}
                                 </div>
                                 <div className="space-y-0.5 pt-3 border-t border-border">
                                     <p className="text-[8px] text-emerald-600 dark:text-emerald-400/70 font-bold uppercase tracking-wider mb-1">Support</p>
-                                    {topPe.map((r, i) => <KeyLevelRow key={r.strike} rank={i + 1} strike={r.strike} oi={r.pe.oi} type="pe" />)}
+                                    {topPe.map((r, i) => <KeyLevelRow key={r.strike} rank={i + 1} strike={r.strike} oi={r.pe?.oi ?? 0} type="pe" />)}
                                 </div>
                             </div>
                         </div>
@@ -555,12 +558,12 @@ export function OptionsDesk({ symbol }: { symbol: string }) {
                                         <div key={r.strike}>
                                             <div className="flex justify-between mb-1.5">
                                                 <span className="text-xs font-bold text-foreground">{r.strike} CE</span>
-                                                <span className="text-xs font-mono text-rose-600 dark:text-rose-400">+{fK(r.ce.oichg)}</span>
+                                                <span className="text-xs font-mono text-rose-600 dark:text-rose-400">+{fK(r.ce?.oichg ?? 0)}</span>
                                             </div>
                                             <div className="h-1 rounded-full bg-border overflow-hidden">
                                                 <div className="h-full bg-rose-500/60 rounded-full" style={{ width: `${Math.max(5, pct)}%` }} />
                                             </div>
-                                            <div className="text-[9px] text-muted-foreground mt-1">Total: {fL(r.ce.oi)}</div>
+                                            <div className="text-[9px] text-muted-foreground mt-1">Total: {fL(r.ce?.oi ?? 0)}</div>
                                         </div>
                                     );
                                 })}
@@ -578,12 +581,12 @@ export function OptionsDesk({ symbol }: { symbol: string }) {
                                         <div key={r.strike}>
                                             <div className="flex justify-between mb-1.5">
                                                 <span className="text-xs font-bold text-foreground">{r.strike} PE</span>
-                                                <span className="text-xs font-mono text-emerald-600 dark:text-emerald-400">+{fK(r.pe.oichg)}</span>
+                                                <span className="text-xs font-mono text-emerald-600 dark:text-emerald-400">+{fK(r.pe?.oichg ?? 0)}</span>
                                             </div>
                                             <div className="h-1 rounded-full bg-border overflow-hidden">
                                                 <div className="h-full bg-emerald-500/60 rounded-full" style={{ width: `${Math.max(5, pct)}%` }} />
                                             </div>
-                                            <div className="text-[9px] text-muted-foreground mt-1">Total: {fL(r.pe.oi)}</div>
+                                            <div className="text-[9px] text-muted-foreground mt-1">Total: {fL(r.pe?.oi ?? 0)}</div>
                                         </div>
                                     );
                                 })}
@@ -593,11 +596,11 @@ export function OptionsDesk({ symbol }: { symbol: string }) {
                             <p className="text-[9px] font-bold tracking-widest uppercase text-muted-foreground/90 dark:text-muted-foreground/80 mb-4">All Key Levels</p>
                             <div className="space-y-1 mb-4">
                                 <p className="text-[8px] text-rose-700 dark:text-rose-400/70 font-bold uppercase tracking-wider mb-2">Resistance (CE OI)</p>
-                                {topCe.map((r, i) => <KeyLevelRow key={r.strike} rank={i + 1} strike={r.strike} oi={r.ce.oi} type="ce" />)}
+                                {topCe.map((r, i) => <KeyLevelRow key={r.strike} rank={i + 1} strike={r.strike} oi={r.ce?.oi ?? 0} type="ce" />)}
                             </div>
                             <div className="pt-4 border-t border-border space-y-1">
                                 <p className="text-[8px] text-emerald-700 dark:text-emerald-400/70 font-bold uppercase tracking-wider mb-2">Support (PE OI)</p>
-                                {topPe.map((r, i) => <KeyLevelRow key={r.strike} rank={i + 1} strike={r.strike} oi={r.pe.oi} type="pe" />)}
+                                {topPe.map((r, i) => <KeyLevelRow key={r.strike} rank={i + 1} strike={r.strike} oi={r.pe?.oi ?? 0} type="pe" />)}
                             </div>
                         </div>
                     </motion.div>
@@ -677,14 +680,14 @@ export function OptionsDesk({ symbol }: { symbol: string }) {
                     <span className="flex items-center gap-1.5 text-[10px] text-rose-700 dark:text-rose-400/90">
                         <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse flex-shrink-0" />
                         <span className="font-semibold">{topCe[0].strike} CE</span>
-                        <span className="text-muted-foreground/80 dark:text-muted-foreground">— Strongest resistance · {fL(topCe[0].ce.oi)}</span>
+                        <span className="text-muted-foreground/80 dark:text-muted-foreground">— Strongest resistance · {fL(topCe[0].ce?.oi ?? 0)}</span>
                     </span>
                 )}
                 {topPe[0] && (
                     <span className="flex items-center gap-1.5 text-[10px] text-emerald-700 dark:text-emerald-400/90">
                         <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse flex-shrink-0" />
                         <span className="font-semibold">{topPe[0].strike} PE</span>
-                        <span className="text-muted-foreground/80 dark:text-muted-foreground">— Strongest support · {fL(topPe[0].pe.oi)}</span>
+                        <span className="text-muted-foreground/80 dark:text-muted-foreground">— Strongest support · {fL(topPe[0].pe?.oi ?? 0)}</span>
                     </span>
                 )}
                 <span className="flex items-center gap-1.5 text-[10px] text-amber-700 dark:text-amber-400/80">

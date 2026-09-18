@@ -6,6 +6,41 @@ Newest entries at the top. All timestamps IST unless noted.
 
 ---
 
+## 2026-09-18 (evening) — the Options Desk crashed on the fallback chain; Telegram alerts could still be lost
+
+**Options Desk crash.** `Cannot read properties of undefined (reading 'oi')` at
+`r.ce.oi`. There are two chain builders and they disagreed on field names: the
+real broker chain emits `ce`/`pe`, while the Black-Scholes fallback emitted
+**`call`/`put`**. The frontend only knows `ce`/`pe`, so every row read
+`undefined` the moment the fallback chain was served — which is exactly what
+happens with no broker session. Nothing else consumed `call`/`put` (checked),
+so the fallback now emits `ce`/`pe` like the real one.
+
+The interface also declared `ce: OptionData` as always present, which is why
+`r.ce.oi` compiled; the broker chain keeps a row even when it quotes only one
+side. `StrikeRow` now marks both sides optional, and the compiler found all
+ten unguarded accesses.
+
+**Telegram could still lose alerts.** Delivery was fire-and-forget: one HTML
+attempt, one plain-text fallback, and on failure the message was gone. That is
+what silently ate 2026-09-16's "Market is OPEN", the stand-down warning and the
+whole EOD report while the Wi-Fi flapped.
+
+Alerts about money must not evaporate because a laptop's Wi-Fi blinked, so
+there is now a durable outbox (`run/telegram_outbox.jsonl`): a failed send is
+spooled, retried ahead of the next message, flushed on every watchdog tick, and
+again on the next process start. A message delivered late is prefixed
+`⏱ (delayed Nm)` so it cannot be mistaken for current; anything older than 12
+hours is dropped rather than sent (yesterday's "Market is OPEN" helps nobody);
+the spool is capped at 200 and keeps the newest; and a still-broken link is
+probed once, not hammered with the whole backlog.
+
+Verified against the live system: the chain endpoint returns 41 rows all
+carrying `ce` and `pe`, and the orchestrator's watchdog calls
+`flush_telegram_outbox()`.
+
+---
+
 ## 2026-09-18 (later) — the real cause: Start_AI_Bot.bat hijacked a running session
 
 The dashboard crash came back after the fix was committed, because the fix

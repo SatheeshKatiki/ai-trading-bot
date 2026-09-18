@@ -484,6 +484,22 @@ def send_telegram_notification(message: str) -> None:
         logger.warning("Could not dispatch Telegram alert: %s", e)
 
 
+def flush_telegram_outbox() -> int:
+    """Re-send anything a past outage left undelivered.
+
+    Called on the watchdog's tick so a message spooled at 09:14 goes out as
+    soon as the link returns, instead of waiting for the next alert to
+    happen to trigger a flush.
+    """
+    try:
+        from shared.alerts.telegram import alerter
+        if alerter and alerter.is_enabled:
+            return alerter.flush_outbox()
+    except Exception as exc:
+        logger.debug("Telegram outbox flush skipped: %s", exc)
+    return 0
+
+
 def kill_process_on_ports(ports: List[int]) -> None:
     """Kill whatever is LISTENING on each given port. Exact, not approximate.
 
@@ -1261,6 +1277,10 @@ def run_session_flow(force_now: bool = False) -> None:
         # Watchdog: the supervisors decide whether an exit is even worth
         # restarting, and pace any restart behind the backoff ladder. They
         # are safe to call on every tick.
+        # Anything a network blip swallowed earlier goes out as soon as the
+        # link is back -- alerts about money must not be lost to Wi-Fi.
+        flush_telegram_outbox()
+
         backend_sv.supervise()
         # Supervised through the close: it squares off at 15:15 itself and
         # refuses new entries after it, so a late restart can only finish
