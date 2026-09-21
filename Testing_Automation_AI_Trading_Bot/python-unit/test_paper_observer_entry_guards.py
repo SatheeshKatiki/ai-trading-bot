@@ -131,9 +131,13 @@ def test_a_genuine_change_still_triggers():
                     {"bias": "BULLISH BIAS", "confidence": 66}]) == [False, True]
 
 
+# The owner widened the window on 2026-09-22 from 09:25-15:00 to 09:20-15:15.
+# Measured over 675 sessions with costs from real premiums it was neutral on
+# both indices, so the owner's preference decided. 15:15 itself is still shut:
+# that is the EOD review, not an entry opportunity.
 @pytest.mark.parametrize("t,expected", [
-    ((9, 15), False), ((9, 24), False), ((9, 25), True), ((12, 0), True),
-    ((15, 0), True), ((15, 1), False), ((15, 15), False),
+    ((9, 15), False), ((9, 19), False), ((9, 20), True), ((9, 25), True),
+    ((12, 0), True), ((15, 0), True), ((15, 14), True), ((15, 15), False),
 ])
 def test_ema9_entries_respect_the_strategy_window(t, expected):
     assert po.entry_window_open("ema9_rsi_momentum", datetime.time(*t)) is expected

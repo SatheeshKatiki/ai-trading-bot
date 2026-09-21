@@ -117,6 +117,55 @@ def ema_cluster_touch(df: pd.DataFrame, ind: IndicatorSet,
     return ClusterTouch(passes=passes, by_body=by_body, by_wick=by_wick)
 
 
+def _with_anticipation(df: pd.DataFrame, ind: IndicatorSet,
+                       cfg: Ema9RsiMomentumConfig,
+                       ema_up: np.ndarray, ema_dn: np.ndarray):
+    """Optionally treat an imminent crossover as a crossover.
+
+    The owner asked (2026-09-22) for a signal when the lines have not crossed
+    yet but look like they will within the next candle or two. It is OFF by
+    default, because it measured as the most damaging change tried on this
+    strategy: NIFTY +Rs.11,150 -> -Rs.64,551 at one bar of anticipation, and
+    -Rs.98,964 at two; SENSEX -Rs.37,841 -> -Rs.56,247 and -Rs.63,470. Every
+    tightness setting tried (gap below 0.15 / 0.30 / 0.50 x ATR) and an extra
+    RSI-strength requirement were all worse, on both indices.
+
+    The reason is structural and not a tuning problem: EMA9 approaches EMA20
+    far more often than it crosses it. Anticipating roughly doubles the trade
+    count and nearly all the extra trades are approaches that failed.
+
+    Kept because the owner asked for it and may want to see it on a different
+    instrument or timeframe. Guarded so that even when enabled it fires only
+    once per approach, only while the lines are genuinely close (a fraction
+    of ATR apart), and only while the gap is still narrowing.
+    """
+    bars = int(getattr(cfg, "anticipate_cross_bars", 0) or 0)
+    if bars <= 0:
+        return ema_up, ema_dn
+
+    fast = np.asarray(ind.ema_fast, dtype=float)
+    slow = np.asarray(ind.ema_slow, dtype=float)
+    gap = fast - slow
+    step = np.r_[0.0, np.diff(gap)]
+
+    high = np.asarray(df["high"], dtype=float)
+    low = np.asarray(df["low"], dtype=float)
+    close = np.asarray(df["close"], dtype=float)
+    prev = np.r_[close[0], close[:-1]]
+    true_range = np.maximum(high - low, np.maximum(np.abs(high - prev), np.abs(low - prev)))
+    atr = pd.Series(true_range).ewm(alpha=1 / 14, adjust=False).mean().to_numpy()
+    close_enough = np.abs(gap) <= float(getattr(cfg, "anticipate_max_gap_atr", 0.30)) * atr
+
+    soon_up = (gap < 0) & (step > 0) & ((gap + step * bars) > 0) & close_enough
+    soon_dn = (gap > 0) & (step < 0) & ((gap + step * bars) < 0) & close_enough
+    # once per approach, not on every bar of it
+    soon_up &= ~np.r_[False, soon_up[:-1]]
+    soon_dn &= ~np.r_[False, soon_dn[:-1]]
+
+    return (np.asarray(ema_up, dtype=bool) | np.nan_to_num(soon_up).astype(bool),
+            np.asarray(ema_dn, dtype=bool) | np.nan_to_num(soon_dn).astype(bool))
+
+
 #: Entry priority. HIGH is the owner's first preference (a body touch), MEDIUM
 #: a wick touch that earned its place, LOW one that did not.
 PRIORITY_HIGH = "HIGH"
@@ -250,6 +299,7 @@ def compute_cross_signals(df: pd.DataFrame, cfg: Ema9RsiMomentumConfig) -> Cross
 
     ema_up = crossed_above(ind.ema_fast, ind.ema_slow)
     ema_dn = crossed_below(ind.ema_fast, ind.ema_slow)
+    ema_up, ema_dn = _with_anticipation(df, ind, cfg, ema_up, ema_dn)
     rsi_bullish = np.asarray(ind.rsi > ind.rsi_ma, dtype=bool)
     rsi_bearish = np.asarray(ind.rsi < ind.rsi_ma, dtype=bool)
 

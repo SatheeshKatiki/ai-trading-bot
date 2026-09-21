@@ -605,16 +605,69 @@ class CandleAggregator:
         return self.candles[symbol]
 
 
-def positions_needing_eod_exit(active_positions: dict, now_hms: str, eod_time: str) -> List[str]:
-    """Which positions must still be squared off at the EOD cutoff.
+def _eod_policy_cfg():
+    """The end-of-day policy config, or None if it cannot be read."""
+    try:
+        from trading_bot.strategies.ema9_rsi_momentum.config import Ema9RsiMomentumConfig
+        return Ema9RsiMomentumConfig.from_settings(_load_settings())
+    except Exception as exc:
+        logger.debug("EOD policy unavailable, closing everything at the cutoff: %s", exc)
+        return None
+
+
+def _expiry_today() -> bool:
+    """True only when today is definitely an expiry. Unknown counts as not."""
+    try:
+        from shared.eod_policy import is_expiry_day
+        from shared.instruments import DEFAULT_PAPER_TEST_INSTRUMENTS
+        for sym in DEFAULT_PAPER_TEST_INSTRUMENTS:
+            if is_expiry_day(sym) is True:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def positions_needing_eod_exit(active_positions: dict, now_hms: str, eod_time: str,
+                               cfg=None, is_expiry_day: bool = False) -> List[str]:
+    """Which positions must still be squared off at the end of the day.
 
     Pure, so the rule is testable without running the engine: nothing before
     the cutoff, and never a position whose exit is already in flight.
+
+    The owner's rule (2026-09-22) turned the cutoff into a review. With `cfg`
+    supplied, a position still running at 15:15 -- in profit and within its
+    allowed giveback of its own best premium -- is left alone until the hard
+    time, and everything is closed then. Without `cfg` the old behaviour
+    stands, which is what the safety-net watchdog falls back to if the policy
+    cannot be read: closing everything is the safe failure, not holding it.
     """
     if now_hms < eod_time:
         return []
-    return [key for key, pos in active_positions.items()
-            if not getattr(pos, "is_exiting", False)]
+    if cfg is None:
+        return [key for key, pos in active_positions.items()
+                if not getattr(pos, "is_exiting", False)]
+
+    from shared.eod_policy import decide_eod
+    now = datetime.strptime(now_hms[:8], "%H:%M:%S").time()
+    due: List[str] = []
+    for key, pos in active_positions.items():
+        if getattr(pos, "is_exiting", False):
+            continue
+        entry = float(getattr(pos, "entry_price", 0.0) or 0.0)
+        last = float(getattr(pos, "current_price", 0.0) or getattr(pos, "ltp", 0.0) or entry)
+        best = float(getattr(pos, "highest_price", 0.0) or last)
+        gain = ((last - entry) / entry * 100.0) if entry else 0.0
+        giveback = ((best - last) / best * 100.0) if best else 0.0
+        verdict = decide_eod(now, gain, giveback,
+                             str(getattr(pos, "momentum_strength", "") or ""),
+                             cfg, is_expiry_day=is_expiry_day,
+                             reversed_signal=bool(getattr(pos, "signal_reversed", False)))
+        if verdict.must_close:
+            due.append(key)
+        else:
+            logger.info("EOD: holding %s — %s", key, verdict.reason)
+    return due
 
 
 def _entry_timing_allows(df, direction: int, settings: dict,
@@ -3041,8 +3094,14 @@ async def run_live_bot(symbols: List[str]) -> None:
                 now_hms = datetime.now(_IST).strftime("%H:%M:%S")
                 if active_positions:
                     had_positions = True
+                # The owner's 15:15 review: a position still running is held
+                # to the hard time rather than cut mid-move. If the policy
+                # cannot be built, cfg stays None and everything closes at
+                # 15:15 exactly as before -- closing is the safe failure.
+                _eod_cfg = _eod_policy_cfg()
                 pending = positions_needing_eod_exit(
-                    active_positions, now_hms, exit_engine.eod_exit_time)
+                    active_positions, now_hms, exit_engine.eod_exit_time,
+                    cfg=_eod_cfg, is_expiry_day=_expiry_today())
                 if not pending:
                     if now_hms < exit_engine.eod_exit_time:
                         escalated = confirmed = had_positions = False   # a new day

@@ -48,8 +48,46 @@ DECAY_HIGH_PCT: float = -30.0
 ENABLE_ADX_FILTER: bool = True
 MIN_ADX: float = 18.0
 ENABLE_TIME_FILTER: bool = True
-TIME_START: str = "09:25"
-TIME_END: str = "15:00"
+# Owner's window, 2026-09-22: 09:20 to 15:15 (was 09:25-15:00).
+# Measured over 675 sessions with costs from real premiums: NIFTY +Rs.11,150
+# -> +Rs.11,150 and SENSEX -Rs.37,841 -> -Rs.37,841. Neutral either way, so
+# the owner's preference decides.
+TIME_START: str = "09:20"
+TIME_END: str = "15:15"
+
+# ─────────────────────────────────────────────────────────────────────
+# Expiry-day late entry (owner's rule, 2026-09-22)
+# ─────────────────────────────────────────────────────────────────────
+# Nothing is entered after TIME_END -- except on an expiry day, where a
+# genuinely strong signal may still be taken until EXPIRY_LATE_ENTRY_END.
+# 0DTE premium after 15:15 is nearly all delta and no time value, so a real
+# move pays quickly; but the same thinness punishes a marginal signal, which
+# is why this needs VERY_STRONG momentum and nothing less.
+EXPIRY_LATE_ENTRY: bool = True
+EXPIRY_LATE_ENTRY_END: str = "15:25"
+EXPIRY_LATE_ENTRY_MIN_STRENGTH: str = "VERY_STRONG"
+
+# ─────────────────────────────────────────────────────────────────────
+# Anticipating a crossover (owner asked 2026-09-22; OFF by default)
+# ─────────────────────────────────────────────────────────────────────
+# "If it has not crossed yet but is about to within the next candle or two,
+# treat it as a signal." Implemented, and OFF, because it was measured as the
+# single most damaging change tried on this strategy:
+#
+#                                        NIFTY net    SENSEX net
+#   exact cross only (today)              +11,150       -37,841
+#   + anticipate within 1 bar             -64,551       -56,247
+#   + anticipate within 2 bars            -98,964       -63,470
+#
+# Tried at three tightness settings (gap < 0.15 / 0.30 / 0.50 x ATR) and with
+# an added RSI-strength requirement; every variant was worse on both indices.
+# The reason is structural: EMA9 approaches EMA20 far more often than it
+# crosses it, so anticipating roughly doubles the trade count (178 -> 350+)
+# and nearly all of the extra trades are the approaches that failed.
+#
+# Set `ema9_rsi_anticipate_cross_bars` to 1 or 2 to enable.
+ANTICIPATE_CROSS_BARS: int = 0
+ANTICIPATE_MAX_GAP_ATR: float = 0.30
 ENABLE_TOUCH_FILTER: bool = True
 
 # How the crossover candle must sit against the EMA cluster.
@@ -121,6 +159,63 @@ MAX_GIVEBACK_PCT: float = 20.0
 URGENCY_THRESHOLD: float = 0.70
 
 # ─────────────────────────────────────────────────────────────────────
+# End of day (owner's rule, 2026-09-22)
+# ─────────────────────────────────────────────────────────────────────
+# 15:15 stops being a guillotine and becomes a review: a position still
+# running -- in profit and within `EOD_RUNNER_GIVEBACK_PCT` of its own best
+# premium -- is allowed to keep going to EOD_HARD_TIME. Everything else is
+# closed at 15:15 as before, and EVERYTHING is closed at the hard time.
+#
+# Measured over 675 sessions, costs from real premiums:
+#
+#                                          NIFTY        SENSEX
+#   close everything at 15:15            +11,150       -37,841
+#   close everything at 15:25             +7,415       -37,507   <- worse
+#   extend only runners within 3%        +12,428       -37,463   <- best
+#   extend only runners within 5%        +12,005       -37,297
+#   extend only runners within 12%        +7,880       -35,587
+#
+# Blanket extension loses money; extending only what is still at its high
+# makes money. 5% is the default -- 3% scored marginally higher on NIFTY but
+# on 8 trades out of 178, which is not a margin worth tuning to.
+EOD_REVIEW_TIME: str = "15:15"
+EOD_HARD_TIME: str = "15:25"
+EOD_RUNNER_GIVEBACK_PCT: float = 5.0
+
+# Carrying a position overnight. OFF, and the owner asked for it to exist
+# rather than to be on: it changes the risk class completely. An intraday
+# option buyer's whole edge is that no gap can happen while the position is
+# open. Held overnight, one gap against a 15%-stop position can exceed every
+# stop the ladder would ever apply, and no stop order protects against a gap.
+# On an expiry day it is not a choice at all -- the contract expires, so the
+# carry logic never runs there.
+ALLOW_OVERNIGHT_CARRY: bool = False
+OVERNIGHT_MIN_GAIN_PCT: float = 40.0      # must be this far in profit
+OVERNIGHT_MIN_STRENGTH: str = "VERY_STRONG"
+
+# ─────────────────────────────────────────────────────────────────────
+# Per-symbol overrides
+# ─────────────────────────────────────────────────────────────────────
+# One global parameter set treated NIFTY and SENSEX as the same instrument.
+# They are not: SENSEX carries a wider spread and a different tick and lot
+# economy, and it wants a much stronger trend before a crossover is worth
+# paying for. Measured quarter by quarter, fixed, no fitting:
+#
+#   min_adx      18        20        21        22        25
+#   NIFTY   +11,150   +17,301   +10,373       -10    -6,148
+#   SENSEX  -37,841   -23,318   -18,554   -13,866    -9,602   (best in 8/11 q)
+#
+# SENSEX improves monotonically all the way to 25 and is best there in 8 of
+# 11 quarters -- that is a real effect, not a peak to fit. NIFTY's surface is
+# spiky (20 has the best total but is best in only 1 quarter of 11), so it
+# stays at 18 rather than chasing a number that does not repeat.
+#
+# Settings key: "ema9_rsi_symbol_overrides": {"SENSEX": {"min_adx": 25}}
+SYMBOL_OVERRIDES: dict = {
+    "SENSEX": {"min_adx": 25.0},
+}
+
+# ─────────────────────────────────────────────────────────────────────
 # Execution: which chart the rules read, and which strike a signal buys
 # ─────────────────────────────────────────────────────────────────────
 # Defaults are today's behaviour (5-minute chart, ATM strike). The 15-minute
@@ -138,6 +233,19 @@ MAX_ENTRY_SPREAD_PCT: float = 1.0     # refuse a leg whose bid/ask spread is wid
 # ─────────────────────────────────────────────────────────────────────
 INITIAL_SL_PCT: float = 15.0                                            # opening stop, % under entry
 PROFIT_LADDER_PCT: tuple = (15.0, 33.0, 50.0, 75.0, 100.0, 150.0, 200.0)  # rungs; stop steps to the rung below
+
+
+def _symbol_key(symbol: str) -> str:
+    """"NSE:NIFTY50-INDEX" / "NIFTY 24500 CE" -> "NIFTY"; "BSE:SENSEX-INDEX" -> "SENSEX".
+
+    Overrides are keyed by the plain instrument name so one entry covers the
+    index, its option contracts and every spelling the UI and broker use.
+    """
+    text = str(symbol or "").upper()
+    for name in ("BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "BANKEX", "NIFTY"):
+        if name in text:
+            return name
+    return text.split(":")[-1].split("-")[0].strip()
 
 
 @dataclass(frozen=True)
@@ -165,6 +273,17 @@ class Ema9RsiMomentumConfig:
     enable_touch_filter: bool = ENABLE_TOUCH_FILTER
     ema_touch_mode: str = EMA_TOUCH_MODE
     legacy_touch_buffer_pct: float = LEGACY_TOUCH_BUFFER_PCT
+    anticipate_cross_bars: int = ANTICIPATE_CROSS_BARS
+    anticipate_max_gap_atr: float = ANTICIPATE_MAX_GAP_ATR
+    expiry_late_entry: bool = EXPIRY_LATE_ENTRY
+    expiry_late_entry_end: str = EXPIRY_LATE_ENTRY_END
+    expiry_late_entry_min_strength: str = EXPIRY_LATE_ENTRY_MIN_STRENGTH
+    eod_review_time: str = EOD_REVIEW_TIME
+    eod_hard_time: str = EOD_HARD_TIME
+    eod_runner_giveback_pct: float = EOD_RUNNER_GIVEBACK_PCT
+    allow_overnight_carry: bool = ALLOW_OVERNIGHT_CARRY
+    overnight_min_gain_pct: float = OVERNIGHT_MIN_GAIN_PCT
+    overnight_min_strength: str = OVERNIGHT_MIN_STRENGTH
     wick_requires_confirmation: bool = WICK_REQUIRES_CONFIRMATION
     wick_min_rsi_gap: float = WICK_MIN_RSI_GAP
     trend_slope_lookback: int = TREND_SLOPE_LOOKBACK
@@ -183,7 +302,8 @@ class Ema9RsiMomentumConfig:
     profit_ladder_pct: tuple = PROFIT_LADDER_PCT
 
     @classmethod
-    def from_settings(cls, settings: dict | None = None, **overrides) -> "Ema9RsiMomentumConfig":
+    def from_settings(cls, settings: dict | None = None, symbol: str | None = None,
+                      **overrides) -> "Ema9RsiMomentumConfig":
         """Build from a flat settings dict (as read from ``config/settings.json``)
         using the ``ema9_rsi_<field>`` key convention, then apply any explicit
         keyword overrides (e.g. the values ``generate_signals`` itself already
@@ -208,6 +328,16 @@ class Ema9RsiMomentumConfig:
             from shared.timeframes import parse_timeframe
             kwargs["timeframe_minutes"] = parse_timeframe(
                 settings["timeframe"], TIMEFRAME_MINUTES)
+
+        # Per-symbol overrides last but one: SENSEX is not NIFTY, and one
+        # global parameter set was costing it real money (see SYMBOL_OVERRIDES).
+        # An explicit keyword override still wins over everything.
+        if symbol:
+            table = settings.get("ema9_rsi_symbol_overrides", SYMBOL_OVERRIDES) or {}
+            key = _symbol_key(symbol)
+            for field_name, value in (table.get(key) or {}).items():
+                if field_name in cls.__dataclass_fields__:
+                    kwargs[field_name] = value
 
         kwargs.update({k: v for k, v in overrides.items() if v is not None})
         return cls(**kwargs)
