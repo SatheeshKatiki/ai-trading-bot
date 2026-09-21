@@ -32,18 +32,54 @@ from trading_bot.strategies.ema9_rsi_momentum.signal_engine import build_entry_s
 from trading_bot.strategies._signal_utils import edge_trigger
 
 
+def _session_index(n: int) -> pd.DatetimeIndex:
+    """Bar times that look like a real chart: 76 five-minute bars per weekday
+    from 09:15, then a gap to the next session.
+
+    The old version ran `date_range(..., freq="5min")` straight through the
+    night, so roughly three bars in four fell outside the strategy's own
+    09:25-15:00 entry window and could never fire. That was invisible while
+    the touch filter admitted 90% of crossovers; once the filter became the
+    owner's real rule (2026-09-22) it left the fixture with no signals at all.
+    """
+    out: list[pd.Timestamp] = []
+    day = pd.Timestamp("2026-08-03 09:15")          # a Monday
+    while len(out) < n:
+        if day.weekday() < 5:
+            out += list(pd.date_range(day, periods=min(76, n - len(out)), freq="5min"))
+        day = (day + pd.Timedelta(days=1)).normalize() + pd.Timedelta(hours=9, minutes=15)
+    return pd.DatetimeIndex(out[:n])
+
+
 def _synthetic_ohlcv(n: int = 400, seed: int = 42) -> pd.DataFrame:
+    """Session-shaped bars that trend in legs, with ranges scaled to that drift.
+
+    A pure random walk has no trend, so ADX almost never clears 18 and the
+    candle at a crossover rarely reaches both EMAs -- a market the strategy is
+    not built for. Real intraday data moves in legs, which is what produces
+    the ~1-signal-per-300-bars density measured on 675 real NIFTY sessions.
+    """
     rng = np.random.default_rng(seed)
-    close = 24_000 + rng.normal(0, 15, n).cumsum()
+    legs, filled = [], 0
+    while filled < n:
+        length = int(rng.integers(30, 80))
+        drift = rng.normal(0, 6.0)
+        legs.append(rng.normal(drift, 9.0, min(length, n - filled)))
+        filled += length
+    close = 24_000 + np.concatenate(legs)[:n].cumsum()
+
+    shape = np.random.default_rng(seed + 1)
+    open_ = close - shape.normal(0, 7, n)
+    half = shape.uniform(6, 26, n)                   # wick, scaled to the drift
     return pd.DataFrame(
         {
-            "open": close - rng.uniform(1, 8, n),
-            "high": close + rng.uniform(1, 12, n),
-            "low": close - rng.uniform(1, 12, n),
+            "open": open_,
+            "high": np.maximum(close, open_) + half,
+            "low": np.minimum(close, open_) - half,
             "close": close,
-            "volume": rng.integers(1_000, 50_000, n).astype(float),
+            "volume": shape.integers(1_000, 50_000, n).astype(float),
         },
-        index=pd.date_range("2026-08-01 09:15", periods=n, freq="5min"),
+        index=_session_index(n),
     )
 
 
