@@ -172,9 +172,14 @@ def test_ce_and_pe_entry_conditions_are_symmetric():
 
 
 def test_generate_signals_parameters_are_configurable():
-    df = _synthetic_ohlcv(400, seed=5)
+    # 2,000 bars, not 400: since the EMA-touch rule became the owner's real
+    # one (2026-09-22) a signal needs the candle to reach BOTH averages, which
+    # happens about once in 300 bars. At 400 both parameter sets produced no
+    # signals at all and the test passed them as "equal" for the wrong reason.
+    df = _synthetic_ohlcv(2_000, seed=5)
     default_signals = generate_signals(df, enable_time_filter=False, enable_adx_filter=False)
     custom_signals = generate_signals(df, ema_fast=5, ema_slow=13, rsi_length=9, rsi_ma_length=10, enable_time_filter=False, enable_adx_filter=False)
+    assert (default_signals != 0).any(), "nothing to compare if neither fires"
     # Different periods must be capable of producing a different signal path
     assert not default_signals.equals(custom_signals)
 

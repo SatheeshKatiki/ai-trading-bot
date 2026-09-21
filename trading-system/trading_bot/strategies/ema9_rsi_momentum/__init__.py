@@ -38,7 +38,9 @@ from __future__ import annotations
 
 import logging
 from collections import deque
+from dataclasses import dataclass
 
+import numpy as np
 import pandas as pd
 
 from trading_bot.strategies._signal_utils import edge_trigger
@@ -51,10 +53,13 @@ from .premium_health import (
     classify_decay,
     evaluate_protective_exit as _evaluate_protective_exit,
 )
+from .indicators import compute_indicator_set
 from .signal_engine import (
     CrossSignals,
+    assess_entry_quality as _assess_entry_quality,
     build_entry_signal_series,
     classify_momentum_strength,
+    ema_cluster_touch as _ema_cluster_touch,
 )
 
 logger = logging.getLogger(__name__)
@@ -177,3 +182,46 @@ def evaluate_protective_exit(
     """
     cfg = Ema9RsiMomentumConfig.from_settings(settings, **overrides)
     return _evaluate_protective_exit(df, side, entry_premium, current_premium, cfg)
+
+
+@dataclass(frozen=True)
+class EntryGrade:
+    """What `shared.entry_gate` reads back from this strategy."""
+
+    priority: str
+    touch: str          # "body" | "wick" | "none"
+    trend_agrees: bool
+    rsi_separated: bool
+    take: bool
+
+
+def assess_entry_quality(df: pd.DataFrame, direction: int,
+                         settings: dict | None = None) -> EntryGrade | None:
+    """This strategy's grade for the LATEST bar, for the shared entry gate.
+
+    Published under the name `shared.entry_gate` looks for, so the gate can
+    ask whichever strategy the user selected for its own view of entry
+    quality instead of assuming every strategy has EMAs. A strategy without
+    this function is simply ungraded, and gated on timing alone.
+
+    HIGH  the candle's body reached both EMAs -- the owner's first preference
+    MEDIUM a wick touch that also agrees with the trend and shows RSI clear
+           of its own average
+    LOW   a wick touch with neither, which the gate drops
+    """
+    if df is None or len(df) < 40 or direction == 0:
+        return None
+    cfg = Ema9RsiMomentumConfig.from_settings(settings)
+    ind = compute_indicator_set(df, cfg.ema_fast, cfg.ema_slow,
+                                cfg.rsi_length, cfg.rsi_ma_length)
+    side = 1 if direction > 0 else -1
+    quality = _assess_entry_quality(df, ind, cfg, np.full(len(df), side, dtype=int))
+    touch = _ema_cluster_touch(df, ind, cfg)
+    i = len(df) - 1
+    return EntryGrade(
+        priority=str(quality.priority[i]),
+        touch="body" if bool(touch.by_body[i]) else ("wick" if bool(touch.by_wick[i]) else "none"),
+        trend_agrees=bool(quality.trend_agrees[i]),
+        rsi_separated=bool(quality.rsi_separated[i]),
+        take=bool(quality.take[i]),
+    )

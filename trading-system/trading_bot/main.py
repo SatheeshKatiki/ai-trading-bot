@@ -617,12 +617,21 @@ def positions_needing_eod_exit(active_positions: dict, now_hms: str, eod_time: s
             if not getattr(pos, "is_exiting", False)]
 
 
-def _entry_timing_allows(df, direction: int, settings: dict) -> tuple[bool, str]:
-    """Whether an entry may be taken at this moment in the forming candle.
+def _entry_timing_allows(df, direction: int, settings: dict,
+                         strategy_name: str = "ema9_rsi_momentum") -> tuple[bool, str]:
+    """Whether an entry may be taken at this moment, for the selected strategy.
 
-    The owner's rule (2026-09-22): enter in the last `entry_confirm_seconds`
-    before the bar closes; earlier, only on already-strong momentum. See
-    `signal_engine.entry_timing_gate` for why.
+    Two of the owner's rules (2026-09-22) are about when and how well an entry
+    is taken rather than about one strategy's maths, so they hold whatever the
+    user selected in the UI:
+
+      * timing -- enter in the last `entry_confirm_seconds` of the bar, on the
+        timeframe the user picked; earlier only on already-strong momentum.
+      * quality -- a setup the strategy itself grades LOW is dropped.
+
+    `shared.entry_gate` asks the selected strategy for its own grade and
+    skips grading for a strategy that publishes none, rather than forcing one
+    strategy's idea of quality onto the rest.
 
     Fails OPEN: if the strength cannot be worked out (a short frame, a
     missing column), the entry proceeds exactly as it did before this gate
@@ -630,9 +639,9 @@ def _entry_timing_allows(df, direction: int, settings: dict) -> tuple[bool, str]
     worse failure than the one it guards against.
     """
     try:
+        from shared.entry_gate import decide
         from trading_bot.strategies.ema9_rsi_momentum.config import Ema9RsiMomentumConfig
-        from trading_bot.strategies.ema9_rsi_momentum.signal_engine import (
-            classify_momentum_strength, entry_timing_gate)
+        from trading_bot.strategies.ema9_rsi_momentum.signal_engine import classify_momentum_strength
         from shared.indicators import rsi as _rsi
 
         cfg = Ema9RsiMomentumConfig.from_settings(settings or {})
@@ -641,7 +650,10 @@ def _entry_timing_allows(df, direction: int, settings: dict) -> tuple[bool, str]
             return True, "strength unknown (short frame) — gate skipped"
         value = float(pd.Series(_rsi(closes, cfg.rsi_length)).iloc[-1])
         strength = classify_momentum_strength(value, 1 if direction > 0 else -1, cfg)
-        return entry_timing_gate(datetime.now(_IST), strength, cfg)
+
+        verdict = decide(strategy_name, df, 1 if direction > 0 else -1,
+                         strength, settings or {}, datetime.now(_IST))
+        return verdict.take, str(verdict)
     except Exception as exc:                       # never block a live entry on this
         logger.debug("entry timing gate skipped: %s", exc)
         return True, "timing gate unavailable — entry allowed"
@@ -2134,7 +2146,7 @@ async def run_live_bot(symbols: List[str]) -> None:
                                 # momentum is already STRONG. The paper book
                                 # gates identically, so both books agree.
                                 timing_ok, timing_why = _entry_timing_allows(
-                                    df, int(latest_signal), settings)
+                                    df, int(latest_signal), settings, strategy_name)
                                 if not timing_ok:
                                     logger.info("Holding %s %s entry — %s", strategy_name, s, timing_why)
                                     continue

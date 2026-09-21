@@ -65,6 +65,7 @@ from trading_bot.strategies.ema9_rsi_momentum.signal_engine import (
 )
 
 from shared.market_hours import latest_bar_is_fresh
+from shared.entry_gate import decide as entry_decision
 from shared.timeframes import settings_timeframe, timeframe_label
 from shared.risk.portfolio_guard import entry_block_reason
 
@@ -426,7 +427,10 @@ def select_best_option(symbol, direction, spot_price):
 
 def analyze_market_state(symbol, direction):
     """Analyze multi-layer technical setup like an institutional trader."""
-    candles = fetch_candles(symbol, timeframe_label(active_timeframe_minutes()), 35)
+    # 80 bars, not 35: the shared entry gate asks the selected strategy to
+    # grade the setup, and that grading needs enough history for EMA20 and
+    # the RSI's own 20-bar average to have converged.
+    candles = fetch_candles(symbol, timeframe_label(active_timeframe_minutes()), 80)
     if not candles or len(candles) < 20:
         return None
     
@@ -447,6 +451,8 @@ def analyze_market_state(symbol, direction):
     return {
         "spot": round(spot, 2),
         "bar_time": candles[-1].get("datetime"),     # for the data-freshness gate
+        # The frame the shared entry gate grades the setup on.
+        "frame": candles_to_frame(candles),
         "ema9": round(e9, 2) if e9 else spot,
         "ema21": round(e21, 2) if e21 else spot,
         "atr": round(at, 2),
@@ -842,8 +848,14 @@ def run_session(day_num, date_str, day_name):
                         strength = classify_momentum_strength(
                             float(state.get("rsi") or 0.0),
                             1 if direction == "BUY" else -1, _EMA9_CFG)
-                        timing_ok, timing_why = entry_timing_gate(
-                            datetime.datetime.now(IST), strength, _EMA9_CFG)
+                        # Graded and timed by whichever strategy is selected
+                        # in the UI, on whichever timeframe -- see
+                        # shared/entry_gate.py.
+                        verdict = entry_decision(
+                            active_strategy, state.get("frame"),
+                            1 if direction == "BUY" else -1, strength,
+                            active_settings, datetime.datetime.now(IST))
+                        timing_ok, timing_why = verdict.take, str(verdict)
                         if not timing_ok:
                             if _TIMING_LOGGED.get(symbol) != bias:
                                 _TIMING_LOGGED[symbol] = bias

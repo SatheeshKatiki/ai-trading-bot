@@ -76,6 +76,34 @@ EMA_TOUCH_MODE: str = "body_or_wick"
 LEGACY_TOUCH_BUFFER_PCT: float = 0.0006  # only read when mode == "legacy"
 
 # ─────────────────────────────────────────────────────────────────────
+# How a wick touch has to earn its entry (owner's rule, 2026-09-22)
+# ─────────────────────────────────────────────────────────────────────
+# The owner keeps both kinds of touch but wants them weighted: a body touch
+# is first preference, a wick touch second, and the bot decides for itself
+# whether a given wick signal is worth taking rather than taking them all.
+#
+# A body touch is taken on its own (priority HIGH). A wick touch must ALSO
+# agree with the trend and show RSI genuinely separated from its own average
+# (priority MEDIUM); a wick touch that shows neither is skipped (LOW).
+#
+# Measured over 2024-01-01..2026-09-21 on NIFTY and SENSEX 5-min, costs
+# calibrated from real option premiums, on the wick-only signals alone:
+#
+#   wick gate                 NIFTY Rs/trade   SENSEX Rs/trade
+#   take every wick                     -268              -169
+#   trend agrees                         -74               -59
+#   RSI gap >= 3                        -266              -181
+#   trend agrees AND gap >= 3            -17               -44   <- this
+#
+# Against taking every wick, that beat the alternative in 11/11 NIFTY and
+# 7/11 SENSEX quarters, fixed rule, no per-period fitting. It does not make
+# wick trades profitable -- it stops them paying for the body trades.
+WICK_REQUIRES_CONFIRMATION: bool = True
+WICK_MIN_RSI_GAP: float = 3.0        # |RSI - RSI-MA| the wick signal must show
+TREND_SLOPE_LOOKBACK: int = 6        # bars the EMA20 slope is measured over
+TREND_SLOPE_MIN_PCT: float = 0.02    # slope, as % of price, to count as agreeing
+
+# ─────────────────────────────────────────────────────────────────────
 # Entry timing (owner's rule, 2026-09-22)
 # ─────────────────────────────────────────────────────────────────────
 # A crossover is only final once its candle closes: intrabar, EMA9 can cross
@@ -137,6 +165,10 @@ class Ema9RsiMomentumConfig:
     enable_touch_filter: bool = ENABLE_TOUCH_FILTER
     ema_touch_mode: str = EMA_TOUCH_MODE
     legacy_touch_buffer_pct: float = LEGACY_TOUCH_BUFFER_PCT
+    wick_requires_confirmation: bool = WICK_REQUIRES_CONFIRMATION
+    wick_min_rsi_gap: float = WICK_MIN_RSI_GAP
+    trend_slope_lookback: int = TREND_SLOPE_LOOKBACK
+    trend_slope_min_pct: float = TREND_SLOPE_MIN_PCT
     entry_confirm_seconds: int = ENTRY_CONFIRM_SECONDS
     early_entry_min_strength: str = EARLY_ENTRY_MIN_STRENGTH
     enable_exit_analyzer: bool = ENABLE_EXIT_ANALYZER

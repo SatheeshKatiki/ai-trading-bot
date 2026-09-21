@@ -117,6 +117,87 @@ def ema_cluster_touch(df: pd.DataFrame, ind: IndicatorSet,
     return ClusterTouch(passes=passes, by_body=by_body, by_wick=by_wick)
 
 
+#: Entry priority. HIGH is the owner's first preference (a body touch), MEDIUM
+#: a wick touch that earned its place, LOW one that did not.
+PRIORITY_HIGH = "HIGH"
+PRIORITY_MEDIUM = "MEDIUM"
+PRIORITY_LOW = "LOW"
+PRIORITY_NONE = "NONE"
+
+
+@dataclass(frozen=True)
+class EntryQuality:
+    """Per-bar entry grading: how good the touch is, and whether to take it."""
+
+    priority: np.ndarray      # PRIORITY_* label per bar
+    take: np.ndarray          # bool: this bar's signal is worth acting on
+    trend_agrees: np.ndarray  # EMA20 sloping with the trade
+    rsi_separated: np.ndarray # RSI clear of its own average
+
+
+def assess_entry_quality(df: pd.DataFrame, ind: IndicatorSet,
+                         cfg: Ema9RsiMomentumConfig,
+                         direction: np.ndarray) -> EntryQuality:
+    """Grade each bar's entry, the way the owner asked the bot to decide.
+
+    A body touch is first preference and is taken on its own -- the candle
+    committed through both averages, there is nothing left to confirm.
+
+    A wick touch is second preference: the candle only grazed the cluster, so
+    the bot looks for two independent reasons to believe the move anyway --
+    the EMA20 sloping the same way as the trade, and RSI genuinely separated
+    from its own average rather than hugging it. Both, and the entry is taken
+    at MEDIUM. Neither or one, and it is skipped at LOW.
+
+    Measured on the wick-only signals over 2024-01-01..2026-09-21, costs from
+    real option premiums: taking every wick cost Rs.268/trade on NIFTY and
+    Rs.169 on SENSEX; requiring both confirmations brought that to Rs.17 and
+    Rs.44. Against taking every wick it won 11/11 NIFTY and 7/11 SENSEX
+    quarters, fixed, with no per-period fitting. It does not make wick trades
+    profitable -- it stops them paying for the body trades.
+    """
+    touch = ema_cluster_touch(df, ind, cfg)
+    n = len(df)
+    direction = np.asarray(direction, dtype=int)
+
+    close = np.asarray(df["close"], dtype=float)
+    slow = pd.Series(np.asarray(ind.ema_slow, dtype=float))
+    lookback = max(1, int(getattr(cfg, "trend_slope_lookback", 6)))
+    slope_pct = ((slow - slow.shift(lookback)) / np.where(close == 0, np.nan, close) * 100).to_numpy()
+    floor = float(getattr(cfg, "trend_slope_min_pct", 0.02))
+    trend_agrees = np.where(direction > 0, slope_pct > floor,
+                            np.where(direction < 0, slope_pct < -floor, False))
+    trend_agrees = np.nan_to_num(trend_agrees, nan=0.0).astype(bool)
+
+    gap = np.abs(np.asarray(ind.rsi, dtype=float) - np.asarray(ind.rsi_ma, dtype=float))
+    rsi_separated = np.nan_to_num(gap, nan=0.0) >= float(getattr(cfg, "wick_min_rsi_gap", 3.0))
+
+    wick_only = touch.by_wick & ~touch.by_body
+    if getattr(cfg, "wick_requires_confirmation", True):
+        wick_ok = wick_only & trend_agrees & rsi_separated
+    else:
+        wick_ok = wick_only
+
+    priority = np.full(n, PRIORITY_NONE, dtype=object)
+    priority[wick_only] = PRIORITY_LOW
+    priority[wick_ok] = PRIORITY_MEDIUM
+    priority[touch.by_body] = PRIORITY_HIGH
+
+    # "take" still honours the configured touch mode: in "body" mode a wick
+    # never qualifies however well confirmed, and in "legacy" mode the old
+    # one-sided check decides and no grading applies.
+    mode = str(getattr(cfg, "ema_touch_mode", "body_or_wick")).lower()
+    if mode == BODY:
+        take = touch.by_body
+    elif mode == "legacy":
+        take = touch.passes
+    else:
+        take = touch.by_body | wick_ok
+
+    return EntryQuality(priority=priority, take=take,
+                        trend_agrees=trend_agrees, rsi_separated=rsi_separated)
+
+
 def entry_timing_gate(now: datetime.datetime, strength: str,
                       cfg: Ema9RsiMomentumConfig,
                       bar_minutes: int | None = None) -> tuple[bool, str]:
@@ -206,9 +287,14 @@ def compute_cross_signals(df: pd.DataFrame, cfg: Ema9RsiMomentumConfig) -> Cross
     # Prevents late entries where the candle is already flying far away from the EMA line.
     # The breakout candle MUST touch or be rooted in the EMA cluster.
     if cfg.enable_touch_filter and "low" in df.columns and "high" in df.columns:
-        touch = ema_cluster_touch(df, ind, cfg)
-        touch_ce = touch.passes
-        touch_pe = touch.passes
+        # Grade each candidate bar rather than just pass/fail it: a body touch
+        # is taken outright, a wick touch only once it has confirmed itself.
+        # The direction a bar would trade decides which way "the trend agrees"
+        # has to point, so the grading is done per side.
+        quality_ce = assess_entry_quality(df, ind, cfg, np.where(ema_up, 1, 0))
+        quality_pe = assess_entry_quality(df, ind, cfg, np.where(ema_dn, -1, 0))
+        touch_ce = quality_ce.take
+        touch_pe = quality_pe.take
     else:
         touch_ce = np.ones(len(df), dtype=bool)
         touch_pe = np.ones(len(df), dtype=bool)

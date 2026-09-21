@@ -190,9 +190,12 @@ def test_both_books_apply_the_same_gate():
         encoding="utf-8", errors="ignore")
     engine = pathlib.Path(_bootstrap.TRADING_SYSTEM_ROOT, "trading_bot", "main.py").read_text(
         encoding="utf-8", errors="ignore")
-    assert "entry_timing_gate(" in observer
-    assert "entry_timing_gate(" in engine or "_entry_timing_allows(" in engine
+    # Both now go through shared/entry_gate.py, which applies the timing rule
+    # for whichever strategy the user selected -- see test_entry_gate.py.
+    assert "entry_decision(" in observer
     assert "classify_momentum_strength(" in observer
+    assert "_entry_timing_allows(" in engine
+    assert "from shared.entry_gate import decide" in engine
 
 
 def test_the_live_gate_fails_open():
@@ -200,7 +203,7 @@ def test_the_live_gate_fails_open():
     engine = pathlib.Path(_bootstrap.TRADING_SYSTEM_ROOT, "trading_bot", "main.py").read_text(
         encoding="utf-8", errors="ignore")
     start = engine.index("def _entry_timing_allows")
-    body = engine[start:start + 1600]
+    body = engine[start:start + 2600]
     assert "except Exception" in body
     assert "return True" in body
 
