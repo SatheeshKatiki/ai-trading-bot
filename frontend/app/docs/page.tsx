@@ -1584,6 +1584,54 @@ api_bridge.py  (FastAPI app)
           <TR cells={["Volume Avg", "Rolling SMA of volume over configurable period"]} />
         </Table>
       </Section>
+
+      <div id="smc">
+        <Section title="Smart Money Concepts (SMC Pro) — Core Architecture">
+          <p className="text-muted-foreground leading-relaxed mb-4">
+            Author: <strong className="text-primary">Mana AI</strong>. Built in <code className="text-xs font-mono text-emerald-400">shared/indicators/smart_money_concepts.py</code>.
+            Implements institutional order flow, market structure detection, order blocks, and imbalance zones with zero lookahead bias.
+          </p>
+          <Table headers={["Module", "Institutional Logic", "Trading Rule"]}>
+            <TR cells={["Swing Structure", "50-bar rolling pivot highs & lows", "Identifies macro market regime (Bullish/Bearish)"]} />
+            <TR cells={["Break of Structure (BOS)", "Candle Close crosses previous swing pivot", "Trend continuation confirmation"]} />
+            <TR cells={["Change of Character (CHoCH)", "Candle Close breaks internal structure opposite trend", "Early trend reversal signal"]} />
+            <TR cells={["Order Blocks (OB)", "Last opposing candle before an aggressive expansion impulse", "High-probability institutional entry zone on mitigation pullback"]} />
+            <TR cells={["Fair Value Gaps (FVG)", "3-bar price imbalance (High[t-2] < Low[t])", "Price magnet targeting imbalance fill"]} />
+            <TR cells={["Equilibrium (50%)", "50% Fibonacci retracement between swing points", "Discount zone (<50%) for longs, Premium zone (>50%) for shorts"]} />
+          </Table>
+        </Section>
+      </div>
+
+      <div id="volume-profile">
+        <Section title="Fixed Range Volume Profile (FRVP) — Theory & Architecture">
+          <p className="text-muted-foreground leading-relaxed mb-4">
+            Author: <strong className="text-primary">Mana AI</strong>. Built in <code className="text-xs font-mono text-amber-400">shared/indicators/volume_profile.py</code>.
+            Implements Steidlmayer Auction Market Theory with 50 row bins and 70% Value Area Volume.
+          </p>
+          <Table headers={["Metric", "Calculation Formula", "Market Interpretation"]}>
+            <TR cells={["Row Bins (50)", "BinWidth = (High - Low) / 50", "Uniform price resolution across the auction window"]} />
+            <TR cells={["Point of Control (POC)", "Bin with highest executed volume", "Maximum institutional consensus / magnetic price anchor"]} />
+            <TR cells={["Value Area (70%)", "Sorted cumulative volume outward from POC until 70%", "One standard deviation of market price acceptance"]} />
+            <TR cells={["VAH & VAL", "Upper and lower edges of 70% Value Area", "Breakouts outside signify auction imbalance expansion"]} />
+            <TR cells={["Volume Delta", "Ask Volume minus Bid Volume per price row", "Buyer vs seller aggression / absorption clusters"]} />
+          </Table>
+        </Section>
+      </div>
+
+      <div id="rsi-divergence">
+        <Section title="Momentum RSI Divergence Engine (MDE Pro) — Theory & Rules">
+          <p className="text-muted-foreground leading-relaxed mb-4">
+            Author: <strong className="text-primary">Mana AI</strong>. Built in <code className="text-xs font-mono text-purple-400">shared/indicators/rsi_divergence.py</code>.
+            Combines Wilder's smoothed RSI (14) with a 20-period Signal EMA and automated 5-bar pivot divergence detection.
+          </p>
+          <Table headers={["Pattern Type", "Price Action", "RSI Momentum", "Trading Execution"]}>
+            <TR cells={["Regular Bullish", "Lower Low", "Higher Low", "Exhaustion reversal — look for Call entry at support"]} />
+            <TR cells={["Regular Bearish", "Higher High", "Lower High", "Exhaustion reversal — look for Put entry at resistance"]} />
+            <TR cells={["Hidden Bullish", "Higher Low", "Lower Low", "Trend continuation — high-winrate dip buy in bull trend"]} />
+            <TR cells={["Hidden Bearish", "Lower High", "Higher High", "Trend continuation — high-winrate rally sell in bear trend"]} />
+          </Table>
+        </Section>
+      </div>
     </div>
   ),
 
