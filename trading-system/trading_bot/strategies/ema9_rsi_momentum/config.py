@@ -51,6 +51,42 @@ ENABLE_TIME_FILTER: bool = True
 TIME_START: str = "09:25"
 TIME_END: str = "15:00"
 ENABLE_TOUCH_FILTER: bool = True
+
+# How the crossover candle must sit against the EMA cluster.
+#
+#   "body_or_wick"  the owner's rule (2026-09-22): the candle must reach BOTH
+#                   EMAs -- its body preferred, its wick accepted. A signal
+#                   carries which of the two it was, so the books can log it.
+#   "body"          the strict half of that rule: the BODY must reach both.
+#   "legacy"        the pre-2026-09-22 one-sided check (low <= upper EMA +
+#                   0.06% buffer), kept only so an old run can be reproduced.
+#
+# Measured on 675 sessions of NIFTY and SENSEX 5-min (2024-01-01..2026-09-21),
+# costs calibrated from real option premiums, at the 2,136 / 2,226 crossover
+# bars in that history:
+#
+#              passes  NIFTY net  SENSEX net   beats "legacy" in
+#   legacy        90%   -93,739    -1,11,112   --
+#   body_or_wick  38%   -28,982      -53,100   7/11 and 9/11 quarters
+#   body          22%   +17,534      -37,766   10/11 and 8/11 quarters
+#
+# "body" is the better performer on both indices; "body_or_wick" is the
+# owner's literal instruction and stays the default until the owner chooses.
+EMA_TOUCH_MODE: str = "body_or_wick"
+LEGACY_TOUCH_BUFFER_PCT: float = 0.0006  # only read when mode == "legacy"
+
+# ─────────────────────────────────────────────────────────────────────
+# Entry timing (owner's rule, 2026-09-22)
+# ─────────────────────────────────────────────────────────────────────
+# A crossover is only final once its candle closes: intrabar, EMA9 can cross
+# EMA20 and cross back before the bar is done. So an entry is taken in the
+# last `ENTRY_CONFIRM_SECONDS` of the forming candle, when the bar is all but
+# settled. Earlier in the bar an entry is allowed only when momentum is
+# already at least `EARLY_ENTRY_MIN_STRENGTH` (see classify_momentum_strength),
+# i.e. the move is strong enough not to wait for confirmation.
+ENTRY_CONFIRM_SECONDS: int = 10
+EARLY_ENTRY_MIN_STRENGTH: str = "STRONG"
+
 ENABLE_EXIT_ANALYZER: bool = True
 MIN_PEAK_PROFIT_PTS: float = 30.0
 MAX_GIVEBACK_PCT: float = 20.0
@@ -99,6 +135,10 @@ class Ema9RsiMomentumConfig:
     time_start: str = TIME_START
     time_end: str = TIME_END
     enable_touch_filter: bool = ENABLE_TOUCH_FILTER
+    ema_touch_mode: str = EMA_TOUCH_MODE
+    legacy_touch_buffer_pct: float = LEGACY_TOUCH_BUFFER_PCT
+    entry_confirm_seconds: int = ENTRY_CONFIRM_SECONDS
+    early_entry_min_strength: str = EARLY_ENTRY_MIN_STRENGTH
     enable_exit_analyzer: bool = ENABLE_EXIT_ANALYZER
     min_peak_profit_pts: float = MIN_PEAK_PROFIT_PTS
     max_giveback_pct: float = MAX_GIVEBACK_PCT
