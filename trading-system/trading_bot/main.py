@@ -617,6 +617,36 @@ def positions_needing_eod_exit(active_positions: dict, now_hms: str, eod_time: s
             if not getattr(pos, "is_exiting", False)]
 
 
+def _entry_timing_allows(df, direction: int, settings: dict) -> tuple[bool, str]:
+    """Whether an entry may be taken at this moment in the forming candle.
+
+    The owner's rule (2026-09-22): enter in the last `entry_confirm_seconds`
+    before the bar closes; earlier, only on already-strong momentum. See
+    `signal_engine.entry_timing_gate` for why.
+
+    Fails OPEN: if the strength cannot be worked out (a short frame, a
+    missing column), the entry proceeds exactly as it did before this gate
+    existed. A helper that silently stops a live book from trading would be a
+    worse failure than the one it guards against.
+    """
+    try:
+        from trading_bot.strategies.ema9_rsi_momentum.config import Ema9RsiMomentumConfig
+        from trading_bot.strategies.ema9_rsi_momentum.signal_engine import (
+            classify_momentum_strength, entry_timing_gate)
+        from shared.indicators import rsi as _rsi
+
+        cfg = Ema9RsiMomentumConfig.from_settings(settings or {})
+        closes = df["close"] if hasattr(df, "columns") and "close" in df.columns else None
+        if closes is None or len(closes) < cfg.rsi_length + 2:
+            return True, "strength unknown (short frame) — gate skipped"
+        value = float(pd.Series(_rsi(closes, cfg.rsi_length)).iloc[-1])
+        strength = classify_momentum_strength(value, 1 if direction > 0 else -1, cfg)
+        return entry_timing_gate(datetime.now(_IST), strength, cfg)
+    except Exception as exc:                       # never block a live entry on this
+        logger.debug("entry timing gate skipped: %s", exc)
+        return True, "timing gate unavailable — entry allowed"
+
+
 def _market_closed_reason() -> Optional[str]:
     """Why no order may be placed right now, or None when the market is open.
 
@@ -2092,6 +2122,21 @@ async def run_live_bot(symbols: List[str]) -> None:
                                         "AI rejected %s signal for %s — confidence %.2f < threshold %.2f",
                                         strategy_name, s, confidence, min_confidence
                                     )
+                                    continue
+
+                                # The owner's entry-timing rule (2026-09-22).
+                                # A crossover is not final until its candle
+                                # closes -- intrabar, EMA9 can cross EMA20 and
+                                # cross back, and buying that costs a full
+                                # round-trip spread plus the stop for a signal
+                                # that never existed. So enter in the last few
+                                # seconds of the bar; earlier only when
+                                # momentum is already STRONG. The paper book
+                                # gates identically, so both books agree.
+                                timing_ok, timing_why = _entry_timing_allows(
+                                    df, int(latest_signal), settings)
+                                if not timing_ok:
+                                    logger.info("Holding %s %s entry — %s", strategy_name, s, timing_why)
                                     continue
 
                             # Auto-map to Options if it's an Index trade

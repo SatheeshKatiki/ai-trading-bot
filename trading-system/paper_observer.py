@@ -59,12 +59,19 @@ from shared.instruments import DEFAULT_PAPER_TEST_INSTRUMENTS, resolve_paper_tes
 from trading_bot.strategies.premium_selection.options_selector import INSTRUMENT_CONFIG
 from trading_bot.strategies.ema9_rsi_momentum.config import Ema9RsiMomentumConfig
 from trading_bot.strategies.ema9_rsi_momentum.exit_ladder import initial_stop, ratchet_stop, stop_reason
+from trading_bot.strategies.ema9_rsi_momentum.signal_engine import (
+    classify_momentum_strength,
+    entry_timing_gate,
+)
 
 from shared.market_hours import latest_bar_is_fresh
 from shared.risk.portfolio_guard import entry_block_reason
 
 #: Last stale bar reported per symbol, so a closed market logs once, not every poll.
 _STALE_DATA_LOGGED: dict = {}
+#: Last bias a symbol's entry was held back on, so "waiting for bar close" is
+#: printed once per signal rather than on every poll of the same one.
+_TIMING_LOGGED: dict = {}
 
 #: The owner's exit ladder (SL 15%, stop steps up rung by rung, no fixed target).
 _EMA9_CFG = Ema9RsiMomentumConfig()
@@ -798,6 +805,24 @@ def run_session(day_num, date_str, day_name):
                             print(f"  [{ts}] ⛔ {symbol}: last bar {state.get('bar_time')} is not fresh "
                                   f"-- market closed or feed down; not trading.")
                         state = None
+                    # The owner's entry-timing rule (2026-09-22): a crossover is
+                    # not final until its candle closes, so take the entry in
+                    # the last few seconds of the bar -- earlier only when
+                    # momentum is already strong enough not to need the wait.
+                    if state:
+                        strength = classify_momentum_strength(
+                            float(state.get("rsi") or 0.0),
+                            1 if direction == "BUY" else -1, _EMA9_CFG)
+                        timing_ok, timing_why = entry_timing_gate(
+                            datetime.datetime.now(IST), strength, _EMA9_CFG)
+                        if not timing_ok:
+                            if _TIMING_LOGGED.get(symbol) != bias:
+                                _TIMING_LOGGED[symbol] = bias
+                                print(f"  [{ts}] ⏳ {symbol} {direction} held -- {timing_why}")
+                            state = None
+                        else:
+                            _TIMING_LOGGED.pop(symbol, None)
+
                     if state:
                         opt = select_best_option(symbol, direction, state["spot"])
                         block = (portfolio_block(symbol, direction, opt, session_log, active_positions, active_settings)
