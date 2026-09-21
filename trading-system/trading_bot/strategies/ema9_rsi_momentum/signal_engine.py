@@ -49,6 +49,7 @@ class CrossSignals:
 
 
 from shared.indicators import adx
+from shared.timeframes import seconds_to_bar_close, timeframe_label  # noqa: F401  (re-exported)
 
 
 BODY = "body"
@@ -116,19 +117,6 @@ def ema_cluster_touch(df: pd.DataFrame, ind: IndicatorSet,
     return ClusterTouch(passes=passes, by_body=by_body, by_wick=by_wick)
 
 
-def seconds_to_bar_close(now: datetime.datetime, bar_minutes: int) -> float:
-    """Seconds left in the candle `now` falls inside.
-
-    Bars are aligned to the hour (09:15, 09:20, ... for a 5-minute chart), so
-    the offset into the current bar is measured from the top of the hour.
-    """
-    if bar_minutes <= 0:
-        raise ValueError("bar_minutes must be positive")
-    span = bar_minutes * 60
-    into = (now.minute % bar_minutes) * 60 + now.second + now.microsecond / 1e6
-    return span - into
-
-
 def entry_timing_gate(now: datetime.datetime, strength: str,
                       cfg: Ema9RsiMomentumConfig,
                       bar_minutes: int | None = None) -> tuple[bool, str]:
@@ -146,23 +134,34 @@ def entry_timing_gate(now: datetime.datetime, strength: str,
     RSI already sits in the STRONG band for the trade's direction, the
     crossover is very unlikely to un-happen.
 
+    The bar size is whatever the user picked in the UI -- 1, 3, 5, 15, 30
+    minutes or an hour -- carried on `cfg.timeframe_minutes`, or passed
+    explicitly. On a daily, weekly or monthly chart the next close is days
+    away, so there is nothing to wait for; the rule does not apply and the
+    entry is allowed, with the reason saying so rather than pretending a
+    countdown exists.
+
     Returns ``(allowed, reason)``; `reason` is logged either way, so a skipped
     entry can be told apart from an absent signal in the books.
     """
     span = int(bar_minutes or getattr(cfg, "timeframe_minutes", 5) or 5)
     left = seconds_to_bar_close(now, span)
-    window = int(getattr(cfg, "entry_confirm_seconds", 10))
+    if left is None:
+        return True, (f"{timeframe_label(span)} bars have no intraday close -- "
+                      f"bar-close confirmation does not apply")
 
+    window = int(getattr(cfg, "entry_confirm_seconds", 10))
     if left <= window:
-        return True, f"confirmation window ({left:.0f}s to bar close)"
+        return True, f"confirmation window ({left:.0f}s to {timeframe_label(span)} bar close)"
 
     floor = str(getattr(cfg, "early_entry_min_strength", STRONG)).upper()
     order = {NO_MOMENTUM: 0, NORMAL: 1, STRONG: 2, VERY_STRONG: 3}
     if order.get(str(strength).upper(), 0) >= order.get(floor, 2):
-        return True, f"early entry on {strength} momentum ({left:.0f}s to bar close)"
+        return True, (f"early entry on {strength} momentum "
+                      f"({left:.0f}s to {timeframe_label(span)} bar close)")
 
-    return False, (f"waiting for bar close ({left:.0f}s left); momentum "
-                   f"{strength or NO_MOMENTUM} is below {floor}")
+    return False, (f"waiting for {timeframe_label(span)} bar close ({left:.0f}s left); "
+                   f"momentum {strength or NO_MOMENTUM} is below {floor}")
 
 
 def compute_cross_signals(df: pd.DataFrame, cfg: Ema9RsiMomentumConfig) -> CrossSignals:

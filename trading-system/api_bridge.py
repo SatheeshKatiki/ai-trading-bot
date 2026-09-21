@@ -3202,7 +3202,13 @@ async def get_strategy_markers(
         if len(df) < 40:
             return {"symbol": symbol, "strategy": active, "markers": [], "count": 0}
 
-        cfg = Ema9RsiMomentumConfig.from_settings(_load_config_settings())
+        # The chart's own timeframe wins over settings.json here: the user may
+        # be looking at a 15-minute chart while the books run on 5, and the
+        # markers must describe the bars actually on screen.
+        from shared.timeframes import parse_timeframe
+        cfg = Ema9RsiMomentumConfig.from_settings(
+            _load_config_settings(),
+            timeframe_minutes=parse_timeframe(timeframe, 5))
         sig = compute_cross_signals(df, cfg)
         touch = ema_cluster_touch(df, sig.indicators, cfg)
         rsi = list(sig.indicators.rsi)

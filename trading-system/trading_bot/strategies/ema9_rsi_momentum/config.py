@@ -162,5 +162,20 @@ class Ema9RsiMomentumConfig:
             key = f"ema9_rsi_{field_name}"
             if key in settings:
                 kwargs[field_name] = settings[key]
+
+        # The chart timeframe the user picked in the UI ("5 Min", "15 Min",
+        # "1 Hour", ...) is stored as a plain "timeframe" string, not under
+        # the ema9_rsi_ prefix -- it belongs to the whole app, not to this
+        # strategy. Before 2026-09-22 nothing mapped it onto
+        # `timeframe_minutes`, so the field sat at its default of 5 whatever
+        # the user selected: they watched a 15-minute chart while the rules
+        # ran on 5-minute bars. An explicit ema9_rsi_timeframe_minutes still
+        # wins, which is how the variant shadow book pins 5 and 15 side by
+        # side regardless of the UI.
+        if "timeframe_minutes" not in kwargs and settings.get("timeframe") is not None:
+            from shared.timeframes import parse_timeframe
+            kwargs["timeframe_minutes"] = parse_timeframe(
+                settings["timeframe"], TIMEFRAME_MINUTES)
+
         kwargs.update({k: v for k, v in overrides.items() if v is not None})
         return cls(**kwargs)

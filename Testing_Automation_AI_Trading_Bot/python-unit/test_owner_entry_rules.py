@@ -163,7 +163,8 @@ def test_early_in_the_bar_a_weak_signal_waits():
     now = datetime.datetime(2026, 9, 22, 9, 32, 0)                 # 180s left
     ok, why = entry_timing_gate(now, "NORMAL", _cfg())
     assert not ok
-    assert "waiting for bar close" in why and "NORMAL" in why
+    # the reason names the bar size, so a held entry says which chart it was on
+    assert "waiting for 5 Min bar close" in why and "NORMAL" in why
 
 
 def test_early_in_the_bar_strong_momentum_does_not_wait():

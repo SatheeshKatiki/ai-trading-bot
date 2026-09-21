@@ -65,7 +65,34 @@ from trading_bot.strategies.ema9_rsi_momentum.signal_engine import (
 )
 
 from shared.market_hours import latest_bar_is_fresh
+from shared.timeframes import settings_timeframe, timeframe_label
 from shared.risk.portfolio_guard import entry_block_reason
+
+_TF_CACHE: dict = {"mtime": None, "minutes": 5}
+
+
+def active_timeframe_minutes() -> int:
+    """The chart timeframe the user selected in the UI, in minutes.
+
+    Re-read when settings.json changes rather than captured at import: the
+    user can switch timeframe while this book is running and the next scan
+    should already be on the new one. Two call sites used to hardcode
+    "5 Min", so a user on the 15-minute chart was watched on 5-minute bars.
+
+    Falls back to 5 on any read problem -- a malformed settings file must not
+    stop the book, it should keep trading what it has always traded.
+    """
+    try:
+        path = ROOT_DIR / "config" / "settings.json"
+        mtime = path.stat().st_mtime
+        if _TF_CACHE["mtime"] != mtime:
+            with open(path, "r", encoding="utf-8") as fh:
+                _TF_CACHE["minutes"] = settings_timeframe(json.load(fh), 5)
+            _TF_CACHE["mtime"] = mtime
+        return _TF_CACHE["minutes"]
+    except Exception:
+        return _TF_CACHE.get("minutes", 5) or 5
+
 
 #: Last stale bar reported per symbol, so a closed market logs once, not every poll.
 _STALE_DATA_LOGGED: dict = {}
@@ -246,7 +273,9 @@ def check_reversal_exit(symbol, opt_type, entry_premium, current_premium):
     # CLOSED bars only. The rule reads the frame's LAST bar, and the last bar
     # /api/history returns is still forming -- a cross that appears mid-bar
     # and is gone by its close would otherwise exit the position.
-    candles = closed_candles(fetch_candles(symbol, "5 Min", 61) or [], 5, now_ist())
+    tf = active_timeframe_minutes()
+    candles = closed_candles(
+        fetch_candles(symbol, timeframe_label(tf), 61) or [], tf, now_ist())
     if len(candles) < 40:
         return None
     try:
@@ -397,7 +426,7 @@ def select_best_option(symbol, direction, spot_price):
 
 def analyze_market_state(symbol, direction):
     """Analyze multi-layer technical setup like an institutional trader."""
-    candles = fetch_candles(symbol, "5 Min", 35)
+    candles = fetch_candles(symbol, timeframe_label(active_timeframe_minutes()), 35)
     if not candles or len(candles) < 20:
         return None
     
