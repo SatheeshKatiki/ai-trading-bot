@@ -101,6 +101,13 @@ export default function StrategySettings() {
       // option PREMIUM -- a trailing stop inside the bid/ask spread.
       ema9_rsi_initial_sl_pct: 15,
       ema9_rsi_profit_ladder_pct: [15, 33, 50, 75, 100, 150, 200],
+      // Both off. They exist because the owner asked for them; both were
+      // measured before being given a default. Anticipating the crossover was
+      // the most damaging change tried (NIFTY +11,150 -> -64,551), and an
+      // overnight carry changes the risk class rather than the return.
+      ema9_rsi_anticipate_cross_bars: 0,
+      ema9_rsi_allow_overnight_carry: false,
+      ema9_rsi_overnight_min_gain_pct: 40,
       trailing_sl: true,
       enable_squeeze_filter: true,
       enable_extension_filter: false,

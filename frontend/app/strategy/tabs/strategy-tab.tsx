@@ -61,6 +61,53 @@ export default function StrategyTab({ settings, setSettings }: StrategyTabProps)
             onChange={(checked) => updateSetting("strict_entry_mode", checked)}
           />
         </div>
+
+        {/* Anticipate the EMA crossover instead of waiting for it. Measured
+            over 675 sessions with costs from real option premiums, so the
+            number is on the switch rather than buried in a doc: it was the
+            most damaging change tried on this strategy. */}
+        <div className="pt-3 border-t border-border">
+          <div className="flex justify-between items-center">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold text-foreground uppercase tracking-wider">
+                Anticipate Crossover
+              </span>
+              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-rose-500/15 text-rose-400 border border-rose-500/30">
+                MEASURED WORSE
+              </span>
+            </div>
+            <CustomSwitch
+              checked={(settings.ema9_rsi_anticipate_cross_bars ?? 0) > 0}
+              onChange={(checked) =>
+                updateSetting("ema9_rsi_anticipate_cross_bars", checked ? 1 : 0)
+              }
+            />
+          </div>
+          <p className="text-[11px] text-muted-foreground mt-1.5 leading-relaxed">
+            Enter when EMA9 is about to cross EMA20, without waiting for the cross.
+            Backtested 2024-01 to 2026-09: NIFTY <span className="text-emerald-400 font-semibold">+₹11,150</span> →{" "}
+            <span className="text-rose-400 font-semibold">−₹64,551</span>, SENSEX −₹37,841 → −₹56,247.
+            EMA9 approaches EMA20 far more often than it crosses, so this roughly doubles
+            trades and most of the extra ones are approaches that failed.
+          </p>
+          {(settings.ema9_rsi_anticipate_cross_bars ?? 0) > 0 && (
+            <div className="mt-3">
+              <label className="text-xs font-bold text-gray-400 block mb-1.5 uppercase tracking-wider">
+                Look ahead
+              </label>
+              <select
+                value={settings.ema9_rsi_anticipate_cross_bars ?? 1}
+                onChange={(e) =>
+                  updateSetting("ema9_rsi_anticipate_cross_bars", Number(e.target.value))
+                }
+                className="w-full bg-background border border-border rounded-lg px-3 py-2.5 text-sm font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-rose-500"
+              >
+                <option value={1}>1 candle ahead</option>
+                <option value={2}>2 candles ahead</option>
+              </select>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Box 2: Exit Conditions */}
@@ -107,6 +154,55 @@ export default function StrategyTab({ settings, setSettings }: StrategyTabProps)
             checked={settings.enable_auto_exit || false}
             onChange={(checked) => updateSetting("enable_auto_exit", checked)}
           />
+        </div>
+
+        {/* Carrying a position past 15:25. Off by default: it changes the risk
+            class rather than the return, so the reason sits next to the switch. */}
+        <div className="pt-3 border-t border-border">
+          <div className="flex justify-between items-center">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold text-foreground uppercase tracking-wider">
+                Overnight Carry
+              </span>
+              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/30">
+                GAP RISK
+              </span>
+            </div>
+            <CustomSwitch
+              checked={settings.ema9_rsi_allow_overnight_carry || false}
+              onChange={(checked) =>
+                updateSetting("ema9_rsi_allow_overnight_carry", checked)
+              }
+            />
+          </div>
+          <p className="text-[11px] text-muted-foreground mt-1.5 leading-relaxed">
+            Off: everything is squared off at 15:25. On: a position up{" "}
+            <span className="font-semibold text-foreground">
+              +{settings.ema9_rsi_overnight_min_gain_pct ?? 40}%
+            </span>{" "}
+            with VERY_STRONG momentum and the signal intact is held to the next session.
+            An intraday buyer&apos;s edge is that no gap can happen while the position is
+            open — held overnight, one gap can exceed every stop the ladder would apply,
+            and no stop order protects against a gap.{" "}
+            <span className="text-emerald-400 font-semibold">Never on expiry day</span> —
+            the contract expires, so there is nothing to carry.
+          </p>
+          {settings.ema9_rsi_allow_overnight_carry && (
+            <div className="mt-3 space-y-1.5">
+              <div className="flex justify-between text-xs font-bold uppercase tracking-wider">
+                <span className="text-gray-400">Minimum gain to carry</span>
+                <span className="text-amber-400 font-extrabold text-sm">
+                  +{settings.ema9_rsi_overnight_min_gain_pct ?? 40}%
+                </span>
+              </div>
+              <CustomSlider
+                min={20}
+                max={200}
+                value={settings.ema9_rsi_overnight_min_gain_pct ?? 40}
+                onChange={(val) => updateSetting("ema9_rsi_overnight_min_gain_pct", val)}
+              />
+            </div>
+          )}
         </div>
       </div>
 

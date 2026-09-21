@@ -3206,8 +3206,11 @@ async def get_strategy_markers(
         # be looking at a 15-minute chart while the books run on 5, and the
         # markers must describe the bars actually on screen.
         from shared.timeframes import parse_timeframe
+        # The symbol matters: per-instrument overrides mean SENSEX runs a
+        # different ADX floor from NIFTY, and the chart has to draw the
+        # markers the books would actually act on for THIS instrument.
         cfg = Ema9RsiMomentumConfig.from_settings(
-            _load_config_settings(),
+            _load_config_settings(), symbol=symbol,
             timeframe_minutes=parse_timeframe(timeframe, 5))
         sig = compute_cross_signals(df, cfg)
         touch = ema_cluster_touch(df, sig.indicators, cfg)
