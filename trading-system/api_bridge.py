@@ -3140,6 +3140,99 @@ def compute_signals(
         signals_cache_store[symbol] = err_res
         return err_res
 
+@app.get("/api/strategy-markers")
+async def get_strategy_markers(
+    symbol: str = Query(..., description="Index or ticker, e.g. NSE:NIFTY50-INDEX"),
+    start_date: str = Query(..., description="Start date (YYYY-MM-DD)"),
+    end_date: str = Query(..., description="End date (YYYY-MM-DD)"),
+    timeframe: str = Query("5 Min", description="Chart timeframe"),
+    strategy: Optional[str] = Query(None, description="Defaults to active_strategy"),
+):
+    """The chart's BUY CE / BUY PE markers, computed by the live strategy itself.
+
+    Why this exists: until 2026-09-22 the chart computed its own signals in
+    TypeScript (`computeAutoSignalMarkers` in native-chart.tsx). It was a
+    second implementation of the same rules and it disagreed with the engine
+    that actually trades -- it carried no ADX filter at all and used a wider
+    touch buffer (0.08% vs 0.06%). Checked against 2026-09-18 NIFTY: ADX sat
+    at 10.6-16.7 all day, so the real engine produced ZERO signals while the
+    chart drew four. The owner was reading markers the bot would never act on.
+
+    So there is now one implementation. This endpoint runs the same
+    `compute_cross_signals` the books run, over the same candles the chart is
+    drawing, and returns the bars it fired on. If the strategy changes, the
+    chart changes with it -- there is nothing left to drift.
+    """
+    try:
+        active = strategy or _load_config_settings().get("active_strategy", "ema9_rsi_momentum")
+    except Exception:
+        active = strategy or "ema9_rsi_momentum"
+
+    hist = await get_history(symbol=symbol, start_date=start_date,
+                             end_date=end_date, timeframe=timeframe)
+    candles = (hist or {}).get("data") or []
+    if not candles:
+        return {"symbol": symbol, "strategy": active, "markers": [], "count": 0}
+
+    if active != "ema9_rsi_momentum":
+        # Only this strategy exposes per-bar cross signals today. Say so
+        # plainly rather than quietly drawing nothing that looks like "no
+        # signals today".
+        return {"symbol": symbol, "strategy": active, "markers": [], "count": 0,
+                "unsupported": True,
+                "message": f"{active} does not publish per-bar chart markers"}
+
+    try:
+        import pandas as _pd
+        from trading_bot.strategies.ema9_rsi_momentum.config import Ema9RsiMomentumConfig
+        from trading_bot.strategies.ema9_rsi_momentum.signal_engine import (
+            compute_cross_signals, ema_cluster_touch, classify_momentum_strength)
+
+        df = _pd.DataFrame(candles)
+        cols = {c.lower(): c for c in df.columns}
+        tcol = cols.get("time") or cols.get("datetime") or cols.get("date")
+        for need in ("open", "high", "low", "close"):
+            if need not in cols:
+                raise ValueError(f"history is missing '{need}'")
+            df[need] = _pd.to_numeric(df[cols[need]], errors="coerce")
+        if tcol is None:
+            raise ValueError("history is missing a time column")
+        ts = _pd.to_datetime(df[tcol], errors="coerce", utc=False)
+        df = df.assign(_ts=ts).dropna(subset=["_ts", "close"]).set_index("_ts").sort_index()
+        if len(df) < 40:
+            return {"symbol": symbol, "strategy": active, "markers": [], "count": 0}
+
+        cfg = Ema9RsiMomentumConfig.from_settings(_load_config_settings())
+        sig = compute_cross_signals(df, cfg)
+        touch = ema_cluster_touch(df, sig.indicators, cfg)
+        rsi = list(sig.indicators.rsi)
+
+        markers = []
+        for i, when in enumerate(df.index):
+            if sig.bullish[i]:
+                side, direction = "BUY CE", 1
+            elif sig.bearish[i]:
+                side, direction = "BUY PE", -1
+            else:
+                continue
+            markers.append({
+                "time": when.isoformat(),
+                "epoch": int(when.timestamp()),
+                "text": side,
+                "side": "CE" if direction == 1 else "PE",
+                "touch": "body" if bool(touch.by_body[i]) else "wick",
+                "strength": classify_momentum_strength(float(rsi[i]), direction, cfg),
+                "close": float(df["close"].iloc[i]),
+            })
+        return {"symbol": symbol, "strategy": active, "timeframe": timeframe,
+                "touch_mode": getattr(cfg, "ema_touch_mode", "body_or_wick"),
+                "min_adx": getattr(cfg, "min_adx", None),
+                "count": len(markers), "markers": markers}
+    except Exception as e:
+        logger.warning("strategy-markers failed for %s: %s", symbol, e)
+        raise HTTPException(status_code=500, detail=f"Could not compute strategy markers: {e}")
+
+
 @app.get("/api/signals")
 async def get_signals_api(
     symbol: str = Query("NIFTY", description="The stock ticker"),
