@@ -17,7 +17,8 @@ import {
   Layout,
   Layers,
   Lock,
-  RotateCcw
+  RotateCcw,
+  Sliders
 } from "lucide-react";
 import { useTheme } from "@/components/theme-provider";
 import CustomSwitch from "@/components/custom-switch";
@@ -211,9 +212,11 @@ export default function Settings() {
 
         <main className="flex-1 overflow-y-auto p-6 space-y-6">
           {/* Header */}
-          <div>
+          <div className="pb-2 border-b border-border/30">
             <h1 className="font-display font-bold text-2xl text-foreground">System Settings</h1>
-            <p className="text-sm text-muted-foreground">Manage your account, notifications, and application preferences.</p>
+            <p className="text-sm text-muted-foreground">
+              Manage your broker credentials, AI models, and UI preferences.
+            </p>
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

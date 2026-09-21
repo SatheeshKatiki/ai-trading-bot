@@ -16,6 +16,7 @@ import { useLiveSettingsStore } from '@/store/useLiveSettingsStore';
 import { NumberInput } from "@/components/number-input";
 import NewsTicker from "@/components/news-ticker";
 import { ErrorBoundary } from "@/components/error-boundary";
+import ChartHeaderToolbar from "@/components/chart-header-toolbar";
 import { isMarketOpenIST } from "@/lib/ist-time";
 import { useState, useEffect, useRef, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -81,8 +82,17 @@ interface Notification {
 
 import dynamic from "next/dynamic";
 
-// Dynamic imports for charts to prevent SSR hydration errors
-const NativeChart = dynamic(() => import("@/components/native-chart"), { ssr: false });
+// Dynamic imports for charts to prevent SSR hydration errors with institutional loading skeleton
+const NativeChart = dynamic(() => import("@/components/native-chart"), {
+    ssr: false,
+    loading: () => (
+        <div className="w-full h-full min-h-[520px] flex flex-col items-center justify-center bg-background/40 backdrop-blur-sm rounded-xl border border-border/20 animate-pulse">
+            <RefreshCw className="w-8 h-8 animate-spin text-primary mb-3 opacity-80" />
+            <span className="text-sm font-semibold text-foreground/90 tracking-wide">Loading Institutional Chart...</span>
+            <span className="text-xs text-muted-foreground mt-1">Connecting to live candle feed & indicator engine</span>
+        </div>
+    )
+});
 
 function formatTradeDisplay(symbol: string, price: number, side: string, qty?: number) {
     // Parse options symbol like "NSE:NIFTY26DEC2424000CE"
@@ -863,8 +873,10 @@ function LiveTradingContent() {
                                         <p className="text-xs text-muted-foreground">Native Institutional Candlestick Chart (Live Feed)</p>
                                     </div>
 
-                                    {/* Timeframe Selector (TradingView Style) */}
-                                    <div className="flex items-center gap-4">
+                                    {/* Right-aligned Institutional Chart Controls (Toolbar + Timeframe + Toggles) */}
+                                    <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+                                        <ChartHeaderToolbar />
+
                                         <div className="flex items-center bg-muted/30 rounded-lg p-1 border border-border/50 relative">
                                             {/* Starred Timeframes */}
                                             <div className="flex items-center">

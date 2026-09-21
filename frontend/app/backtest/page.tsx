@@ -5,6 +5,7 @@ import Header from "@/components/header";
 import CustomDatePicker from "@/components/custom-date-picker";
 import { NumberInput } from "@/components/number-input";
 import NativeChart from "@/components/native-chart";
+import ChartHeaderToolbar from "@/components/chart-header-toolbar";
 import { useState, useRef, useEffect } from "react";
 import { 
   TrendingUp, 
@@ -1000,7 +1001,7 @@ export default function Backtest() {
 
               {/* Interactive Signal Overlay Candlestick Chart */}
               <div className="glass-card rounded-xl p-6 border border-border/20 shadow-lg">
-                <div className="flex justify-between items-center mb-4">
+                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-4">
                   <div>
                     <h3 className="font-display font-bold text-lg text-foreground flex items-center gap-2">
                       <BarChart2 className="w-5 h-5 text-primary" />
@@ -1008,13 +1009,17 @@ export default function Backtest() {
                     </h3>
                     <p className="text-xs text-muted-foreground">BUY (▲) / SELL (▼) Signals & Executed Trades Overlay</p>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-medium">
-                      🟢 BUY Signal (▲)
-                    </span>
-                    <span className="text-xs px-2.5 py-1 rounded-full bg-rose-500/10 text-rose-400 border border-rose-500/20 font-medium">
-                      🔴 SELL Signal (▼)
-                    </span>
+
+                  <div className="flex flex-wrap items-center gap-3 sm:gap-4">
+                    <ChartHeaderToolbar />
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-medium">
+                        🟢 BUY Signal (▲)
+                      </span>
+                      <span className="text-xs px-2.5 py-1 rounded-full bg-rose-500/10 text-rose-400 border border-rose-500/20 font-medium">
+                        🔴 SELL Signal (▼)
+                      </span>
+                    </div>
                   </div>
                 </div>
 
