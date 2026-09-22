@@ -1,37 +1,39 @@
 import { NextResponse } from 'next/server';
+import { getAuthHeaders, BACKEND_URL } from '@/lib/backend';
 
-export async function GET() {
-  const exposureData = [
-    { name: "Nifty 50", value: 45 },
-    { name: "Bank Nifty", value: 35 },
-    { name: "IT Sector", value: 20 },
-  ];
+export const dynamic = 'force-dynamic';
+export const fetchCache = 'force-no-store';
 
-  const drawdownData = [
-    { day: "Mon", dd: 2 },
-    { day: "Tue", dd: 5 },
-    { day: "Wed", dd: 1 },
-    { day: "Thu", dd: 8 },
-    { day: "Fri", dd: 3 },
-  ];
+/**
+ * Proxies the Risk page's data from the engine.
+ *
+ * This route used to RETURN CONSTANTS: Nifty 45% / Bank Nifty 35% / IT 20%
+ * exposure, a Mon-to-Fri drawdown series, a 10,000 daily-loss limit and a
+ * hand-written correlation matrix. None of it came from the system, so the
+ * Risk page looked like risk management and was decoration.
+ *
+ * The backend now derives all of it from what the books actually wrote --
+ * open positions for exposure, session logs for drawdown, settings for the
+ * limits the engine enforces, and the cached index candles for correlation --
+ * and omits anything it cannot derive, with a reason in `notes`.
+ */
+export async function GET(request: Request) {
+  try {
+    const { search } = new URL(request.url);
+    const res = await fetch(`${BACKEND_URL}/api/risk${search}`, {
+      cache: 'no-store',
+      next: { revalidate: 0 },
+      headers: await getAuthHeaders(),
+    });
 
-  const limits = {
-    maxDailyLoss: 10000,
-    riskPerTrade: 1.5,
-    maxPositions: 5,
-    circuitBreaker: true
-  };
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({ error: 'Backend error' }));
+      return NextResponse.json(data, { status: res.status });
+    }
 
-  const correlationMatrix = [
-    { asset: "Nifty 50", values: [1.00, 0.82, 0.45] },
-    { asset: "Bank Nifty", values: [0.82, 1.00, 0.12] },
-    { asset: "IT Index", values: [0.45, 0.12, 1.00] }
-  ];
-
-  return NextResponse.json({
-    limits,
-    exposureData,
-    drawdownData,
-    correlationMatrix
-  });
+    return NextResponse.json(await res.json());
+  } catch (error) {
+    console.error('Error in risk proxy:', error);
+    return NextResponse.json({ error: 'Failed to connect to backend' }, { status: 500 });
+  }
 }

@@ -135,7 +135,7 @@ from trading_bot.strategies.meta_agent_strategy import generate_signals as meta_
 from trading_bot.strategies.buy_the_dip_strategy import generate_signals as buy_dip_signals
 from trading_bot.strategies.ema9_rsi_momentum import generate_signals as ema9_rsi_signals
 from trading_bot.strategies.marl_strategy import generate_signals as marl_signals
-from shared.instruments import is_option_symbol
+from shared.instruments import is_option_symbol, normalize_instrument
 
 # Register strategies for the API
 registry.register("ema_rsi",      ema_rsi_signals)
@@ -3155,6 +3155,149 @@ def compute_signals(
         signals_cache_store[f"{symbol}_{strategy or 'ema9_rsi_momentum'}"] = err_res
         signals_cache_store[symbol] = err_res
         return err_res
+
+@app.get("/api/risk")
+async def get_risk_overview():
+    """Real exposure, drawdown, limits and correlation for the Risk page.
+
+    Until 2026-09-22 `/api/risk` was a Next.js route that returned constants:
+    Nifty 45% / Bank Nifty 35% / IT 20% exposure, a Mon-to-Fri drawdown series,
+    a 10,000 daily-loss limit and a hand-written correlation matrix. None of it
+    came from the system. The page built on it looked like risk management and
+    was decoration.
+
+    Everything below is derived from what the books actually wrote. Where a
+    number cannot be derived it is omitted with a reason rather than invented
+    -- the same rule the option chain had to learn when its open interest was
+    coming from `deterministic_random()`.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    root = _Path(__file__).resolve().parent
+    notes: list[str] = []
+
+    settings = _load_config_settings()
+    state = _load_state_fn(reload_trades=True, reload_state=True)
+    equity = float(state.get("equity") or 0.0)
+    realized = float(state.get("pnl") or 0.0)
+    trades_today = state.get("trades") or []
+
+    # ── Exposure: what is actually at risk right now, per instrument ──
+    exposure: list[dict] = []
+    deployed = 0.0
+    try:
+        positions_path = root / "config" / "active_positions.json"
+        positions = _json.loads(positions_path.read_text()) if positions_path.exists() else {}
+        by_instrument: dict[str, float] = {}
+        for pos in positions.values():
+            symbol = str(pos.get("symbol") or "")
+            price = float(pos.get("entry_price") or 0.0)
+            qty = float(pos.get("quantity") or 0.0)
+            name = normalize_instrument(symbol) if symbol else "UNKNOWN"
+            value = price * qty
+            by_instrument[name] = by_instrument.get(name, 0.0) + value
+            deployed += value
+        for name, value in sorted(by_instrument.items(), key=lambda kv: -kv[1]):
+            exposure.append({
+                "name": name,
+                "value": round(value / deployed * 100, 1) if deployed else 0.0,
+                "capital": round(value, 2),
+            })
+        if not exposure:
+            notes.append("no open positions, so there is no exposure to show")
+    except Exception as exc:
+        notes.append(f"exposure unavailable: {exc}")
+
+    # ── Drawdown: built from the sessions the books actually recorded ──
+    drawdown: list[dict] = []
+    try:
+        logs = sorted((root / "paper_obs_logs").glob("session_*.json"))[-15:]
+        running, peak = 0.0, 0.0
+        for path in logs:
+            try:
+                session = _json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            day_pnl = sum(float(t.get("net_pnl") or 0.0) for t in session.get("trades", []))
+            running += day_pnl
+            peak = max(peak, running)
+            label = str(session.get("date") or path.stem)
+            for part in label.replace("_", " ").split():
+                if part.count("-") == 2:
+                    label = part
+                    break
+            drawdown.append({
+                "day": label,
+                "dd": round((peak - running), 2),
+                "pnl": round(day_pnl, 2),
+                "cumulative": round(running, 2),
+            })
+        if not drawdown:
+            notes.append("no session logs yet, so there is no drawdown history")
+    except Exception as exc:
+        notes.append(f"drawdown unavailable: {exc}")
+
+    # ── Limits: the ones the engine actually enforces ──
+    max_loss_pct = float(settings.get("max_daily_loss_pct", 3.0) or 3.0)
+    capital = float(settings.get("initial_capital", 100000.0) or 100000.0)
+    limits = {
+        "maxDailyLoss": round(capital * max_loss_pct / 100.0, 2),
+        "maxDailyLossPct": max_loss_pct,
+        "dailyLossUsed": round(abs(min(realized, 0.0)), 2),
+        "riskPerTrade": float(settings.get("risk_per_trade_pct", 1.0) or 1.0),
+        "maxPositions": int(settings.get("max_daily_trades", 6) or 6),
+        "openPositions": len(exposure),
+        "tradesToday": len(trades_today),
+        "circuitBreaker": not bool(settings.get("emergency_stop", False)),
+        "emergencyStop": bool(settings.get("emergency_stop", False)),
+        "equity": round(equity, 2),
+        "capitalDeployed": round(deployed, 2),
+    }
+
+    # ── Correlation: measured from the index candles already on disk ──
+    correlation: list[dict] = []
+    try:
+        import pandas as _pd
+        series: dict[str, _pd.Series] = {}
+        for name, filename in (("NIFTY 50", "NSE_NIFTY50-INDEX_5Min.csv"),
+                               ("Bank Nifty", "NSE_NIFTYBANK-INDEX_5Min.csv"),
+                               ("Sensex", "BSE_SENSEX-INDEX_5Min.csv")):
+            path = root / "data" / filename
+            if not path.exists():
+                continue
+            frame = _pd.read_csv(path, header=None,
+                                 names=["ts", "open", "high", "low", "close", "volume"])
+            stamps = _pd.to_datetime(frame["ts"], errors="coerce", format="mixed")
+            frame = frame[stamps.notna()].assign(ts=stamps[stamps.notna()])
+            closes = _pd.to_numeric(frame["close"], errors="coerce")
+            daily = closes.groupby(frame["ts"].dt.date).last().dropna()
+            if len(daily) >= 10:
+                series[name] = daily.pct_change().dropna()
+        if len(series) >= 2:
+            joined = _pd.DataFrame(series).dropna()
+            matrix = joined.corr()
+            correlation = [{"asset": a, "values": [round(float(matrix.loc[a, b]), 2)
+                                                   for b in matrix.columns]}
+                           for a in matrix.index]
+            correlation_labels = list(matrix.columns)
+        else:
+            correlation_labels = []
+            notes.append("not enough overlapping index history to measure correlation")
+    except Exception as exc:
+        correlation_labels = []
+        notes.append(f"correlation unavailable: {exc}")
+
+    return {
+        "limits": limits,
+        "exposureData": exposure,
+        "drawdownData": drawdown,
+        "correlationMatrix": correlation,
+        "correlationLabels": correlation_labels,
+        "notes": notes,
+        "source": "live",
+    }
+
 
 @app.get("/api/strategy-markers")
 async def get_strategy_markers(
