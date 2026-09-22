@@ -125,6 +125,16 @@ function isMarketOpen() {
     return isMarketOpenIST();
 }
 
+/**
+ * How long the live socket may stay silent before REST polling takes over.
+ *
+ * The broadcaster pushes every 500ms, so 3s is six missed frames -- long
+ * enough not to flap on a slow frame, short enough that the metric cards
+ * never visibly freeze. Being wrong in the safe direction just means one
+ * extra REST call.
+ */
+const WS_STALE_MS = 3000;
+
 function IsolatedMarketTicker() {
     const isWsConnected = useLiveMarketStore(state => state.isWsConnected);
     const tickerData = useLiveMarketStore(state => state.tickerData);
@@ -663,8 +673,25 @@ function LiveTradingContent() {
 
                 const store = useLiveMarketStore.getState();
 
-                // Only use fallback polling for trades/pnl if WS is disconnected
-                if (!store.isWsConnected) {
+                // Fall back to polling whenever the socket is not actually
+                // DELIVERING -- not merely whenever it reports itself closed.
+                //
+                // `isWsConnected` alone was not enough. When the backend
+                // restarts, the browser is often left holding a half-open
+                // socket: no `onclose` fires (it can take minutes on
+                // Windows), so the flag stays true, the socket sends nothing,
+                // and this block -- the only thing that writes equity, P&L
+                // and the trade count from REST -- was skipped entirely. The
+                // metric cards then sat frozen until the page was reloaded,
+                // which is exactly what the owner saw on 2026-09-22 after the
+                // backend was restarted under an open tab.
+                //
+                // `lastPingTime` is stamped on every WS message, so silence
+                // is measurable. Beyond the stale window the socket is
+                // treated as dead for data purposes and REST takes over.
+                const wsSilentMs = Date.now() - store.lastPingTime;
+                const wsDelivering = store.isWsConnected && wsSilentMs < WS_STALE_MS;
+                if (!wsDelivering) {
                     store.setEquity(data.equity);
                     store.setPnl(data.pnl);
                     store.setTrades(data.trades || []);
@@ -682,7 +709,7 @@ function LiveTradingContent() {
                 }
 
                 const parsedPrice = Number(data.currentPrice);
-                if (!store.isWsConnected || store.currentPrice === 0) {
+                if (!wsDelivering || store.currentPrice === 0) {
                     if (parsedPrice && parsedPrice !== 0) {
                         store.setCurrentPrice((prev: number) => (isMarketOpen() || prev === 0) ? parsedPrice : prev);
                     }
@@ -700,8 +727,17 @@ function LiveTradingContent() {
                 if (isMounted) setIsLoading(false);
             } finally {
                 if (isMounted) {
-                    const wsConnected = useLiveMarketStore.getState().isWsConnected;
-                    timeoutId = setTimeout(fetchState, wsConnected ? 5000 : 1500);
+                    const s = useLiveMarketStore.getState();
+                    const silent = Date.now() - s.lastPingTime;
+                    const delivering = s.isWsConnected && silent < WS_STALE_MS;
+                    // A socket that claims to be open but has gone quiet is
+                    // half-open: ask for a fresh one, and meanwhile poll at
+                    // the disconnected rate so the cards keep moving.
+                    if (s.isWsConnected && !delivering) {
+                        s.disconnectWs();
+                        s.connectWs(urlSymbol);
+                    }
+                    timeoutId = setTimeout(fetchState, delivering ? 5000 : 1500);
                 }
             }
         };
