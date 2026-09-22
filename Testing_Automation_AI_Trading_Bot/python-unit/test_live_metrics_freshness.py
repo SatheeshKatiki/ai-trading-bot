@@ -34,6 +34,12 @@ def _live_page() -> str:
         encoding="utf-8", errors="ignore")
 
 
+def _dashboard() -> str:
+    root = pathlib.Path(_bootstrap.TRADING_SYSTEM_ROOT).parent
+    return (root / "frontend" / "app" / "page.tsx").read_text(
+        encoding="utf-8", errors="ignore")
+
+
 def _store() -> str:
     root = pathlib.Path(_bootstrap.TRADING_SYSTEM_ROOT).parent
     return (root / "frontend" / "store" / "useLiveMarketStore.ts").read_text(
@@ -41,9 +47,9 @@ def _store() -> str:
 
 
 def test_a_stale_window_is_defined_and_sane():
-    src = _live_page()
-    match = re.search(r"const WS_STALE_MS\s*=\s*(\d+)", src)
-    assert match, "the staleness window must be a named constant"
+    src = _store()
+    match = re.search(r"export const WS_STALE_MS\s*=\s*(\d+)", src)
+    assert match, "the staleness window must be one named constant in the store"
     window = int(match.group(1))
     # The broadcaster pushes every 500ms: long enough not to flap on a slow
     # frame, short enough that a frozen card is never visible for long.
@@ -105,3 +111,44 @@ def test_the_broadcaster_refreshes_state_fast_enough_to_matter():
     match = re.search(r"_WS_TRADE_CACHE_TTL:\s*float\s*=\s*([0-9.]+)", api)
     assert match, "the trade-cache TTL must stay explicit"
     assert float(match.group(1)) <= 0.5
+
+
+def test_there_is_one_definition_of_live_shared_by_both_pages():
+    """Two copies of this rule would drift, and one page would freeze again."""
+    assert "export function wsIsDelivering" in _store()
+    assert "wsIsDelivering" in _live_page()
+    assert "wsIsDelivering" in _dashboard()
+    assert "const WS_STALE_MS" not in _live_page(), "no local copy of the window"
+
+
+def test_the_dashboard_home_uses_it_for_its_ws_or_rest_choice():
+    """It picked WS values on the flag alone, so it froze the same way."""
+    src = _dashboard()
+    assert "wsIsDelivering({ isWsConnected: wsIsUp, lastPingTime: wsLastPing })" in src
+    assert "const wsConnected = useLiveMarketStore(state => state.isWsConnected);" not in src
+
+
+def test_the_risk_card_has_a_real_source():
+    """It read ACTIVE forever: the store initialised it and nothing wrote it."""
+    api = pathlib.Path(_bootstrap.TRADING_SYSTEM_ROOT, "api_bridge.py").read_text(
+        encoding="utf-8", errors="ignore")
+    assert '"risk_status"' in api
+    for state in ("HALTED", "IDLE", "ACTIVE", "UNKNOWN"):
+        assert state in api
+    assert "data.risk_status" in _store(), "and the store must read it"
+
+
+def test_an_unreadable_risk_state_is_not_reported_as_fine():
+    api = pathlib.Path(_bootstrap.TRADING_SYSTEM_ROOT, "api_bridge.py").read_text(
+        encoding="utf-8", errors="ignore")
+    start = api.index('websocket_data["risk_status"] = "HALTED"')
+    block = api[max(0, start - 600):start + 900]
+    assert 'websocket_data["risk_status"] = "UNKNOWN"' in block
+    assert "except Exception" in block
+
+
+def test_an_emergency_stop_is_what_makes_it_halt():
+    api = pathlib.Path(_bootstrap.TRADING_SYSTEM_ROOT, "api_bridge.py").read_text(
+        encoding="utf-8", errors="ignore")
+    start = api.index('websocket_data["risk_status"] = "HALTED"')
+    assert 'emergency_stop' in api[max(0, start - 300):start]

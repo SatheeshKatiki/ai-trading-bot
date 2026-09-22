@@ -6,7 +6,7 @@ import NewsTicker from "@/components/news-ticker";
 import LiveTicker from "@/components/live-ticker";
 import { BtstPredictor } from "@/components/btst-predictor";
 import { useState, useEffect } from "react";
-import { useLiveMarketStore } from "@/store/useLiveMarketStore";
+import { useLiveMarketStore, wsIsDelivering } from "@/store/useLiveMarketStore";
 import { 
   TrendingUp, 
   TrendingDown, 
@@ -90,7 +90,12 @@ export default function Dashboard() {
   const wsAccountRoi = useLiveMarketStore(state => state.accountRoi);
   const wsMarginDeployed = useLiveMarketStore(state => state.marginDeployed);
   const wsPositionsDetail = useLiveMarketStore(state => state.positionsDetail);
-  const wsConnected = useLiveMarketStore(state => state.isWsConnected);
+  // Live only while the socket is actually delivering. The flag alone left
+  // these cards showing stale WS numbers after a backend restart, because a
+  // half-open socket keeps reporting itself connected -- see wsIsDelivering.
+  const wsIsUp = useLiveMarketStore(state => state.isWsConnected);
+  const wsLastPing = useLiveMarketStore(state => state.lastPingTime);
+  const wsConnected = wsIsDelivering({ isWsConnected: wsIsUp, lastPingTime: wsLastPing });
 
   // Starts at 0, not a plausible 100000. Account ROI is computed against
   // this figure, so seeding it with an invented balance produced a real-looking

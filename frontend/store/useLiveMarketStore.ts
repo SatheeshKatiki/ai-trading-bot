@@ -110,6 +110,29 @@ export interface LiveMarketState {
     disconnectWs: () => void;
 }
 
+/**
+ * How long the live socket may stay silent before it stops being trusted.
+ *
+ * The backend broadcaster pushes every 500ms, so this is six missed frames:
+ * long enough not to flap on one slow frame, short enough that a frozen
+ * number is never visible for long.
+ */
+export const WS_STALE_MS = 3000;
+
+/**
+ * Is the socket actually DELIVERING -- not merely reporting itself open?
+ *
+ * `isWsConnected` says a socket object exists and has not seen `onclose`.
+ * That is not the same thing. When the backend restarts, the browser is
+ * routinely left holding a half-open socket: no close event fires for
+ * minutes on Windows, the flag stays true, and anything that chose WS data
+ * over REST on the strength of that flag silently froze. Every such choice
+ * goes through here instead, so there is one definition of "live".
+ */
+export function wsIsDelivering(state: { isWsConnected: boolean; lastPingTime: number }): boolean {
+    return state.isWsConnected && (Date.now() - state.lastPingTime) < WS_STALE_MS;
+}
+
 export const useLiveMarketStore = create<LiveMarketState>((set, get) => ({
     // Deliberately EMPTY. This used to be seeded with hardcoded index prices
     // (NIFTY 23820.35, ...) which rendered as a live quote until the first
@@ -258,6 +281,7 @@ export const useLiveMarketStore = create<LiveMarketState>((set, get) => ({
                     if (data.positions_detail)                   pendingUpdates.positionsDetail    = data.positions_detail;
                     if (data.trades)                             pendingUpdates.trades             = data.trades;
 
+                    if (data.risk_status !== undefined)          pendingUpdates.riskStatus         = data.risk_status;
                     if (data.signalsData && data.signalsData.confidence !== undefined) {
                         pendingUpdates.aiConfidence = data.signalsData.confidence;
                     }

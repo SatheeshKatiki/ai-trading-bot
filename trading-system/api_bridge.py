@@ -1188,6 +1188,22 @@ async def websocket_broadcaster():
             websocket_data["trades"] = _ws_trade_cache.get("trades", [])
             realized_pnl = _ws_trade_cache.get("pnl", 0.0)
             websocket_data["equity"] = _ws_trade_cache.get("equity", 100000.0)
+
+            # The dashboard's Risk Engine card had no source at all: the store
+            # initialised riskStatus to "ACTIVE" and nothing ever wrote it, so
+            # it read ACTIVE even while an emergency stop was engaged. It now
+            # rides the same 500ms channel as everything else on that row.
+            try:
+                _s = _load_config_settings()
+                if _s.get("emergency_stop"):
+                    websocket_data["risk_status"] = "HALTED"
+                elif not _s.get("is_active", True):
+                    websocket_data["risk_status"] = "IDLE"
+                else:
+                    websocket_data["risk_status"] = "ACTIVE"
+            except Exception:
+                # Unknown is not "fine". Say so rather than claiming ACTIVE.
+                websocket_data["risk_status"] = "UNKNOWN"
             # THE ENGINE GATE.
             #
             # `FyersBroker.stream_quotes()` forwards every entry of raw_ticks
