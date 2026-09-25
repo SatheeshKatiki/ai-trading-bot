@@ -94,6 +94,13 @@ from trading_bot.strategies.momentum_strategy import MomentumStrategy
 from trading_bot.strategies.drl_strategy import generate_signals as drl_signals
 from trading_bot.strategies.marl_strategy import generate_signals as marl_signals
 from trading_bot.strategies.ema9_rsi_momentum import STRATEGY_NAME as EMA9_RSI_MOMENTUM_STRATEGY_NAME
+#: Name-only import (no strategy code runs) so the two M1/M2 branches below
+#: can be guarded on an exact match rather than a string literal. The
+#: strategy package itself is imported lazily inside those branches, so when
+#: another strategy is selected nothing of it is ever executed.
+from trading_bot.strategies.rsi_smc_options_buyer.config import (
+    STRATEGY_NAME as RSI_SMC_STRATEGY_NAME,
+)
 
 #: Last closed bar the ema9 reversal exit was evaluated on, per option
 #: position -- the rule reads a closed candle, so once per bar is enough.
@@ -103,6 +110,24 @@ _EMA9_REVERSAL_CHECKED: dict = {}
 #: default). Only fetched while the gate is on; cached for a minute.
 #: Last stale bar reported per symbol, so a closed market logs once a bar.
 _STALE_DATA_LOGGED: dict = {}
+
+#: M2: last contract-rejection reason logged per option symbol, so a contract
+#: that keeps failing the screen does not repeat the same line on every
+#: ~200ms re-evaluation until the next candle closes. Gates logging only.
+_CONTRACT_REJECT_LOGGED: dict = {}
+
+#: M1: the UNDERLYING price at which each open rsi_smc_options_buyer position's
+#: premise is dead -- just past the extreme of the sweep that caused the entry.
+#: Keyed by base (index) symbol, written at entry, read by the exit branch.
+#:
+#: Held here rather than on `Position` because `Position` is shared
+#: infrastructure and `_save_positions` serialises a fixed key set, so a new
+#: field would either need that protected code changed or would be silently
+#: dropped on restart anyway. The consequence is explicit and accepted: after
+#: a restart this is empty, so the structural invalidation check is skipped
+#: for positions carried across it. The premium ladder, the structure-reversal
+#: exit, the hard SL interceptor and the EOD square-off all still apply.
+_RSI_SMC_INVALIDATION: dict = {}
 
 _INDIA_VIX_SYMBOL = "NSE:INDIAVIX-INDEX"
 _INDIA_VIX_CACHE: dict = {"at": 0.0, "value": None}
@@ -1139,6 +1164,11 @@ async def run_live_bot(symbols: List[str]) -> None:
     # (timestamp, last_known_premium) per option symbol — see the
     # exit-check block in on_tick() for why this exists.
     _option_premium_cache: Dict[str, tuple[float, float]] = {}
+    # M2: (timestamp, MarketQuote) per option symbol. The cache above keeps
+    # only the last price, which is all every existing consumer needs; a
+    # contract-quality screen needs bid/ask/volume too. Kept separate so that
+    # cache's shape -- and the SL/target math that reads it -- is untouched.
+    _last_option_quote: Dict[str, tuple[float, Any]] = {}
     _OPTION_PREMIUM_FETCH_INTERVAL_S = 1.0
     # Separate from _option_premium_cache (which only ever holds a real
     # premium, never None -- the exit-check path above assigns its cached
@@ -1848,6 +1878,81 @@ async def run_live_bot(symbols: List[str]) -> None:
                         _save_positions(active_positions)
                         if not broker.paper_mode:
                             asyncio.create_task(update_exchange_sl(broker, open_position))
+                elif strategy_name == RSI_SMC_STRATEGY_NAME and is_opt_pos:
+                    # ── M1: rsi_smc_options_buyer option exits ──────────────
+                    # EOD square-off first, then the premium ladder, then the
+                    # structural invalidation on the UNDERLYING, then an
+                    # opposite BOS/CHoCH on closed bars. No fixed target.
+                    # See trading_bot/strategies/rsi_smc_options_buyer/exits.py.
+                    #
+                    # The ENTIRE branch is wrapped. An exception raised in the
+                    # exit path does NOT reach on_tick's own handler -- that
+                    # only covers the entry section -- it escapes on_tick
+                    # into FyersBroker.stream_quotes, whose `except` treats
+                    # anything at all as a dropped socket, logs "API Bridge
+                    # WebSocket disconnected", backs off and reconnects. A
+                    # strategy bug would therefore present as a feed outage
+                    # and repeat on every tick. So: log it, and fall through
+                    # to SmartExitEngine, which is what every unbranded
+                    # strategy already uses.
+                    _rsi_smc_handled = False
+                    try:
+                        from trading_bot.strategies.rsi_smc_options_buyer import exits as _rsi_smc_exits
+                        from trading_bot.strategies.rsi_smc_options_buyer.config import RsiSmcConfig as _RsiSmcConfig
+
+                        _rsi_smc_cfg = _RsiSmcConfig.from_settings(settings, symbol=sym)
+                        open_position.highest_price = max(open_position.highest_price, exit_check_price)
+                        old_stop_loss = open_position.stop_loss
+
+                        _rsi_smc_decision = _rsi_smc_exits.evaluate(
+                            df_underlying=df if not df.empty else None,
+                            direction=1 if open_position.symbol.upper().endswith("CE") else -1,
+                            entry_premium=open_position.entry_price,
+                            current_premium=exit_check_price,
+                            best_premium=open_position.highest_price,
+                            current_stop=open_position.stop_loss,
+                            now_hms=current_time,
+                            eod_time=exit_engine.eod_exit_time,
+                            cfg=_rsi_smc_cfg,
+                            # `ltp` is the UNDERLYING's price on this tick;
+                            # exit_check_price is the option PREMIUM. They are
+                            # passed to separate parameters on purpose -- the
+                            # two scales must never meet (2026-08-07 audit §2.1).
+                            underlying_price=ltp,
+                            invalidation_price=_RSI_SMC_INVALIDATION.get(sym),
+                            symbol=sym,
+                            tick=float(settings.get("option_sl_tick_size", 0.05)),
+                        )
+                        _rsi_smc_handled = True
+
+                        open_position.stop_loss = _rsi_smc_decision.new_stop
+                        if _rsi_smc_decision.should_exit:
+                            should_exit = True
+                            reason = _rsi_smc_decision.reason
+                            exit_qty = open_position.quantity
+
+                        if open_position.stop_loss != old_stop_loss:
+                            logger.info(
+                                "RSI_SMC LADDER SL MOVED for %s: %.2f -> %.2f (next rung %s)",
+                                sym, old_stop_loss, open_position.stop_loss,
+                                f"{_rsi_smc_decision.next_rung:.2f}" if _rsi_smc_decision.next_rung else "none",
+                            )
+                            _save_positions(active_positions)
+                            if not broker.paper_mode:
+                                asyncio.create_task(update_exchange_sl(broker, open_position))
+                    except Exception as _rsi_smc_exc:
+                        logger.error(
+                            "rsi_smc_options_buyer: exit evaluation failed for %s "
+                            "(entry %.2f, premium %.2f, stop %.2f): %s -- falling back to "
+                            "SmartExitEngine for this tick. The hard SL/TP interceptors "
+                            "above have already run and are unaffected.",
+                            sym, open_position.entry_price, exit_check_price,
+                            open_position.stop_loss, _rsi_smc_exc, exc_info=True,
+                        )
+                    if not _rsi_smc_handled:
+                        should_exit, reason, exit_qty = exit_engine.evaluate_exit(
+                            open_position, exit_check_price, current_time, current_atr,
+                        )
                 else:
                     # Dynamically apply Trailing SL settings
                     if settings.get("trailing_sl", False) or settings.get("trailingSl", False):
@@ -2408,6 +2513,14 @@ async def run_live_bot(symbols: List[str]) -> None:
                                     if entry_symbol in live_quotes and live_quotes[entry_symbol].ltp > 0:
                                         live_premium = live_quotes[entry_symbol].ltp
                                         _option_premium_cache[entry_symbol] = (now_mono, live_premium)
+                                        # M2: keep the full quote (bid/ask/volume),
+                                        # not just the last price, so a strategy
+                                        # that publishes approve_contract() can
+                                        # screen the contract below. Separate
+                                        # from _option_premium_cache so that
+                                        # cache's shape and every existing
+                                        # consumer of it are untouched.
+                                        _last_option_quote[entry_symbol] = (now_mono, live_quotes[entry_symbol])
                                     elif cached_entry:
                                         live_premium = cached_entry[1]
                                     else:
@@ -2425,6 +2538,59 @@ async def run_live_bot(symbols: List[str]) -> None:
                                 continue
 
                             entry_premium = live_premium
+
+                            # ── M2: contract-quality screen (opt-in) ──────
+                            # Consulted ONLY when the selected strategy
+                            # publishes `approve_contract`. None of the 14
+                            # pre-existing strategies does, so for every one
+                            # of them `getattr` returns None and this block
+                            # is a no-op -- the entry path is byte-identical
+                            # to before.
+                            #
+                            # Screens what a MarketQuote can actually answer:
+                            # bid/ask spread, a zero or crossed quote, quote
+                            # staleness, traded volume. Open Interest, OI
+                            # change, Implied Volatility and Delta are NOT
+                            # reachable from the live engine (their only
+                            # source is api_bridge's FastAPI-layer option
+                            # chain) and are deliberately not approximated.
+                            try:
+                                _approver = None
+                                if strategy_name in registry.registered_strategies:
+                                    import importlib as _importlib
+                                    try:
+                                        _strategy_module = _importlib.import_module(
+                                            f"trading_bot.strategies.{strategy_name}")
+                                        _approver = getattr(_strategy_module, "approve_contract", None)
+                                    except Exception:
+                                        _approver = None
+                                if _approver is not None:
+                                    _quote_entry = _last_option_quote.get(entry_symbol)
+                                    _verdict = _approver(
+                                        entry_symbol,
+                                        _quote_entry[1] if _quote_entry else None,
+                                        settings,
+                                        (time.monotonic() - _quote_entry[0]) if _quote_entry else None,
+                                    )
+                                    if _verdict is not None and not getattr(_verdict, "approved", True):
+                                        if _CONTRACT_REJECT_LOGGED.get(entry_symbol) != _verdict.reason:
+                                            _CONTRACT_REJECT_LOGGED[entry_symbol] = _verdict.reason
+                                            logger.info(
+                                                "Contract rejected by %s: %s",
+                                                strategy_name, getattr(_verdict, "reason", "no reason given"),
+                                            )
+                                        continue
+                            except Exception as _approve_exc:
+                                # Fails OPEN, deliberately. This screen can
+                                # only ever REFUSE a trade; a broken screen
+                                # that silently refused every entry would be
+                                # a worse failure than one that lets a wide
+                                # spread through, and the operator would see
+                                # a bot that looks alive and never trades.
+                                logger.error(
+                                    "Contract screen for %s raised (%s) -- allowing the entry.",
+                                    entry_symbol, _approve_exc,
+                                )
 
                             # ── Premium-banded initial stop-loss ──────────
                             # Option buying means we buy premium, so the stop
@@ -2461,6 +2627,49 @@ async def run_live_bot(symbols: List[str]) -> None:
                                     Ema9RsiMomentumConfig.from_settings(settings).initial_sl_pct,
                                     float(settings.get("option_sl_tick_size", 0.05)),
                                 )
+                            elif strategy_name == RSI_SMC_STRATEGY_NAME:
+                                # M1 (entry side). Same shape as the ema9
+                                # branch above: the premium-band table has
+                                # already vetoed an untradeable premium, and
+                                # this only chooses where the opening stop
+                                # sits. Wrapped because an exception here
+                                # would escape into the entry path's handler
+                                # and skip the trade silently -- the band
+                                # stop is a correct, if less specific,
+                                # fallback.
+                                try:
+                                    from trading_bot.strategies.rsi_smc_options_buyer import exits as _rsi_smc_exits
+                                    from trading_bot.strategies.rsi_smc_options_buyer.config import RsiSmcConfig as _RsiSmcConfig
+                                    _rsi_smc_cfg = _RsiSmcConfig.from_settings(settings, symbol=s)
+                                    sl_price = _rsi_smc_exits.opening_stop(
+                                        entry_premium, _rsi_smc_cfg,
+                                        float(settings.get("option_sl_tick_size", 0.05)),
+                                    )
+                                    # Remember where this trade's premise dies
+                                    # on the UNDERLYING: just past the extreme
+                                    # of the sweep that caused it. Read back by
+                                    # the M1 exit branch.
+                                    from trading_bot.strategies.rsi_smc_options_buyer import (
+                                        signal_engine as _rsi_smc_engine,
+                                    )
+                                    _, _, _rsi_smc_diag, _ = _rsi_smc_engine.build(
+                                        df, _rsi_smc_cfg, symbol=s)
+                                    _rsi_smc_last = len(df) - 1
+                                    _rsi_smc_extreme = (
+                                        _rsi_smc_diag.swept_extreme_bull[_rsi_smc_last]
+                                        if latest_signal == 1
+                                        else _rsi_smc_diag.swept_extreme_bear[_rsi_smc_last]
+                                    )
+                                    _RSI_SMC_INVALIDATION[s] = _rsi_smc_exits.structural_invalidation(
+                                        int(latest_signal), float(_rsi_smc_extreme),
+                                        float(_rsi_smc_diag.atr[_rsi_smc_last]), _rsi_smc_cfg,
+                                    )
+                                except Exception as _rsi_smc_exc:
+                                    logger.error(
+                                        "rsi_smc_options_buyer: opening stop failed for %s (%s) "
+                                        "-- using the shared premium-band stop.",
+                                        entry_symbol, _rsi_smc_exc,
+                                    )
 
                             # NO FIXED PROFIT TARGET. 0.0 means "unlimited
                             # upside" to every downstream exit check
