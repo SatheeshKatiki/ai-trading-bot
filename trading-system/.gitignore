@@ -191,3 +191,8 @@ logs/
 # the full sweep), tens of MB, and superseded on every strategy change.
 # The reports generated FROM them are tracked; the caches are not.
 validation_harness/results/*.pkl
+
+# Phase 12 observed-option-data research store. Append-only accumulation of
+# live broker quotes; can reach gigabytes over months and is machine-local
+# until a dataset is deliberately frozen and published.
+research_data/
