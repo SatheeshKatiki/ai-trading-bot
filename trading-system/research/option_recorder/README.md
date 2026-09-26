@@ -1,4 +1,4 @@
-# Observed option data recorder (Phase 12)
+# Observed option data recorder (Phase 12, hardened in Phase 13)
 
 **Research infrastructure. Observes and records. Never trades.**
 
@@ -16,9 +16,17 @@ python -m research.option_recorder.collect --once --dry-run
 # accumulate, 5-minute cadence (matches the frozen signal's bar size)
 python -m research.option_recorder.collect --interval 300
 
-# daily completeness / integrity report
+# daily health scorecard + integrity report
 python -m research.option_recorder.qa
+
+# full offline rehearsal: no network, no broker, deletes what it writes
+python -m research.option_recorder.selftest
 ```
+
+**Operating procedure — read this before collecting a real session:**
+[`RUNBOOK.md`](RUNBOOK.md). It covers the morning pre-flight that catches a
+missing broker session, what each log field means, restart/resume, and the
+20 / 60 / 125-session checkpoints.
 
 Requires `api_bridge` running locally with a valid broker session — it reads
 `/api/option-chain` and `/api/history` rather than opening a second Fyers
@@ -26,6 +34,14 @@ session that would contend with the live one for the same token and rate limit.
 
 ## What it guarantees
 
+- **Idempotent.** Every observation has a canonical key; re-polling an
+  instant, or restarting mid-session, stores it once. The key set is rebuilt
+  from the stored data, so losing the index changes nothing.
+- **Durable.** Writes are flushed and `fsync`-ed; checkpoints are written
+  atomically. The recorder never reports coverage it does not have.
+- **Honest about staleness.** The broker sends no per-leg quote timestamp, so
+  `quote_age_seconds` is always `None` — never fabricated. Staleness is
+  derived from consecutive observations and kept in its own field.
 - **Append-only.** No update or delete path exists; a test asserts the class
   exposes none. RAW broker payloads are stored verbatim and checksummed.
 - **Observed is never overwritten by modelled.** A chain returning
