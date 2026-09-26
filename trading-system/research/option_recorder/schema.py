@@ -29,7 +29,17 @@ from typing import Any, Dict, Optional
 
 #: Schema version. Bumped on any field change; stored on every record so a
 #: frozen dataset can always be read back with the reader that wrote it.
-SCHEMA_VERSION = "1.0.0"
+SCHEMA_VERSION = "1.1.0"   # 1.1.0: staleness + lineage fields (Phase 13)
+
+#: Version of the COLLECTOR that produced a record (Phase 13 sec19). Bumped
+#: when collection behaviour changes in a way a researcher must know about.
+#: Distinct from SCHEMA_VERSION: the shape can be stable while the way the
+#: values were obtained changes.
+RECORDER_VERSION = "1.1.0"
+
+#: Version of the normalisation rules (payload -> OptionQuote). Bumped when
+#: the mapping or the quality rules change, so a mixed dataset stays readable.
+NORMALIZATION_VERSION = "1.1.0"
 
 #: Research-time guard (Phase 12 sec3). Any future options-validation harness
 #: must assert this and refuse to run against modelled premiums. It exists so
@@ -85,6 +95,28 @@ FIELD_PROVENANCE: Dict[str, Provenance] = {
 #: A quote older than this at capture time is STALE, not VALID.
 DEFAULT_STALE_SECONDS = 90.0
 
+#: **The broker chain carries no per-leg quote timestamp.** Verified against
+#: ``api_bridge._chain_leg``, which maps ltp/bid/ask/oi/volume and nothing
+#: temporal. Exchange-supplied quote age is therefore UNAVAILABLE and this
+#: recorder does not invent one -- ``quote_age_seconds`` stays ``None``.
+#:
+#: What IS observable is whether a contract quote CHANGED between two
+#: consecutive snapshots of our own. A leg whose ltp, bid, ask, volume and OI
+#: are all identical across several minutes of an open market is not trading.
+#: That is derived from stored observations, reproducible from them, and
+#: recorded separately as ``unchanged_for_seconds`` so it is never confused
+#: with a real exchange timestamp.
+DEFAULT_UNCHANGED_STALE_SECONDS = 600.0
+
+
+class SessionStatus(str, Enum):
+    """Verdict for a whole instrument-session (Phase 13 sec13)."""
+
+    COMPLETE = "COMPLETE"        # meets every coverage and quality bound
+    INCOMPLETE = "INCOMPLETE"    # real data, but gaps -- usable with care
+    UNUSABLE = "UNUSABLE"        # synthetic, corrupt, or too sparse to trust
+    EMPTY = "EMPTY"              # nothing collected
+
 
 @dataclass(frozen=True)
 class OptionQuote:
@@ -126,12 +158,23 @@ class OptionQuote:
     dte: Optional[int] = None
     expiry_class: Optional[str] = None       # "WEEKLY" | "MONTHLY"
 
-    # --- lineage (sec15) ----------------------------------------------
+    # --- staleness (sec7) ---------------------------------------------
+    #: Exchange-supplied age. Always None here: the chain has no per-leg
+    #: timestamp. Kept as a field so a future feed that DOES supply one needs
+    #: no schema change.
+    quote_age_seconds: Optional[float] = None
+    #: Seconds this exact quote (ltp/bid/ask/volume/oi) has been unchanged
+    #: across our own consecutive snapshots. DERIVED, not observed.
+    unchanged_for_seconds: Optional[float] = None
+
+    # --- lineage (sec15, sec19) ---------------------------------------
     source: str = "fyers:options-chain-v3"
     source_endpoint: str = "/api/option-chain"
     retrieved_at: str = ""
     original_symbol: str = ""
     schema_version: str = SCHEMA_VERSION
+    recorder_version: str = RECORDER_VERSION
+    normalization_version: str = NORMALIZATION_VERSION
 
     # --- quality (sec9) -----------------------------------------------
     quality: str = Quality.VALID.value
@@ -163,7 +206,28 @@ class OptionQuote:
         """What a SELL could actually have received: the BID (sec24)."""
         return self.bid if self.bid > 0 else None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def observation_key(self) -> str:
+        """Canonical identity of ONE observation (Phase 13 sec6).
+
+        Two records with this key describe the same contract at the same
+        instant and are the same observation, however many times the loop
+        polled. The key deliberately excludes price and quality: a retry that
+        returns slightly different numbers for the same instant is still a
+        duplicate of that instant, and keeping both would let one moment vote
+        twice in any later statistic.
+        """
+        return observation_key(self.underlying, self.event_time,
+                               self.option_symbol, self.expiry,
+                               self.strike, self.option_type)
+
+    def quote_fingerprint(self) -> str:
+        """Hash of the tradeable state only, for change detection (sec7)."""
+        return record_checksum({
+            "ltp": self.last_price, "bid": self.bid, "ask": self.ask,
+            "volume": self.volume, "oi": self.open_interest,
+        })
+
+    def to_dict(self):
         d = asdict(self)
         d["quality_reasons"] = list(self.quality_reasons)
         return d
@@ -229,7 +293,9 @@ class UnderlyingSnapshot:
 def classify_quote(bid: float, ask: float, last_price: float,
                    age_seconds: Optional[float],
                    is_synthetic: bool,
-                   stale_seconds: float = DEFAULT_STALE_SECONDS):
+                   stale_seconds: float = DEFAULT_STALE_SECONDS,
+                   unchanged_for_seconds=None,
+                   unchanged_stale_seconds: float = DEFAULT_UNCHANGED_STALE_SECONDS):
     """(Quality, reasons) for one leg. Deterministic and order-independent.
 
     SYNTHETIC wins over everything: a modelled premium is not an observation
@@ -258,7 +324,27 @@ def classify_quote(bid: float, ask: float, last_price: float,
     if age_seconds is not None and age_seconds > stale_seconds:
         return Quality.STALE, (f"quote age {age_seconds:.0f}s > {stale_seconds:.0f}s",)
 
+    if (unchanged_for_seconds is not None
+            and unchanged_for_seconds > unchanged_stale_seconds):
+        return Quality.STALE, (
+            f"quote unchanged for {unchanged_for_seconds:.0f}s > "
+            f"{unchanged_stale_seconds:.0f}s (derived, not an exchange age)",)
+
     return Quality.VALID, ()
+
+
+def observation_key(underlying: str, event_time: str, option_symbol: str,
+                    expiry: str, strike: float, option_type: str) -> str:
+    """The canonical duplicate key (Phase 13 sec6).
+
+    Strike is formatted to 2dp so 24000 and 24000.0 collide, as they must.
+    ``option_symbol`` is included because it is the exchange contract
+    identity; ``expiry`` and ``strike`` are included too because a symbol can
+    be absent from a malformed row while the contract is still identified.
+    """
+    return "|".join((str(underlying), str(event_time), str(option_symbol or ""),
+                     str(expiry or ""), f"{float(strike):.2f}",
+                     str(option_type)))
 
 
 def _finite(x) -> bool:
@@ -276,8 +362,10 @@ def record_checksum(payload: Dict[str, Any]) -> str:
 
 
 __all__ = [
-    "SCHEMA_VERSION", "REQUIRE_OBSERVED_OPTION_DATA", "DEFAULT_STALE_SECONDS",
-    "Quality", "Provenance", "FIELD_PROVENANCE",
+    "SCHEMA_VERSION", "RECORDER_VERSION", "NORMALIZATION_VERSION",
+    "REQUIRE_OBSERVED_OPTION_DATA", "DEFAULT_STALE_SECONDS",
+    "DEFAULT_UNCHANGED_STALE_SECONDS",
+    "Quality", "Provenance", "SessionStatus", "FIELD_PROVENANCE",
     "OptionQuote", "SignalEvent", "UnderlyingSnapshot",
-    "classify_quote", "record_checksum",
+    "classify_quote", "observation_key", "record_checksum",
 ]

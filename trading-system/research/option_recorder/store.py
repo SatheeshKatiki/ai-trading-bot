@@ -37,7 +37,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Optional
 
-from .schema import SCHEMA_VERSION, record_checksum
+from .schema import (RECORDER_VERSION, SCHEMA_VERSION, observation_key,
+                     record_checksum)
 
 LAYERS = ("raw", "normalized", "derived", "events")
 
@@ -83,11 +84,17 @@ class ResearchStore:
     # -- writing -------------------------------------------------------
     def append(self, layer: str, instrument: str, session_date: str,
                name: str, records: Iterable[Any]) -> int:
-        """Append records. Returns how many were written.
+        """Append records durably. Returns how many were written.
 
-        Thread-safe and crash-tolerant: each record is a complete line, so a
-        process killed mid-write loses at most the final partial line, which
-        :func:`read` skips.
+        Thread-safe and crash-tolerant. Two properties matter (Phase 13 sec18):
+
+        * **Whole lines.** Each record is serialised completely before it is
+          written, so a reader never sees half a JSON object except as a
+          truncated final line, which :meth:`read` skips.
+        * **Durable.** The handle is flushed and ``fsync``-ed before it
+          closes. Without that, a power loss can lose minutes of quotes that
+          the process already reported as written -- the recorder would claim
+          coverage it does not have, which is worse than a visible gap.
         """
         path = self._file(layer, instrument, session_date, name)
         written = 0
@@ -100,7 +107,113 @@ class ResearchStore:
                     fh.write(json.dumps(payload, default=str,
                                         separators=(",", ":")) + "\n")
                     written += 1
+                if written:
+                    fh.flush()
+                    os.fsync(fh.fileno())
         return written
+
+    # -- deduplication (sec6) ------------------------------------------
+    def _key_index_path(self, instrument: str, session_date: str) -> Path:
+        d = self.root / "index" / instrument
+        d.mkdir(parents=True, exist_ok=True)
+        return d / f"{session_date}.keys"
+
+    def load_keys(self, instrument: str, session_date: str) -> set:
+        """Every observation key already stored for this session.
+
+        Read from the sidecar index when present, and otherwise rebuilt from
+        the normalized layer itself. The rebuild is what makes a restart safe
+        without trusting the index file: the data is the source of truth.
+        """
+        path = self._key_index_path(instrument, session_date)
+        keys = set()
+        if path.exists():
+            with path.open("r", encoding="utf-8") as fh:
+                keys = {ln.strip() for ln in fh if ln.strip()}
+        for rec in self.read("normalized", instrument, session_date,
+                             "quotes.jsonl"):
+            try:
+                keys.add(observation_key(
+                    rec.get("underlying"), rec.get("event_time"),
+                    rec.get("option_symbol"), rec.get("expiry"),
+                    rec.get("strike") or 0.0, rec.get("option_type")))
+            except (TypeError, ValueError):
+                continue
+        return keys
+
+    def append_deduped(self, layer: str, instrument: str, session_date: str,
+                       name: str, records: Iterable[Any],
+                       seen: Optional[set] = None):
+        """Append only records whose observation key is new.
+
+        Returns ``(written, skipped, seen)``. ``seen`` is carried by the
+        caller across the session so the common path costs no disk reads.
+        Re-running a snapshot for an instant already recorded is therefore a
+        no-op rather than a second vote for that instant.
+        """
+        if seen is None:
+            seen = self.load_keys(instrument, session_date)
+        fresh, skipped = [], 0
+        new_keys = []
+        for rec in records:
+            key = (rec.observation_key() if hasattr(rec, "observation_key")
+                   else None)
+            if key is None:
+                fresh.append(rec)
+                continue
+            if key in seen:
+                skipped += 1
+                continue
+            seen.add(key)
+            new_keys.append(key)
+            fresh.append(rec)
+        written = self.append(layer, instrument, session_date, name, fresh) if fresh else 0
+        if new_keys:
+            kp = self._key_index_path(instrument, session_date)
+            with _WRITE_LOCK:
+                with kp.open("a", encoding="utf-8") as fh:
+                    fh.write("\n".join(new_keys) + "\n")
+                    fh.flush()
+                    os.fsync(fh.fileno())
+        return written, skipped, seen
+
+    # -- checkpoints (sec21) -------------------------------------------
+    def checkpoint_path(self, instrument: str, session_date: str) -> Path:
+        d = self.root / "checkpoint" / instrument
+        d.mkdir(parents=True, exist_ok=True)
+        return d / f"{session_date}.json"
+
+    def write_checkpoint(self, instrument: str, session_date: str,
+                         state: Dict[str, Any]) -> Path:
+        """Record progress so a restart resumes instead of starting over.
+
+        Written atomically via a temp file and ``os.replace``: a checkpoint
+        half-written by a crash would be worse than none, because the reader
+        cannot tell it is truncated.
+        """
+        path = self.checkpoint_path(instrument, session_date)
+        body = dict(state)
+        body.update({"instrument": instrument, "session_date": session_date,
+                     "recorder_version": RECORDER_VERSION,
+                     "updated_at": datetime.now().isoformat(timespec="seconds")})
+        tmp = path.with_suffix(".json.tmp")
+        with tmp.open("w", encoding="utf-8") as fh:
+            json.dump(body, fh, indent=2, default=str)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+        return path
+
+    def read_checkpoint(self, instrument: str,
+                        session_date: str) -> Optional[Dict[str, Any]]:
+        path = self.checkpoint_path(instrument, session_date)
+        if not path.exists():
+            return None
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return None
+
 
     def append_raw(self, instrument: str, session_date: str,
                    payload: Dict[str, Any], *, endpoint: str,
