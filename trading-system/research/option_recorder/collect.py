@@ -239,6 +239,16 @@ class InstrumentState:
         self.written = 0
         self.skipped = 0
         self.failures = 0
+        # -- Phase 14 sec7 persistence / integrity counters -------------
+        self.storage_errors = 0
+        self.reconnects = 0        # recoveries after a failed fetch
+        self.restarts = 0          # process starts that found a checkpoint
+        self.future_bars_refused = 0
+        self.synthetic_snapshots = 0
+        self.thin_chains = 0
+        self.first_snapshot_at: Optional[str] = None
+        self.last_snapshot_at: Optional[str] = None
+        self._last_failed = False
 
     def roll_if_needed(self, session_date: str) -> bool:
         if session_date == self.session_date:
@@ -246,10 +256,50 @@ class InstrumentState:
         self.__init__(self.instrument, session_date)
         return True
 
+    def as_checkpoint(self) -> Dict[str, Any]:
+        """Everything the session report needs that only the running process
+        knows. Outages, restarts and storage errors leave no trace in the data
+        itself, so a report rebuilt from files alone could not see them."""
+        return {
+            "snapshots": self.snapshots, "written": self.written,
+            "skipped": self.skipped, "failures": self.failures,
+            "storage_errors": self.storage_errors,
+            "reconnects": self.reconnects, "restarts": self.restarts,
+            "future_bars_refused": self.future_bars_refused,
+            "synthetic_snapshots": self.synthetic_snapshots,
+            "thin_chains": self.thin_chains,
+            "first_snapshot_at": self.first_snapshot_at,
+            "last_snapshot_at": self.last_snapshot_at,
+        }
+
 
 def _contract_key(instrument: str, symbol: str, expiry: str,
                   strike: float, side: str) -> str:
     return f"{instrument}|{symbol}|{expiry}|{float(strike):.2f}|{side}"
+
+
+def extract_vix(chain: Dict[str, Any]) -> Tuple[Optional[float], Optional[float]]:
+    """India VIX from the chain payload (Phase 14 sec3).
+
+    ``api_bridge`` serves this from the broker's ``indiavixData`` and sets it
+    to ``None`` when the broker sends nothing. Absent stays absent: carrying
+    the last reading forward would silently rewrite the volatility regime a
+    later study attributes its result to.
+    """
+    v = chain.get("indiaVix")
+    if not isinstance(v, dict):
+        return None, None
+    try:
+        value = float(v.get("value"))
+    except (TypeError, ValueError):
+        return None, None
+    if value <= 0:
+        return None, None
+    try:
+        chp = float(v.get("chp"))
+    except (TypeError, ValueError):
+        chp = None
+    return value, chp
 
 
 def chain_coverage(chain: Dict[str, Any]) -> Dict[str, Any]:
@@ -430,13 +480,21 @@ def snapshot(store: ResearchStore, instrument: str, *,
         result["error"] = "chain unavailable"
         if state is not None:
             state.failures += 1
+            state._last_failed = True
         return result
+    if state is not None and state._last_failed:
+        # Recovered. Counted so the session report can show that an outage
+        # happened and was survived, which a file-only report cannot see.
+        state.reconnects += 1
+        state._last_failed = False
     if chain.get("synthetic"):
         # Recorded anyway, so the gap is visible in the completeness report --
         # but it can never count as evidence.
         logger.warning("%s: chain came back SYNTHETIC (no broker session); "
                        "recording as SYNTHETIC, not usable for validation.",
                        instrument)
+        if state is not None:
+            state.synthetic_snapshots += 1
 
     cov = chain_coverage(chain)
     ok_cov, cov_problems = coverage_ok(cov)
@@ -448,12 +506,17 @@ def snapshot(store: ResearchStore, instrument: str, *,
         # reason to mark it, so the daily report can see it (sec10).
         logger.warning("%s: thin chain -- %s", instrument, "; ".join(cov_problems))
         result["coverage_problems"] = cov_problems
+        if state is not None:
+            state.thin_chains += 1
 
     hist = fetch_history(instrument)
     if hist is None:
         logger.warning("%s: underlying history unavailable; chain still "
                        "recorded, signal state skipped", instrument)
     state_sig = signal_state(hist) if hist is not None else None
+
+    vix, vix_chp = extract_vix(chain)
+    result["india_vix"] = vix
 
     quotes, counts = normalise_chain(instrument, chain, retrieved_at=retrieved,
                                      state=state)
@@ -468,12 +531,29 @@ def snapshot(store: ResearchStore, instrument: str, *,
         return result
 
     ev = retrieved.isoformat(timespec="seconds")
-    store.append_raw(instrument, session_date, chain,
-                     endpoint="/api/option-chain", retrieved_at=ev)
+    try:
+        store.append_raw(instrument, session_date, chain,
+                         endpoint="/api/option-chain", retrieved_at=ev)
+    except OSError as exc:
+        # A storage failure must be counted and surfaced, never swallowed: a
+        # session that quietly wrote nothing would otherwise look thin rather
+        # than broken.
+        logger.error("%s: RAW write failed: %s", instrument, exc)
+        if state is not None:
+            state.storage_errors += 1
+        result["error"] = f"storage failure: {exc}"
+        return result
 
     seen = state.seen_keys if state is not None else None
-    written, skipped, seen = store.append_deduped(
-        "normalized", instrument, session_date, "quotes.jsonl", quotes, seen)
+    try:
+        written, skipped, seen = store.append_deduped(
+            "normalized", instrument, session_date, "quotes.jsonl", quotes, seen)
+    except OSError as exc:
+        logger.error("%s: normalized write failed: %s", instrument, exc)
+        if state is not None:
+            state.storage_errors += 1
+        result["error"] = f"storage failure: {exc}"
+        return result
     result["written"], result["skipped"] = written, skipped
     if state is not None:
         state.seen_keys = seen
@@ -506,6 +586,7 @@ def snapshot(store: ResearchStore, instrument: str, *,
             result["error"] = "future-dated bar refused"
             if state is not None:
                 state.failures += 1
+                state.future_bars_refused += 1
             return result
 
         store.append("derived", instrument, session_date, "underlying.jsonl", [
@@ -515,7 +596,8 @@ def snapshot(store: ResearchStore, instrument: str, *,
                 previous_day_high=state_sig["pdh"], previous_day_low=state_sig["pdl"],
                 atr=state_sig["atr"], bar_open=state_sig["bar"]["open"],
                 bar_high=state_sig["bar"]["high"], bar_low=state_sig["bar"]["low"],
-                bar_close=state_sig["bar"]["close"])])
+                bar_close=state_sig["bar"]["close"],
+                india_vix=vix, india_vix_change_pct=vix_chp)])
 
         if state_sig["in_band"]:
             # One setup per (session, instrument, direction) -- the Phase 10
@@ -536,12 +618,13 @@ def snapshot(store: ResearchStore, instrument: str, *,
             result["signal"] = setup_id
 
     if state is not None:
-        store.write_checkpoint(instrument, session_date, {
-            "snapshots": state.snapshots, "written": state.written,
-            "skipped": state.skipped, "failures": state.failures,
-            "last_event_time": ev,
-            "last_coverage": cov, "last_coverage_ok": ok_cov,
-        })
+        if state.first_snapshot_at is None:
+            state.first_snapshot_at = ev
+        state.last_snapshot_at = ev
+        cp = state.as_checkpoint()
+        cp.update({"last_event_time": ev, "last_coverage": cov,
+                   "last_coverage_ok": ok_cov})
+        store.write_checkpoint(instrument, session_date, cp)
 
     result["ok"] = True
     return result
@@ -597,12 +680,15 @@ def main(argv: Optional[List[str]] = None) -> int:
             st.seen_keys = store.load_keys(inst, today)
             cp = store.read_checkpoint(inst, today)
             if cp:
-                st.snapshots = int(cp.get("snapshots") or 0)
-                st.written = int(cp.get("written") or 0)
-                st.skipped = int(cp.get("skipped") or 0)
+                for f in ("snapshots", "written", "skipped", "failures",
+                          "storage_errors", "reconnects", "future_bars_refused",
+                          "synthetic_snapshots", "thin_chains"):
+                    setattr(st, f, int(cp.get(f) or 0))
+                st.first_snapshot_at = cp.get("first_snapshot_at")
+                st.restarts = int(cp.get("restarts") or 0) + 1
                 logger.info("%s: resumed from checkpoint -- %d snapshots, "
-                            "%d observations already on disk",
-                            inst, st.snapshots, len(st.seen_keys))
+                            "%d observations already on disk (restart #%d)",
+                            inst, st.snapshots, len(st.seen_keys), st.restarts)
             elif st.seen_keys:
                 logger.info("%s: %d observations already on disk for %s",
                             inst, len(st.seen_keys), today)

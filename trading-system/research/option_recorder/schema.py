@@ -29,7 +29,7 @@ from typing import Any, Dict, Optional
 
 #: Schema version. Bumped on any field change; stored on every record so a
 #: frozen dataset can always be read back with the reader that wrote it.
-SCHEMA_VERSION = "1.1.0"   # 1.1.0: staleness + lineage fields (Phase 13)
+SCHEMA_VERSION = "1.2.0"   # 1.2.0: India VIX on the underlying (Phase 14)
 
 #: Version of the COLLECTOR that produced a record (Phase 13 sec19). Bumped
 #: when collection behaviour changes in a way a researcher must know about.
@@ -82,6 +82,10 @@ FIELD_PROVENANCE: Dict[str, Provenance] = {
     "expiry": Provenance.OBSERVED,
     "option_type": Provenance.OBSERVED,
     "underlying_price": Provenance.OBSERVED,
+    # India VIX is a real broker value (api_bridge serves it from
+    # `indiavixData`), not a model output. It is OBSERVED when present and
+    # simply absent when the broker does not send it -- never interpolated.
+    "india_vix": Provenance.OBSERVED,
     # The broker does NOT publish IV or Greeks. api_bridge solves IV from the
     # real premium and derives Greeks from that. Reproducible from stored
     # inputs, so they are recorded as DERIVED and the raw inputs are kept.
@@ -280,7 +284,14 @@ class UnderlyingSnapshot:
     bar_high: Optional[float] = None
     bar_low: Optional[float] = None
     bar_close: Optional[float] = None
+    #: India VIX at this snapshot, when the broker supplied it. ``None`` means
+    #: it was not sent -- it is never carried forward from an earlier snapshot
+    #: and never modelled, because a stale volatility reading silently
+    #: rewrites the regime a later study would attribute a result to.
+    india_vix: Optional[float] = None
+    india_vix_change_pct: Optional[float] = None
     schema_version: str = SCHEMA_VERSION
+    recorder_version: str = RECORDER_VERSION
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
