@@ -382,8 +382,11 @@ class TestAudit:
         assert set(s["layers"]) >= {"raw", "normalized"}
 
     def test_next_checkpoint_is_the_next_rung(self, store, monkeypatch):
+        """The rung comes from the ladder, not from --target. Phase 15 added
+        the early 5 and 10 rungs, so one COMPLETE session points at 5."""
         self._session(store, monkeypatch, SESSION)
-        assert AU.audit(store, target=20)["next_checkpoint"] == 20
+        nxt = AU.audit(store, target=20)["next_checkpoint"]
+        assert nxt == min(c for c in AU.CHECKPOINTS if c > 1)
 
     def test_audit_never_reports_strategy_performance(self, store, monkeypatch):
         self._session(store, monkeypatch, SESSION)
