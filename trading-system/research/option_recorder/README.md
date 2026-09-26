@@ -25,7 +25,13 @@ python -m research.option_recorder.qa
 # full evidence report for one session
 python -m research.option_recorder.session_report --instrument NIFTY --session YYYY-MM-DD
 
-# progress toward the next checkpoint (20 / 60 / 125 COMPLETE sessions)
+# end-of-day close-out: manifest, integrity, report, classification, counter
+python -m research.option_recorder.eod
+
+# incident log (append-only)
+python -m research.option_recorder.incidents list
+
+# progress toward the next checkpoint (5 / 10 / 20 / 60 / 125 COMPLETE sessions)
 python -m research.option_recorder.audit --target 20
 
 # full offline rehearsal: no network, no broker, deletes what it writes

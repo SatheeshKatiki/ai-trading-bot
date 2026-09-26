@@ -98,17 +98,27 @@ data has not been altered.
 
 ---
 
-## After the session
+## After the session — one command
 
 ```bash
-# one-line-per-session table
-python -m research.option_recorder.qa
+python -m research.option_recorder.eod
+```
 
-# full evidence report for one session, persisted beside the data
-python -m research.option_recorder.session_report     --instrument NIFTY --session YYYY-MM-DD --write
+That runs the entire end-of-day procedure for today: manifest, integrity
+verification, session report (persisted), incident review, classification and
+the `COMPLETE_SESSIONS` counter. Pass `--session YYYY-MM-DD` for an earlier
+day. It is re-runnable.
 
-# progress toward the next checkpoint
-python -m research.option_recorder.audit --target 20
+**It cannot override a classification, by design.** The status comes from the
+QA rules and there is no flag that could supply one; a test asserts none
+exists.
+
+The individual commands remain available:
+
+```bash
+python -m research.option_recorder.qa                       # one line per session
+python -m research.option_recorder.session_report     --instrument NIFTY --session YYYY-MM-DD --write         # full evidence record
+python -m research.option_recorder.audit --target 20        # cumulative audit
 ```
 
 ```
@@ -150,25 +160,39 @@ Two things it does that `qa` cannot:
   `available_at` precedes its `event_time` forces the session `UNUSABLE`,
   whatever the rest of the scorecard says.
 
-## Incident log (§9)
+## Incident log
 
-When anything on this list happens, append a dated entry to
-`research_data/INCIDENTS.md` — token unavailable, synthetic chain, API outage,
-recorder crash, storage failure, timezone mismatch, duplicate corruption,
-future timestamp, malformed chain:
+Every failure gets an entry. The log is a tool rather than a markdown file
+because the sessions where something went wrong are exactly the sessions
+where the operator is busy dealing with it — and an incident log missing its
+worst entries is worse than none, since the 20-session audit would then read
+as clean.
 
+```bash
+python -m research.option_recorder.incidents log     --session 2026-09-28 --instrument NIFTY --type API_OUTAGE     --detected 11:20 --last-valid 11:15     --cause "api_bridge restarted"     --action "recorder restarted 11:24, resumed from checkpoint"     --usable INCOMPLETE
+
+python -m research.option_recorder.incidents list
+python -m research.option_recorder.incidents summary
 ```
-## 2026-10-07 NIFTY
-what happened   : api_bridge restarted at 11:20, recorder lost 3 snapshots
-detected by     : gap in qa output / recorder log
-session status  : INCOMPLETE
-action taken    : recorder restarted 11:24, resumed from checkpoint
-data touched    : none -- no file was edited
-```
+
+Types: `TOKEN_UNAVAILABLE`, `SYNTHETIC_CHAIN`, `API_OUTAGE`,
+`RECORDER_CRASH`, `STORAGE_FAILURE`, `TIMEZONE_MISMATCH`,
+`DUPLICATE_CORRUPTION`, `FUTURE_TIMESTAMP`, `MALFORMED_CHAIN`,
+`NOT_COLLECTED`, `RESTART_DRILL`, `OTHER`.
+
+**A day the pre-flight refused must be logged as `NOT_COLLECTED`.** It never
+reaches the store, so it exists only here; without the entry the audit would
+understate how many trading days were actually lost. (Weekends and holidays
+are not trading days and are not logged.)
+
+The log is append-only and checksummed. A mistaken entry is corrected by
+appending a correction, never by editing.
 
 **Never patch a historical record to make a session look better.** If a
 normalisation bug is found later, write a NEW normalized version with a
-bumped `normalization_version`; RAW is never rewritten.
+bumped `normalization_version`; RAW is never rewritten. If data ever *is*
+altered, the incident must say so (`--data-modified`) — the audit then
+refuses a `DATA QUALITY PASS` until it is resolved.
 
 ## Restart drill (§10)
 
@@ -194,6 +218,8 @@ and sessions only arrive one per day.
 
 | After | What to do |
 |---|---|
+| **5 COMPLETE sessions** | Infrastructure-only checkpoint: continuity, quote quality, storage and timestamp integrity, reconnect behaviour, unresolved defects. A systemic recorder defect found here costs 5 sessions instead of 20 — stop and fix before continuing. |
+| **10 COMPLETE sessions** | Re-run the recorder tests, schema validation, cumulative QA, duplicate/timestamp/storage audits. Require `0 unexplained critical data-integrity defects` before continuing. |
 | **20 COMPLETE sessions** | Infrastructure review only. Confirm coverage, freshness and integrity are holding. **No strategy analysis** — 20 sessions cannot answer an economic question, and looking early is how a result gets chosen rather than measured. |
 | **60 COMPLETE sessions** | First look at option friction: measured spread, measured theta per session per DTE regime. Descriptive only, still no go/no-go. |
 | **125 COMPLETE sessions** (~6 months) | The pre-declared economic validation from Phase 11 may run, on `available_at`-filtered data, with the DEV/VAL/HOLDOUT split declared **before** the data is examined. |
