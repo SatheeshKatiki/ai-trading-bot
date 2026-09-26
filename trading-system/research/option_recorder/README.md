@@ -1,4 +1,4 @@
-# Observed option data recorder (Phase 12, hardened in Phase 13)
+# Observed option data recorder (Phase 12; hardened 13; operated 14)
 
 **Research infrastructure. Observes and records. Never trades.**
 
@@ -10,6 +10,9 @@ answered from observation instead of from a model.
 ## Run it
 
 ```bash
+# pre-session go/no-go gate -- exit 0 = GO, exit 2 = do not collect
+python -m research.option_recorder.preflight
+
 # see what it would capture, write nothing
 python -m research.option_recorder.collect --once --dry-run
 
@@ -18,6 +21,12 @@ python -m research.option_recorder.collect --interval 300
 
 # daily health scorecard + integrity report
 python -m research.option_recorder.qa
+
+# full evidence report for one session
+python -m research.option_recorder.session_report --instrument NIFTY --session YYYY-MM-DD
+
+# progress toward the next checkpoint (20 / 60 / 125 COMPLETE sessions)
+python -m research.option_recorder.audit --target 20
 
 # full offline rehearsal: no network, no broker, deletes what it writes
 python -m research.option_recorder.selftest

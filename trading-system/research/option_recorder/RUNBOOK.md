@@ -16,23 +16,27 @@ recorder that fails quietly collects months of holes nobody notices.
    chain *only when a Fyers session exists*. With no session the endpoint
    falls back to a Black–Scholes model chain flagged `synthetic: true`.
 
-2. **Prove the session is real before committing the day**:
+2. **Run the pre-flight gate.** It writes nothing and checks every condition
+   mechanically, because the one failure that matters — a synthetic chain from
+   a missing broker session — looks completely normal at a glance and costs a
+   whole trading day:
 
    ```bash
    cd "D:/Projects/AI trading Bot/trading-system"
-   python -m research.option_recorder.collect --once --dry-run
+   python -m research.option_recorder.preflight
    ```
 
-   Look at the `quality=` field in the log line:
+   It verifies the clock is IST, the session date is today, storage is
+   writable, the chain endpoint is reachable, **the chain is real and not
+   synthetic**, quotes parse and classify, India VIX is present, history is
+   available, and history contains no future-dated bars.
 
-   | What you see | What it means | What to do |
-   |---|---|---|
-   | `{'VALID': 300}` or similar | real broker chain | start the recorder |
-   | any `SYNTHETIC` | **no broker session** | fix the login first — a synthetic day is worth nothing |
-   | `ERROR=chain unavailable` | bridge down or not listening | start the bridge |
-   | `strikes=3` (thin) | chain is degraded | start anyway; the day will be marked, not lost |
+   * **exit code 0 → `GO`** — start the recorder.
+   * **exit code 2 → `NO-GO`** — do not collect. The failing checks are listed.
 
-   A dry run writes nothing at all, so it is always safe.
+   `warn` lines (weekend, market closed, thin chain, missing VIX) are
+   advisory and never block: a degraded chain is still real data worth
+   recording, and dropping it would hide the degradation.
 
 3. Optionally rehearse the whole pipeline offline (no network, no broker,
    deletes everything it writes):
@@ -97,7 +101,14 @@ data has not been altered.
 ## After the session
 
 ```bash
+# one-line-per-session table
 python -m research.option_recorder.qa
+
+# full evidence report for one session, persisted beside the data
+python -m research.option_recorder.session_report     --instrument NIFTY --session YYYY-MM-DD --write
+
+# progress toward the next checkpoint
+python -m research.option_recorder.audit --target 20
 ```
 
 ```
@@ -119,6 +130,61 @@ so one fatal problem cannot be averaged away by five healthy ones.
 Any `BLOCKER:` line printed under a session says exactly which bound failed.
 
 ---
+
+## The session report
+
+`session_report` is the per-day evidence record: metadata and versions, data
+quality (valid / invalid / stale / synthetic / zero bid-ask / crossed /
+duplicates / malformed / missing intervals), persistence (raw and normalized
+row counts, setups, storage errors, reconnects, restarts) and time integrity
+(timezone, future timestamps, `available_at` vs `event_time`).
+
+Two things it does that `qa` cannot:
+
+* **It reads the checkpoint.** Outages, restarts and storage errors leave no
+  trace in the data files, so a report rebuilt from data alone would show a
+  clean session.
+* **It re-derives the timestamp guarantees from stored data.** The recorder
+  enforces them at write time; the report checks them again at read time. A
+  guarantee only ever asserted by the writer is not a guarantee. Any row whose
+  `available_at` precedes its `event_time` forces the session `UNUSABLE`,
+  whatever the rest of the scorecard says.
+
+## Incident log (§9)
+
+When anything on this list happens, append a dated entry to
+`research_data/INCIDENTS.md` — token unavailable, synthetic chain, API outage,
+recorder crash, storage failure, timezone mismatch, duplicate corruption,
+future timestamp, malformed chain:
+
+```
+## 2026-10-07 NIFTY
+what happened   : api_bridge restarted at 11:20, recorder lost 3 snapshots
+detected by     : gap in qa output / recorder log
+session status  : INCOMPLETE
+action taken    : recorder restarted 11:24, resumed from checkpoint
+data touched    : none -- no file was edited
+```
+
+**Never patch a historical record to make a session look better.** If a
+normalisation bug is found later, write a NEW normalized version with a
+bumped `normalization_version`; RAW is never rewritten.
+
+## Restart drill (§10)
+
+Once during the first 20 sessions, prove resume works on real data. Do it
+mid-session, when a missed snapshot costs one interval rather than the day:
+
+1. Note the snapshot count in the log.
+2. `Ctrl+C` the recorder.
+3. Start it again with the same command.
+4. Confirm the log says `resumed from checkpoint ... (restart #1)`.
+5. Confirm the next line shows a large `dup=` and `new=0` for the repeated
+   instant.
+6. After the session, confirm `duplicates: 0` in the session report and that
+   integrity still passes.
+
+Record it in the incident log as a planned drill.
 
 ## Checkpoints
 
