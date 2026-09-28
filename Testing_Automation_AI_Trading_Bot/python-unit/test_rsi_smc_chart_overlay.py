@@ -131,11 +131,41 @@ def test_order_blocks_are_not_returned(call):
     assert "order_block" not in json.dumps(out).lower()
 
 
+def _all_keys(obj, out=None):
+    """Every key name anywhere in the payload."""
+    out = set() if out is None else out
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            out.add(str(k).lower())
+            _all_keys(v, out)
+    elif isinstance(obj, list):
+        for v in obj:
+            _all_keys(v, out)
+    return out
+
+
 def test_no_trade_or_signal_field_leaks_into_the_overlay(call):
-    blob = json.dumps(call()).lower()
-    for banned in ("buy ce", "buy pe", "entry", "stoploss", "target",
-                   "order_id", "quantity", "premium"):
-        assert banned not in blob, f"overlay leaked {banned}"
+    """Checks KEY NAMES, not raw text.
+
+    An earlier version matched substrings against the whole serialised
+    payload. That broke twice over: "premium" is a legitimate key here -- the
+    Premium half of the dealing range, a price band, nothing to do with an
+    option premium -- and holding a 280 KB string in an assertion made the
+    failure itself unrenderable, so pytest appeared to hang instead of
+    reporting.
+    """
+    keys = _all_keys(call())
+    banned = {"entry", "entry_price", "stoploss", "sl", "target", "order_id",
+              "quantity", "qty", "side_to_trade", "option_premium", "pnl",
+              "signal", "action"}
+    leaked = sorted(keys & banned)
+    assert not leaked, f"overlay leaked execution fields: {leaked}"
+
+
+def test_overlay_names_no_tradeable_contract(call):
+    """The overlay describes the UNDERLYING. It must never name a contract,
+    or it starts to look like a recommendation to buy one."""
+    assert "option_symbol" not in _all_keys(call())
 
 
 def test_sweeps_are_deduplicated(call):
@@ -238,3 +268,78 @@ def test_settings_json_gained_no_rsi_smc_key():
     cfg = json.loads((ROOT / "config" / "settings.json").read_text(encoding="utf-8"))
     assert cfg["active_strategy"] == "ema9_rsi_momentum"
     assert not [k for k in cfg if "rsi_smc" in k]
+
+
+# ---------------------------------------------------------------------
+# dealing range and anchors (the 2026-09-28 "Strong High at 22,880" bug)
+# ---------------------------------------------------------------------
+
+class TestDealingRange:
+
+    def test_range_block_is_present(self, call):
+        r = call()["range"]
+        assert r is not None
+        for key in ("equilibrium", "premium", "discount", "ote", "strong_high",
+                    "weak_high", "strong_low", "weak_low", "trend", "as_of_time"):
+            assert key in r
+
+    def test_highs_sit_above_lows(self, call):
+        r = call()
+        r = r["range"]
+        highs = [r[k]["price"] for k in ("strong_high", "weak_high") if r[k]]
+        lows = [r[k]["price"] for k in ("strong_low", "weak_low") if r[k]]
+        assert highs and lows
+        assert min(highs) > max(lows), (
+            "a 'high' anchor priced below a 'low' anchor is the bug that put "
+            "Strong High at the bottom of a crash")
+
+    def test_zones_are_ordered_and_bracket_equilibrium(self, call):
+        r = call()["range"]
+        assert r["premium"][0] < r["premium"][1]
+        assert r["discount"][0] < r["discount"][1]
+        # premium sits above discount, equilibrium between them
+        assert r["discount"][1] <= r["premium"][0] + 1e-6
+        assert r["discount"][0] <= r["equilibrium"] <= r["premium"][1]
+
+    def test_anchors_point_at_a_real_bar_or_admit_they_do_not(self, call):
+        """A wrong anchor is worse than none, so an unmatched level must say
+        anchored=False rather than land on an arbitrary candle."""
+        r = call()["range"]
+        for key in ("strong_high", "weak_high", "strong_low", "weak_low"):
+            a = r[key]
+            if a is None:
+                continue
+            if a["anchored"]:
+                assert a["epoch"] is not None and a["time"] is not None
+            else:
+                assert a["epoch"] is None
+
+    def test_anchor_sits_on_its_own_price(self, call):
+        """The anchor's bar must actually reach the anchor's price -- that is
+        what 'anchored to the swing' means."""
+        raw = pd.read_csv(FIXTURE)
+        tcol = next(c for c in raw.columns if c.lower() in ("datetime", "time", "date"))
+        raw[tcol] = pd.to_datetime(raw[tcol])
+        df = raw.set_index(tcol).sort_index()
+
+        r = call()["range"]
+        for key, col in (("strong_high", "high"), ("weak_high", "high"),
+                         ("strong_low", "low"), ("weak_low", "low")):
+            a = r[key]
+            if not a or not a["anchored"]:
+                continue
+            bar = df.loc[pd.Timestamp(a["time"])]
+            assert abs(float(bar[col]) - a["price"]) < 0.5, (
+                f"{key} claims {a['price']} at {a['time']} but that bar's "
+                f"{col} is {float(bar[col])}")
+
+    def test_range_follows_the_data_it_is_given(self, call, rows):
+        """Item 3: the zones must track the active dealing range, not sit
+        where they were first computed."""
+        early = call(data=rows[:400])["range"]
+        late = call()["range"]
+        assert early["premium"] != late["premium"]
+        assert early["equilibrium"] != late["equilibrium"]
+
+    def test_empty_history_has_no_range(self, call):
+        assert call(data=[])["range"] is None
