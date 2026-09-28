@@ -202,7 +202,32 @@ export interface AppliedIndicatorsState {
 }
 
 /** One overlay payload from the engine. Shapes mirror the endpoint. */
+export interface RsiSmcAnchor {
+  price: number;
+  time: string | null;
+  epoch: number | null;
+  /** False when no swing carried this price, so the chart draws it as a
+   *  level at the right edge instead of guessing a bar. */
+  anchored: boolean;
+}
+
+export interface RsiSmcRange {
+  as_of_time: string | null;
+  trend: number;
+  equilibrium: number | null;
+  premium: [number, number] | null;
+  discount: [number, number] | null;
+  ote: [number, number] | null;
+  strong_high: RsiSmcAnchor | null;
+  weak_high: RsiSmcAnchor | null;
+  strong_low: RsiSmcAnchor | null;
+  weak_low: RsiSmcAnchor | null;
+  active_swing_high: RsiSmcAnchor | null;
+  active_swing_low: RsiSmcAnchor | null;
+}
+
 export interface RsiSmcOverlay {
+  range?: RsiSmcRange | null;
   strategy_id?: string;
   view?: string;
   causal?: boolean;
@@ -477,6 +502,14 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
     return Object.values(appliedIndicators).filter(Boolean).length;
   }, [appliedIndicators]);
 
+  /** The six that ship on by default. The engine overlay is opt-in and is
+   *  deliberately not one of them, so "Restore" means "put the defaults
+   *  back", not "turn everything on". */
+  const missingDefaultIndicator = useMemo(() => {
+    return (["ema1", "ema2", "smc", "frvp", "rsi", "vol"] as const)
+      .some((k) => !appliedIndicators[k]);
+  }, [appliedIndicators]);
+
   // Persistent collapse all state from localStorage
   useEffect(() => {
     try {
@@ -601,6 +634,41 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
     };
   }, [setShowRsi, setRsiLength, setRsiOverbought, setRsiOversold, setRsiColor]);
 
+  /** Draw a label, nudged vertically until it clears everything already
+   *  placed. Canvas has no layout, so two indicators writing near the same
+   *  price simply overprint -- which is how "Strong High", "Weak Low" and
+   *  "LL CHoCH" ended up unreadable on top of each other. */
+  const placeLabel = (
+    ctx: CanvasRenderingContext2D,
+    taken: { x1: number; y1: number; x2: number; y2: number }[],
+    text: string, x: number, y: number,
+    opts: { align?: CanvasTextAlign; prefer?: 1 | -1; maxX?: number } = {},
+  ): boolean => {
+    const align = opts.align ?? "left";
+    const prefer = opts.prefer ?? -1;
+    const w = ctx.measureText(text).width;
+    const h = 10;
+    const x1 = align === "center" ? x - w / 2 : align === "right" ? x - w : x;
+    if (opts.maxX !== undefined && x1 + w > opts.maxX) return false;
+
+    let cy = y;
+    for (let attempt = 0; attempt < 14; attempt++) {
+      const box = { x1, y1: cy - h / 2, x2: x1 + w, y2: cy + h / 2 };
+      const clash = taken.some(t => !(box.x2 < t.x1 || box.x1 > t.x2
+                                      || box.y2 < t.y1 || box.y1 > t.y2));
+      if (!clash) {
+        taken.push(box);
+        const prev = ctx.textAlign;
+        ctx.textAlign = align;
+        ctx.fillText(text, x, cy);
+        ctx.textAlign = prev;
+        return true;
+      }
+      cy += prefer * (h + 2) * (attempt + 1) * (attempt % 2 === 0 ? 1 : -1);
+    }
+    return false;
+  };
+
   const redrawCanvasOverlays = () => {
     const canvas = overlayCanvasRef.current;
     const chart = chartRef.current;
@@ -646,6 +714,14 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
     }
 
     const { smc, frvp } = calculatedIndicatorsRef.current;
+    // When the engine overlay is on it draws the dealing range and the
+    // strong/weak anchors from Python, correctly anchored. The browser's own
+    // copy must then stand down rather than draw a second, differently
+    // anchored set on top -- that double-draw is what put "Strong High" on
+    // the 2026-09-28 breakdown candle next to the real one.
+    const engineRangeActive = Boolean(
+      appliedIndicatorsRef.current.rsiSmc && showRsiSmcRef.current
+      && !hideAllIndicatorsRef.current && rsiSmcRef.current?.range);
     const mSettings = manaSettingsRef.current;
     const rightScaleMargin = chartPaneWidth;
 
@@ -749,7 +825,90 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
         ctx.fill();
       }
 
-      // e. BOS / CHoCH labels
+      // e. dealing range: premium / equilibrium / discount, from the engine
+      const taken: { x1: number; y1: number; x2: number; y2: number }[] = [];
+      const rng = ov.range;
+      if (rng) {
+        const bandX = Math.max(65, chartPaneWidth - 260);
+        const bandW = Math.max(40, chartPaneWidth - 2 - bandX);
+        const drawZone = (z: [number, number] | null, fill: string,
+                          stroke: string, name: string) => {
+          if (!z) return;
+          const yA = yOf(z[1]), yB = yOf(z[0]);
+          if (yA === null || yB === null) return;
+          const top = Math.min(yA, yB), h = Math.abs(yA - yB);
+          if (h < 1) return;
+          ctx.fillStyle = fill;
+          ctx.fillRect(bandX, top, bandW, h);
+          ctx.strokeStyle = stroke;
+          ctx.lineWidth = 1;
+          ctx.strokeRect(bandX, top, bandW, h);
+          ctx.fillStyle = stroke;
+          ctx.font = "bold 8.5px ui-monospace, monospace";
+          placeLabel(ctx, taken, name, bandX + 4, top + h / 2,
+                     { maxX: chartPaneWidth - 2 });
+        };
+        drawZone(rng.premium, "rgba(244,63,94,0.10)", "rgba(244,63,94,0.55)", "Premium");
+        drawZone(rng.discount, "rgba(20,184,166,0.10)", "rgba(20,184,166,0.55)", "Discount");
+        drawZone(rng.ote, "rgba(167,139,250,0.10)", "rgba(167,139,250,0.55)", "OTE");
+
+        if (rng.equilibrium !== null) {
+          const yEq = yOf(rng.equilibrium);
+          if (yEq !== null) {
+            ctx.strokeStyle = "rgba(148,163,184,0.75)";
+            ctx.setLineDash([5, 4]);
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(bandX, yEq);
+            ctx.lineTo(bandX + bandW, yEq);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.fillStyle = "rgba(148,163,184,0.95)";
+            ctx.font = "bold 8px ui-monospace, monospace";
+            placeLabel(ctx, taken, "Equilibrium", bandX + 4, yEq,
+                       { maxX: chartPaneWidth - 2 });
+          }
+        }
+
+        // f. strong / weak anchors, drawn at the swing that formed them.
+        //    An unanchored one becomes a level at the right edge rather than
+        //    a marker on a bar we cannot identify.
+        ctx.font = "bold 8.5px ui-monospace, monospace";
+        const anchors: [string, any, string, 1 | -1][] = [
+          ["Strong High", rng.strong_high, BEAR, -1],
+          ["Weak High", rng.weak_high, BEAR, -1],
+          ["Strong Low", rng.strong_low, BULL, 1],
+          ["Weak Low", rng.weak_low, BULL, 1],
+        ];
+        for (const [name, a, col, dir] of anchors) {
+          if (!a) continue;
+          const y = yOf(a.price);
+          if (y === null) continue;
+          const x = a.anchored && a.epoch !== null ? xOf(a.epoch) : null;
+          ctx.strokeStyle = col;
+          ctx.fillStyle = col;
+          ctx.lineWidth = 1;
+          if (x !== null && inPane(x)) {
+            ctx.beginPath();
+            ctx.moveTo((x as number) - 6, y);
+            ctx.lineTo((x as number) + 6, y);
+            ctx.stroke();
+            placeLabel(ctx, taken, name, (x as number) + 8, y + dir * 6,
+                       { prefer: dir, maxX: chartPaneWidth - 2 });
+          } else {
+            ctx.setLineDash([3, 3]);
+            ctx.beginPath();
+            ctx.moveTo(chartPaneWidth - 90, y);
+            ctx.lineTo(chartPaneWidth - 2, y);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            placeLabel(ctx, taken, name, chartPaneWidth - 4, y + dir * 6,
+                       { align: "right", prefer: dir, maxX: chartPaneWidth - 2 });
+          }
+        }
+      }
+
+      // g. BOS / CHoCH labels
       ctx.font = "9px ui-monospace, monospace";
       ctx.textBaseline = "middle";
       for (const ev of ov.structure || []) {
@@ -765,10 +924,9 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
         ctx.stroke();
         const label = (ev.type || "").toUpperCase().startsWith("BOS") ? "BOS" : "CHoCH";
         ctx.fillStyle = col;
-        const tw = ctx.measureText(label).width;
-        if ((x as number) + 7 + tw < chartPaneWidth - 2) {
-          ctx.fillText(label, (x as number) + 7, ev.bullish ? y - 6 : y + 6);
-        }
+        placeLabel(ctx, taken, label, (x as number) + 7,
+                   ev.bullish ? y - 6 : y + 6,
+                   { prefer: ev.bullish ? -1 : 1, maxX: chartPaneWidth - 2 });
       }
       ctx.restore();
     }
@@ -903,7 +1061,8 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
       }
 
       // 2C. Dealing Range Boxes: Premium, Equilibrium & Discount - Exact TradingView LuxAlgo Aesthetic
-      if (mSettings.smc.show_premium_discount !== false && smc.dealingRange) {
+      if (mSettings.smc.show_premium_discount !== false && smc.dealingRange
+          && !engineRangeActive) {
         const dr = smc.dealingRange;
         const yTop = series.priceToCoordinate(dr.top);
         const yBottom = series.priceToCoordinate(dr.bottom);
@@ -980,7 +1139,7 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
       }
 
       // 2D. Weak High & Strong Low (and Strong High & Weak Low)
-      if (mSettings.smc.show_strong_weak_high_low !== false) {
+      if (mSettings.smc.show_strong_weak_high_low !== false && !engineRangeActive) {
         if (smc.weakHigh) {
           const y = series.priceToCoordinate(smc.weakHigh.price);
           const x = chart.timeScale().timeToCoordinate(smc.weakHigh.time as Time);
@@ -2558,6 +2717,7 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
                 {appliedIndicators.frvp && showFrvp && <span className="w-1.5 h-1.5 rounded-full bg-amber-400" title="FRVP" />}
                 {appliedIndicators.rsi && showRsi && <span className="w-1.5 h-1.5 rounded-full bg-purple-400" title="MDE Pro" />}
                 {appliedIndicators.vol && showVolume && <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" title="Volume" />}
+                {appliedIndicators.rsiSmc && showRsiSmc && <span className="w-1.5 h-1.5 rounded-full bg-violet-400" title="RSI SMC (engine overlay)" />}
               </div>
             )}
           </div>
@@ -2576,7 +2736,7 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
           </button>
 
           {/* If any indicator was removed, provide a quick one-click Restore button */}
-          {activeAppliedCount < 6 && (
+          {missingDefaultIndicator && (
             <button
               type="button"
               onClick={handleResetAllIndicators}
