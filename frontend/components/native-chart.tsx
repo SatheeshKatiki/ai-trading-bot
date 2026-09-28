@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useRef, useState, useMemo } from "react";
+import React, { useEffect, useRef, useState, useMemo, useCallback } from "react";
 import { createChart, ColorType, IChartApi, ISeriesApi, Time, TickMarkType, CandlestickSeries, LineSeries, HistogramSeries, CrosshairMode, createSeriesMarkers } from "lightweight-charts";
 import { RefreshCw, Settings2, X, ChevronDown, ChevronUp, Maximize2 as ResetZoomIcon, Download, Tag, Bot, Eye, EyeOff, Layers, BarChart3, Activity, Plus } from "lucide-react";
 import { useTheme } from "@/components/theme-provider";
@@ -197,6 +197,23 @@ export interface AppliedIndicatorsState {
   frvp: boolean;
   rsi: boolean;
   vol: boolean;
+  /** The backend strategy's own SMC overlay (GET /api/rsi-smc-overlay). */
+  rsiSmc: boolean;
+}
+
+/** One overlay payload from the engine. Shapes mirror the endpoint. */
+export interface RsiSmcOverlay {
+  strategy_id?: string;
+  view?: string;
+  causal?: boolean;
+  active?: boolean;
+  bars?: number;
+  params?: Record<string, any>;
+  structure: { epoch: number; type: string; bullish: boolean; price: number | null; internal?: boolean }[];
+  fvg: { epoch: number; bullish: boolean; top: number | null; bottom: number | null; mitigated_time: string | null }[];
+  sweeps: { epoch: number; side: string; level: number | null; extreme: number | null }[];
+  levels: { epoch: number; high: number | null; low: number | null }[];
+  pd_band: { epoch: number; pdh: number | null; pdl: number | null; tol: number | null }[];
 }
 
 export const DEFAULT_APPLIED_INDICATORS: AppliedIndicatorsState = {
@@ -206,6 +223,9 @@ export const DEFAULT_APPLIED_INDICATORS: AppliedIndicatorsState = {
   frvp: true,
   rsi: true,
   vol: true,
+  // Off by default: a new overlay must not silently appear on charts that
+  // never asked for it. The user adds it from the indicator directory.
+  rsiSmc: false,
 };
 
 interface NativeChartProps {
@@ -322,6 +342,17 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
     const onOpenIndicators = () => {
       setShowManaIndicatorsModal(true);
     };
+    const onRsiSmcToggled = (e: any) => {
+      const on = Boolean(e?.detail?.value);
+      setAppliedIndicators((prev) => {
+        const next = { ...prev, rsiSmc: on };
+        try {
+          localStorage.setItem("mana_applied_indicators", JSON.stringify(next));
+        } catch {}
+        return next;
+      });
+      if (on) setShowRsiSmc(true);
+    };
 
     window.addEventListener("chart:reset-zoom", onResetZoom);
     window.addEventListener("chart:toggle-signals", onToggleSignals as EventListener);
@@ -329,6 +360,7 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
     window.addEventListener("chart:export-png", onExportPng);
     window.addEventListener("chart:open-settings", onOpenSettings);
     window.addEventListener("chart:open-indicators", onOpenIndicators);
+    window.addEventListener("chart:rsi-smc-toggled", onRsiSmcToggled as EventListener);
 
     // Initial sync
     window.dispatchEvent(new CustomEvent("chart:signals-changed", { detail: { value: showAutoSignalsState } }));
@@ -341,6 +373,7 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
       window.removeEventListener("chart:export-png", onExportPng);
       window.removeEventListener("chart:open-settings", onOpenSettings);
       window.removeEventListener("chart:open-indicators", onOpenIndicators);
+      window.removeEventListener("chart:rsi-smc-toggled", onRsiSmcToggled as EventListener);
     };
   }, [symbol, timeframe, showAutoSignalsState, showMarkers]);
 
@@ -348,6 +381,7 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
   const [showEma1, setShowEma1] = useState(true);
   const [showEma2, setShowEma2] = useState(true);
   const [showSmc, setShowSmc] = useState(true);
+  const [showRsiSmc, setShowRsiSmc] = useState(true);
   const [showFrvp, setShowFrvp] = useState(true);
   const [hideAllIndicators, setHideAllIndicators] = useState(false);
   const [collapseAllIndicators, setCollapseAllIndicators] = useState(false);
@@ -366,6 +400,42 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
   });
   const appliedIndicatorsRef = useRef(appliedIndicators);
   appliedIndicatorsRef.current = appliedIndicators;
+
+  /** Fetch the engine's SMC overlay. Nothing about it is recomputed in the
+   *  browser -- that is the entire point of the endpoint. */
+  const fetchRsiSmcOverlay = useCallback(async (chartData: any[]) => {
+    if (!appliedIndicatorsRef.current.rsiSmc || !chartData || !chartData.length) {
+      rsiSmcRef.current = null;
+      setRsiSmcStatusText("");
+      requestAnimationFrame(redrawCanvasOverlays);
+      return;
+    }
+    try {
+      const firstTs = chartData[0].time as number;
+      const lastTs = chartData[chartData.length - 1].time as number;
+      const asDate = (epoch: number) => new Date(epoch * 1000).toISOString().split("T")[0];
+      const url = `/api/rsi-smc-overlay?symbol=${encodeURIComponent(symbol)}`
+        + `&start_date=${asDate(firstTs)}&end_date=${asDate(lastTs)}`
+        + `&timeframe=${encodeURIComponent(timeframe)}`;
+      const res = await fetch(url);
+      if (!res.ok) { rsiSmcRef.current = null; setRsiSmcStatusText("unavailable"); return; }
+      const json: RsiSmcOverlay = await res.json();
+      rsiSmcRef.current = json;
+      const bos = (json.structure || []).filter(x => (x.type || "").toUpperCase().startsWith("BOS")).length;
+      const choch = (json.structure || []).length - bos;
+      setRsiSmcStatusText(
+        `${bos} BOS • ${choch} CHoCH • ${(json.sweeps || []).length} sweeps • ${(json.fvg || []).length} FVG`);
+    } catch {
+      rsiSmcRef.current = null;
+      setRsiSmcStatusText("unavailable");
+    }
+    requestAnimationFrame(redrawCanvasOverlays);
+  }, [symbol, timeframe]);
+
+  // Switching the indicator on must draw it now, not at the next data load.
+  useEffect(() => {
+    void fetchRsiSmcOverlay(lastChartDataRef.current);
+  }, [appliedIndicators.rsiSmc, symbol, timeframe, fetchRsiSmcOverlay]);
 
   const handleRemoveIndicator = (key: keyof AppliedIndicatorsState) => {
     setAppliedIndicators((prev) => {
@@ -451,6 +521,13 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
   const [liveRsiSignalVal, setLiveRsiSignalVal] = useState<number | null>(null);
   const [liveVolumeVal, setLiveVolumeVal] = useState<number | null>(liveVolume || null);
   const [smcStatusText, setSmcStatusText] = useState<string>("");
+  const [rsiSmcStatusText, setRsiSmcStatusText] = useState<string>("");
+  const rsiSmcRef = useRef<RsiSmcOverlay | null>(null);
+  /** The candles currently drawn, so the overlay can be fetched the moment
+   *  the indicator is switched on instead of waiting for the next reload. */
+  const lastChartDataRef = useRef<any[]>([]);
+  const showRsiSmcRef = useRef(showRsiSmc);
+  showRsiSmcRef.current = showRsiSmc;
   const [frvpStatusText, setFrvpStatusText] = useState<string>("");
   const lastVolumeRef = useRef<number | null>(liveVolume || null);
 
@@ -571,6 +648,130 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
     const { smc, frvp } = calculatedIndicatorsRef.current;
     const mSettings = manaSettingsRef.current;
     const rightScaleMargin = chartPaneWidth;
+
+    // RSI_SMC engine overlay. Drawn from the backend payload only.
+    if (appliedIndicatorsRef.current.rsiSmc && showRsiSmcRef.current
+        && !hideAllIndicatorsRef.current && rsiSmcRef.current) {
+      const ov = rsiSmcRef.current;
+      const ts = chart.timeScale();
+      const xOf = (epoch: number) => ts.timeToCoordinate(epoch as Time);
+      const yOf = (price: number) => series.priceToCoordinate(price);
+      const inPane = (x: number | null) => x !== null && x >= 0 && x <= chartPaneWidth - 1;
+
+      const BULL = "#14b8a6";
+      const BEAR = "#f43f5e";
+      const BAND = "#a78bfa";
+      const LEVEL = "#64748b";
+
+      // a. prior-day band (PDH/PDL +/- 0.25 ATR) -- the frozen rule
+      ctx.save();
+      ctx.lineWidth = 1;
+      for (const key of ["pdh", "pdl"] as const) {
+        ctx.beginPath();
+        let started = false;
+        for (const row of ov.pd_band || []) {
+          const v = row[key];
+          if (v === null || v === undefined) { started = false; continue; }
+          const x = xOf(row.epoch), y = yOf(v);
+          if (!inPane(x) || y === null) { started = false; continue; }
+          if (!started) { ctx.moveTo(x as number, y); started = true; }
+          else ctx.lineTo(x as number, y);
+        }
+        ctx.strokeStyle = BAND;
+        ctx.setLineDash([4, 3]);
+        ctx.stroke();
+      }
+      // tolerance ribbon around each level
+      ctx.setLineDash([]);
+      ctx.fillStyle = "rgba(167,139,250,0.10)";
+      for (const key of ["pdh", "pdl"] as const) {
+        ctx.beginPath();
+        const top: [number, number][] = [];
+        const bot: [number, number][] = [];
+        for (const row of ov.pd_band || []) {
+          const v = row[key], tol = row.tol;
+          if (v === null || v === undefined || tol === null || tol === undefined) continue;
+          const x = xOf(row.epoch), yu = yOf(v + tol), yl = yOf(v - tol);
+          if (!inPane(x) || yu === null || yl === null) continue;
+          top.push([x as number, yu]); bot.push([x as number, yl]);
+        }
+        if (top.length > 1) {
+          ctx.moveTo(top[0][0], top[0][1]);
+          for (const [x, y] of top) ctx.lineTo(x, y);
+          for (let i = bot.length - 1; i >= 0; i--) ctx.lineTo(bot[i][0], bot[i][1]);
+          ctx.closePath();
+          ctx.fill();
+        }
+      }
+
+      // b. rolling extreme levels the sweep rule reads
+      ctx.setLineDash([2, 4]);
+      ctx.strokeStyle = LEVEL;
+      for (const key of ["high", "low"] as const) {
+        ctx.beginPath();
+        let started = false;
+        for (const row of ov.levels || []) {
+          const v = row[key];
+          if (v === null || v === undefined) { started = false; continue; }
+          const x = xOf(row.epoch), y = yOf(v);
+          if (!inPane(x) || y === null) { started = false; continue; }
+          if (!started) { ctx.moveTo(x as number, y); started = true; }
+          else ctx.lineTo(x as number, y);
+        }
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+
+      // c. unmitigated FVG boxes
+      for (const g of ov.fvg || []) {
+        if (g.top === null || g.bottom === null) continue;
+        const x = xOf(g.epoch);
+        if (!inPane(x)) continue;
+        const yT = yOf(g.top), yB = yOf(g.bottom);
+        if (yT === null || yB === null) continue;
+        const w = Math.max(6, chartPaneWidth - (x as number));
+        ctx.fillStyle = g.bullish ? "rgba(20,184,166,0.10)" : "rgba(244,63,94,0.10)";
+        ctx.fillRect(x as number, Math.min(yT, yB), Math.min(w, 60), Math.abs(yT - yB));
+      }
+
+      // d. liquidity sweeps, at the extreme the wick actually reached
+      for (const sw of ov.sweeps || []) {
+        if (sw.extreme === null) continue;
+        const x = xOf(sw.epoch), y = yOf(sw.extreme);
+        if (!inPane(x) || y === null) continue;
+        const bull = sw.side === "bullish";
+        ctx.fillStyle = bull ? BULL : BEAR;
+        ctx.beginPath();
+        const px = x as number, d = 4;
+        if (bull) { ctx.moveTo(px, y + d); ctx.lineTo(px - d, y + d * 2.2); ctx.lineTo(px + d, y + d * 2.2); }
+        else { ctx.moveTo(px, y - d); ctx.lineTo(px - d, y - d * 2.2); ctx.lineTo(px + d, y - d * 2.2); }
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      // e. BOS / CHoCH labels
+      ctx.font = "9px ui-monospace, monospace";
+      ctx.textBaseline = "middle";
+      for (const ev of ov.structure || []) {
+        if (ev.price === null) continue;
+        const x = xOf(ev.epoch), y = yOf(ev.price);
+        if (!inPane(x) || y === null) continue;
+        const col = ev.bullish ? BULL : BEAR;
+        ctx.strokeStyle = col;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo((x as number) - 5, y);
+        ctx.lineTo((x as number) + 5, y);
+        ctx.stroke();
+        const label = (ev.type || "").toUpperCase().startsWith("BOS") ? "BOS" : "CHoCH";
+        ctx.fillStyle = col;
+        const tw = ctx.measureText(label).width;
+        if ((x as number) + 7 + tw < chartPaneWidth - 2) {
+          ctx.fillText(label, (x as number) + 7, ev.bullish ? y - 6 : y + 6);
+        }
+      }
+      ctx.restore();
+    }
 
     // 1. Draw FRVP Volume Profile (Left Side Histogram)
     if (appliedIndicatorsRef.current.frvp && showFrvpRef.current && !hideAllIndicatorsRef.current && frvp && frvp.bins && frvp.bins.length > 0 && frvp.maxBinVolume > 0) {
@@ -1517,6 +1718,8 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
           if (showAutoSignals && chartData.length > 20) {
             try {
               const sMarkers = await fetchStrategyMarkers(chartData);
+              lastChartDataRef.current = chartData;
+              void fetchRsiSmcOverlay(chartData);
               sMarkers.forEach(m => finalMarkers.push(m));
             } catch { /* markers are a view concern; never break the chart */ }
           }
@@ -1860,6 +2063,7 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
       const rsiResult = computeRSIWithSignal(cachedData, rsiPer, rsiSig);
       const smcResult = computeSMC(cachedData, Math.max(150, smcLookback * 3));
       const frvpResult = computeFRVP(cachedData, frvpBins, frvpValPct);
+      lastChartDataRef.current = cachedData;
       calculatedIndicatorsRef.current = { smc: smcResult, frvp: frvpResult };
 
       if (ema1Data.length > 0) setLiveEma1Val(ema1Data[ema1Data.length - 1].value);
@@ -2607,6 +2811,46 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
               </div>
             )}
 
+
+            {/* 3b. RSI_SMC engine overlay */}
+            {appliedIndicators.rsiSmc && (
+              <div
+                className={`group flex items-center justify-between gap-2 px-2 py-0.5 rounded bg-background/70 hover:bg-background/95 backdrop-blur-md border border-border/40 text-[11px] font-medium shadow-sm transition-all hover:border-primary/50 w-fit ${
+                  !showRsiSmc || hideAllIndicators ? "opacity-50" : ""
+                }`}
+                title="RSI_SMC_OPTIONS_BUYER_V1 — served by the engine. Analytical view. Strategy is inactive."
+              >
+                <div className="flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-violet-400"></span>
+                  <span className="text-foreground/90 font-semibold flex items-center gap-1 text-[10.5px]">
+                    RSI SMC
+                    <span className="text-[9px] text-violet-400 font-mono">[RSI_SMC_OPTIONS_BUYER_V1]</span>
+                    <span className="text-[8.5px] text-amber-400/90 font-mono border border-amber-400/40 rounded px-1">ANALYTICAL</span>
+                    {showRsiSmc && !hideAllIndicators && rsiSmcStatusText && (
+                      <span className="text-[9px] text-violet-400/80 font-mono ml-0.5">{rsiSmcStatusText}</span>
+                    )}
+                  </span>
+                </div>
+                <div className="flex items-center gap-0.5 opacity-60 group-hover:opacity-100 transition-opacity ml-1">
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); setShowRsiSmc(!showRsiSmc); }}
+                    className="p-0.5 hover:text-foreground text-muted-foreground rounded"
+                    title={showRsiSmc ? "Hide Indicator" : "Show Indicator"}
+                  >
+                    {showRsiSmc ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); handleRemoveIndicator('rsiSmc'); }}
+                    className="p-0.5 hover:text-red-400 text-muted-foreground rounded"
+                    title="Remove Indicator"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+              </div>
+            )}
             {/* 4. FRVP Indicator */}
             {appliedIndicators.frvp && (
               <div
