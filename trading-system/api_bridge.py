@@ -3440,7 +3440,7 @@ async def get_rsi_smc_overlay(
     candles = (hist or {}).get("data") or []
     empty = {"symbol": symbol, "strategy": "rsi_smc_options_buyer",
              "view": "analytical", "causal": False, "bars": 0,
-             "structure": [], "fvg": [], "sweeps": [],
+             "range": None, "structure": [], "fvg": [], "sweeps": [],
              "levels": [], "pd_band": []}
     if not candles:
         return empty
@@ -3525,6 +3525,64 @@ async def get_rsi_smc_overlay(
                 }
                 fvg.append(rec)
 
+        # -- dealing range and the strong/weak anchors ------------------
+        # The browser's own SMC copy draws these too, and gets the anchor
+        # wrong: on 2026-09-28 it put "Strong High" on the breakdown candle
+        # at 22,880 instead of on the swing high that was broken. The
+        # analytical view carries the right prices, but only as scalars --
+        # so the bar each one sits on is recovered here by matching it back
+        # to the swing object it came from. That is what lets the chart draw
+        # the label at the swing instead of at whatever candle broke it.
+        swings = [o for o in view.objects if o.kind == "swing"]
+
+        def anchor(price, is_high):
+            if price is None or not _np.isfinite(price):
+                return None
+            best, best_gap = None, None
+            for o in swings:
+                if bool((o.extra or {}).get("is_high")) != is_high:
+                    continue
+                if o.price is None:
+                    continue
+                gap = abs(float(o.price) - float(price))
+                # Prefer the LATEST swing at this price: a level can be
+                # tagged more than once and the live one is the recent one.
+                if gap <= 0.05 and (best_gap is None or gap < best_gap
+                                    or (gap == best_gap and o.origin_index > best.origin_index)):
+                    best, best_gap = o, gap
+            t, e = at(best.origin_index) if best is not None else (None, None)
+            return {"price": round(float(price), 2), "time": t, "epoch": e,
+                    "anchored": best is not None}
+
+        def zone(pair):
+            try:
+                lo, hi = float(pair[0]), float(pair[1])
+            except (TypeError, ValueError, IndexError):
+                return None
+            if not (_np.isfinite(lo) and _np.isfinite(hi)) or lo == hi == 0.0:
+                return None
+            return [round(min(lo, hi), 2), round(max(lo, hi), 2)]
+
+        rng = {
+            # Every value below is "as of" the last bar, so the zones follow
+            # the live dealing range instead of being pinned where they were
+            # first computed.
+            "as_of_time": times[view.as_of_index] if 0 <= view.as_of_index < len(times) else None,
+            "trend": int(view.trend),
+            "equilibrium": (round(float(view.equilibrium_price), 2)
+                            if view.equilibrium_price is not None
+                            and _np.isfinite(view.equilibrium_price) else None),
+            "premium": zone(view.premium_zone),
+            "discount": zone(view.discount_zone),
+            "ote": zone(view.ote_zone),
+            "strong_high": anchor(view.strong_high, True),
+            "weak_high": anchor(view.weak_high, True),
+            "strong_low": anchor(view.strong_low, False),
+            "weak_low": anchor(view.weak_low, False),
+            "active_swing_high": anchor(view.active_swing_high, True),
+            "active_swing_low": anchor(view.active_swing_low, False),
+        }
+
         sweeps_res = _liq.reference_sweeps(df, cfg.sweep_lookback,
                                            cfg.sweep_recent_bars)
         level_low, level_high = _liq.rolling_extreme_levels(
@@ -3578,13 +3636,18 @@ async def get_rsi_smc_overlay(
         band_atr = _atr(df, band_window).to_numpy(dtype=float)
         tol = BAND_ATR * band_atr
 
+        # Convert each array ONCE. Calling series() inside the row loop
+        # rebuilt a full-length list per row -- quadratic, and it was the
+        # whole cost of this endpoint (14s on 1200 bars).
+        lvl_hi, lvl_lo = series(level_high), series(level_low)
+        pdh_s, pdl_s = series(daily.prev_day_high), series(daily.prev_day_low)
+        tol_s = [None if not _np.isfinite(v) else round(float(v), 2) for v in tol]
+
         levels_out = [{"time": times[i], "epoch": epochs[i],
-                       "high": series(level_high)[i], "low": series(level_low)[i]}
+                       "high": lvl_hi[i], "low": lvl_lo[i]}
                       for i in range(len(df))]
         pd_band = [{"time": times[i], "epoch": epochs[i],
-                    "pdh": series(daily.prev_day_high)[i],
-                    "pdl": series(daily.prev_day_low)[i],
-                    "tol": None if not _np.isfinite(tol[i]) else round(float(tol[i]), 2)}
+                    "pdh": pdh_s[i], "pdl": pdl_s[i], "tol": tol_s[i]}
                    for i in range(len(df))]
 
         return {
@@ -3607,6 +3670,7 @@ async def get_rsi_smc_overlay(
                 "timeframe_minutes": cfg.timeframe_minutes,
                 "pd_band_atr": BAND_ATR,
             },
+            "range": rng,
             "structure": structure,
             "fvg": fvg,
             "sweeps": sweeps,
