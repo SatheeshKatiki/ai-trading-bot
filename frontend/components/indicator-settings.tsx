@@ -231,6 +231,40 @@ export interface ManaIndicatorItem {
 
 export const MANA_INDICATORS_DIRECTORY: ManaIndicatorItem[] = [
   {
+    id: "rsi_smc",
+    name: "RSI SMC Options Buyer (Engine Overlay)",
+    code: "RSI_SMC_OPTIONS_BUYER_V1",
+    category: "structure",
+    categoryLabel: "Institutional Structure",
+    author: "Engine",
+    boosts: "—",
+    description: "The backend strategy's OWN structure, sweeps, FVGs and prior-day band, served from Python. Analytical view. The strategy is inactive — this draws only.",
+    isCore: false,
+    hasSettingsModal: false,
+    defaultActive: false,
+    doc: {
+      overview: "Draws what RSI_SMC_OPTIONS_BUYER_V1 computes, using the strategy's own Python modules rather than a second implementation in the browser. The chart and the engine cannot disagree, because there is only one implementation.",
+      theory: "This repository already paid for a duplicated rule once: until 2026-09-22 the chart drew its own BUY CE/PE markers with no ADX filter and disagreed with the engine four-to-zero on 2026-09-18 NIFTY. /api/strategy-markers fixed that by moving the rule to the code that trades. This overlay follows the same principle for the SMC objects.",
+      keyFeatures: [
+        "Structure events (BOS / CHoCH) from the strategy's own causal series",
+        "Liquidity sweeps with the swept level and the extreme the wick reached",
+        "Rolling extreme levels (lookback 20, recent 5) — the levels the entry rule reads",
+        "Unmitigated Fair Value Gaps",
+        "Prior-day-extreme band (PDH/PDL ±0.25×ATR) — the frozen rule the recorder is collecting for",
+        "Order Blocks are deliberately NOT drawn: Phase 7 blocked them for this strategy"
+      ],
+      formula: "Served by GET /api/rsi-smc-overlay, which runs structure.build_analytical(), liquidity.reference_sweeps() and levels.compute_daily_levels() from trading_bot/strategies/rsi_smc_options_buyer/.",
+      parametersExplained: [
+        { param: "View", description: "ANALYTICAL — objects are drawn on the bar that formed them, including ones the live engine could not have confirmed yet. It matches a TradingView-style SMC chart; it is not what the engine saw in real time." },
+        { param: "Swing Points Length", description: "5 (strategy default)" },
+        { param: "Sweep Lookback / Recent", description: "20 bars / 5 bars" },
+        { param: "Prior-day band", description: "0.25 × ATR(14) around the previous day's high and low" }
+      ],
+      tradingEdge: "None claimed. The strategy is NO-GO and has never been run, live or paper. This overlay exists to read the market the way the strategy reads it, not to signal trades.",
+      docUrl: "/docs?tab=chart-indicators#rsi-smc"
+    }
+  },
+  {
     id: "smc",
     name: "Smart Money Concepts (SMC Pro)",
     code: "SMC-PRO",
@@ -549,6 +583,7 @@ export default function IndicatorSettings({ isModal = false, onClose }: Indicato
   const [activeCategory, setActiveCategory] = useState<string>("all");
   const [favorites, setFavorites] = useState<string[]>(["smc", "frvp", "rsi"]);
   const [activeIndicators, setActiveIndicators] = useState<Record<string, boolean>>({
+    rsi_smc: false,
     smc: true,
     frvp: true,
     rsi: true,
@@ -606,6 +641,21 @@ export default function IndicatorSettings({ isModal = false, onClose }: Indicato
     e.stopPropagation();
     const newStatus = !activeIndicators[item.id];
     setActiveIndicators((prev) => ({ ...prev, [item.id]: newStatus }));
+
+    if (item.id === "rsi_smc") {
+      // This one has no settings payload -- it is served whole by the
+      // backend. Applying it only tells the chart to draw it.
+      try {
+        const raw = localStorage.getItem("mana_applied_indicators");
+        const next = { ...(raw ? JSON.parse(raw) : {}), rsiSmc: newStatus };
+        localStorage.setItem("mana_applied_indicators", JSON.stringify(next));
+      } catch {}
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("chart:rsi-smc-toggled",
+          { detail: { value: newStatus } }));
+      }
+      return;
+    }
 
     if (item.settingsType) {
       const updated = { ...settings };
