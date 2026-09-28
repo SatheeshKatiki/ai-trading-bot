@@ -3401,6 +3401,224 @@ async def get_strategy_markers(
         raise HTTPException(status_code=500, detail=f"Could not compute strategy markers: {e}")
 
 
+@app.get("/api/rsi-smc-overlay")
+async def get_rsi_smc_overlay(
+    symbol: str = Query(..., description="Index or ticker, e.g. NSE:NIFTY50-INDEX"),
+    start_date: str = Query(..., description="Start date (YYYY-MM-DD)"),
+    end_date: str = Query(..., description="End date (YYYY-MM-DD)"),
+    timeframe: str = Query("5 Min", description="Chart timeframe"),
+    max_bars: int = Query(1500, ge=50, le=5000),
+):
+    """SMC overlay for the chart, computed by the strategy's OWN code.
+
+    Why this is an endpoint and not TypeScript
+    ------------------------------------------
+    The chart already carries a second SMC implementation
+    (``lib/indicators-engine.ts``), and this repository has paid for that kind
+    of duplication once: until 2026-09-22 the chart drew its own BUY CE/PE
+    markers with no ADX filter and disagreed with the engine four-to-zero on
+    2026-09-18 NIFTY. ``/api/strategy-markers`` fixed it by moving the rule to
+    the one implementation that trades. This does the same for the RSI_SMC
+    objects: the chart draws what the strategy's own modules produce, so there
+    is nothing left to drift.
+
+    **This draws the ANALYTICAL view, at the owner's explicit request.**
+    Objects carry their full lifecycle and are placed at ``origin_index`` --
+    an Order Block appears on the bar that formed it, not on the later bar
+    where the engine could first confirm it. That is what makes it match a
+    TradingView-style SMC chart, and it also means the drawing shows objects
+    the live engine could NOT have seen at that bar. ``view: "analytical"``
+    and ``causal: false`` are in the payload so the UI can say so; the strategy
+    itself still receives only the causal view and ``assert_causal`` still
+    enforces that. Nothing here feeds a trading decision.
+
+    Read-only. Computing this neither activates nor configures the strategy,
+    which remains inactive and NO-GO.
+    """
+    hist = await get_history(symbol=symbol, start_date=start_date,
+                             end_date=end_date, timeframe=timeframe)
+    candles = (hist or {}).get("data") or []
+    empty = {"symbol": symbol, "strategy": "rsi_smc_options_buyer",
+             "view": "analytical", "causal": False, "bars": 0,
+             "structure": [], "fvg": [], "sweeps": [],
+             "levels": [], "pd_band": []}
+    if not candles:
+        return empty
+
+    try:
+        import numpy as _np
+        import pandas as _pd
+
+        df = _pd.DataFrame(candles)
+        cols = {c.lower(): c for c in df.columns}
+        tcol = cols.get("time") or cols.get("datetime") or cols.get("date")
+        for need in ("open", "high", "low", "close"):
+            if need not in cols:
+                raise ValueError(f"history is missing '{need}'")
+            df[need] = _pd.to_numeric(df[cols[need]], errors="coerce")
+        if tcol is None:
+            raise ValueError("history is missing a time column")
+        if "volume" in cols:
+            df["volume"] = _pd.to_numeric(df[cols["volume"]], errors="coerce")
+        else:
+            df["volume"] = 0.0
+        ts = _pd.to_datetime(df[tcol], errors="coerce", utc=False)
+        df = (df.assign(_ts=ts).dropna(subset=["_ts", "close"])
+                .set_index("_ts").sort_index())
+        df = df[["open", "high", "low", "close", "volume"]]
+        if len(df) > max_bars:
+            df = df.iloc[-max_bars:]
+
+        from trading_bot.strategies.rsi_smc_options_buyer import levels as _levels
+        from trading_bot.strategies.rsi_smc_options_buyer import liquidity as _liq
+        from trading_bot.strategies.rsi_smc_options_buyer import structure as _struct
+        from trading_bot.strategies.rsi_smc_options_buyer.config import RsiSmcConfig
+        from shared.indicators import atr as _atr
+        from shared.timeframes import parse_timeframe
+
+        cfg = RsiSmcConfig.from_settings(
+            _load_config_settings(), symbol=symbol,
+            timeframe_minutes=parse_timeframe(timeframe, 5))
+        if len(df) < cfg.min_bars:
+            return dict(empty, bars=len(df),
+                        message=f"need {cfg.min_bars} bars, have {len(df)}")
+
+        view = _struct.build_analytical(df, cfg, symbol=f"overlay:{symbol}")
+        times = [t.isoformat() for t in df.index]
+        epochs = [int(t.timestamp()) for t in df.index]
+
+        def at(i):
+            i = None if i is None else int(i)
+            if i is None or not (0 <= i < len(times)):
+                return None, None
+            return times[i], epochs[i]
+
+        structure, fvg = [], []
+        for o in view.objects:
+            o_time, o_epoch = at(o.origin_index)
+            if o_time is None:
+                continue
+            if o.kind == "structure_event":
+                structure.append({
+                    "time": o_time, "epoch": o_epoch,
+                    "type": (o.extra or {}).get("event_type", "BOS"),
+                    "internal": bool((o.extra or {}).get("is_internal", False)),
+                    "bullish": bool(o.is_bullish),
+                    "price": None if o.price is None else float(o.price),
+                })
+            elif o.kind == "fvg":
+                # Order Blocks are deliberately NOT returned. Phase 7 blocked
+                # them for this strategy (USE_OB_TRIGGER = False), and drawing
+                # them beside the objects it does use would imply otherwise.
+                mit_time, _ = at(o.mitigation_index)
+                conf_time, _ = at(o.confirmation_index)
+                rec = {
+                    "id": o.object_id, "time": o_time, "epoch": o_epoch,
+                    "bullish": bool(o.is_bullish),
+                    "top": None if o.top is None else float(o.top),
+                    "bottom": None if o.bottom is None else float(o.bottom),
+                    "confirmed_time": conf_time,
+                    "mitigated_time": mit_time,
+                    # The bar the live engine could first have used it. Kept so
+                    # the UI can show the gap between "drawn" and "usable".
+                    "confirmation_lag": o.confirmation_lag,
+                }
+                fvg.append(rec)
+
+        sweeps_res = _liq.reference_sweeps(df, cfg.sweep_lookback,
+                                           cfg.sweep_recent_bars)
+        level_low, level_high = _liq.rolling_extreme_levels(
+            df, cfg.sweep_lookback, cfg.sweep_recent_bars)
+
+        # One sweep, one marker. `reference_sweeps` holds its flag true for
+        # `sweep_recent_bars` after the event (that is what the entry rule
+        # reads), so consecutive bars repeat the same sweep. Collapse each run
+        # of identical side+level to the bar it first appeared on -- otherwise
+        # the chart shows five markers where the market swept once.
+        sweeps = []
+        _last_at: dict = {}
+        for i in range(len(df)):
+            if bool(sweeps_res.bullish[i]):
+                lv, ex = sweeps_res.bullish_level[i], sweeps_res.bullish_extreme[i]
+                side = "bullish"
+            elif bool(sweeps_res.bearish[i]):
+                lv, ex = sweeps_res.bearish_level[i], sweeps_res.bearish_extreme[i]
+                side = "bearish"
+            else:
+                continue
+            # Identity is the EXTREME the wick reached, not the level: the
+            # rolling level drifts a point or two as the window slides, so
+            # keying on it emitted a marker per bar. And the flag can flicker
+            # off and back on inside its own hold window, so suppressing only
+            # CONSECUTIVE repeats still drew one event twice a few bars
+            # apart. Suppress the same extreme for as long as the flag is
+            # entitled to stay up; a repeat after that is a genuine re-test
+            # of the same price and must still be drawn.
+            key = (side, None if not _np.isfinite(ex) else round(float(ex), 2))
+            prev_i = _last_at.get(key)
+            if prev_i is not None and (i - prev_i) <= cfg.sweep_recent_bars:
+                _last_at[key] = i
+                continue
+            _last_at[key] = i
+            sweeps.append({
+                "time": times[i], "epoch": epochs[i], "side": side,
+                "level": None if not _np.isfinite(lv) else round(float(lv), 2),
+                "extreme": key[1],
+            })
+
+        def series(arr):
+            return [None if not _np.isfinite(v) else round(float(v), 2) for v in arr]
+
+        daily = _levels.compute_daily_levels(df)
+        atr_v = _atr(df, cfg.atr_length).to_numpy(dtype=float)
+        # The frozen Phase 10 band the recorder is collecting for. Its
+        # constants live in the recorder, not here; they are restated as
+        # literals deliberately so a chart tweak can never move the rule.
+        BAND_ATR, band_window = 0.25, 14
+        band_atr = _atr(df, band_window).to_numpy(dtype=float)
+        tol = BAND_ATR * band_atr
+
+        levels_out = [{"time": times[i], "epoch": epochs[i],
+                       "high": series(level_high)[i], "low": series(level_low)[i]}
+                      for i in range(len(df))]
+        pd_band = [{"time": times[i], "epoch": epochs[i],
+                    "pdh": series(daily.prev_day_high)[i],
+                    "pdl": series(daily.prev_day_low)[i],
+                    "tol": None if not _np.isfinite(tol[i]) else round(float(tol[i]), 2)}
+                   for i in range(len(df))]
+
+        return {
+            "symbol": symbol, "strategy": "rsi_smc_options_buyer",
+            "strategy_id": "RSI_SMC_OPTIONS_BUYER_V1",
+            "timeframe": timeframe,
+            "view": "analytical",
+            "causal": False,
+            "notice": ("Analytical view: objects are drawn at the bar that "
+                       "formed them, including ones the live engine could not "
+                       "have confirmed yet. Not what the engine saw in real "
+                       "time."),
+            "active": False,
+            "bars": len(df),
+            "params": {
+                "swing_points_length": cfg.swing_points_length,
+                "sweep_lookback": cfg.sweep_lookback,
+                "sweep_recent_bars": cfg.sweep_recent_bars,
+                "atr_length": cfg.atr_length,
+                "timeframe_minutes": cfg.timeframe_minutes,
+                "pd_band_atr": BAND_ATR,
+            },
+            "structure": structure,
+            "fvg": fvg,
+            "sweeps": sweeps,
+            "levels": levels_out,
+            "pd_band": pd_band,
+        }
+    except Exception as e:
+        logger.warning("rsi-smc-overlay failed for %s: %s", symbol, e)
+        raise HTTPException(status_code=500,
+                            detail=f"Could not compute RSI_SMC overlay: {e}")
+
+
 @app.get("/api/signals")
 async def get_signals_api(
     symbol: str = Query("NIFTY", description="The stock ticker"),
