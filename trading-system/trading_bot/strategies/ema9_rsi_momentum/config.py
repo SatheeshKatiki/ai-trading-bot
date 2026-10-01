@@ -136,10 +136,45 @@ LEGACY_TOUCH_BUFFER_PCT: float = 0.0006  # only read when mode == "legacy"
 # Against taking every wick, that beat the alternative in 11/11 NIFTY and
 # 7/11 SENSEX quarters, fixed rule, no per-period fitting. It does not make
 # wick trades profitable -- it stops them paying for the body trades.
+
 WICK_REQUIRES_CONFIRMATION: bool = True
 WICK_MIN_RSI_GAP: float = 3.0        # |RSI - RSI-MA| the wick signal must show
 TREND_SLOPE_LOOKBACK: int = 6        # bars the EMA20 slope is measured over
 TREND_SLOPE_MIN_PCT: float = 0.02    # slope, as % of price, to count as agreeing
+
+# ─────────────────────────────────────────────────────────────────────
+# Breakaway entries (the 2026-09-22 miss). OFF by default.
+# ─────────────────────────────────────────────────────────────────────
+# The touch rule refuses a cross whose candle has already left the EMA
+# cluster, because that is usually a chase. On 2026-09-22 it refused a NIFTY
+# PE at 10:30 that was worth 136 points: price fell so fast that by the time
+# EMA9 crossed EMA20 the candle sat 5.82 points clear of both averages. The
+# bar that DID touch the cluster (10:20, graded HIGH) was two bars before the
+# cross -- the two conditions were met, but never on the same candle.
+#
+# The refused group as a whole deserves refusing: 693 NIFTY and 644 SENSEX
+# crossovers, losing Rs.98 and Rs.132 per trade. But inside it there is a
+# separable subset -- a decisive candle, body at least `min_body_atr` x ATR,
+# closing within `max_close_from_extreme` of its own extreme in the trade's
+# direction. That is a market leaving a level, not a trader chasing it:
+#
+#   breakaway subset alone     NIFTY +147/trade PF 1.29   SENSEX +23 PF 1.06
+#   LIVE today                       +11,150   PF 1.12          -9,602 PF 0.71
+#   LIVE + breakaway (1.0x)          +32,231   PF 1.23          -9,767 PF 0.82
+#
+# On NIFTY that is +Rs.21,081 and it beat LIVE in 7 of 11 quarters. On SENSEX
+# it beat LIVE in only 4 of 11 and the total is flat, so there is no evidence
+# for it there. Seven quarters out of eleven on one index is not the standard
+# the other changes here cleared (the touch rule won 10/11 and 8/11, the wick
+# confirmation 11/11 and 7/11), so this ships OFF for the owner to try in the
+# variant book first.
+#
+# Enable with `ema9_rsi_allow_breakaway_entry`, or per symbol via
+# SYMBOL_OVERRIDES.
+ALLOW_BREAKAWAY_ENTRY: bool = False
+BREAKAWAY_MIN_BODY_ATR: float = 1.0
+BREAKAWAY_MAX_CLOSE_FROM_EXTREME: float = 0.35
+BREAKAWAY_ATR_LENGTH: int = 14
 
 # ─────────────────────────────────────────────────────────────────────
 # Entry timing (owner's rule, 2026-09-22)
@@ -284,6 +319,10 @@ class Ema9RsiMomentumConfig:
     allow_overnight_carry: bool = ALLOW_OVERNIGHT_CARRY
     overnight_min_gain_pct: float = OVERNIGHT_MIN_GAIN_PCT
     overnight_min_strength: str = OVERNIGHT_MIN_STRENGTH
+    allow_breakaway_entry: bool = ALLOW_BREAKAWAY_ENTRY
+    breakaway_min_body_atr: float = BREAKAWAY_MIN_BODY_ATR
+    breakaway_max_close_from_extreme: float = BREAKAWAY_MAX_CLOSE_FROM_EXTREME
+    breakaway_atr_length: int = BREAKAWAY_ATR_LENGTH
     wick_requires_confirmation: bool = WICK_REQUIRES_CONFIRMATION
     wick_min_rsi_gap: float = WICK_MIN_RSI_GAP
     trend_slope_lookback: int = TREND_SLOPE_LOOKBACK

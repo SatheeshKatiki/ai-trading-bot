@@ -166,6 +166,44 @@ def _with_anticipation(df: pd.DataFrame, ind: IndicatorSet,
             np.asarray(ema_dn, dtype=bool) | np.nan_to_num(soon_dn).astype(bool))
 
 
+
+PRIORITY_BREAKAWAY = "BREAKAWAY"
+
+
+def _breakaway(df: pd.DataFrame, cfg: Ema9RsiMomentumConfig,
+               direction: np.ndarray) -> np.ndarray:
+    """A candle that is LEAVING the level, not chasing one that already left.
+
+    See config.ALLOW_BREAKAWAY_ENTRY for the 2026-09-22 case this exists for
+    and the measurements. Two conditions, both about conviction rather than
+    position: the body is at least `breakaway_min_body_atr` x ATR, and the
+    candle closes within `breakaway_max_close_from_extreme` of its own
+    extreme in the trade's direction -- a bar that ran and held, not one that
+    ran and gave it back.
+    """
+    if not bool(getattr(cfg, "allow_breakaway_entry", False)):
+        return np.zeros(len(df), dtype=bool)
+
+    open_ = np.asarray(df["open"], dtype=float) if "open" in df.columns else None
+    high = np.asarray(df["high"], dtype=float)
+    low = np.asarray(df["low"], dtype=float)
+    close = np.asarray(df["close"], dtype=float)
+    if open_ is None:
+        return np.zeros(len(df), dtype=bool)
+
+    prev = np.r_[close[0], close[:-1]]
+    true_range = np.maximum(high - low, np.maximum(np.abs(high - prev), np.abs(low - prev)))
+    length = max(1, int(getattr(cfg, "breakaway_atr_length", 14)))
+    atr = pd.Series(true_range).ewm(alpha=1 / length, adjust=False).mean().to_numpy()
+
+    decisive = np.abs(close - open_) >= float(getattr(cfg, "breakaway_min_body_atr", 1.0)) * atr
+    span = np.maximum(high - low, 1e-9)
+    edge = float(getattr(cfg, "breakaway_max_close_from_extreme", 0.35))
+    held = np.where(np.asarray(direction) > 0, (high - close) <= edge * span,
+                    np.where(np.asarray(direction) < 0, (close - low) <= edge * span, False))
+    return decisive & np.nan_to_num(held).astype(bool)
+
+
 #: Entry priority. HIGH is the owner's first preference (a body touch), MEDIUM
 #: a wick touch that earned its place, LOW one that did not.
 PRIORITY_HIGH = "HIGH"
@@ -227,8 +265,14 @@ def assess_entry_quality(df: pd.DataFrame, ind: IndicatorSet,
     else:
         wick_ok = wick_only
 
+    # A cross whose candle has left the cluster is normally a chase. A
+    # decisive one that closes at its extreme is the exception -- see
+    # `_breakaway`. Off unless the owner switches it on.
+    breakaway = _breakaway(df, cfg, direction) & ~touch.by_wick
+
     priority = np.full(n, PRIORITY_NONE, dtype=object)
     priority[wick_only] = PRIORITY_LOW
+    priority[breakaway] = PRIORITY_BREAKAWAY
     priority[wick_ok] = PRIORITY_MEDIUM
     priority[touch.by_body] = PRIORITY_HIGH
 
@@ -241,7 +285,7 @@ def assess_entry_quality(df: pd.DataFrame, ind: IndicatorSet,
     elif mode == "legacy":
         take = touch.passes
     else:
-        take = touch.by_body | wick_ok
+        take = touch.by_body | wick_ok | breakaway
 
     return EntryQuality(priority=priority, take=take,
                         trend_agrees=trend_agrees, rsi_separated=rsi_separated)
