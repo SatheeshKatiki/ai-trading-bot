@@ -779,3 +779,29 @@ outputs, so this is paid once per data set.
    (owner decision); the shared function is unchanged.
 3. The repository `.gitignore` ignores `*.json`; the smc1 config file is
    committed with `git add -f`, as several other tracked JSON files were.
+4. **Ghost position in `config/active_positions.json`** (investigated
+   read-only 2026-10-01, not changed). Key `NIFTY50`: symbol
+   `NSE:NIFTY50-INDEX`, side 1, qty 1, entry 23346.4 at 22:17:17, stop
+   23206.32, target 23930.06.
+   * **Writer:** `api_bridge.py` `POST /api/order/execute` (the manual
+     dashboard order path). It builds the key by stripping `NSE:` and
+     `-INDEX` (giving `NIFTY50`), and sets stop = fill × 0.994 and target =
+     fill × 1.025 -- 23346.4 × 0.994 = 23206.32 and × 1.025 = 23930.06,
+     exactly the stored values. No other writer produces this shape (the
+     paper observer adds `underlying` and `strategy`).
+   * **When:** `state.db` trade #91 is the matching fill: BUY
+     `NSE:NIFTY50-INDEX` qty 1 @ 23346.4 at **2026-09-18 22:17:17 IST**. The
+     endpoint's market-closed guard was committed four minutes later
+     (`e3b230c`, 2026-09-18 22:21:04), so the order went through the
+     unguarded endpoint, most likely while that guard was being built. No log
+     line from that minute survives, so the caller cannot be named.
+   * **Why it persists:** nothing removes it. The paper observer's sync
+     deletes only its own keys (NIFTY, BANKNIFTY, SENSEX) and rewrites the rest
+     unchanged; `main.py` has not run since. An index is not a tradeable
+     instrument, and the endpoint still accepts an index symbol inside market
+     hours.
+   * **Effect on smc1:** while it is there, the file is never empty. The
+     fetch script refuses whenever `main.py` or the paper observer is running
+     with any entry in the file, so on a trading day the fetch is blocked for
+     as long as an engine runs. It does not block on a day no engine runs
+     (the fetch's fallback, 2026-10-02).
