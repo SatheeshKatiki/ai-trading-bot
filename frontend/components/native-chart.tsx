@@ -291,6 +291,7 @@ const chartDataCache: Record<string, any> = {};
 
 export default function NativeChart({ symbol, livePrice, liveVolume = 0, timeframe = "5 Min", initialData, disableFetch, lastTick = 0, markers, showAutoSignals = true, signalLevels, hideBottomToolbar = true }: NativeChartProps) {
   const { theme } = useTheme();
+  const isDark = theme !== "light";
 
   const {
     ema1Length, ema1Color, ema1LineWidth, ema1LineStyle,
@@ -326,6 +327,9 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
   const countdownRef = useRef<HTMLDivElement>(null);
   const barStartVolRef = useRef<{ time: number; vol: number }>({ time: 0, vol: 0 });
   const liveBarVolRef = useRef<number>(0);
+  // User Viewport & Scroll Retention: Preserves user pan & zoom across live ticks and data polls
+  const userLogicalRangeRef = useRef<{ from: number; to: number } | null>(null);
+  const isInitialRangeSetRef = useRef<boolean>(false);
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -337,7 +341,15 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
   // Listen to external chart toolbar events (moved from bottom overlay to header)
   useEffect(() => {
     const onResetZoom = () => {
-      chartRef.current?.timeScale().fitContent();
+      userLogicalRangeRef.current = null;
+      isInitialRangeSetRef.current = false;
+      const dataLen = (lastChartDataRef.current || []).length;
+      if (dataLen > 0 && chartRef.current) {
+        chartRef.current.timeScale().setVisibleLogicalRange({ from: Math.max(0, dataLen - 150), to: dataLen + 15 });
+        isInitialRangeSetRef.current = true;
+      } else {
+        chartRef.current?.timeScale().fitContent();
+      }
     };
     const onToggleSignals = (e: any) => {
       setShowAutoSignalsState((prev) => {
@@ -739,53 +751,79 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
       const BAND = "#a78bfa";
       const LEVEL = "#64748b";
 
-      // a. prior-day band (PDH/PDL +/- 0.25 ATR) -- the frozen rule
+      // a. prior-day band (PDH/PDL +/- 0.25 ATR) -- segmented by trading session
       ctx.save();
       ctx.lineWidth = 1;
       for (const key of ["pdh", "pdl"] as const) {
-        ctx.beginPath();
-        let started = false;
+        let currentSeg: { x: number; y: number; yu: number; yl: number }[] = [];
+        const segments: { x: number; y: number; yu: number; yl: number }[][] = [];
+        let prevV: number | null = null;
+        let prevX: number | null = null;
+
         for (const row of ov.pd_band || []) {
-          const v = row[key];
-          if (v === null || v === undefined) { started = false; continue; }
-          const x = xOf(row.epoch), y = yOf(v);
-          if (!inPane(x) || y === null) { started = false; continue; }
-          if (!started) { ctx.moveTo(x as number, y); started = true; }
-          else ctx.lineTo(x as number, y);
+          const v = row[key], tol = row.tol || 0;
+          if (v === null || v === undefined) {
+            if (currentSeg.length > 0) { segments.push(currentSeg); currentSeg = []; }
+            prevV = null; prevX = null;
+            continue;
+          }
+          const x = xOf(row.epoch);
+          const y = yOf(v);
+          const yu = yOf(v + tol);
+          const yl = yOf(v - tol);
+          if (!inPane(x) || y === null || yu === null || yl === null) {
+            continue;
+          }
+          const px = x as number;
+          if (prevV !== null && (Math.abs(v - prevV) > 0.05 || (prevX !== null && px - prevX > 40))) {
+            if (currentSeg.length > 0) { segments.push(currentSeg); currentSeg = []; }
+          }
+          currentSeg.push({ x: px, y, yu, yl });
+          prevV = v;
+          prevX = px;
         }
-        ctx.strokeStyle = BAND;
-        ctx.setLineDash([4, 3]);
-        ctx.stroke();
-      }
-      // tolerance ribbon around each level
-      ctx.setLineDash([]);
-      ctx.fillStyle = "rgba(167,139,250,0.10)";
-      for (const key of ["pdh", "pdl"] as const) {
-        ctx.beginPath();
-        const top: [number, number][] = [];
-        const bot: [number, number][] = [];
-        for (const row of ov.pd_band || []) {
-          const v = row[key], tol = row.tol;
-          if (v === null || v === undefined || tol === null || tol === undefined) continue;
-          const x = xOf(row.epoch), yu = yOf(v + tol), yl = yOf(v - tol);
-          if (!inPane(x) || yu === null || yl === null) continue;
-          top.push([x as number, yu]); bot.push([x as number, yl]);
-        }
-        if (top.length > 1) {
-          ctx.moveTo(top[0][0], top[0][1]);
-          for (const [x, y] of top) ctx.lineTo(x, y);
-          for (let i = bot.length - 1; i >= 0; i--) ctx.lineTo(bot[i][0], bot[i][1]);
-          ctx.closePath();
-          ctx.fill();
+        if (currentSeg.length > 0) segments.push(currentSeg);
+
+        // Draw segmented line and tolerance ribbon cleanly per session
+        for (const seg of segments) {
+          if (seg.length === 0) continue;
+          if (seg.length > 1) {
+            ctx.fillStyle = "rgba(167,139,250,0.10)";
+            ctx.beginPath();
+            ctx.moveTo(seg[0].x, seg[0].yu);
+            for (let i = 1; i < seg.length; i++) ctx.lineTo(seg[i].x, seg[i].yu);
+            for (let i = seg.length - 1; i >= 0; i--) ctx.lineTo(seg[i].x, seg[i].yl);
+            ctx.closePath();
+            ctx.fill();
+          }
+          ctx.strokeStyle = BAND;
+          ctx.setLineDash([4, 3]);
+          ctx.beginPath();
+          ctx.moveTo(seg[0].x, seg[0].y);
+          for (let i = 1; i < seg.length; i++) ctx.lineTo(seg[i].x, seg[i].y);
+          ctx.stroke();
+          ctx.setLineDash([]);
+
+          // 3. Clear text label (PDH / PDL) at the end of the line
+          const lastPt = seg[seg.length - 1];
+          if (lastPt && inPane(lastPt.x)) {
+            const labelText = key === "pdh" ? "PDH" : "PDL";
+            ctx.font = "bold 9px monospace";
+            ctx.fillStyle = BAND;
+            ctx.textAlign = "right";
+            ctx.textBaseline = key === "pdh" ? "bottom" : "top";
+            ctx.fillText(labelText, Math.min(chartPaneWidth - 4, lastPt.x), key === "pdh" ? lastPt.y - 2 : lastPt.y + 2);
+          }
         }
       }
 
-      // b. rolling extreme levels the sweep rule reads
+      // b. rolling extreme levels the sweep rule reads with labels
       ctx.setLineDash([2, 4]);
       ctx.strokeStyle = LEVEL;
       for (const key of ["high", "low"] as const) {
         ctx.beginPath();
         let started = false;
+        let lastPt: { x: number; y: number } | null = null;
         for (const row of ov.levels || []) {
           const v = row[key];
           if (v === null || v === undefined) { started = false; continue; }
@@ -793,12 +831,22 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
           if (!inPane(x) || y === null) { started = false; continue; }
           if (!started) { ctx.moveTo(x as number, y); started = true; }
           else ctx.lineTo(x as number, y);
+          lastPt = { x: x as number, y };
         }
         ctx.stroke();
+
+        if (lastPt && inPane(lastPt.x)) {
+          const label = key === "high" ? "Liq High" : "Liq Low";
+          ctx.font = "bold 8.5px monospace";
+          ctx.fillStyle = LEVEL;
+          ctx.textAlign = "right";
+          ctx.textBaseline = key === "high" ? "bottom" : "top";
+          ctx.fillText(label, Math.min(chartPaneWidth - 4, lastPt.x), key === "high" ? lastPt.y - 2 : lastPt.y + 2);
+        }
       }
       ctx.setLineDash([]);
 
-      // c. unmitigated FVG boxes
+      // c. unmitigated FVG boxes with label
       for (const g of ov.fvg || []) {
         if (g.top === null || g.bottom === null) continue;
         const x = xOf(g.epoch);
@@ -806,11 +854,21 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
         const yT = yOf(g.top), yB = yOf(g.bottom);
         if (yT === null || yB === null) continue;
         const w = Math.max(6, chartPaneWidth - (x as number));
+        const boxH = Math.abs(yT - yB);
         ctx.fillStyle = g.bullish ? "rgba(20,184,166,0.10)" : "rgba(244,63,94,0.10)";
-        ctx.fillRect(x as number, Math.min(yT, yB), Math.min(w, 60), Math.abs(yT - yB));
+        ctx.fillRect(x as number, Math.min(yT, yB), Math.min(w, 60), boxH);
+        
+        // FVG text label
+        if (boxH >= 6) {
+          ctx.font = "bold 8px monospace";
+          ctx.fillStyle = g.bullish ? "rgba(20,184,166,0.85)" : "rgba(244,63,94,0.85)";
+          ctx.textAlign = "left";
+          ctx.textBaseline = "middle";
+          ctx.fillText("FVG", (x as number) + 3, Math.min(yT, yB) + boxH / 2);
+        }
       }
 
-      // d. liquidity sweeps, at the extreme the wick actually reached
+      // d. liquidity sweeps with clear label
       for (const sw of ov.sweeps || []) {
         if (sw.extreme === null) continue;
         const x = xOf(sw.epoch), y = yOf(sw.extreme);
@@ -823,6 +881,13 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
         else { ctx.moveTo(px, y - d); ctx.lineTo(px - d, y - d * 2.2); ctx.lineTo(px + d, y - d * 2.2); }
         ctx.closePath();
         ctx.fill();
+
+        // SWEEP text label
+        ctx.font = "bold 7.5px monospace";
+        ctx.fillStyle = bull ? BULL : BEAR;
+        ctx.textAlign = "center";
+        ctx.textBaseline = bull ? "top" : "bottom";
+        ctx.fillText("SWEEP", px, bull ? y + d * 2.2 + 2 : y - d * 2.2 - 2);
       }
 
       // e. dealing range: premium / equilibrium / discount, from the engine
@@ -908,25 +973,49 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
         }
       }
 
-      // g. BOS / CHoCH labels
-      ctx.font = "9px ui-monospace, monospace";
-      ctx.textBaseline = "middle";
+      // g. BOS / CHoCH Structure Break Lines & Badges
       for (const ev of ov.structure || []) {
         if (ev.price === null) continue;
         const x = xOf(ev.epoch), y = yOf(ev.price);
         if (!inPane(x) || y === null) continue;
-        const col = ev.bullish ? BULL : BEAR;
+        const px = x as number;
+        const isChoch = (ev.type || "").toUpperCase().includes("CHOCH");
+        const isBull = ev.bullish;
+        const col = isChoch ? (isBull ? "#38bdf8" : "#f43f5e") : (isBull ? BULL : BEAR);
+
+        // Draw horizontal structure breakout line spanning back across previous bars
+        const lineLeft = Math.max(65, px - 45);
+        const lineRight = Math.min(chartPaneWidth - 2, px + 8);
+        ctx.strokeStyle = col;
+        ctx.lineWidth = 1.2;
+        ctx.setLineDash(isChoch ? [3, 2] : [2, 2]);
+        ctx.beginPath();
+        ctx.moveTo(lineLeft, y);
+        ctx.lineTo(lineRight, y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Clean label badge with background pill
+        const tagText = isChoch ? "CHoCH" : "BOS";
+        ctx.font = "bold 8.5px ui-monospace, monospace";
+        const tagW = ctx.measureText(tagText).width;
+        const pillW = tagW + 8;
+        const pillH = 13;
+        const pillX = Math.max(65, Math.min(chartPaneWidth - pillW - 4, px - pillW / 2));
+        const pillY = isBull ? y - pillH - 2 : y + 2;
+
+        // Pill background
+        ctx.fillStyle = isBull ? "rgba(16, 185, 129, 0.15)" : (isChoch ? "rgba(56, 189, 248, 0.15)" : "rgba(244, 63, 94, 0.15)");
+        ctx.fillRect(pillX, pillY, pillW, pillH);
         ctx.strokeStyle = col;
         ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo((x as number) - 5, y);
-        ctx.lineTo((x as number) + 5, y);
-        ctx.stroke();
-        const label = (ev.type || "").toUpperCase().startsWith("BOS") ? "BOS" : "CHoCH";
+        ctx.strokeRect(pillX, pillY, pillW, pillH);
+
+        // Pill text
         ctx.fillStyle = col;
-        placeLabel(ctx, taken, label, (x as number) + 7,
-                   ev.bullish ? y - 6 : y + 6,
-                   { prefer: ev.bullish ? -1 : 1, maxX: chartPaneWidth - 2 });
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(tagText, pillX + pillW / 2, pillY + pillH / 2);
       }
       ctx.restore();
     }
@@ -1480,6 +1569,8 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
         minBarSpacing: 0.2,
         fixLeftEdge: false,
         fixRightEdge: false,
+        shiftVisibleRangeOnNewBar: false,
+        allowShiftVisibleRangeOnWhitespaceReplacement: false,
         tickMarkFormatter: (time: Time, tickMarkType: TickMarkType) => {
           const p = formatEpochISTParts(time as number);
           switch (tickMarkType) {
@@ -1603,7 +1694,10 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
     rsiSignalSeriesRef.current = rsiSignalSeries;
     vwapSeriesRef.current = vwapSeries;
 
-    chart.timeScale().subscribeVisibleLogicalRangeChange(() => {
+    chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+      if (range) {
+        userLogicalRangeRef.current = range;
+      }
       requestAnimationFrame(redrawCanvasOverlays);
     });
 
@@ -1736,6 +1830,8 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
 
   // 2. FETCH DATA WHEN SYMBOL/TIMEFRAME CHANGES
   useEffect(() => {
+    isInitialRangeSetRef.current = false;
+    userLogicalRangeRef.current = null;
     let isMounted = true;
     if (!chartRef.current || !seriesRef.current || !emaSeriesRef.current || !smaSeriesRef.current) return;
 
@@ -1961,6 +2057,8 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
       if (rsiSignalSeriesRef.current) rsiSignalSeriesRef.current.setData(rsiResult.signalSeries as any);
 
       seedIncrementalState(data, ema1Data, ema2Data);
+      lastChartDataRef.current = data;
+      void fetchRsiSmcOverlay(data);
       updateFrvpPriceLines();
       updateSmcPriceLines();
       requestAnimationFrame(redrawCanvasOverlays);
@@ -1972,11 +2070,17 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
       if (disableFetch && initialData) {
         const normalizedInitialData = sanitizeCandleSeries(initialData);
         chartDataCache[cacheKey] = normalizedInitialData;
+        const currentRange = userLogicalRangeRef.current || chart.timeScale().getVisibleLogicalRange();
         candleSeries.setData(normalizedInitialData);
         applyAllIndicatorData(normalizedInitialData, candleSeries, emaSeries, smaSeries);
         if (normalizedInitialData.length > 0) {
           lastCandleRef.current = normalizedInitialData[normalizedInitialData.length - 1];
-          chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, normalizedInitialData.length - 150), to: normalizedInitialData.length + 15 });
+          if (currentRange && isInitialRangeSetRef.current) {
+            chart.timeScale().setVisibleLogicalRange(currentRange);
+          } else {
+            chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, normalizedInitialData.length - 150), to: normalizedInitialData.length + 15 });
+            isInitialRangeSetRef.current = true;
+          }
         } else {
           chart.timeScale().fitContent();
         }
@@ -1988,12 +2092,16 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
         const cached = sanitizeCandleSeries(chartDataCache[cacheKey]);
         if (!isMounted) return;
 
-        candleSeries.setData(cached);
-        applyAllIndicatorData(cached, candleSeries, emaSeries, smaSeries);
-        lastCandleRef.current = cached[cached.length - 1];
-        chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, cached.length - 150), to: cached.length + 15 });
-        setLoading(false); // Instant load!
-        fetchMarkersAndLines(cached, candleSeries);
+        // Only populate from cache on initial load (don't re-slam and reset timeScale on background polling!)
+        if (!isInitialRangeSetRef.current) {
+          candleSeries.setData(cached);
+          applyAllIndicatorData(cached, candleSeries, emaSeries, smaSeries);
+          lastCandleRef.current = cached[cached.length - 1];
+          chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, cached.length - 150), to: cached.length + 15 });
+          isInitialRangeSetRef.current = true;
+          setLoading(false); // Instant load!
+          fetchMarkersAndLines(cached, candleSeries);
+        }
       } else {
         setLoading(true);
       }
@@ -2064,6 +2172,7 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
             });
           }
 
+          const currentRange = userLogicalRangeRef.current || chart.timeScale().getVisibleLogicalRange();
           candleSeries.setData(dataToSet);
           applyAllIndicatorData(uniqueData, candleSeries, emaSeries, smaSeries);
           seedIncrementalState(uniqueData, ema1Data, ema2Data);
@@ -2084,9 +2193,14 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
             liveBarVolRef.current = lastVol;
             lastVolumeRef.current = lastVol;
             setLiveVolumeVal(lastVol);
-            if (prevLen === 0 || uniqueData.length > prevLen) {
+
+            // User viewport retention: If user has already scrolled/zoomed, maintain their exact viewport!
+            if (currentRange && isInitialRangeSetRef.current) {
+              chart.timeScale().setVisibleLogicalRange(currentRange);
+            } else if (!isInitialRangeSetRef.current) {
               chart.priceScale('right').applyOptions({ autoScale: true });
-              chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, uniqueData.length - 150), to: uniqueData.length });
+              chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, uniqueData.length - 150), to: uniqueData.length + 15 });
+              isInitialRangeSetRef.current = true;
             }
           } else {
             chart.timeScale().fitContent();
@@ -2279,8 +2393,12 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
         dataToSet = cachedData.map((d: any) => ({ ...d, color: undefined, wickColor: undefined, borderColor: undefined }));
       }
 
-      // 4. Update Series Data
+      // 4. Update Series Data while preserving user's visible range
+      const currentRange = userLogicalRangeRef.current || chartRef.current?.timeScale().getVisibleLogicalRange();
       seriesRef.current.setData(dataToSet);
+      if (currentRange) {
+        chartRef.current?.timeScale().setVisibleLogicalRange(currentRange);
+      }
       if (emaSeriesRef.current) emaSeriesRef.current.setData(ema1Data);
       if (smaSeriesRef.current) smaSeriesRef.current.setData(ema2Data);
       if (rsiSeriesRef.current) rsiSeriesRef.current.setData(rsiResult.rsiSeries as any);
@@ -2466,6 +2584,19 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
   useEffect(() => {
     if (livePrice && livePrice > 0 && seriesRef.current && lastCandleRef.current) {
       const lastCandle = lastCandleRef.current;
+
+      // Guard: Do not generate or mutate candles when market is closed
+      if (!isMarketOpen()) {
+        return;
+      }
+
+      // Guard: Reject anomalous ticks that deviate > 3.5% from the last candle close
+      const lastClose = lastCandle.close || livePrice;
+      const priceGap = Math.abs(livePrice - lastClose) / (lastClose || 1);
+      if (priceGap > 0.035) {
+        console.warn(`[NativeChart] Ignored anomalous livePrice tick: ${livePrice} vs lastClose: ${lastClose} (gap: ${(priceGap * 100).toFixed(1)}%)`);
+        return;
+      }
 
       // Root-cause fix (chart timestamp audit): this used to read
       // `new Date().getHours()/getMinutes()`, i.e. the VIEWER's own
@@ -2698,41 +2829,58 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
         <div ref={tooltipRef} className="hidden text-[11px] font-mono tracking-tight px-3" />
       </div>
 
-      {/* Mana Institutional Indicators Legend (Interactive - Click to Open Settings, Toggle Visibility, or Remove via X) */}
-      <div className="absolute top-8 left-4 z-20 pointer-events-auto flex flex-col gap-1 select-none max-w-[340px]">
-        {/* Master Toolbar Header: Indicators Count, Add fx, Restore, Hide All, Expand/Collapse */}
-        <div className="flex items-center justify-between px-2 py-0.5 rounded bg-background/70 backdrop-blur-md border border-border/40 text-[10px] text-muted-foreground w-fit gap-1.5 shadow-sm transition-all">
+      {/* Indicators Legend (TradingView / Broker Chart Style: Pure text rows, theme-adaptive, hover action buttons) */}
+      <div className="absolute top-8 left-4 z-20 pointer-events-auto flex flex-col gap-0.5 select-none max-w-fit">
+        {/* Master Toolbar Header: Indicators Count, Up/Down Arrow Toggle, Restore, Hide All */}
+        <div className="flex items-center gap-2 px-1 py-0.5 text-[11px] w-fit select-none">
           <div
             onClick={handleToggleCollapseAll}
-            className="flex items-center gap-1.5 cursor-pointer hover:text-foreground transition-colors group"
-            title={collapseAllIndicators ? "Click to Expand All Indicators" : "Click to Collapse All Indicators"}
+            className="flex items-center gap-1 cursor-pointer group"
+            title={collapseAllIndicators ? "Click to Expand Indicators" : "Click to Collapse Indicators"}
           >
-            <span className="font-semibold uppercase tracking-wider text-[9px] text-foreground/80 group-hover:text-primary transition-colors">Indicators</span>
-            <span className="text-[9px] px-1 py-0.2 rounded bg-muted/60 text-muted-foreground font-mono font-medium">{activeAppliedCount}</span>
-            {collapseAllIndicators && (
-              <div className="flex items-center gap-1 ml-0.5 animate-in fade-in duration-200">
-                {appliedIndicators.ema1 && showEma1 && <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: ema1Color }} title={`EMA ${ema1Length}`} />}
-                {appliedIndicators.ema2 && showEma2 && <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: ema2Color }} title={`EMA ${ema2Length}`} />}
-                {appliedIndicators.smc && showSmc && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" title="SMC Pro" />}
-                {appliedIndicators.frvp && showFrvp && <span className="w-1.5 h-1.5 rounded-full bg-amber-400" title="FRVP" />}
-                {appliedIndicators.rsi && showRsi && <span className="w-1.5 h-1.5 rounded-full bg-purple-400" title="MDE Pro" />}
-                {appliedIndicators.vol && showVolume && <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" title="Volume" />}
-                {appliedIndicators.rsiSmc && showRsiSmc && <span className="w-1.5 h-1.5 rounded-full bg-violet-400" title="RSI SMC (engine overlay)" />}
-              </div>
+            <span className={`font-semibold text-[10.5px] uppercase tracking-wider transition-colors ${
+              isDark ? "text-slate-200 group-hover:text-primary" : "text-slate-800 group-hover:text-primary"
+            }`}>
+              Indicators
+            </span>
+            <span className={`text-[10px] font-mono px-1 py-0.2 rounded font-medium ${
+              isDark ? "bg-slate-800 text-slate-300" : "bg-slate-200 text-slate-700"
+            }`}>
+              {activeAppliedCount}
+            </span>
+            {/* TradingView-style Up/Down arrow toggle */}
+            {collapseAllIndicators ? (
+              <ChevronDown size={13} className={isDark ? "text-slate-400 group-hover:text-primary transition-colors" : "text-slate-600 group-hover:text-primary transition-colors"} />
+            ) : (
+              <ChevronUp size={13} className={isDark ? "text-slate-400 group-hover:text-primary transition-colors" : "text-slate-600 group-hover:text-primary transition-colors"} />
             )}
           </div>
 
-          <div className="h-3 w-px bg-border/40" />
+          {/* When collapsed, show compact colored indicator dots */}
+          {collapseAllIndicators && (
+            <div className="flex items-center gap-1 ml-0.5 animate-in fade-in duration-200">
+              {appliedIndicators.ema1 && showEma1 && <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: ema1Color }} title={`EMA ${ema1Length}`} />}
+              {appliedIndicators.ema2 && showEma2 && <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: ema2Color }} title={`EMA ${ema2Length}`} />}
+              {appliedIndicators.smc && showSmc && <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" title="SMC Pro" />}
+              {appliedIndicators.frvp && showFrvp && <span className="w-1.5 h-1.5 rounded-full bg-amber-500" title="FRVP" />}
+              {appliedIndicators.rsi && showRsi && <span className="w-1.5 h-1.5 rounded-full bg-purple-500" title="MDE Pro" />}
+              {appliedIndicators.vol && showVolume && <span className="w-1.5 h-1.5 rounded-full bg-cyan-500" title="Volume" />}
+              {appliedIndicators.rsiSmc && showRsiSmc && <span className="w-1.5 h-1.5 rounded-full bg-violet-500" title="RSI SMC (engine overlay)" />}
+            </div>
+          )}
 
-          {/* Quick Add Indicators Button */}
+          {/* Quick Hide All / Show All Toggle Button */}
           <button
             type="button"
-            onClick={() => setShowManaIndicatorsModal(true)}
-            className="flex items-center gap-1 px-1.5 py-0.5 rounded transition-all text-[9.5px] font-medium hover:text-primary hover:bg-muted/40 text-muted-foreground"
-            title="Open Indicators Directory (fx) to Add Indicators"
+            onClick={() => setHideAllIndicators(!hideAllIndicators)}
+            className={`p-0.5 rounded transition-all ml-0.5 ${
+              hideAllIndicators
+                ? "text-amber-500 hover:text-amber-400"
+                : isDark ? "text-slate-400 hover:text-slate-100" : "text-slate-600 hover:text-slate-900"
+            }`}
+            title={hideAllIndicators ? "Show All Indicators" : "Hide All Indicators (Raw Price Action)"}
           >
-            <Plus size={11} />
-            <span>Add</span>
+            {hideAllIndicators ? <EyeOff size={12} className="text-amber-500" /> : <Eye size={12} />}
           </button>
 
           {/* If any indicator was removed, provide a quick one-click Restore button */}
@@ -2740,95 +2888,44 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
             <button
               type="button"
               onClick={handleResetAllIndicators}
-              className="flex items-center gap-0.5 px-1.5 py-0.5 rounded transition-all text-[9.5px] font-medium text-primary hover:bg-primary/10"
+              className="p-0.5 rounded transition-all text-primary hover:bg-primary/10 ml-0.5"
               title="Restore / Re-apply All 6 Indicators"
             >
-              <RefreshCw size={9} />
-              <span>Restore</span>
+              <RefreshCw size={10} />
             </button>
           )}
-
-          <div className="h-3 w-px bg-border/40" />
-
-          {/* Hide All / Show All on Chart */}
-          <button
-            type="button"
-            onClick={() => setHideAllIndicators(!hideAllIndicators)}
-            className={`flex items-center gap-1 px-1.5 py-0.5 rounded transition-all text-[9.5px] font-medium ${
-              hideAllIndicators
-                ? "bg-amber-500/20 text-amber-400 border border-amber-500/40 shadow-sm"
-                : "hover:text-foreground hover:bg-muted/40 text-muted-foreground"
-            }`}
-            title={hideAllIndicators ? "Show All Indicators" : "Hide All Indicators (Disturbance-Free Raw Price Action)"}
-          >
-            {hideAllIndicators ? (
-              <>
-                <EyeOff size={11} className="text-amber-400" />
-                <span>Hidden</span>
-              </>
-            ) : (
-              <>
-                <Eye size={11} />
-                <span>Hide All</span>
-              </>
-            )}
-          </button>
-
-          {/* Expand All / Collapse All Toggle Button */}
-          <button
-            type="button"
-            onClick={handleToggleCollapseAll}
-            className={`flex items-center gap-1 px-1.5 py-0.5 rounded transition-all text-[9.5px] font-medium ${
-              collapseAllIndicators
-                ? "bg-primary/20 text-primary border border-primary/40 shadow-xs hover:bg-primary/30"
-                : "hover:text-foreground hover:bg-muted/40 text-muted-foreground"
-            }`}
-            title={collapseAllIndicators ? "Expand All Indicators" : "Collapse All Indicators"}
-          >
-            {collapseAllIndicators ? (
-              <>
-                <ChevronDown size={11} className="text-primary" />
-                <span>Expand All</span>
-              </>
-            ) : (
-              <>
-                <ChevronUp size={11} />
-                <span>Collapse All</span>
-              </>
-            )}
-          </button>
         </div>
 
-        {/* Indicator Badges (Collapsed when collapseAllIndicators is true) */}
+        {/* Indicator Rows (TradingView text list style - only icons shown on hover) */}
         {!collapseAllIndicators && (
-          <div className="flex flex-col gap-1 animate-in fade-in slide-in-from-top-1 duration-150">
+          <div className="flex flex-col gap-0.5 animate-in fade-in slide-in-from-top-1 duration-150">
             {/* 1. EMA 9 */}
             {appliedIndicators.ema1 && (
               <div
-                className={`group flex items-center justify-between gap-2 px-2 py-0.5 rounded bg-background/70 hover:bg-background/95 backdrop-blur-md border border-border/40 text-[11px] font-medium shadow-sm transition-all hover:border-primary/50 w-fit ${
-                  !showEma1 || hideAllIndicators ? "opacity-50" : ""
+                className={`group flex items-center gap-1.5 px-1 py-0.5 rounded hover:bg-slate-500/10 transition-colors w-fit select-none ${
+                  !showEma1 || hideAllIndicators ? "opacity-40" : ""
                 }`}
                 title="Click to configure EMA 1"
               >
                 <div className="flex items-center gap-1.5 cursor-pointer" onClick={() => handleOpenEmaSettings('ema1')}>
-                  <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: ema1Color }}></span>
-                  <span className="text-foreground/90 font-semibold group-hover:text-primary transition-colors flex items-center gap-1 text-[10.5px]">
+                  <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: ema1Color }}></span>
+                  <span className={`text-[10.5px] font-medium flex items-center gap-1 ${isDark ? "text-slate-100" : "text-slate-900"}`}>
                     EMA {ema1Length}
                     {liveEma1Val !== null && showEma1 && !hideAllIndicators && (
-                      <span className="text-[9.5px] font-mono text-muted-foreground font-normal ml-0.5">
+                      <span className={`text-[9.5px] font-mono font-normal ml-0.5 ${isDark ? "text-slate-300" : "text-slate-700"}`}>
                         ₹{liveEma1Val.toFixed(2)}
                       </span>
                     )}
                   </span>
                 </div>
-                <div className="flex items-center gap-0.5 opacity-60 group-hover:opacity-100 transition-opacity ml-1">
+                <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity ml-1">
                   <button
                     type="button"
                     onClick={(e) => {
                       e.stopPropagation();
                       setShowEma1(!showEma1);
                     }}
-                    className="p-0.5 hover:text-foreground text-muted-foreground rounded"
+                    className={`p-0.5 rounded hover:bg-slate-500/20 ${isDark ? "text-slate-300 hover:text-white" : "text-slate-600 hover:text-slate-900"}`}
                     title={showEma1 ? "Hide EMA" : "Show EMA"}
                   >
                     {showEma1 && !hideAllIndicators ? <Eye size={11} style={{ color: ema1Color }} /> : <EyeOff size={11} />}
@@ -2839,7 +2936,7 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
                       e.stopPropagation();
                       handleOpenEmaSettings('ema1');
                     }}
-                    className="p-0.5 hover:text-primary text-muted-foreground rounded"
+                    className={`p-0.5 rounded hover:bg-slate-500/20 ${isDark ? "text-slate-300 hover:text-white" : "text-slate-600 hover:text-slate-900"}`}
                     title="Configure EMA 1"
                   >
                     <Settings2 size={11} />
@@ -2850,7 +2947,7 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
                       e.stopPropagation();
                       handleRemoveIndicator('ema1');
                     }}
-                    className="p-0.5 hover:text-destructive hover:bg-destructive/10 text-muted-foreground rounded transition-colors"
+                    className="p-0.5 rounded hover:bg-destructive/20 text-slate-400 hover:text-destructive transition-colors"
                     title="Remove EMA 1"
                   >
                     <X size={11} />
@@ -2862,30 +2959,30 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
             {/* 2. EMA 20 */}
             {appliedIndicators.ema2 && (
               <div
-                className={`group flex items-center justify-between gap-2 px-2 py-0.5 rounded bg-background/70 hover:bg-background/95 backdrop-blur-md border border-border/40 text-[11px] font-medium shadow-sm transition-all hover:border-primary/50 w-fit ${
-                  !showEma2 || hideAllIndicators ? "opacity-50" : ""
+                className={`group flex items-center gap-1.5 px-1 py-0.5 rounded hover:bg-slate-500/10 transition-colors w-fit select-none ${
+                  !showEma2 || hideAllIndicators ? "opacity-40" : ""
                 }`}
                 title="Click to configure EMA 2"
               >
                 <div className="flex items-center gap-1.5 cursor-pointer" onClick={() => handleOpenEmaSettings('ema2')}>
-                  <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: ema2Color }}></span>
-                  <span className="text-foreground/90 font-semibold group-hover:text-primary transition-colors flex items-center gap-1 text-[10.5px]">
+                  <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: ema2Color }}></span>
+                  <span className={`text-[10.5px] font-medium flex items-center gap-1 ${isDark ? "text-slate-100" : "text-slate-900"}`}>
                     EMA {ema2Length}
                     {liveEma2Val !== null && showEma2 && !hideAllIndicators && (
-                      <span className="text-[9.5px] font-mono text-muted-foreground font-normal ml-0.5">
+                      <span className={`text-[9.5px] font-mono font-normal ml-0.5 ${isDark ? "text-slate-300" : "text-slate-700"}`}>
                         ₹{liveEma2Val.toFixed(2)}
                       </span>
                     )}
                   </span>
                 </div>
-                <div className="flex items-center gap-0.5 opacity-60 group-hover:opacity-100 transition-opacity ml-1">
+                <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity ml-1">
                   <button
                     type="button"
                     onClick={(e) => {
                       e.stopPropagation();
                       setShowEma2(!showEma2);
                     }}
-                    className="p-0.5 hover:text-foreground text-muted-foreground rounded"
+                    className={`p-0.5 rounded hover:bg-slate-500/20 ${isDark ? "text-slate-300 hover:text-white" : "text-slate-600 hover:text-slate-900"}`}
                     title={showEma2 ? "Hide EMA" : "Show EMA"}
                   >
                     {showEma2 && !hideAllIndicators ? <Eye size={11} style={{ color: ema2Color }} /> : <EyeOff size={11} />}
@@ -2896,7 +2993,7 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
                       e.stopPropagation();
                       handleOpenEmaSettings('ema2');
                     }}
-                    className="p-0.5 hover:text-primary text-muted-foreground rounded"
+                    className={`p-0.5 rounded hover:bg-slate-500/20 ${isDark ? "text-slate-300 hover:text-white" : "text-slate-600 hover:text-slate-900"}`}
                     title="Configure EMA 2"
                   >
                     <Settings2 size={11} />
@@ -2907,7 +3004,7 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
                       e.stopPropagation();
                       handleRemoveIndicator('ema2');
                     }}
-                    className="p-0.5 hover:text-destructive hover:bg-destructive/10 text-muted-foreground rounded transition-colors"
+                    className="p-0.5 rounded hover:bg-destructive/20 text-slate-400 hover:text-destructive transition-colors"
                     title="Remove EMA 2"
                   >
                     <X size={11} />
@@ -2919,31 +3016,31 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
             {/* 3. SMC Pro Indicator */}
             {appliedIndicators.smc && (
               <div
-                className={`group flex items-center justify-between gap-2 px-2 py-0.5 rounded bg-background/70 hover:bg-background/95 backdrop-blur-md border border-border/40 text-[11px] font-medium shadow-sm transition-all hover:border-primary/50 w-fit ${
-                  !showSmc || hideAllIndicators ? "opacity-50" : ""
+                className={`group flex items-center gap-1.5 px-1 py-0.5 rounded hover:bg-slate-500/10 transition-colors w-fit select-none ${
+                  !showSmc || hideAllIndicators ? "opacity-40" : ""
                 }`}
                 title="Click to open SMC Pro Settings"
               >
                 <div className="flex items-center gap-1.5 cursor-pointer" onClick={() => setActiveIndicatorModal("smc")}>
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-                  <span className="text-foreground/90 font-semibold group-hover:text-primary transition-colors flex items-center gap-1 text-[10.5px]">
-                    SMC Pro <span className="text-[9px] text-emerald-400 font-mono">[Structure]</span>
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0"></span>
+                  <span className={`text-[10.5px] font-medium flex items-center gap-1 ${isDark ? "text-slate-100" : "text-slate-900"}`}>
+                    SMC Pro <span className="text-[9px] text-emerald-500 font-mono">[Structure]</span>
                     {showSmc && !hideAllIndicators && smcStatusText && (
-                      <span className="text-[9px] text-emerald-400/80 font-mono ml-0.5">{smcStatusText}</span>
+                      <span className={`text-[9px] font-mono ml-0.5 ${isDark ? "text-emerald-400/90" : "text-emerald-600"}`}>{smcStatusText}</span>
                     )}
                   </span>
                 </div>
-                <div className="flex items-center gap-0.5 opacity-60 group-hover:opacity-100 transition-opacity ml-1">
+                <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity ml-1">
                   <button
                     type="button"
                     onClick={(e) => {
                       e.stopPropagation();
                       setShowSmc(!showSmc);
                     }}
-                    className="p-0.5 hover:text-foreground text-muted-foreground rounded"
+                    className={`p-0.5 rounded hover:bg-slate-500/20 ${isDark ? "text-slate-300 hover:text-white" : "text-slate-600 hover:text-slate-900"}`}
                     title={showSmc ? "Hide Indicator" : "Show Indicator"}
                   >
-                    {showSmc && !hideAllIndicators ? <Eye size={11} className="text-emerald-400" /> : <EyeOff size={11} />}
+                    {showSmc && !hideAllIndicators ? <Eye size={11} className="text-emerald-500" /> : <EyeOff size={11} />}
                   </button>
                   <button
                     type="button"
@@ -2951,7 +3048,7 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
                       e.stopPropagation();
                       setActiveIndicatorModal("smc");
                     }}
-                    className="p-0.5 hover:text-primary text-muted-foreground rounded"
+                    className={`p-0.5 rounded hover:bg-slate-500/20 ${isDark ? "text-slate-300 hover:text-white" : "text-slate-600 hover:text-slate-900"}`}
                     title="Configure Parameters"
                   >
                     <Settings2 size={11} />
@@ -2962,7 +3059,7 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
                       e.stopPropagation();
                       handleRemoveIndicator('smc');
                     }}
-                    className="p-0.5 hover:text-destructive hover:bg-destructive/10 text-muted-foreground rounded transition-colors"
+                    className="p-0.5 rounded hover:bg-destructive/20 text-slate-400 hover:text-destructive transition-colors"
                     title="Remove SMC Pro"
                   >
                     <X size={11} />
@@ -2971,39 +3068,37 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
               </div>
             )}
 
-
             {/* 3b. RSI_SMC engine overlay */}
             {appliedIndicators.rsiSmc && (
               <div
-                className={`group flex items-center justify-between gap-2 px-2 py-0.5 rounded bg-background/70 hover:bg-background/95 backdrop-blur-md border border-border/40 text-[11px] font-medium shadow-sm transition-all hover:border-primary/50 w-fit ${
-                  !showRsiSmc || hideAllIndicators ? "opacity-50" : ""
+                className={`group flex items-center gap-1.5 px-1 py-0.5 rounded hover:bg-slate-500/10 transition-colors w-fit select-none whitespace-nowrap ${
+                  !showRsiSmc || hideAllIndicators ? "opacity-40" : ""
                 }`}
-                title="RSI_SMC_OPTIONS_BUYER_V1 — served by the engine. Analytical view. Strategy is inactive."
+                title="RSI_SMC_OPTIONS_BUYER_V1 — served by the engine. Analytical view."
               >
-                <div className="flex items-center gap-1.5">
-                  <span className="w-1.5 h-1.5 rounded-full bg-violet-400"></span>
-                  <span className="text-foreground/90 font-semibold flex items-center gap-1 text-[10.5px]">
+                <div className="flex items-center gap-1.5 flex-nowrap">
+                  <span className="w-1.5 h-1.5 rounded-full bg-violet-500 shrink-0"></span>
+                  <span className={`text-[10.5px] font-medium flex items-center gap-1 whitespace-nowrap ${isDark ? "text-slate-100" : "text-slate-900"}`}>
                     RSI SMC
-                    <span className="text-[9px] text-violet-400 font-mono">[RSI_SMC_OPTIONS_BUYER_V1]</span>
-                    <span className="text-[8.5px] text-amber-400/90 font-mono border border-amber-400/40 rounded px-1">ANALYTICAL</span>
+                    <span className="text-[9px] text-violet-500 dark:text-violet-400 font-mono shrink-0">[Overlay]</span>
                     {showRsiSmc && !hideAllIndicators && rsiSmcStatusText && (
-                      <span className="text-[9px] text-violet-400/80 font-mono ml-0.5">{rsiSmcStatusText}</span>
+                      <span className={`text-[9px] font-mono ml-0.5 whitespace-nowrap ${isDark ? "text-violet-300/90" : "text-violet-700"}`}>{rsiSmcStatusText}</span>
                     )}
                   </span>
                 </div>
-                <div className="flex items-center gap-0.5 opacity-60 group-hover:opacity-100 transition-opacity ml-1">
+                <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity ml-1">
                   <button
                     type="button"
                     onClick={(e) => { e.stopPropagation(); setShowRsiSmc(!showRsiSmc); }}
-                    className="p-0.5 hover:text-foreground text-muted-foreground rounded"
+                    className={`p-0.5 rounded hover:bg-slate-500/20 ${isDark ? "text-slate-300 hover:text-white" : "text-slate-600 hover:text-slate-900"}`}
                     title={showRsiSmc ? "Hide Indicator" : "Show Indicator"}
                   >
-                    {showRsiSmc ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
+                    {showRsiSmc ? <Eye className="w-3 h-3 text-violet-500" /> : <EyeOff className="w-3 h-3" />}
                   </button>
                   <button
                     type="button"
                     onClick={(e) => { e.stopPropagation(); handleRemoveIndicator('rsiSmc'); }}
-                    className="p-0.5 hover:text-red-400 text-muted-foreground rounded"
+                    className="p-0.5 rounded hover:bg-destructive/20 text-slate-400 hover:text-destructive transition-colors"
                     title="Remove Indicator"
                   >
                     <X className="w-3 h-3" />
@@ -3011,34 +3106,35 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
                 </div>
               </div>
             )}
+
             {/* 4. FRVP Indicator */}
             {appliedIndicators.frvp && (
               <div
-                className={`group flex items-center justify-between gap-2 px-2 py-0.5 rounded bg-background/70 hover:bg-background/95 backdrop-blur-md border border-border/40 text-[11px] font-medium shadow-sm transition-all hover:border-primary/50 w-fit ${
-                  !showFrvp || hideAllIndicators ? "opacity-50" : ""
+                className={`group flex items-center gap-1.5 px-1 py-0.5 rounded hover:bg-slate-500/10 transition-colors w-fit select-none ${
+                  !showFrvp || hideAllIndicators ? "opacity-40" : ""
                 }`}
                 title="Click to open FRVP Settings"
               >
                 <div className="flex items-center gap-1.5 cursor-pointer" onClick={() => setActiveIndicatorModal("frvp")}>
-                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
-                  <span className="text-foreground/90 font-semibold group-hover:text-primary transition-colors flex items-center gap-1 text-[10.5px]">
-                    FRVP <span className="text-[9px] text-amber-400 font-mono">[Range]</span>
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0"></span>
+                  <span className={`text-[10.5px] font-medium flex items-center gap-1 ${isDark ? "text-slate-100" : "text-slate-900"}`}>
+                    FRVP <span className="text-[9px] text-amber-500 font-mono">[Range]</span>
                     {showFrvp && !hideAllIndicators && frvpStatusText && (
-                      <span className="text-[9px] text-amber-400/80 font-mono ml-0.5">{frvpStatusText}</span>
+                      <span className={`text-[9px] font-mono ml-0.5 ${isDark ? "text-amber-400/90" : "text-amber-600"}`}>{frvpStatusText}</span>
                     )}
                   </span>
                 </div>
-                <div className="flex items-center gap-0.5 opacity-60 group-hover:opacity-100 transition-opacity ml-1">
+                <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity ml-1">
                   <button
                     type="button"
                     onClick={(e) => {
                       e.stopPropagation();
                       setShowFrvp(!showFrvp);
                     }}
-                    className="p-0.5 hover:text-foreground text-muted-foreground rounded"
+                    className={`p-0.5 rounded hover:bg-slate-500/20 ${isDark ? "text-slate-300 hover:text-white" : "text-slate-600 hover:text-slate-900"}`}
                     title={showFrvp ? "Hide Indicator" : "Show Indicator"}
                   >
-                    {showFrvp && !hideAllIndicators ? <Eye size={11} className="text-amber-400" /> : <EyeOff size={11} />}
+                    {showFrvp && !hideAllIndicators ? <Eye size={11} className="text-amber-500" /> : <EyeOff size={11} />}
                   </button>
                   <button
                     type="button"
@@ -3046,7 +3142,7 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
                       e.stopPropagation();
                       setActiveIndicatorModal("frvp");
                     }}
-                    className="p-0.5 hover:text-primary text-muted-foreground rounded"
+                    className={`p-0.5 rounded hover:bg-slate-500/20 ${isDark ? "text-slate-300 hover:text-white" : "text-slate-600 hover:text-slate-900"}`}
                     title="Configure Parameters"
                   >
                     <Settings2 size={11} />
@@ -3057,7 +3153,7 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
                       e.stopPropagation();
                       handleRemoveIndicator('frvp');
                     }}
-                    className="p-0.5 hover:text-destructive hover:bg-destructive/10 text-muted-foreground rounded transition-colors"
+                    className="p-0.5 rounded hover:bg-destructive/20 text-slate-400 hover:text-destructive transition-colors"
                     title="Remove FRVP"
                   >
                     <X size={11} />
@@ -3069,34 +3165,34 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
             {/* 5. MDE Pro Indicator */}
             {appliedIndicators.rsi && (
               <div
-                className={`group flex items-center justify-between gap-2 px-2 py-0.5 rounded bg-background/70 hover:bg-background/95 backdrop-blur-md border border-border/40 text-[11px] font-medium shadow-sm transition-all hover:border-primary/50 w-fit ${
-                  !showRsi || hideAllIndicators ? "opacity-50" : ""
+                className={`group flex items-center gap-1.5 px-1 py-0.5 rounded hover:bg-slate-500/10 transition-colors w-fit select-none ${
+                  !showRsi || hideAllIndicators ? "opacity-40" : ""
                 }`}
                 title="Click to open MDE Pro Settings"
               >
                 <div className="flex items-center gap-1.5 cursor-pointer" onClick={() => setActiveIndicatorModal("rsi")}>
-                  <span className="w-1.5 h-1.5 rounded-full bg-purple-400"></span>
-                  <span className="text-foreground/90 font-semibold group-hover:text-primary transition-colors flex items-center gap-1 text-[10.5px]">
-                    MDE Pro <span className="text-[9px] text-purple-400 font-mono">[{rsiLength}, 20]</span>
+                  <span className="w-1.5 h-1.5 rounded-full bg-purple-500 shrink-0"></span>
+                  <span className={`text-[10.5px] font-medium flex items-center gap-1 ${isDark ? "text-slate-100" : "text-slate-900"}`}>
+                    MDE Pro <span className="text-[9px] text-purple-500 font-mono">[{rsiLength}, 20]</span>
                     {showRsi && !hideAllIndicators && liveRsiVal !== null && (
-                      <span className="text-[9px] text-purple-400 font-mono ml-0.5">
+                      <span className={`text-[9.5px] font-mono ml-0.5 ${isDark ? "text-purple-300" : "text-purple-700"}`}>
                         {liveRsiVal.toFixed(1)}
-                        {liveRsiSignalVal !== null && <span className="text-amber-400 ml-1">({liveRsiSignalVal.toFixed(1)})</span>}
+                        {liveRsiSignalVal !== null && <span className="text-amber-500 ml-1">({liveRsiSignalVal.toFixed(1)})</span>}
                       </span>
                     )}
                   </span>
                 </div>
-                <div className="flex items-center gap-0.5 opacity-60 group-hover:opacity-100 transition-opacity ml-1">
+                <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity ml-1">
                   <button
                     type="button"
                     onClick={(e) => {
                       e.stopPropagation();
                       setShowRsi(!showRsi);
                     }}
-                    className="p-0.5 hover:text-foreground text-muted-foreground rounded"
+                    className={`p-0.5 rounded hover:bg-slate-500/20 ${isDark ? "text-slate-300 hover:text-white" : "text-slate-600 hover:text-slate-900"}`}
                     title={showRsi ? "Hide Indicator" : "Show Indicator"}
                   >
-                    {showRsi && !hideAllIndicators ? <Eye size={11} className="text-purple-400" /> : <EyeOff size={11} />}
+                    {showRsi && !hideAllIndicators ? <Eye size={11} className="text-purple-500" /> : <EyeOff size={11} />}
                   </button>
                   <button
                     type="button"
@@ -3104,7 +3200,7 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
                       e.stopPropagation();
                       setActiveIndicatorModal("rsi");
                     }}
-                    className="p-0.5 hover:text-primary text-muted-foreground rounded"
+                    className={`p-0.5 rounded hover:bg-slate-500/20 ${isDark ? "text-slate-300 hover:text-white" : "text-slate-600 hover:text-slate-900"}`}
                     title="Configure Parameters"
                   >
                     <Settings2 size={11} />
@@ -3115,7 +3211,7 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
                       e.stopPropagation();
                       handleRemoveIndicator('rsi');
                     }}
-                    className="p-0.5 hover:text-destructive hover:bg-destructive/10 text-muted-foreground rounded transition-colors"
+                    className="p-0.5 rounded hover:bg-destructive/20 text-slate-400 hover:text-destructive transition-colors"
                     title="Remove MDE Pro"
                   >
                     <X size={11} />
@@ -3127,8 +3223,8 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
             {/* 6. Volume Indicator */}
             {appliedIndicators.vol && (
               <div
-                className={`group flex items-center justify-between gap-2 px-2 py-0.5 rounded bg-background/70 hover:bg-background/95 backdrop-blur-md border border-border/40 text-[11px] font-medium shadow-sm transition-all hover:border-primary/50 w-fit ${
-                  !showVolume || hideAllIndicators ? "opacity-50" : ""
+                className={`group flex items-center gap-1.5 px-1 py-0.5 rounded hover:bg-slate-500/10 transition-colors w-fit select-none ${
+                  !showVolume || hideAllIndicators ? "opacity-40" : ""
                 }`}
                 title="Click to configure Volume"
               >
@@ -3140,27 +3236,27 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
                     setShowSettings(true);
                   }}
                 >
-                  <span className="w-1.5 h-1.5 rounded-full bg-cyan-400"></span>
-                  <span className="text-foreground/90 font-semibold group-hover:text-primary transition-colors flex items-center gap-1 text-[10.5px]">
-                    Volume <span className="text-[9px] text-cyan-400 font-mono">[Vol]</span>
+                  <span className="w-1.5 h-1.5 rounded-full bg-cyan-500 shrink-0"></span>
+                  <span className={`text-[10.5px] font-medium flex items-center gap-1 ${isDark ? "text-slate-100" : "text-slate-900"}`}>
+                    Volume <span className="text-[9px] text-cyan-500 font-mono">[Vol]</span>
                     {liveVolumeVal !== null && showVolume && !hideAllIndicators && (
-                      <span className="text-[9.5px] font-mono text-cyan-400/90 font-normal ml-0.5">
+                      <span className={`text-[9.5px] font-mono font-normal ml-0.5 ${isDark ? "text-cyan-300" : "text-cyan-700"}`}>
                         {formatVolumeVal(liveVolumeVal)}
                       </span>
                     )}
                   </span>
                 </div>
-                <div className="flex items-center gap-0.5 opacity-60 group-hover:opacity-100 transition-opacity ml-1">
+                <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity ml-1">
                   <button
                     type="button"
                     onClick={(e) => {
                       e.stopPropagation();
                       setShowVolume(!showVolume);
                     }}
-                    className="p-0.5 hover:text-foreground text-muted-foreground rounded"
+                    className={`p-0.5 rounded hover:bg-slate-500/20 ${isDark ? "text-slate-300 hover:text-white" : "text-slate-600 hover:text-slate-900"}`}
                     title={showVolume ? "Hide Volume" : "Show Volume"}
                   >
-                    {showVolume && !hideAllIndicators ? <Eye size={11} className="text-cyan-400" /> : <EyeOff size={11} />}
+                    {showVolume && !hideAllIndicators ? <Eye size={11} className="text-cyan-500" /> : <EyeOff size={11} />}
                   </button>
                   <button
                     type="button"
@@ -3170,7 +3266,7 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
                       setActiveAccordion('vol');
                       setShowSettings(true);
                     }}
-                    className="p-0.5 hover:text-primary text-muted-foreground rounded"
+                    className={`p-0.5 rounded hover:bg-slate-500/20 ${isDark ? "text-slate-300 hover:text-white" : "text-slate-600 hover:text-slate-900"}`}
                     title="Configure Volume"
                   >
                     <Settings2 size={11} />
@@ -3181,7 +3277,7 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
                       e.stopPropagation();
                       handleRemoveIndicator('vol');
                     }}
-                    className="p-0.5 hover:text-destructive hover:bg-destructive/10 text-muted-foreground rounded transition-colors"
+                    className="p-0.5 rounded hover:bg-destructive/20 text-slate-400 hover:text-destructive transition-colors"
                     title="Remove Volume"
                   >
                     <X size={11} />
@@ -3192,15 +3288,17 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
 
             {/* Zero state: when user removed all indicators via X button */}
             {activeAppliedCount === 0 && (
-              <div className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded bg-background/70 backdrop-blur-md border border-border/40 text-[10.5px] text-muted-foreground shadow-sm">
+              <div className="flex items-center gap-2 px-1 py-0.5 text-[10.5px] text-muted-foreground select-none">
                 <span>No indicators applied</span>
-                <button
-                  type="button"
-                  onClick={() => setShowManaIndicatorsModal(true)}
-                  className="text-primary hover:underline font-semibold flex items-center gap-0.5"
-                >
-                  <Plus size={11} /> Add
-                </button>
+                {missingDefaultIndicator && (
+                  <button
+                    type="button"
+                    onClick={handleResetAllIndicators}
+                    className="text-primary hover:underline font-semibold flex items-center gap-0.5"
+                  >
+                    <RefreshCw size={10} /> Restore
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -3416,7 +3514,17 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
           </div>
 
           <button
-            onClick={() => chartRef.current?.timeScale().fitContent()}
+            onClick={() => {
+              userLogicalRangeRef.current = null;
+              isInitialRangeSetRef.current = false;
+              const dataLen = (lastChartDataRef.current || []).length;
+              if (dataLen > 0 && chartRef.current) {
+                chartRef.current.timeScale().setVisibleLogicalRange({ from: Math.max(0, dataLen - 150), to: dataLen + 15 });
+                isInitialRangeSetRef.current = true;
+              } else {
+                chartRef.current?.timeScale().fitContent();
+              }
+            }}
             className="p-2 rounded-full bg-background/90 hover:bg-background text-muted-foreground hover:text-foreground transition-all shadow-lg border border-border/40 backdrop-blur-md pointer-events-auto flex items-center justify-center hover:scale-110 active:scale-95"
             title="Reset Zoom"
           >

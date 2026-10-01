@@ -543,7 +543,7 @@ export function computeSMC(candles: Candle[], lookbackWindow: number = 150): SMC
   return {
     bullishOrderBlocks: activeBullishOBs,
     bearishOrderBlocks: activeBearishOBs,
-    structures: structures.slice(-2),
+    structures: structures.slice(-25),
     swingHighs: swingHighs.slice(-4),
     swingLows: swingLows.slice(-4),
     swingPivots: sortedPivots,
