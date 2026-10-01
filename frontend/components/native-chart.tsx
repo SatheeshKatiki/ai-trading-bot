@@ -751,6 +751,10 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
       const BAND = "#a78bfa";
       const LEVEL = "#64748b";
 
+      // Every label in this overlay goes through placeLabel against one shared
+      // list, so no two overprint (see e9c86ba).
+      const taken: { x1: number; y1: number; x2: number; y2: number }[] = [];
+
       // a. prior-day band (PDH/PDL +/- 0.25 ATR) -- segmented by trading session
       ctx.save();
       ctx.lineWidth = 1;
@@ -810,9 +814,10 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
             const labelText = key === "pdh" ? "PDH" : "PDL";
             ctx.font = "bold 9px monospace";
             ctx.fillStyle = BAND;
-            ctx.textAlign = "right";
-            ctx.textBaseline = key === "pdh" ? "bottom" : "top";
-            ctx.fillText(labelText, Math.min(chartPaneWidth - 4, lastPt.x), key === "pdh" ? lastPt.y - 2 : lastPt.y + 2);
+            ctx.textBaseline = "middle";
+            placeLabel(ctx, taken, labelText, Math.min(chartPaneWidth - 4, lastPt.x),
+                       key === "pdh" ? lastPt.y - 7 : lastPt.y + 7,
+                       { align: "right", prefer: key === "pdh" ? -1 : 1, maxX: chartPaneWidth - 2 });
           }
         }
       }
@@ -839,9 +844,10 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
           const label = key === "high" ? "Liq High" : "Liq Low";
           ctx.font = "bold 8.5px monospace";
           ctx.fillStyle = LEVEL;
-          ctx.textAlign = "right";
-          ctx.textBaseline = key === "high" ? "bottom" : "top";
-          ctx.fillText(label, Math.min(chartPaneWidth - 4, lastPt.x), key === "high" ? lastPt.y - 2 : lastPt.y + 2);
+          ctx.textBaseline = "middle";
+          placeLabel(ctx, taken, label, Math.min(chartPaneWidth - 4, lastPt.x),
+                     key === "high" ? lastPt.y - 7 : lastPt.y + 7,
+                     { align: "right", prefer: key === "high" ? -1 : 1, maxX: chartPaneWidth - 2 });
         }
       }
       ctx.setLineDash([]);
@@ -862,9 +868,9 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
         if (boxH >= 6) {
           ctx.font = "bold 8px monospace";
           ctx.fillStyle = g.bullish ? "rgba(20,184,166,0.85)" : "rgba(244,63,94,0.85)";
-          ctx.textAlign = "left";
           ctx.textBaseline = "middle";
-          ctx.fillText("FVG", (x as number) + 3, Math.min(yT, yB) + boxH / 2);
+          placeLabel(ctx, taken, "FVG", (x as number) + 3, Math.min(yT, yB) + boxH / 2,
+                     { maxX: chartPaneWidth - 2 });
         }
       }
 
@@ -885,13 +891,12 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
         // SWEEP text label
         ctx.font = "bold 7.5px monospace";
         ctx.fillStyle = bull ? BULL : BEAR;
-        ctx.textAlign = "center";
-        ctx.textBaseline = bull ? "top" : "bottom";
-        ctx.fillText("SWEEP", px, bull ? y + d * 2.2 + 2 : y - d * 2.2 - 2);
+        ctx.textBaseline = "middle";
+        placeLabel(ctx, taken, "SWEEP", px, bull ? y + d * 2.2 + 7 : y - d * 2.2 - 7,
+                   { align: "center", prefer: bull ? 1 : -1, maxX: chartPaneWidth - 2 });
       }
 
       // e. dealing range: premium / equilibrium / discount, from the engine
-      const taken: { x1: number; y1: number; x2: number; y2: number }[] = [];
       const rng = ov.range;
       if (rng) {
         const bandX = Math.max(65, chartPaneWidth - 260);
@@ -995,27 +1000,30 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
         ctx.stroke();
         ctx.setLineDash([]);
 
-        // Clean label badge with background pill
+        // Badge: placeLabel picks a spot clear of every other label and records
+        // the text box it used; the pill is then drawn around that box and the
+        // text redrawn on top of the pill fill.
         const tagText = isChoch ? "CHoCH" : "BOS";
         ctx.font = "bold 8.5px ui-monospace, monospace";
-        const tagW = ctx.measureText(tagText).width;
-        const pillW = tagW + 8;
-        const pillH = 13;
-        const pillX = Math.max(65, Math.min(chartPaneWidth - pillW - 4, px - pillW / 2));
-        const pillY = isBull ? y - pillH - 2 : y + 2;
-
-        // Pill background
-        ctx.fillStyle = isBull ? "rgba(16, 185, 129, 0.15)" : (isChoch ? "rgba(56, 189, 248, 0.15)" : "rgba(244, 63, 94, 0.15)");
-        ctx.fillRect(pillX, pillY, pillW, pillH);
-        ctx.strokeStyle = col;
-        ctx.lineWidth = 1;
-        ctx.strokeRect(pillX, pillY, pillW, pillH);
-
-        // Pill text
         ctx.fillStyle = col;
-        ctx.textAlign = "center";
         ctx.textBaseline = "middle";
-        ctx.fillText(tagText, pillX + pillW / 2, pillY + pillH / 2);
+        const tagX = Math.max(65 + ctx.measureText(tagText).width / 2,
+                              Math.min(chartPaneWidth - 4 - ctx.measureText(tagText).width / 2, px));
+        if (placeLabel(ctx, taken, tagText, tagX, isBull ? y - 9 : y + 9,
+                       { align: "center", prefer: isBull ? -1 : 1, maxX: chartPaneWidth - 2 })) {
+          const box = taken[taken.length - 1];
+          const pillX = box.x1 - 3, pillY = box.y1 - 1.5;
+          const pillW = box.x2 - box.x1 + 6, pillH = box.y2 - box.y1 + 3;
+          ctx.fillStyle = isBull ? "rgba(16, 185, 129, 0.15)" : (isChoch ? "rgba(56, 189, 248, 0.15)" : "rgba(244, 63, 94, 0.15)");
+          ctx.fillRect(pillX, pillY, pillW, pillH);
+          // A bullish CHoCH's fill is green; its border now matches it.
+          ctx.strokeStyle = isBull && isChoch ? "rgb(16, 185, 129)" : col;
+          ctx.lineWidth = 1;
+          ctx.strokeRect(pillX, pillY, pillW, pillH);
+          ctx.fillStyle = col;
+          ctx.textAlign = "center";
+          ctx.fillText(tagText, (box.x1 + box.x2) / 2, (box.y1 + box.y2) / 2);
+        }
       }
       ctx.restore();
     }
