@@ -1,7 +1,10 @@
 # SMC_RSI_FRVP_OPTIONS_V1 — Design (Phase A)
 
-**Status:** design only, awaiting owner approval. No source code changed in
-this phase. `active_strategy` remains `ema9_rsi_momentum`.
+**Status:** Phase A approved with changes on 2026-10-01 (§12). The phase
+plan is revised (§15): an **edge-validation phase B2 with a GO/NO-GO gate**
+(§16) now sits between the detectors and the strategy engine. No source code
+changed in Phase A. `active_strategy` remains `ema9_rsi_momentum`. All smc1
+work happens on branch `feature/smc1`.
 
 **Package name:** `smc_rsi_frvp_options_v1` · **Short id / table prefix:** `smc1`
 · **Versioned id for logs and journal rows:** `SMC_RSI_FRVP_OPTIONS_V1`
@@ -181,7 +184,7 @@ class Smc1Engine:
 | `config/event_calendar.yaml` | `trading-system/config/strategies/smc1_event_calendar.json` (same shape as `config/market_holidays.json`) |
 | DB migrations | New SQLite file `trading-system/state/smc1.db` (or `smc1.db` beside `state.db`), schema versioned with `PRAGMA user_version` inside the new package. `state.db` untouched. |
 | `smc1_*` tables | unchanged names, inside `smc1.db` |
-| `/api/v1/strategies/smc1/...` | FastAPI `APIRouter` in a new module, served by the book process on its own port (or mounted in `api_bridge.py` — RA2), proxied by Next.js routes under `frontend/app/api/smc1/*` (the existing proxy pattern) |
+| `/api/v1/strategies/smc1/...` | FastAPI `APIRouter` in a new module, served by the smc1 process on its own port (owner decision; RA2 not used), proxied by Next.js routes under `frontend/app/api/smc1/*` (the existing proxy pattern) |
 | Angular feature module | Next.js pages `frontend/app/smc1/{page,live,signals,journal,performance,config}` + components under `frontend/components/smc1/` |
 | Angular chart | `lightweight-charts` 5.2 (already used) |
 | Kite Connect | Fyers adapter (F2) |
@@ -256,6 +259,13 @@ Only RA3 is unavoidable as specified (Phases D/G need 1-minute futures, OI and
 heavyweight data from the one Fyers socket). RA2 has an additive alternative.
 RA1, RA4, RA5 are only needed for automatic daily start and LIVE.
 
+**Owner decision, 2026-10-01:** RA2 is **not needed** (smc1 serves its own
+port). RA1, RA3, RA4 and RA5 are **not approved now — deferred until after
+the B2 GO/NO-GO gate** (§16). Consequences until then: PAPER sessions are
+started by hand; the §14.1 recorder cannot be fed from `api_bridge`'s socket,
+so Phase D's recorder and Phase G are blocked as specified and will be
+re-planned only if B2 passes. Nothing in Phases B/B2 needs any of them.
+
 ---
 
 ## 4. Module list
@@ -301,7 +311,7 @@ trading-system/trading_bot/strategies/smc_rsi_frvp_options_v1/
     db.py  schema.py     smc1.db, user_version
   institutional/         Phase G: F1–F6, OI walls, OI-shift exit
   backtest/              Phase E: replay runner, walk-forward, sensitivity, report
-  api/router.py          FastAPI APIRouter (own port, or mounted per RA2)
+  api/router.py          FastAPI APIRouter served on the smc1 port
 trading-system/smc1_book.py                         process entry point
 trading-system/research/market_recorder/            Phase D (D4)
 trading-system/config/strategies/smc_rsi_frvp_options_v1.json
@@ -385,7 +395,7 @@ row per direction and reconciles open orders before accepting new bars.
 
 ---
 
-## 8. API (FastAPI router on the book's own port, or mounted per RA2; proxied by Next.js)
+## 8. API (FastAPI router on the smc1 book's own port; proxied by Next.js)
 
 `GET status` · `POST start` · `POST stop` · `POST kill` · `GET/PUT config` ·
 `GET state` · `GET signals?from&to&reason&decision` · `GET trades` ·
@@ -440,74 +450,27 @@ applied at the next session unless the key is in a documented hot-reload set.
 
 ---
 
-## 12. Decisions and open questions for the owner
+## 12. Owner decisions (2026-10-01)
 
-**D1 — Structure/FVG engine.** (a) Reuse `calculate_smc` through
-`rsi_smc`'s causal adapter: no duplicated SMC, but O(n²) per replay, results
-depend on history length, and definitions follow LuxAlgo. (b) New
-incremental detectors in the new package with the spec's exact definitions,
-reusing `detect_pivots`, `rsi`, `adx`, `volume_profile`: deterministic and
-O(n), but a second BOS/CHoCH/FVG implementation exists. **Recommendation:
-(b)**, with a Phase B parity test showing where the two agree and listing
-every bar where they differ and why.
-
-**D2 — Daily start.** Approve RA1 so PAPER starts with the orchestrator, or
-start it by hand. **Recommendation: approve RA1** — the recorder shows what
-happens to manual daily steps.
-
-**D3 — LIVE and account sharing.** main.py reconciles the whole account.
-Options: separate trading account/client ID for smc1; or RA5; or smc1 LIVE
-only while main.py is not running. **Recommendation: decide before Phase D's
-live adapter; PAPER needs none of it.**
-
-**D4 — Recorder.** Extend additively as `research/market_recorder/`
-(reusing `option_recorder`'s store, schema and QA), fed through `api_bridge`
-(RA3). **Recommendation: approve RA3**, and separately: today the existing
-recorder has 0 sessions — starting it (a manual step, no code) begins the
-option-quote sample now.
-
-**D5 — Order tags.** Approve RA4 so `smc1-<date>-<seq>` reaches Fyers, or
-keep tags in the local ledger only and match by symbol/qty/side/time.
-**Recommendation: approve RA4 before LIVE; not needed for PAPER.**
-
-**D6 — ATR.** The shared `atr` is not Wilder. (a) Use it (deviation from
-spec); (b) Wilder ATR in the new package (one small function).
-**Recommendation: (b)**; the shared function stays as it is because other
-strategies' thresholds were measured with it.
-
-**D7 — Costs.** Reuse an existing cost function if Phase B finds one that is
-importable and matches current rates; otherwise new `costs.py` with every
-rate in config.
-
-**D8 — Config location.** Dedicated
-`config/strategies/smc_rsi_frvp_options_v1.json` (≈150 keys) rather than
-`smc1_*` keys in the shared `settings.json`, which the UI and three engines
-write. **Recommendation: dedicated file.**
-
-**D9 — Institutional/OI data on the engine path.** OI comes only from
-`api_bridge`'s chain endpoint. If `api_bridge` has no live Fyers session, the
-chain endpoint silently serves a model chain (recorder finding). The new book
-must refuse chain data flagged synthetic. Confirm that is the wanted
-behaviour (no trade rather than trade on a model chain).
-
-**Open questions**
-
-* **Q1** Broker: confirm Fyers (F2). If Kite is required, completing the Kite
-  adapter is existing-code work outside this strategy.
-* **Q2** Futures history: may Phase B's first step be a one-off fetch of 1 m
-  NIFTY continuous futures (read-only) to measure what Fyers actually serves?
-* **Q3** Instruments: spec says NIFTY default, BANKNIFTY via config. Your
-  paper-test rule also includes SENSEX. Include SENSEX (BSE futures/options)
-  in v1 or not?
-* **Q4** VIX history for backtests: no source in the repo. Acceptable to run
-  the VIX guard only in PAPER/LIVE and mark it inactive in backtest reports?
-* **Q5** Dirty working tree: six modified files and one untracked directory
-  (rsi-smc overlay, ema9 config/signal engine, `api_bridge.py`) were already
-  uncommitted when this phase started. They are not mine to commit or revert.
-  The "clean working tree" criterion cannot be met until you decide on them.
-* **Q6** Expiry-day entries: the spec defaults to none
-  (`allow_expiry_day_entries=false`). Your ema9 exit design treats 0DTE on
-  expiry days as intentional. Keep the spec default for smc1?
+| Item | Decision | Effect on the design |
+|---|---|---|
+| Q1 Broker | **Fyers confirmed.** | Kite is out of scope. UI is Next.js with the existing `lightweight-charts` (§3.2, §9). |
+| Q2 Futures history | **Approved:** one-time **read-only** fetch of NIFTY continuous futures, **only outside market hours** (after 15:45 IST or weekends), and **never creating a second Fyers login** while `api_bridge` / the live engine is connected. If it would, stop and report. | Procedure in §16.1. Report: depth of 1 m / 5 m / 15 m, gaps, zero-volume bars. |
+| Q3 Instruments | **NIFTY only in v1.** BANKNIFTY and SENSEX later via config. | Config ships `underlying: "NIFTY"`; any other value is refused at load in v1. |
+| Q4 VIX in backtests | **VIX guard off in backtests**, clearly marked in **every** report. | Every report header carries `VIX_GUARD: OFF (no history)`. |
+| Q5 Working tree | Owner handles the pre-existing uncommitted changes. | They are never touched, staged or committed by smc1 work. All smc1 commits go on `feature/smc1`, by explicit path. |
+| Q6 Expiry day | Keep **no new entries on expiry day** as the default, behind `allow_expiry_day_entries`; **backtest both variants**. | B2 runs every ablation row with the flag `false` (default) and `true`. |
+| D1 Structure engine | **Approved (b):** new step-by-step detectors per spec, plus a test documenting where they disagree with `calculate_smc`. | Phase B deliverable. |
+| D2 Daily start (RA1) | **Deferred** until after the B2 gate. | PAPER started by hand. |
+| D3 LIVE account sharing (RA5) | **Deferred** until after the B2 gate. | No LIVE adapter work before then. |
+| D4 Recorder feed (RA3) | **Deferred** until after the B2 gate. | See §3.6. |
+| D5 Order tags (RA4) | **Deferred** until after the B2 gate. | Tags kept in the local ledger only. |
+| D6 ATR | **Approved:** Wilder ATR inside the new package; shared `atr` untouched. | Phase B. |
+| D7 Costs | Unchanged: reuse an existing cost function if one is importable and current, else a new `costs.py` with every rate in config and cited. | Needed in B2 for the gate (§16.4). |
+| D8 Config | **Approved:** dedicated JSON file `config/strategies/smc_rsi_frvp_options_v1.json`. | |
+| RA2 / own port | **Approved:** separate smc1 process with its own port. **RA2 not needed.** | |
+| D9 Synthetic chain | Not yet answered; only matters from Phase D. Design default: refuse chain data flagged synthetic (no trade). | |
+| Plan change | **New Phase B2 (edge validation) with a GO/NO-GO gate before Phase C.** Premium backtests take an **8.5 % per-trade pessimistic haircut** before go-live gate 1. | §15, §16, §17. |
 
 ---
 
@@ -517,10 +480,14 @@ behaviour (no trade rather than trade on a model chain).
    `detect_pivots` is; the spec's defaults are symmetric, so no default
    changes. An asymmetric setting is refused at config load.
 2. Partial fills are not simulated in PAPER (per spec, documented).
-3. VIX guard inactive in backtest unless a VIX series is supplied (Q4).
+3. VIX guard **off** in every backtest and B2 run, stated in every report
+   header (Q4, owner decision).
 4. Tick-rule CVD (F4) is an approximation from 1 m aggregates unless
    `api_bridge` forwards ticks (RA3).
-5. Backtest option P&L is `SIMULATED_PREMIUM` throughout (F4).
+5. Backtest option P&L is `SIMULATED_PREMIUM` throughout (F4), and carries
+   the 8.5 % per-trade haircut before go-live gate 1 is evaluated (§17).
+6. NIFTY only in v1 (Q3); BANKNIFTY/SENSEX support is config-ready but
+   refused at load until enabled in a later version.
 
 ---
 
@@ -529,3 +496,137 @@ behaviour (no trade rather than trade on a model chain).
 SEBI's retail algo framework and Fyers' implementation (static IP, algo
 identification, order-rate threshold, registration) will be researched from
 primary sources in Phase H and cited. Nothing here assumes the outcome.
+
+---
+
+## 15. Revised phase plan (owner, 2026-10-01)
+
+| Phase | Scope | Exit criteria |
+|---|---|---|
+| A | Audit + this design | Approved 2026-10-01 |
+| **B** | Detectors (spec §3) with D1 (new detectors + disagreement test vs `calculate_smc`) and D6 (Wilder ATR); the one-time futures history fetch and data-quality report (§16.1) | Unit tests with synthetic fixtures, no-lookahead property test, ≥ 90 % coverage on detectors; existing suite unchanged; data report delivered |
+| **B2** | **Edge validation** in underlying points and R, with no option premium model (§16) | Ablation report; comparison with `rsi_smc_options_buyer`; **GO/NO-GO gate** (§16.4). **If NO-GO: stop and report. Phase C does not start.** |
+| C | Strategy engine, state machine, guards, persistence | As in the spec, and only after B2 = GO |
+| D | Options selection, sizing, execution, paper broker, cost model | As in the spec; the recorder part is re-planned with the deferred RA decisions |
+| E | Premium backtests (`SIMULATED_PREMIUM` + §17 haircut), walk-forward, sensitivity, reports | As in the spec |
+| F | API on its own port + Next.js UI + notifications | `npm run build`, `npm run lint`, serial Playwright |
+| G | Institutional footprint | Blocked until RA3 or another data path is approved |
+| H | Compliance, docs, runbook, final PAPER E2E | As in the spec |
+
+After B2, the deferred items (RA1, RA3, RA4, RA5, D9) come back for a
+decision together with the gate result.
+
+## 16. Phase B2: edge validation
+
+### 16.1 Data: the futures history fetch (Q2)
+
+* **When:** only after 15:45 IST on a trading day, or on a weekend or
+  holiday. The fetch script refuses to run between 09:00 and 15:45 IST on a
+  trading day (`shared.market_calendar`).
+* **How, in order of preference. None of them logs in:**
+  1. Through the running `api_bridge`'s history endpoint, which is already
+     authenticated, so no new session is created.
+  2. If `api_bridge` is not running and no live engine is connected: a
+     `FyersModel` built from the **existing cached access token**
+     (`brokers/token_cache`), never the auto-login flow.
+  3. If neither works without a login: **stop and report.**
+* **Read-only:** history calls only. No order, quote subscription or
+  websocket call. Results go to new files
+  (`data/smc1/NSE_NIFTY_FUT_CONT_<tf>.csv`); the existing history cache files
+  are never written.
+* **Report** for 1 m, 5 m, 15 m (and 60 m, which the 1 H filter uses): first
+  and last bar, sessions, bars per session, missing bars and sessions,
+  duplicate timestamps, zero-volume bars (count and %), contract rolls
+  visible as price jumps, timezone check, SHA-256 of each file. Same format as
+  Phase 11's data manifest.
+* If 1 m depth is under about 6 months, stop and ask before B2: the
+  in-sample / out-of-sample split and the FRVP construction depend on it.
+
+### 16.2 Method
+
+* **Event-driven replay, bar by bar, closed bars only**, using the same
+  detector objects Phase B delivers. No frame-level recomputation. A
+  no-lookahead test replays truncated prefixes and asserts identical
+  decisions.
+* **Frozen parameters:** the spec's defaults. Nothing is tuned on the data
+  B2 judges.
+* **Split by date:** first 70 % of sessions in-sample, last 30 %
+  out-of-sample. **The gate reads out-of-sample only.**
+* **Entry** at the trigger price each row defines (structure close, or the
+  FVG retest level once "retest entry" is added). **Exits are causal and on
+  the underlying:** structure stop (5 m close beyond), TP1 partial and
+  TP_final per spec §4.5, time stop, opposite CHoCH, session end 15:10. No
+  option premium anywhere.
+* **Units:** underlying points and R (R = entry − structure stop). One trade
+  per setup: setups are deduplicated by `(session, direction, POI)`, the
+  Phase 10 lesson on repeated episodes of one setup.
+* **Expiry-day variants (Q6):** every row runs with
+  `allow_expiry_day_entries=false` (default) and `=true`.
+* **Every report header:** `NIFTY futures (continuous)`, date ranges, split,
+  `VIX_GUARD: OFF (no history)`, config hash, data file hashes.
+
+### 16.3 Ablation table
+
+Cumulative, in this order, each row adding one element to the row above:
+
+| Row | Entry rule |
+|---|---|
+| 0 | Baseline: 5 m structure entry (BOS/CHoCH close, either direction), causal exits |
+| 1 | + C1 HTF bias (15 m, with the 1 H filter) |
+| 2 | + C2 premium/discount |
+| 3 | + C3 POI (fresh 15 m OB/FVG tap) |
+| 4 | + FRVP confluence (the FRVP half of C3) |
+| 5 | + sweep requirement (C4 sweep) |
+| 6 | + displacement (C4 displacement + 5 m FVG) |
+| 7 | + C5 RSI |
+| 8 | + retest entry (FVG trigger, `retest_max_bars`, no-chase) |
+| 9 | + time windows (09:45–11:30, 13:30–14:45) and the chop filter |
+| 10 | Full spec rule: C1 + C4 mandatory, score ≥ 4, RR ≥ 2.0, blocked-path check |
+
+Columns, for in-sample and out-of-sample separately: trades, win rate,
+average points, average R, expectancy (points and R), max drawdown (points),
+and each row's **change** against the row above (the Phase 8 per-stage
+information measure). A second, smaller table adds each element **alone** to
+row 0, so an effect that depends on the order of addition shows up.
+
+**Comparison with `rsi_smc_options_buyer`:** same data window, same causal
+exits and units, set beside the published Phase 10 numbers (NIFTY realized
+at most +2.3 points per trade; friction 3.4–6.0 points; 11 of 12 cells net
+negative).
+
+### 16.4 The GO/NO-GO gate
+
+**GO only if out-of-sample expectancy per trade, in underlying points, is at
+least 2 × the round-trip option cost in underlying points**, for the full
+spec rule (row 10) with the default expiry-day setting.
+
+```
+cost_premium_rt = spread_rt + slippage_rt + charges_rt         (Rs per unit of premium)
+  spread_rt     = (ask - bid) paid on entry and again on exit, at the
+                  delta-0.55 strike
+  slippage_rt   = 2 x limit_buffer_ticks x tick_size  (+ reprice allowance)
+  charges_rt    = brokerage + STT + exchange txn + SEBI + stamp + GST,
+                  per unit, at the measured premium level and lot size
+cost_points     = cost_premium_rt / target_delta               (target_delta = 0.55)
+GO  <=>  OOS expectancy_points >= 2 x cost_points
+```
+
+Every input is shown with its source: spread from the observed calibration
+(Phase 10 / `backtest_model_miscalibration`), or recorded quotes if any exist
+by then; slippage from config; each charge rate from config with a cited
+source; lot size from the exchange master. The report prints the arithmetic.
+
+**Theta is not in the gate** as defined. Phase 10 measured it as the largest
+single friction component for NIFTY option buyers, so the report also prints
+a theta-inclusive line. That line is **information only and not part of the
+decision**.
+
+**If NO-GO: stop and report. Phase C does not start.**
+
+## 17. Premium backtests: pessimistic haircut
+
+In any later premium backtest (Phase E), every simulated trade's premium P&L
+is reduced by **8.5 % of entry premium**, the measured worst-case optimism of
+the premium model (`backtest_model_miscalibration`), **before** go-live
+gate 1 is evaluated. Reports show the result with and without the haircut;
+the gate reads only the haircut figure.
