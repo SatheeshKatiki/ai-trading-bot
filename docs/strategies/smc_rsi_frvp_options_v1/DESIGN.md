@@ -471,6 +471,7 @@ applied at the next session unless the key is in a documented hot-reload set.
 | RA2 / own port | **Approved:** separate smc1 process with its own port. **RA2 not needed.** | |
 | D9 Synthetic chain | Not yet answered; only matters from Phase D. Design default: refuse chain data flagged synthetic (no trade). | |
 | Plan change | **New Phase B2 (edge validation) with a GO/NO-GO gate before Phase C.** Premium backtests take an **8.5 % per-trade pessimistic haircut** before go-live gate 1. | §15, §16, §17. |
+| Theta in the gate | **Theta counts toward GO/NO-GO** (not information only). Per-trade cost = (spread + slippage + charges) / delta + expected theta loss / delta; Black-76 theta for the delta-0.55 strike × actual holding time × actual DTE, at a documented fixed IV with ±25 % sensitivity; no gamma credit. GO only if OOS expectancy ≥ 2 × total cost for expiry-day entries OFF; ON is computed and shown. | §16.4 |
 
 ---
 
@@ -505,7 +506,7 @@ primary sources in Phase H and cited. Nothing here assumes the outcome.
 |---|---|---|
 | A | Audit + this design | Approved 2026-10-01 |
 | **B** | Detectors (spec §3) with D1 (new detectors + disagreement test vs `calculate_smc`) and D6 (Wilder ATR); the one-time futures history fetch and data-quality report (§16.1) | Unit tests with synthetic fixtures, no-lookahead property test, ≥ 90 % coverage on detectors; existing suite unchanged; data report delivered |
-| **B2** | **Edge validation** in underlying points and R, with no option premium model (§16) | Ablation report; comparison with `rsi_smc_options_buyer`; **GO/NO-GO gate** (§16.4). **If NO-GO: stop and report. Phase C does not start.** |
+| **B2** | **Edge validation** in underlying points and R. No option premium model for P&L; Black-76 is used only to cost theta in the gate (§16) | Ablation report; comparison with `rsi_smc_options_buyer`; **GO/NO-GO gate** (§16.4). **If NO-GO: stop and report. Phase C does not start.** |
 | C | Strategy engine, state machine, guards, persistence | As in the spec, and only after B2 = GO |
 | D | Options selection, sizing, execution, paper broker, cost model | As in the spec; the recorder part is re-planned with the deferred RA decisions |
 | E | Premium backtests (`SIMULATED_PREMIUM` + §17 haircut), walk-forward, sensitivity, reports | As in the spec |
@@ -596,30 +597,54 @@ negative).
 
 ### 16.4 The GO/NO-GO gate
 
-**GO only if out-of-sample expectancy per trade, in underlying points, is at
-least 2 × the round-trip option cost in underlying points**, for the full
-spec rule (row 10) with the default expiry-day setting.
+**Theta counts toward the decision** (owner, 2026-10-01, superseding the
+earlier "information only" wording). Gamma is **not** credited.
+
+Every OOS trade gets its own cost, in underlying points:
 
 ```
-cost_premium_rt = spread_rt + slippage_rt + charges_rt         (Rs per unit of premium)
+cost_points[t]  = friction_points + theta_points[t]
+
+friction_points = (spread_rt + slippage_rt + charges_rt) / target_delta
   spread_rt     = (ask - bid) paid on entry and again on exit, at the
-                  delta-0.55 strike
+                  delta-0.55 strike                          (Rs per unit)
   slippage_rt   = 2 x limit_buffer_ticks x tick_size  (+ reprice allowance)
   charges_rt    = brokerage + STT + exchange txn + SEBI + stamp + GST,
-                  per unit, at the measured premium level and lot size
-cost_points     = cost_premium_rt / target_delta               (target_delta = 0.55)
-GO  <=>  OOS expectancy_points >= 2 x cost_points
+                  per unit, at the modelled premium level and lot size
+theta_points[t] = expected_theta_loss[t] / target_delta
+expected_theta_loss[t] = |theta_per_minute(K[t], DTE[t], IV)| x hold_minutes[t]
+target_delta    = 0.55
 ```
 
-Every input is shown with its source: spread from the observed calibration
-(Phase 10 / `backtest_model_miscalibration`), or recorded quotes if any exist
-by then; slippage from config; each charge rate from config with a cited
-source; lot size from the exchange master. The report prints the arithmetic.
+Inputs to the theta term, per trade `t` in the backtest:
 
-**Theta is not in the gate** as defined. Phase 10 measured it as the largest
-single friction component for NIFTY option buyers, so the report also prints
-a theta-inclusive line. That line is **information only and not part of the
-decision**.
+| Input | Definition | Source |
+|---|---|---|
+| `K[t]` | The strike our rules would pick: on the exchange strike grid, the one whose delta at entry is closest to 0.55 within [0.45, 0.60] | Strike step from the instrument master; delta from the same model as theta |
+| Pricing model | Black-76 on the futures price at entry (the futures price is the forward, so no separate dividend or carry input) | `options/greeks.py`, tested against textbook values |
+| `DTE[t]` | Actual time from the entry timestamp to that week's expiry close (15:30 IST), on that trade date | A cited historical NIFTY expiry list. The weekly expiry weekday changed during the sample, so it is never derived from a fixed weekday |
+| `IV` | No IV history exists in this repository (F4). A **fixed, conservative IV**, stated in the report with its source and the reason it is conservative (higher IV means higher theta) | Report header |
+| IV sensitivity | The gate is evaluated at the base IV, and the report also prints the full result at IV × 0.75 and IV × 1.25, stating whether the verdict changes | Report |
+| `theta_per_minute` | Black-76 theta per day spread over the **375 trading minutes** of a session. This is conservative, because almost all intraday premium decay lands in session hours; the calendar-minute value (÷ 1440) is printed for reference | Documented convention |
+| `hold_minutes[t]` | Actual time from entry fill to final exit for that trade in the backtest. For a trade with a TP1 partial, the lot-weighted holding time | Backtest trade list |
+| Rate | `risk_free_rate` from config | Config, cited |
+
+**The gate:**
+
+```
+mean_OOS(expectancy_points[t]) >= 2 x mean_OOS(cost_points[t])
+```
+
+Evaluated for the full spec rule (row 10) with **expiry-day entries OFF**
+(the default). That is the only decision.
+
+The identical calculation is also run and printed for **expiry-day entries
+ON**. Expiry-day theta at DTE below 1 is far larger, which is exactly why it
+is shown, but it does not decide.
+
+Every input and its source is printed in the report, with the arithmetic
+per variant: friction components, mean / median / P90 of `theta_points`, mean
+`cost_points`, OOS expectancy, and the ratio between them.
 
 **If NO-GO: stop and report. Phase C does not start.**
 
