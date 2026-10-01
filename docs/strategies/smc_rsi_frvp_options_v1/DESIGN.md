@@ -76,7 +76,7 @@ table modifies an existing file.
 | FVG (3.6) | **Reuse via D1** | `calculate_smc` FVG block | Same rule (`low[i] > high[i-2]`, 0.25 × ATR minimum). Its ATR is the non-Wilder `ema(span)` variant. |
 | Order Block (3.7) | **New** (small) | engine's OB differs | Engine picks the last opposite candle with body ≥ 0.3 ATR and zone `[low, body-top]`. Spec: last opposite-bodied candle before the displacement leg, zone `full` or `body`. Changing the engine would change `rsi_smc` and the chart overlay, so a spec-exact OB selector lives in the new package. |
 | Liquidity pools + sweeps (3.8) | **Wrap** | `rsi_smc_options_buyer/levels.py`, `liquidity.py` | PDH/PDL/PDC and prior-session levels reused; EQH/EQL tolerance, opening range and the spec's reclaim-within-N-bars sweep rule are new code in a wrapper. |
-| FRVP (3.9) | **Wrap** | `volume_profile.calculate_fixed_range_volume_profile` | Called with `num_bins = ceil(range / frvp_bin_points)`. Our wrapper adds the spec's 3-bin smoothing and HVN/LVN thresholds over the returned bins; POC/VAH/VAL taken from the engine after verifying its value-area expansion rule matches (Phase B test). |
+| FRVP (3.9) | **New** (owner decision 2026-10-01) | — | Must NOT use `volume_profile.calculate_fixed_range_volume_profile`: it substitutes candle range for missing volume (§18.6). Computed in `detectors/frvp.py` on an exact `bin_points` grid. |
 | RSI (3.10) | **Reuse** | `shared/indicators/rsi.rsi` | Wilder. No warm-up NaNs — wrapper masks the first `rsi_length` bars. |
 | RSI divergence | **Wrap/New** | `rsi_divergence.calculate_rsi_divergences` | Uses its own pivot lookback and a 40-bar window; spec needs "last two *confirmed* 5 m pivot lows within 30 bars". Phase B checks it for look-ahead; if it reads unconfirmed pivots it is not used. |
 | ATR (3.11) | **Decision D6** | `shared/indicators/atr.atr` | **Not Wilder**: `ewm(span=14)` = α 2/15, not 1/14. `adx._wilder_smooth` exists but is private. |
@@ -284,7 +284,7 @@ trading-system/trading_bot/strategies/smc_rsi_frvp_options_v1/
     fvg.py               (D1)
     order_blocks.py      spec-exact OB
     liquidity.py         EQH/EQL, PDH/PDL/PDC, OR, swing levels; sweep + reclaim
-    frvp.py              wrapper over calculate_fixed_range_volume_profile
+    frvp.py              own profile computation (never the shared function)
     momentum.py          RSI, divergence, ATR (D6), ADX, chop filter
   engine/
     scorecard.py         C1–C5 (+C6 in Phase G), grade
@@ -490,6 +490,47 @@ applied at the next session unless the key is in a documented hot-reload set.
 6. NIFTY only in v1 (Q3); BANKNIFTY/SENSEX support is config-ready but
    refused at load until enabled in a later version.
 
+Added in Phase B, where the spec is silent or ambiguous (each is a config
+value or a documented definition, and each is tested):
+
+7. **Leg origin.** The origin of a bullish break is the lowest low between
+   the broken swing and the break bar (inclusive); bearish mirrors. The spec
+   does not define where a leg starts.
+8. **Dealing range end.** The range high (bullish) extends while the leg runs
+   and freezes at the first 15m swing high confirmed after the BOS. Only a
+   BOS forms a range; a CHoCH does not (spec §3.4 says "the latest BOS").
+9. **1H filter.** A 1H trend that is still NEUTRAL, or not yet known, is "not
+   opposite" and passes.
+10. **Displacement confirmation.** "Creates or is part of an FVG" is tested on
+    the FVG's middle and third candles, so a middle-candle displacement is
+    confirmed one bar after the candle.
+11. **Order block selection.** The last opposite-bodied candle at or before the
+    leg origin, searching back no further than the broken swing; the leg must
+    contain a displacement confirmed by the break bar
+    (`order_blocks.require_displacement`). A touch is any bar after the break
+    reaching the zone's near edge.
+12. **Equal highs/lows bound.** `liquidity.eq_max_pivots_back` (default 10):
+    a new pivot pairs only with the previous 10 of its side. Not in the spec.
+13. **Sweep reclaim window.** `sweep_reclaim_bars` counts bars AFTER the sweep
+    candle; the sweep candle closing back counts as a reclaim. A level is used
+    for one sweep only; one that lapses with price still beyond it is retired
+    as a break. PDC is liquidity on both sides.
+14. **FRVP bins and ties.** Bins are an exact `bin_points` grid aligned to
+    multiples of `bin_points` (5 points: 22,500-22,505, ...). On an exact tie
+    the POC is the lowest-priced bin and the value area grows upward. A bar
+    with high == low puts its volume in the bin holding that price.
+15. **FRVP volume.** smc1 computes its own profile and never calls the shared
+    function (owner decision). A zero-volume bar adds nothing and is counted
+    (`Profile.zero_volume_bars`); a range with no volume at all raises
+    `ZeroVolumeError`. HVN/LVN use the mean of the smoothed bins; edge bins
+    are never LVNs. The 1m buffer holds `frvp.history_sessions` (5) sessions.
+    None of these is in the spec.
+16. **Warm-up.** ATR, RSI and ADX withhold values until warmed up (14, 14
+    and 28 bars). RSI and ADX re-run the shared functions from the first bar
+    the tracker saw, so after warm-up a value depends, vanishingly, on where
+    the history starts. The chop filter returns "unknown" while ADX warms up;
+    the engine (Phase C) decides what unknown means.
+
 ---
 
 ## 14. Compliance (Phase H — noted, not researched yet)
@@ -542,6 +583,13 @@ decision together with the gate result.
   Phase 11's data manifest.
 * If 1 m depth is under about 6 months, stop and ask before B2: the
   in-sample / out-of-sample split and the FRVP construction depend on it.
+
+> **Phase B finding (2026-10-01), awaiting the owner's decision — §18.3.**
+> Route 1 cannot fetch futures: `/api/history` rewrites `NSE:NIFTY26OCTFUT` to
+> `NSE:NIFTY26OCTFUT-EQ` and falls back to local CSVs. The script therefore
+> uses route 2 only (cached token, no login) whether or not `api_bridge` is
+> running, and refuses the whole of a trading day before 15:45 (not only
+> 09:00–15:45). It has not been run.
 
 ### 16.2 Method
 
@@ -655,3 +703,79 @@ is reduced by **8.5 % of entry premium**, the measured worst-case optimism of
 the premium model (`backtest_model_miscalibration`), **before** go-live
 gate 1 is evaluated. Reports show the result with and without the haircut;
 the gate reads only the haircut figure.
+
+## 18. Phase B record (2026-10-01)
+
+### 18.1 What exists
+
+`trading_bot/strategies/smc_rsi_frvp_options_v1/` (detectors only, see its
+README), the JSON config, `scripts/smc1_fetch_futures_history.py`, and 157
+tests in `Testing_Automation_AI_Trading_Bot/python-unit/smc1/`. No
+`generate_signals`, so nothing is registered or selectable.
+
+### 18.2 D1: where the new detectors and `calculate_smc` disagree
+
+Measured on real NIFTY 5m bars, June 2026 (1,575 bars, fixture
+`smc1_nifty_5m_2026-06.csv`), pinned by `test_smc1_engine_disagreement.py`:
+
+| # | Area | Result |
+|---|---|---|
+| 1 | BOS/CHoCH timing | **Identical.** Same bars, same directions: 115 events at pivot length 3, 84 at length 5. |
+| 2 | First-event label | The first break out of NEUTRAL: engine CHoCH, spec BOS. The only label difference. |
+| 3 | History length | The engine clamps its pivot length to `min(L, max(3, n // 6))`. On bars 25–64 at L=10 it reports two bearish breaks with 40 bars of history and none with 400. smc1 gives the same answer either way. |
+| 4 | FVG | Same gap rule; 15 of the 209 FVGs found by either side differ, all from the ATR used for the 0.25 × ATR size floor (engine: 14-bar rolling mean from bar 0; smc1: Wilder, nothing before bar 13). |
+| 5 | Order blocks | Different rule by design (§13 item 11). The engine only exposes blocks still active at the end of a frame, so they are not diffed bar by bar. |
+
+The BOS/CHoCH result means the earlier concern about `calculate_smc` was not
+its break logic, which matches the spec. It was items 3 and 4, plus its frame
+recomputation cost.
+
+### 18.3 Futures history fetch — approved 2026-10-01 with conditions
+
+Route 2 only (direct read-only history calls with the cached token), after
+15:45 IST, under the owner's conditions, each enforced by the script and
+tested offline:
+
+* never log in, refresh or generate a token; a missing token stops before any
+  call, and a response saying the token is invalid or expired stops at once;
+* run only when `trading_bot/main.py` / the paper observer is not managing
+  positions (process check plus `config/active_positions.json`), and never
+  while `main.py` runs in LIVE mode;
+* 30-day chunks, 1 s between calls; any rate-limit response (429, "limit",
+  "too many") stops the whole run; other errors are retried twice and a chunk
+  that still fails is named as LOST;
+* read-only; writes only under `data/smc1/` (CSVs, `quality_report.json`,
+  `DATA_REPORT.md`, the SDK's own log);
+* the report gives the earliest available date per timeframe, gaps,
+  zero-volume bars, and a roll analysis (session-open gaps after month-end
+  expiries, continuous series vs the current contract, whether an expired
+  contract is still served).
+
+### 18.4 Verification
+
+| Check | Result |
+|---|---|
+| New tests | 157 passed (smc1 folder) |
+| Branch coverage, new package | 99 % (1,068 statements, 286 branches) |
+| `mypy --strict` (package + fetch script) | clean, 15 files (`--follow-imports=silent --ignore-missing-imports`: shared modules and pandas are not strictly typed) |
+| Existing strategies, signal hashes | 15 of 15 identical before and after, on NIFTY 5m 2026-06-01..08-31 (4,875 bars) |
+
+### 18.5 Runtime notes for B2
+
+The shared RSI and ADX cost about 12 ms and 27 ms per call, almost all fixed
+pandas overhead, and the trackers call them once per bar. Six months of 5m
+bars (~9,000) is roughly 2 minutes of RSI; 15m ADX roughly 1.5 minutes. B2
+runs the detectors once and composes the ablation rows from the recorded
+outputs, so this is paid once per data set.
+
+### 18.6 Findings about existing code (reported, not changed)
+
+1. `/api/history` cannot serve futures: `format_broker_symbol` appends `-EQ`
+   to any symbol with an exchange prefix but no `-`, and the endpoint then
+   falls back to local CSVs.
+2. `shared.indicators.volume_profile.calculate_fixed_range_volume_profile`
+   silently substitutes candle range for volume when volume is zero, which
+   makes an index-spot profile look like a real one. smc1 does not use it
+   (owner decision); the shared function is unchanged.
+3. The repository `.gitignore` ignores `*.json`; the smc1 config file is
+   committed with `git add -f`, as several other tracked JSON files were.
