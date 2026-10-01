@@ -53,7 +53,7 @@ export async function GET(request: Request) {
     let fundsData: unknown = null;
     let signalsData: unknown = null;
     let quoteData: FyersQuoteResponse | null = null;
-    let newTickerData: Record<string, QuoteTick> = {};
+    const newTickerData: Record<string, QuoteTick> = {};
     
     // Map short symbols to Fyers specific symbols for data fetching
     let symbol = rawSymbol;
@@ -103,47 +103,31 @@ export async function GET(request: Request) {
       signalsData = resSignals;
       quoteData = resQuote;
 
-      // 5. Indices Quotes for Ticker (Fallback to Deterministic Simulation if Real API fails/rate-limits)
-      const generateDeterministicQuote = (sym: string, base: number): QuoteTick => {
-          // Simple hash based on symbol and current minute
-          const now = new Date();
-          const seed = sym + now.getHours() + now.getMinutes();
-          const hash = seed.split('').reduce((a,b)=>{a=((a<<5)-a)+b.charCodeAt(0);return a&a},0);
-          const fluctuation = (hash % 100) / 100; // -0.99 to 0.99
-          const currentPrice = base + (base * (fluctuation * 0.0005)); // +/- 0.05% fluctuation
-          const changePercent = (fluctuation * 1.5); // +/- 1.5%
-          return { lp: currentPrice, chp: changePercent };
+      // 5. Indices Quotes for Ticker (Real API quotes from backend)
+      const extractLpChp = (data: FyersQuoteResponse | null): QuoteTick | null => {
+        if (data && data.d && data.d.length > 0 && !data.error && data.s === "ok") {
+          const q = data.d[0].v;
+          if (q.lp !== undefined && q.chp !== undefined) return { lp: q.lp, chp: q.chp };
+        }
+        return null;
       };
 
-      newTickerData = {
-          NIFTY: generateDeterministicQuote('NIFTY', 23800),
-          BANKNIFTY: generateDeterministicQuote('BANKNIFTY', 51000),
-          SENSEX: generateDeterministicQuote('SENSEX', 76000)
-      };
-
-      // Try to fetch real quotes to override simulation if possible
       try {
-          const resNifty = await fetchWithTimeout<FyersQuoteResponse>(`${BACKEND_URL}/api/quote?symbol=NSE:NIFTY50-INDEX`, 1000, authHeaders);
-          const resBankNifty = await fetchWithTimeout<FyersQuoteResponse>(`${BACKEND_URL}/api/quote?symbol=NSE:NIFTYBANK-INDEX`, 1000, authHeaders);
-          const resSensex = await fetchWithTimeout<FyersQuoteResponse>(`${BACKEND_URL}/api/quote?symbol=BSE:SENSEX-INDEX`, 1000, authHeaders);
+        const [resNifty, resBankNifty, resSensex] = await Promise.all([
+          fetchWithTimeout<FyersQuoteResponse>(`${BACKEND_URL}/api/quote?symbol=NSE:NIFTY50-INDEX`, 3000, authHeaders),
+          fetchWithTimeout<FyersQuoteResponse>(`${BACKEND_URL}/api/quote?symbol=NSE:NIFTYBANK-INDEX`, 3000, authHeaders),
+          fetchWithTimeout<FyersQuoteResponse>(`${BACKEND_URL}/api/quote?symbol=BSE:SENSEX-INDEX`, 3000, authHeaders),
+        ]);
 
-          const extractLpChp = (data: FyersQuoteResponse | null): QuoteTick | null => {
-              if (data && data.d && data.d.length > 0 && !data.error && data.s === "ok") {
-                  const q = data.d[0].v;
-                  if (q.lp !== undefined && q.chp !== undefined) return { lp: q.lp, chp: q.chp };
-              }
-              return null;
-          };
+        const niftyData = extractLpChp(resNifty);
+        const bankniftyData = extractLpChp(resBankNifty);
+        const sensexData = extractLpChp(resSensex);
 
-          const niftyData = extractLpChp(resNifty);
-          const bankniftyData = extractLpChp(resBankNifty);
-          const sensexData = extractLpChp(resSensex);
-          
-          if (niftyData) newTickerData.NIFTY = niftyData;
-          if (bankniftyData) newTickerData.BANKNIFTY = bankniftyData;
-          if (sensexData) newTickerData.SENSEX = sensexData;
+        if (niftyData) newTickerData.NIFTY = niftyData;
+        if (bankniftyData) newTickerData.BANKNIFTY = bankniftyData;
+        if (sensexData) newTickerData.SENSEX = sensexData;
       } catch (e) {
-          // Ignore quote fetch errors, use deterministic fallback
+        // Ignore quote fetch errors
       }
       
       
