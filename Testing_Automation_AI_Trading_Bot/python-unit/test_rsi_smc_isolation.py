@@ -78,6 +78,7 @@ def test_no_unexpected_strategy_module_appeared():
         "marl_strategy", "meta_agent_strategy", "ultra_meta_dip_swarm",
         "ema9_rsi_momentum", "momentum_15_5", "momentum_strategy",
         "premium_selection", "structure_break",
+        "smc_rsi_frvp_options_v1",
     }
     unexpected = discovered - known - {NEW_STRATEGY}
     assert not unexpected, f"unexpected strategy modules added: {unexpected}"
