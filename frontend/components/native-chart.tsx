@@ -2,7 +2,7 @@
 
 import React, { useEffect, useRef, useState, useMemo, useCallback } from "react";
 import { createChart, ColorType, IChartApi, ISeriesApi, Time, TickMarkType, CandlestickSeries, LineSeries, HistogramSeries, CrosshairMode, createSeriesMarkers } from "lightweight-charts";
-import { RefreshCw, Settings2, X, ChevronDown, ChevronUp, Maximize2 as ResetZoomIcon, Download, Tag, Bot, Eye, EyeOff, Layers, BarChart3, Activity, Plus } from "lucide-react";
+import { RefreshCw, Settings2, X, ChevronDown, ChevronUp, Maximize2 as ResetZoomIcon, Download, Tag, Bot, Eye, EyeOff, Layers, BarChart3, Activity } from "lucide-react";
 import { useTheme } from "@/components/theme-provider";
 import { useChartSettingsStore } from "@/store/useChartSettingsStore";
 import { parseBackendDatetimeToEpochSeconds, getISTNowParts, istWallTimeToEpochSeconds, isMarketOpenIST, formatEpochISTParts } from "@/lib/ist-time";
@@ -1974,7 +1974,9 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
             try {
               const sMarkers = await fetchStrategyMarkers(chartData);
               lastChartDataRef.current = chartData;
-              void fetchRsiSmcOverlay(chartData);
+              // The RSI_SMC overlay is fetched by applyAllIndicatorData, which
+              // runs before every call of this function. Fetching it here too
+              // doubled the backend SMC computation on every 15 s poll.
               sMarkers.forEach(m => finalMarkers.push(m));
             } catch { /* markers are a view concern; never break the chart */ }
           }
@@ -2137,7 +2139,6 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
         const uniqueData = sanitizeCandleSeries(json.data);
 
         if (uniqueData.length > 0) {
-          const prevLen = (chartDataCache[cacheKey] || []).length;
           chartDataCache[cacheKey] = uniqueData; // Cache it!
           if (!isMounted) return;
           // Apply dynamic colors if enabled
