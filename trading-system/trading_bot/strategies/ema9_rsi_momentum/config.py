@@ -169,6 +169,15 @@ TREND_SLOPE_MIN_PCT: float = 0.02    # slope, as % of price, to count as agreein
 # confirmation 11/11 and 7/11), so this ships OFF for the owner to try in the
 # variant book first.
 #
+# UNVERIFIED: the figures above (+Rs.21,081 on NIFTY, 7 of 11 quarters, and
+# the rest of the table) have not been reproduced by an independent run. Do
+# not rely on them.
+#
+# Before this is ever enabled it needs (owner, 2026-10-01): the same
+# confirmations wick entries require -- EMA20 slope agreeing and RSI
+# separated from its average -- available as config options, and a
+# reproduced backtest. Until then it stays OFF.
+#
 # Enable with `ema9_rsi_allow_breakaway_entry`, or per symbol via
 # SYMBOL_OVERRIDES.
 ALLOW_BREAKAWAY_ENTRY: bool = False
