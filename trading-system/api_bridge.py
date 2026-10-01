@@ -3404,8 +3404,8 @@ async def get_strategy_markers(
 @app.get("/api/rsi-smc-overlay")
 async def get_rsi_smc_overlay(
     symbol: str = Query(..., description="Index or ticker, e.g. NSE:NIFTY50-INDEX"),
-    start_date: str = Query(..., description="Start date (YYYY-MM-DD)"),
-    end_date: str = Query(..., description="End date (YYYY-MM-DD)"),
+    start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
+    end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
     timeframe: str = Query("5 Min", description="Chart timeframe"),
     max_bars: int = Query(1500, ge=50, le=5000),
 ):
@@ -3435,6 +3435,12 @@ async def get_rsi_smc_overlay(
     Read-only. Computing this neither activates nor configures the strategy,
     which remains inactive and NO-GO.
     """
+    from datetime import date, timedelta
+    if not end_date:
+        end_date = date.today().isoformat()
+    if not start_date:
+        start_date = (date.today() - timedelta(days=60)).isoformat()
+
     hist = await get_history(symbol=symbol, start_date=start_date,
                              end_date=end_date, timeframe=timeframe)
     candles = (hist or {}).get("data") or []
