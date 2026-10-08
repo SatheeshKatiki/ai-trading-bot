@@ -1,3 +1,4 @@
+
 """EMA9/RSI Momentum — core signal engine.
 
 Pure, stateless functions operating on a closed-candle OHLCV DataFrame.
@@ -32,6 +33,8 @@ from .indicators import (
     crossed_below_level,
 )
 
+from typing import Optional
+
 #: Momentum-strength labels, weakest to strongest.
 NO_MOMENTUM = "NONE"
 NORMAL = "NORMAL"
@@ -43,9 +46,11 @@ VERY_STRONG = "VERY_STRONG"
 class CrossSignals:
     """Per-bar boolean arrays the entry and exit rules are both built from."""
 
-    bullish: np.ndarray  # EMA9 crossed above EMA20 AND RSI crossed above RSI-EMA20 (same bar)
-    bearish: np.ndarray  # EMA9 crossed below EMA20 AND RSI crossed below RSI-EMA20 (same bar)
+    bullish: np.ndarray  # CE entry signals (executed at candle close)
+    bearish: np.ndarray  # PE entry signals (executed at candle close)
     indicators: IndicatorSet
+    stop_loss: Optional[pd.Series] = None
+    is_chop: Optional[np.ndarray] = None
 
 
 from shared.indicators import adx
@@ -117,57 +122,13 @@ def ema_cluster_touch(df: pd.DataFrame, ind: IndicatorSet,
     return ClusterTouch(passes=passes, by_body=by_body, by_wick=by_wick)
 
 
-def _with_anticipation(df: pd.DataFrame, ind: IndicatorSet,
-                       cfg: Ema9RsiMomentumConfig,
-                       ema_up: np.ndarray, ema_dn: np.ndarray):
-    """Optionally treat an imminent crossover as a crossover.
-
-    The owner asked (2026-09-22) for a signal when the lines have not crossed
-    yet but look like they will within the next candle or two. It is OFF by
-    default, because it measured as the most damaging change tried on this
-    strategy: NIFTY +Rs.11,150 -> -Rs.64,551 at one bar of anticipation, and
-    -Rs.98,964 at two; SENSEX -Rs.37,841 -> -Rs.56,247 and -Rs.63,470. Every
-    tightness setting tried (gap below 0.15 / 0.30 / 0.50 x ATR) and an extra
-    RSI-strength requirement were all worse, on both indices.
-
-    The reason is structural and not a tuning problem: EMA9 approaches EMA20
-    far more often than it crosses it. Anticipating roughly doubles the trade
-    count and nearly all the extra trades are approaches that failed.
-
-    Kept because the owner asked for it and may want to see it on a different
-    instrument or timeframe. Guarded so that even when enabled it fires only
-    once per approach, only while the lines are genuinely close (a fraction
-    of ATR apart), and only while the gap is still narrowing.
-    """
-    bars = int(getattr(cfg, "anticipate_cross_bars", 0) or 0)
-    if bars <= 0:
-        return ema_up, ema_dn
-
-    fast = np.asarray(ind.ema_fast, dtype=float)
-    slow = np.asarray(ind.ema_slow, dtype=float)
-    gap = fast - slow
-    step = np.r_[0.0, np.diff(gap)]
-
-    high = np.asarray(df["high"], dtype=float)
-    low = np.asarray(df["low"], dtype=float)
-    close = np.asarray(df["close"], dtype=float)
-    prev = np.r_[close[0], close[:-1]]
-    true_range = np.maximum(high - low, np.maximum(np.abs(high - prev), np.abs(low - prev)))
-    atr = pd.Series(true_range).ewm(alpha=1 / 14, adjust=False).mean().to_numpy()
-    close_enough = np.abs(gap) <= float(getattr(cfg, "anticipate_max_gap_atr", 0.30)) * atr
-
-    soon_up = (gap < 0) & (step > 0) & ((gap + step * bars) > 0) & close_enough
-    soon_dn = (gap > 0) & (step < 0) & ((gap + step * bars) < 0) & close_enough
-    # once per approach, not on every bar of it
-    soon_up &= ~np.r_[False, soon_up[:-1]]
-    soon_dn &= ~np.r_[False, soon_dn[:-1]]
-
-    return (np.asarray(ema_up, dtype=bool) | np.nan_to_num(soon_up).astype(bool),
-            np.asarray(ema_dn, dtype=bool) | np.nan_to_num(soon_dn).astype(bool))
-
-
-
+#: Entry priority. HIGH is the owner's first preference (a body touch), MEDIUM
+#: a wick touch that earned its place (with trend slope agreement), LOW one that did not.
+PRIORITY_HIGH = "HIGH"
+PRIORITY_MEDIUM = "MEDIUM"
+PRIORITY_LOW = "LOW"
 PRIORITY_BREAKAWAY = "BREAKAWAY"
+PRIORITY_NONE = "NONE"
 
 
 def _breakaway(df: pd.DataFrame, cfg: Ema9RsiMomentumConfig,
@@ -204,14 +165,6 @@ def _breakaway(df: pd.DataFrame, cfg: Ema9RsiMomentumConfig,
     return decisive & np.nan_to_num(held).astype(bool)
 
 
-#: Entry priority. HIGH is the owner's first preference (a body touch), MEDIUM
-#: a wick touch that earned its place, LOW one that did not.
-PRIORITY_HIGH = "HIGH"
-PRIORITY_MEDIUM = "MEDIUM"
-PRIORITY_LOW = "LOW"
-PRIORITY_NONE = "NONE"
-
-
 @dataclass(frozen=True)
 class EntryQuality:
     """Per-bar entry grading: how good the touch is, and whether to take it."""
@@ -219,29 +172,16 @@ class EntryQuality:
     priority: np.ndarray      # PRIORITY_* label per bar
     take: np.ndarray          # bool: this bar's signal is worth acting on
     trend_agrees: np.ndarray  # EMA20 sloping with the trade
-    rsi_separated: np.ndarray # RSI clear of its own average
+    rsi_separated: np.ndarray # preserved for backwards compatibility (all True)
 
 
 def assess_entry_quality(df: pd.DataFrame, ind: IndicatorSet,
                          cfg: Ema9RsiMomentumConfig,
                          direction: np.ndarray) -> EntryQuality:
-    """Grade each bar's entry, the way the owner asked the bot to decide.
-
-    A body touch is first preference and is taken on its own -- the candle
-    committed through both averages, there is nothing left to confirm.
-
-    A wick touch is second preference: the candle only grazed the cluster, so
-    the bot looks for two independent reasons to believe the move anyway --
-    the EMA20 sloping the same way as the trade, and RSI genuinely separated
-    from its own average rather than hugging it. Both, and the entry is taken
-    at MEDIUM. Neither or one, and it is skipped at LOW.
-
-    Measured on the wick-only signals over 2024-01-01..2026-09-21, costs from
-    real option premiums: taking every wick cost Rs.268/trade on NIFTY and
-    Rs.169 on SENSEX; requiring both confirmations brought that to Rs.17 and
-    Rs.44. Against taking every wick it won 11/11 NIFTY and 7/11 SENSEX
-    quarters, fixed, with no per-period fitting. It does not make wick trades
-    profitable -- it stops them paying for the body trades.
+    """Grade each bar's entry:
+    - A body touch is taken outright (priority HIGH).
+    - A wick touch requires trend slope agreement (priority MEDIUM).
+    - Wick touch without trend agreement is skipped (priority LOW).
     """
     touch = ema_cluster_touch(df, ind, cfg)
     n = len(df)
@@ -256,18 +196,15 @@ def assess_entry_quality(df: pd.DataFrame, ind: IndicatorSet,
                             np.where(direction < 0, slope_pct < -floor, False))
     trend_agrees = np.nan_to_num(trend_agrees, nan=0.0).astype(bool)
 
-    gap = np.abs(np.asarray(ind.rsi, dtype=float) - np.asarray(ind.rsi_ma, dtype=float))
-    rsi_separated = np.nan_to_num(gap, nan=0.0) >= float(getattr(cfg, "wick_min_rsi_gap", 3.0))
+    # RSI separation gap rule removed per user instruction.
+    rsi_separated = np.ones(n, dtype=bool)
 
     wick_only = touch.by_wick & ~touch.by_body
     if getattr(cfg, "wick_requires_confirmation", True):
-        wick_ok = wick_only & trend_agrees & rsi_separated
+        wick_ok = wick_only & trend_agrees
     else:
         wick_ok = wick_only
 
-    # A cross whose candle has left the cluster is normally a chase. A
-    # decisive one that closes at its extreme is the exception -- see
-    # `_breakaway`. Off unless the owner switches it on.
     breakaway = _breakaway(df, cfg, direction) & ~touch.by_wick
 
     priority = np.full(n, PRIORITY_NONE, dtype=object)
@@ -277,8 +214,7 @@ def assess_entry_quality(df: pd.DataFrame, ind: IndicatorSet,
     priority[touch.by_body] = PRIORITY_HIGH
 
     # "take" still honours the configured touch mode: in "body" mode a wick
-    # never qualifies however well confirmed, and in "legacy" mode the old
-    # one-sided check decides and no grading applies.
+    # never qualifies; otherwise body touch or confirmed wick touch qualifies.
     mode = str(getattr(cfg, "ema_touch_mode", "body_or_wick")).lower()
     if mode == BODY:
         take = touch.by_body
@@ -329,13 +265,111 @@ def entry_timing_gate(now: datetime.datetime, strength: str,
         return True, f"confirmation window ({left:.0f}s to {timeframe_label(span)} bar close)"
 
     floor = str(getattr(cfg, "early_entry_min_strength", STRONG)).upper()
-    order = {NO_MOMENTUM: 0, NORMAL: 1, STRONG: 2, VERY_STRONG: 3}
-    if order.get(str(strength).upper(), 0) >= order.get(floor, 2):
-        return True, (f"early entry on {strength} momentum "
-                      f"({left:.0f}s to {timeframe_label(span)} bar close)")
+    if not getattr(cfg, "require_bar_close_window", False):
+        order = {NO_MOMENTUM: 0, NORMAL: 1, STRONG: 2, VERY_STRONG: 3}
+        if order.get(str(strength).upper(), 0) >= order.get(floor, 2):
+            return True, (f"early entry on {strength} momentum "
+                          f"({left:.0f}s to {timeframe_label(span)} bar close)")
+
+    if getattr(cfg, "require_bar_close_window", False):
+        return False, (f"waiting for {timeframe_label(span)} bar close ({left:.0f}s left); "
+                       f"entry allowed only in final {window}s window of candle")
 
     return False, (f"waiting for {timeframe_label(span)} bar close ({left:.0f}s left); "
-                   f"momentum {strength or NO_MOMENTUM} is below {floor}")
+                   f"{strength or NO_MOMENTUM} momentum is below {floor} floor")
+
+
+# Alias for entry_timing_gate
+check_entry_timing = entry_timing_gate
+
+
+def detect_chop_box(df: pd.DataFrame, ind: IndicatorSet, cfg: Ema9RsiMomentumConfig) -> np.ndarray:
+    """Detect flat, sideways EMA squeeze zones (Purple 'No Trade' Box in TradingView).
+
+    A chop box occurs when:
+    1. Distance between EMA 9 and EMA 20 is compressed: |EMA9 - EMA20| < chop_atr_mult * ATR.
+    2. EMA 20 slope is relatively flat: |EMA20 - EMA20.shift(3)| / ATR < chop_slope_threshold.
+    Returns a boolean array where True indicates the bar is inside a sideways chop box.
+    """
+    n = len(df)
+    if not getattr(cfg, "enable_chop_filter", True) or n == 0:
+        return np.zeros(n, dtype=bool)
+
+    close_arr = np.asarray(df["close"], dtype=float)
+    if ind.atr is not None and len(ind.atr) == n:
+        atr_vals = np.asarray(ind.atr, dtype=float)
+        atr_arr = np.where(np.isnan(atr_vals) | (atr_vals <= 0), 0.005 * close_arr, atr_vals)
+    else:
+        atr_arr = 0.005 * close_arr
+
+    ema_diff = np.abs(np.asarray(ind.ema_fast, dtype=float) - np.asarray(ind.ema_slow, dtype=float))
+    threshold = float(getattr(cfg, "chop_atr_mult", 0.20)) * atr_arr
+    compression = ema_diff < threshold
+
+    # Normalized slope of EMA20 over 3 bars
+    slow_s = pd.Series(np.asarray(ind.ema_slow, dtype=float))
+    slope = (slow_s - slow_s.shift(3)).abs().to_numpy() / (atr_arr + 1e-9)
+    slope_thresh = float(getattr(cfg, "chop_slope_threshold", 0.15))
+    flat_slope = np.nan_to_num(slope, nan=0.0) < slope_thresh
+
+    return np.asarray(compression & flat_slope, dtype=bool)
+
+
+def compute_adaptive_stop_loss_series(
+    df: pd.DataFrame,
+    ind: IndicatorSet,
+    cfg: Ema9RsiMomentumConfig,
+    signals: pd.Series | np.ndarray,
+) -> pd.Series:
+    """Calculate the ATR-normalized adaptive stop loss for each signal bar.
+
+    - Large Candle (range >= large_candle_atr_mult * ATR):
+        Anchors SL to the trigger yellow candle's Low (CE) or High (PE) with small buffer.
+    - Small Candle (range < large_candle_atr_mult * ATR):
+        Anchors SL to 20 EMA +/- (sl_buffer_atr_mult * ATR).
+    """
+    sl_series = pd.Series(np.nan, index=df.index, dtype=float)
+    sig_arr = np.asarray(signals, dtype=int)
+    if not getattr(cfg, "adaptive_sl_enabled", True) or not np.any(sig_arr != 0):
+        return sl_series
+
+    high_arr = np.asarray(df["high"], dtype=float) if "high" in df.columns else np.asarray(df["close"], dtype=float)
+    low_arr = np.asarray(df["low"], dtype=float) if "low" in df.columns else np.asarray(df["close"], dtype=float)
+    close_arr = np.asarray(df["close"], dtype=float)
+
+    if ind.atr is not None and len(ind.atr) == len(df):
+        atr_vals = np.asarray(ind.atr, dtype=float)
+        atr_arr = np.where(np.isnan(atr_vals) | (atr_vals <= 0), 0.005 * close_arr, atr_vals)
+    else:
+        atr_arr = 0.005 * close_arr
+
+    ema20_arr = np.asarray(ind.ema_slow, dtype=float)
+
+    candle_range = high_arr - low_arr
+    large_mult = float(getattr(cfg, "large_candle_atr_mult", 1.0))
+    buffer_mult = float(getattr(cfg, "sl_buffer_atr_mult", 0.20))
+    candle_buffer_mult = float(getattr(cfg, "sl_candle_buffer_atr_mult", 0.05))
+
+    is_large = candle_range >= (large_mult * atr_arr)
+
+    for i in np.where(sig_arr != 0)[0]:
+        d = sig_arr[i]
+        a = atr_arr[i]
+        c = close_arr[i]
+        if d == 1:  # CE
+            if is_large[i]:
+                sl = low_arr[i] - (candle_buffer_mult * a)
+            else:
+                sl = ema20_arr[i] - (buffer_mult * a)
+            sl_series.iloc[i] = round(min(sl, c - (0.05 * a)), 2)
+        elif d == -1:  # PE
+            if is_large[i]:
+                sl = high_arr[i] + (candle_buffer_mult * a)
+            else:
+                sl = ema20_arr[i] + (buffer_mult * a)
+            sl_series.iloc[i] = round(max(sl, c + (0.05 * a)), 2)
+
+    return sl_series
 
 
 def compute_cross_signals(df: pd.DataFrame, cfg: Ema9RsiMomentumConfig) -> CrossSignals:
@@ -343,9 +377,40 @@ def compute_cross_signals(df: pd.DataFrame, cfg: Ema9RsiMomentumConfig) -> Cross
 
     ema_up = crossed_above(ind.ema_fast, ind.ema_slow)
     ema_dn = crossed_below(ind.ema_fast, ind.ema_slow)
-    ema_up, ema_dn = _with_anticipation(df, ind, cfg, ema_up, ema_dn)
     rsi_bullish = np.asarray(ind.rsi > ind.rsi_ma, dtype=bool)
     rsi_bearish = np.asarray(ind.rsi < ind.rsi_ma, dtype=bool)
+
+    # ── CM Ultimate MA Yellow Candle & Cross Detection ──
+    cm_df = ind.cm_ma
+    if cm_df is not None and "price_cross_ma2_up" in cm_df.columns:
+        cr_up2 = np.asarray(cm_df["price_cross_ma2_up"], dtype=bool)
+        cr_down2 = np.asarray(cm_df["price_cross_ma2_down"], dtype=bool)
+        bar_hl = np.asarray(cm_df.get("bar_highlight", False), dtype=bool)
+        close_arr = np.asarray(df["close"], dtype=float)
+        open_arr = np.asarray(df["open"], dtype=float) if "open" in df.columns else close_arr
+        fast_arr = np.asarray(ind.ema_fast, dtype=float)
+
+        yellow_ce = cr_up2 | (bar_hl & (close_arr > fast_arr) & (close_arr >= open_arr))
+        yellow_pe = cr_down2 | (bar_hl & (close_arr < fast_arr) & (close_arr <= open_arr))
+    else:
+        yellow_ce = np.ones(len(df), dtype=bool)
+        yellow_pe = np.ones(len(df), dtype=bool)
+
+    # ── Chop Box / Range Compression Filter (Purple "No Trade" Box) ──
+    is_chop = detect_chop_box(df, ind, cfg)
+    not_chop = ~is_chop
+
+    # ── Setup A: Reversal Crossovers ──
+    reversal_ce = ema_up
+    reversal_pe = ema_dn
+
+    # ── Setup B: Pullback / Trend Continuation ──
+    if getattr(cfg, "enable_pullback_entries", True):
+        pullback_ce = (ind.ema_fast > ind.ema_slow) & yellow_ce & (ind.rsi > 50.0) & rsi_bullish
+        pullback_pe = (ind.ema_fast < ind.ema_slow) & yellow_pe & (ind.rsi < 50.0) & rsi_bearish
+    else:
+        pullback_ce = np.zeros(len(df), dtype=bool)
+        pullback_pe = np.zeros(len(df), dtype=bool)
 
     # ── Trend Strength Filter (ADX >= min_adx) ──
     # Prevents entries in flat, sideways consolidation where option buyers suffer heavy theta decay.
@@ -358,33 +423,43 @@ def compute_cross_signals(df: pd.DataFrame, cfg: Ema9RsiMomentumConfig) -> Cross
     else:
         adx_ok = np.ones(len(df), dtype=bool)
 
-    # ── Time-of-Day Decay Filter (09:25 AM to 15:00 PM) ──
-    # Avoids opening fake breakouts (09:15-09:25) and last 30-min theta crush (15:00-15:30).
+    # ── Time-of-Day Decay Filter & Late Entry on ALL days (15:15 to 15:25 on VERY_STRONG) ──
+    # Normal window: 09:20 - 15:15. Late window (15:15 - 15:25) allowed on ALL days if momentum is VERY_STRONG.
     if cfg.enable_time_filter:
         try:
+            late_end = getattr(cfg, "late_entry_end", getattr(cfg, "expiry_late_entry_end", "15:25"))
+            late_enabled = bool(getattr(cfg, "late_entry_enabled", getattr(cfg, "expiry_late_entry", True)))
+            rsi_vals = np.asarray(ind.rsi, dtype=float)
+
+            t_str = None
             if isinstance(df.index, pd.DatetimeIndex):
                 t_str = df.index.strftime("%H:%M")
-                time_ok = np.asarray((t_str >= cfg.time_start) & (t_str <= cfg.time_end), dtype=bool)
             else:
                 date_cols = [c for c in df.columns if "date" in str(c).lower() or "time" in str(c).lower()]
                 if date_cols:
                     t_str = pd.to_datetime(df[date_cols[0]]).dt.strftime("%H:%M")
-                    time_ok = np.asarray((t_str >= cfg.time_start) & (t_str <= cfg.time_end), dtype=bool)
+
+            if t_str is not None:
+                normal_time_ok = (t_str >= cfg.time_start) & (t_str <= cfg.time_end)
+                if late_enabled:
+                    in_late_window = (t_str > cfg.time_end) & (t_str <= late_end)
+                    time_ok_ce = np.asarray(normal_time_ok | (in_late_window & (rsi_vals >= cfg.rsi_band_very_strong)), dtype=bool)
+                    time_ok_pe = np.asarray(normal_time_ok | (in_late_window & (rsi_vals <= cfg.rsi_band_normal)), dtype=bool)
                 else:
-                    time_ok = np.ones(len(df), dtype=bool)
+                    time_ok_ce = np.asarray(normal_time_ok, dtype=bool)
+                    time_ok_pe = np.asarray(normal_time_ok, dtype=bool)
+            else:
+                time_ok_ce = np.ones(len(df), dtype=bool)
+                time_ok_pe = np.ones(len(df), dtype=bool)
         except Exception:
-            time_ok = np.ones(len(df), dtype=bool)
+            time_ok_ce = np.ones(len(df), dtype=bool)
+            time_ok_pe = np.ones(len(df), dtype=bool)
     else:
-        time_ok = np.ones(len(df), dtype=bool)
+        time_ok_ce = np.ones(len(df), dtype=bool)
+        time_ok_pe = np.ones(len(df), dtype=bool)
 
     # ── EMA Touch & No-Chasing Guard ──
-    # Prevents late entries where the candle is already flying far away from the EMA line.
-    # The breakout candle MUST touch or be rooted in the EMA cluster.
     if cfg.enable_touch_filter and "low" in df.columns and "high" in df.columns:
-        # Grade each candidate bar rather than just pass/fail it: a body touch
-        # is taken outright, a wick touch only once it has confirmed itself.
-        # The direction a bar would trade decides which way "the trend agrees"
-        # has to point, so the grading is done per side.
         quality_ce = assess_entry_quality(df, ind, cfg, np.where(ema_up, 1, 0))
         quality_pe = assess_entry_quality(df, ind, cfg, np.where(ema_dn, -1, 0))
         touch_ce = quality_ce.take
@@ -393,24 +468,68 @@ def compute_cross_signals(df: pd.DataFrame, cfg: Ema9RsiMomentumConfig) -> Cross
         touch_ce = np.ones(len(df), dtype=bool)
         touch_pe = np.ones(len(df), dtype=bool)
 
-    bullish = ema_up & rsi_bullish & adx_ok & time_ok & touch_ce
-    bearish = ema_dn & rsi_bearish & adx_ok & time_ok & touch_pe
+    # ── Setup A (HIGHEST PRIORITY): 9 & 20 EMA Directional Crossover ──
+    # User Rule (2026-10-02): Fresh 9 & 20 EMA crossovers with RSI confirmation
+    # have HIGHEST PRIORITY. They represent the primary momentum initiation point
+    # for option buying and execute without being blocked by restrictive touch filters.
+    rsi_vals = np.asarray(ind.rsi, dtype=float)
+    crossover_ce = ema_up & rsi_bullish & (rsi_vals >= 48.0)
+    crossover_pe = ema_dn & rsi_bearish & (rsi_vals <= 52.0)
 
-    # ── Warm-up guard (found during 1-year NIFTY backtest review) ──────
-    # Neither `shared.indicators.rsi()` nor `ema()` pad the warm-up period
-    # with NaN when their input has no leading NaN of its own (rsi.py's
-    # own docstring: "the first `window` non-NaN values ... come from a
-    # still-converging average ... callers that need those excluded must
-    # mask them explicitly; this function does not"). `rsi_ma` compounds
-    # this: it's an EMA *of* an already-unconverged RSI, so for the first
-    # few bars both lines can momentarily collapse toward 0 and "cross"
-    # purely from that transient, not a real signal — confirmed live on
-    # this exact NIFTY dataset (bar index 3, RSI jumping 0.00 -> 65.29
-    # against a still-near-0 rsi_ma). Masking crossovers until RSI has had
-    # `rsi_length` bars to compute plus `rsi_ma_length` more for its own
-    # EMA to converge (also compared against the EMA20/9 warm-up need)
-    # removes exactly this artifact without changing any post-warm-up
-    # signal — a bar that would fire once converged still fires.
+    # ── Setup B (Secondary Priority): Pullback / Retest with Yellow Candle ──
+    if getattr(cfg, "enable_pullback_entries", True):
+        pullback_ce = (ind.ema_fast > ind.ema_slow) & yellow_ce & (ind.rsi > 50.0) & rsi_bullish & not_chop & touch_ce & adx_ok
+        pullback_pe = (ind.ema_fast < ind.ema_slow) & yellow_pe & (ind.rsi < 50.0) & rsi_bearish & not_chop & touch_pe & adx_ok
+    else:
+        pullback_ce = np.zeros(len(df), dtype=bool)
+        pullback_pe = np.zeros(len(df), dtype=bool)
+
+    # ── Setup C: CM Yellow Candle Breakdown / Breakout ──
+    # User Rule (2026-10-02): When price breaks through the EMA cluster with a
+    # CM Ultimate MA yellow candle (cr_down2 / cr_up2), this signals a decisive
+    # momentum shift. ADX is deliberately excluded because ADX is a LAGGING
+    # indicator — at the start of breakdown moves (consolidation → directional),
+    # ADX is naturally low. Requiring high ADX misses the exact entry the user
+    # expects (e.g. Oct 1 12:00: ADX=16.06, min_adx=18.0, but 350-pt drop
+    # followed). Touch filter is also bypassed since the yellow candle crossing
+    # through EMA IS the touch/breakdown confirmation.
+    if cm_df is not None and "price_cross_ma2_down" in cm_df.columns:
+        _rsi_prev = pd.Series(rsi_vals).shift(1).bfill().to_numpy()
+        _rsi_falling = rsi_vals < _rsi_prev
+        _rsi_rising  = rsi_vals > _rsi_prev
+
+        cm_breakdown_pe = (
+            cr_down2
+            & (np.asarray(ind.ema_fast) <= np.asarray(ind.ema_slow))
+            & (rsi_vals < 50.0)
+            & (rsi_bearish | _rsi_falling)
+            & not_chop
+        )
+        cm_breakout_ce = (
+            cr_up2
+            & (np.asarray(ind.ema_fast) >= np.asarray(ind.ema_slow))
+            & (rsi_vals > 50.0)
+            & (rsi_bullish | _rsi_rising)
+            & not_chop
+        )
+    else:
+        cm_breakdown_pe = np.zeros(len(df), dtype=bool)
+        cm_breakout_ce = np.zeros(len(df), dtype=bool)
+
+    # ── Institutional Exhaustion Filter (RSI Guard) ──
+    # Option buyers must never buy CE into extreme overbought exhaustion (RSI > 75)
+    # or PE into extreme oversold exhaustion (RSI < 25), where mean-reversion & theta crush options.
+    not_overbought = rsi_vals <= getattr(cfg, "rsi_overbought_cap", 75.0)
+    not_oversold = rsi_vals >= getattr(cfg, "rsi_oversold_floor", 25.0)
+
+    # Valid candidates: Highest priority Crossover | CM Breakdown | Pullback
+    candidate_ce = (crossover_ce | cm_breakout_ce | pullback_ce) & not_overbought
+    candidate_pe = (crossover_pe | cm_breakdown_pe | pullback_pe) & not_oversold
+
+    bullish = candidate_ce & time_ok_ce
+    bearish = candidate_pe & time_ok_pe
+
+    # ── Warm-up guard ──────
     warmup_bars = max(cfg.ema_slow, cfg.rsi_length + cfg.rsi_ma_length)
     if len(bullish) > warmup_bars:
         bullish[:warmup_bars] = False
@@ -419,10 +538,15 @@ def compute_cross_signals(df: pd.DataFrame, cfg: Ema9RsiMomentumConfig) -> Cross
         bullish[:] = False
         bearish[:] = False
 
+    raw_signals = np.select([bearish, bullish], [-1, 1], default=0)
+    sl_series = compute_adaptive_stop_loss_series(df, ind, cfg, raw_signals)
+
     return CrossSignals(
         bullish=bullish,
         bearish=bearish,
         indicators=ind,
+        stop_loss=sl_series,
+        is_chop=is_chop,
     )
 
 
@@ -544,4 +668,13 @@ def build_entry_signal_series(df: pd.DataFrame, cfg: Ema9RsiMomentumConfig, edge
         index=df.index,
         dtype=int,
     )
-    return edge_trigger(signals), cross
+    edge_signals = edge_trigger(signals)
+    sl_series = compute_adaptive_stop_loss_series(df, cross.indicators, cfg, edge_signals)
+    updated_cross = CrossSignals(
+        bullish=np.asarray(edge_signals == 1),
+        bearish=np.asarray(edge_signals == -1),
+        indicators=cross.indicators,
+        stop_loss=sl_series,
+        is_chop=cross.is_chop,
+    )
+    return edge_signals, updated_cross

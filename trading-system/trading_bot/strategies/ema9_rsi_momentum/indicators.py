@@ -17,45 +17,69 @@ Plain comparison operators build a boolean array via a ufunc, not a
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Optional
 
 import numpy as np
 import pandas as pd
 
-from shared.indicators import ema, rsi
+from shared.indicators import atr, cm_ultimate_moving_average, ema, rsi
 
 
 @dataclass(frozen=True)
 class IndicatorSet:
-    """The four series this strategy's rules are built from, aligned to the
+    """The series this strategy's rules are built from, aligned to the
     input ``DataFrame``'s index."""
 
     ema_fast: pd.Series
     ema_slow: pd.Series
     rsi: pd.Series
     rsi_ma: pd.Series
+    cm_ma: Optional[pd.DataFrame] = None
+    atr: Optional[pd.Series] = None
 
 
 def compute_indicator_set(
     df: pd.DataFrame,
-    ema_fast: int,
-    ema_slow: int,
-    rsi_length: int,
+    ema_fast: int = 9,
+    ema_slow: int = 20,
+    rsi_length: int = 14,
     rsi_ma_length: int = 20,
 ) -> IndicatorSet:
-    """Compute EMA fast/slow (on close) and RSI + its EMA smoothing (TradingView RSI-EMA).
+    """Compute moving averages using CM_Ultimate_MA_MTF_V2, ATR, and RSI + its EMA smoothing.
 
+    Uses CM_Ultimate_MA_MTF_V2 indicator for 9 EMA (fast) and 20 EMA (slow).
     ``rsi`` is the classic RSI of close: ``rsi(close, window=rsi_length)``.
     ``rsi_ma`` is the EMA 20 smoothing of the RSI line:
     ``ema(rsi(close, window=rsi_length), window=rsi_ma_length)``.
+    ``atr`` is the 14-period ATR for dynamic volatility scaling.
     """
     close = df["close"]
     rsi_series = rsi(close, window=rsi_length)
+
+    # CM_Ultimate_MA_MTF_V2: MA1 = slow (20 EMA), MA2 = fast (9 EMA)
+    cm_df = cm_ultimate_moving_average(
+        df,
+        ma1_len=ema_slow,
+        ma1_type=2,  # 2 = EMA
+        optional_2nd_ma=True,
+        ma2_len=ema_fast,
+        ma2_type=2,  # 2 = EMA
+    )
+
+    if "high" in df.columns and "low" in df.columns and len(df) >= 1:
+        atr_series = atr(df, window=14)
+    else:
+        atr_series = pd.Series(0.005 * close, index=df.index)
+
     return IndicatorSet(
-        ema_fast=ema(close, window=ema_fast),
-        ema_slow=ema(close, window=ema_slow),
+        ema_fast=cm_df["ma2"],
+        ema_slow=cm_df["ma1"],
         rsi=rsi_series,
         rsi_ma=ema(rsi_series, window=rsi_ma_length),
+        cm_ma=cm_df,
+        atr=atr_series,
     )
+
 
 
 def crossed_above(a: pd.Series, b: pd.Series) -> np.ndarray:

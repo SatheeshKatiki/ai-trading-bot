@@ -23,14 +23,17 @@ import logging
 import logging.handlers
 import os
 import sys
-import threading
 import time
 
 # Force UTF-8 for terminal logging on Windows
-if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
-    sys.stdout.reconfigure(encoding='utf-8')
-if sys.stderr and hasattr(sys.stderr, 'reconfigure'):
-    sys.stderr.reconfigure(encoding='utf-8')
+if sys.stdout is not None:
+    _reconfig_out = getattr(sys.stdout, 'reconfigure', None)
+    if callable(_reconfig_out):
+        _reconfig_out(encoding='utf-8')
+if sys.stderr is not None:
+    _reconfig_err = getattr(sys.stderr, 'reconfigure', None)
+    if callable(_reconfig_err):
+        _reconfig_err(encoding='utf-8')
 
 # Disable any local system proxy to prevent connection failures to Fyers
 os.environ["HTTP_PROXY"] = ""
@@ -84,7 +87,7 @@ from shared.state import update_equity, record_trade, record_journal_entry
 _evaluating_symbols: set[str] = set()
 
 # Broker layer — broker-agnostic: trading logic never imports vendor SDKs directly
-from brokers import BrokerFactory, OrderRequest, OrderSide, OrderType, OrderStatus
+from brokers import BrokerFactory, OrderRequest, OrderSide, OrderType
 from trading_bot.reconciliation import compute_reconciliation
 from trading_bot.strategies.registry import registry
 from trading_bot.strategies.premium_selection import (
@@ -153,11 +156,11 @@ _m2m_last_update: float = 0.0
 
 # Import AI / Risk / Exit / Alert Modules
 from shared.ai import TradeFilterModel, compute_features
-from shared.risk import RiskManager, RiskConfig, TradeRecord, resolve_initial_stop, resolve_min_confidence, find_stale_positions, seconds_since_any_tick, resolve_option_atr
+from shared.risk import RiskManager, TradeRecord, resolve_initial_stop, resolve_min_confidence, find_stale_positions, seconds_since_any_tick, resolve_option_atr
 from shared.instruments import normalize_instrument
 from shared.market_hours import is_market_open, is_before_eod_cutoff
 from shared.exits import SmartExitEngine, Position, PyramidSizer
-from shared.alerts import alerter
+from shared.alerts.telegram import alerter
 from trading_bot.portfolio_risk import PortfolioRiskEngine
 from trading_bot.iceberg_manager import IcebergManager
 
@@ -200,6 +203,7 @@ _HEARTBEAT_WRITE_INTERVAL_S = 15.0
 # ------------------------------------------------------------------
 _settings_cache: dict = {}
 _settings_last_mtime: float = 0.0
+_stopped_out_positions: Dict[str, dict] = {}  # Tracks symbol -> {"side": side, "time": monotonic_time}
 
 
 def _save_positions(positions: Dict[str, Position]) -> None:
@@ -1119,7 +1123,13 @@ async def run_live_bot(symbols: List[str]) -> None:
                 data = broker.get_historical_data(broker_sym, start_date, end_date, _tf_str)
                 if data:
                     df = pd.DataFrame(data)
-                    df["timestamp"] = pd.to_datetime(df["datetime"] if "datetime" in df.columns else df.get("Datetime"))
+                    _dt_col = "datetime" if "datetime" in df.columns else ("Datetime" if "Datetime" in df.columns else None)
+                    if _dt_col:
+                        df["timestamp"] = pd.to_datetime(df[_dt_col])
+                    elif "date" in df.columns:
+                        df["timestamp"] = pd.to_datetime(df["date"])
+                    else:
+                        df["timestamp"] = pd.to_datetime(df.index)
                     df.set_index("timestamp", inplace=True)
                     # Lowercase columns mapping
                     col_map = {c: c.lower() for c in df.columns}
@@ -1317,6 +1327,7 @@ async def run_live_bot(symbols: List[str]) -> None:
                     except Exception as e:
                         logger.error("Failed to check/cancel Hard SL for %s: %s", sym, e)
                 
+                executed_slices: list = []
                 if not broker_sl_hit:
                     executed_slices = await iceberg_manager.execute_iceberg(
                         broker, 
@@ -1785,19 +1796,22 @@ async def run_live_bot(symbols: List[str]) -> None:
                     # documented semantics and makes `iloc[-1]` inside the
                     # engine mean the same thing live as it does on the
                     # complete-bar history a backtest replays.
-                    df_5min = df.resample('5min', label='right', closed='right').agg({
+                    df_resampled = df.resample('5min', label='right', closed='right').agg({
                         'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'
                     }).dropna() if not df.empty else df
-                    if len(df_5min) > 1:
-                        df_5min = df_5min.iloc[:-1]
+                    if isinstance(df_resampled, pd.DataFrame) and len(df_resampled) > 1:
+                        df_5min = df_resampled.iloc[:-1]
+                    else:
+                        df_5min = df_resampled
 
                     # Fetch AI Confidence for early exit
                     features = compute_features(df.tail(60)).tail(1)
                     confidence = ai_filter.predict(features)["confidence"].iloc[-1] if (ai_filter.is_trained and not features.empty) else 1.0
 
+                    df_5min_clean = df_5min if isinstance(df_5min, pd.DataFrame) else pd.DataFrame(df_5min)
                     decision = None if _eod_reached else m_strategy.manage_active_trades(
                         exit_check_price,
-                        df_5min,
+                        df_5min_clean,
                         ai_confidence=confidence * 100,
                         current_atr=current_atr
                     )
@@ -1954,11 +1968,16 @@ async def run_live_bot(symbols: List[str]) -> None:
                             open_position, exit_check_price, current_time, current_atr,
                         )
                 else:
-                    # Dynamically apply Trailing SL settings
+                    # Dynamically apply Trailing SL settings (Adaptive based on Trade Mode: RIDE vs SCALP)
                     if settings.get("trailing_sl", False) or settings.get("trailingSl", False):
-                        # AUDIT FIX: Default 0.5% (not 1.0%) — proven optimal in backtesting
-                        exit_engine.trailing_activation_pct = settings.get("trail_trigger", settings.get("trailTrigger", 0.5))
-                        exit_engine.trailing_offset_pct     = settings.get("trail_offset",  settings.get("trailOffset",  0.35))
+                        if getattr(open_position, "trade_mode", "RIDE") == "SCALP":
+                            # Counter-trend scalp: tighter quick trailing to lock gains fast
+                            exit_engine.trailing_activation_pct = 0.35
+                            exit_engine.trailing_offset_pct     = 0.25
+                        else:
+                            # With-trend ride: standard room to capture runners
+                            exit_engine.trailing_activation_pct = settings.get("trail_trigger", settings.get("trailTrigger", 0.5))
+                            exit_engine.trailing_offset_pct     = settings.get("trail_offset",  settings.get("trailOffset",  0.35))
                     else:
                         # If turned off, set activation pct to an unreachable high number
                         exit_engine.trailing_activation_pct = 9999.0
@@ -1982,14 +2001,16 @@ async def run_live_bot(symbols: List[str]) -> None:
                         settings.get("enable_exit_analyzer",
                                      settings.get("enableExitAnalyzer", False))
                     )
-                    analyzer_df = None
+                    analyzer_df: Optional[pd.DataFrame] = None
                     if exit_engine.enable_exit_analyzer and not df.empty:
-                        analyzer_df = df.resample('5min', label='right', closed='right').agg({
+                        _analyzer_res = df.resample('5min', label='right', closed='right').agg({
                             'open': 'first', 'high': 'max', 'low': 'min',
                             'close': 'last', 'volume': 'sum'
                         }).dropna()
-                        if len(analyzer_df) > 1:
-                            analyzer_df = analyzer_df.iloc[:-1]
+                        if isinstance(_analyzer_res, pd.DataFrame) and len(_analyzer_res) > 1:
+                            analyzer_df = _analyzer_res.iloc[:-1]
+                        elif isinstance(_analyzer_res, pd.DataFrame):
+                            analyzer_df = _analyzer_res
 
                     old_stop_loss = open_position.stop_loss
                     should_exit, reason, exit_qty = exit_engine.evaluate_exit(
@@ -2000,6 +2021,12 @@ async def run_live_bot(symbols: List[str]) -> None:
                     if open_position.stop_loss != old_stop_loss:
                         logger.info("TRAILING SL MOVED for %s: %.2f -> %.2f. Saving to disk.", sym, old_stop_loss, open_position.stop_loss)
                         _save_positions(active_positions)
+                        alerter.send_trailing_sl_alert(
+                            symbol=open_position.symbol,
+                            new_sl=open_position.stop_loss,
+                            reason=f"Trailing SL moved ₹{old_stop_loss:.2f} -> ₹{open_position.stop_loss:.2f}",
+                            execution_time=datetime.now(_IST).strftime("%I:%M:%S %p"),
+                        )
                         if not broker.paper_mode:
                             asyncio.create_task(update_exchange_sl(broker, open_position))
 
@@ -2040,7 +2067,7 @@ async def run_live_bot(symbols: List[str]) -> None:
                             open_position.is_exiting = True
                             full_exit = (exit_qty is None or exit_qty >= open_position.quantity)
                             asyncio.create_task(background_iceberg_exit(
-                                broker, exit_req, base_symbol_key, open_position.side, open_position.entry_price,
+                                broker, exit_req, base_symbol_key or sym, open_position.side, open_position.entry_price,
                                 exit_price=exit_check_price, qty_to_close=qty_to_close, full_exit=full_exit
                             ))
                         except ValidationError as ve:
@@ -2091,9 +2118,25 @@ async def run_live_bot(symbols: List[str]) -> None:
                         trade_date=datetime.now(_IST).strftime("%Y-%m-%d %H:%M:%S")
                     )
                     update_equity(risk_manager.current_equity, risk_manager.daily_pnl)
-                    alerter.send_exit_alert(sym, open_position.side, qty_to_close, exit_check_price, pnl, reason)
+                    alerter.send_exit_alert(
+                        sym, open_position.side, qty_to_close, exit_check_price, pnl, reason,
+                        execution_time=datetime.now(_IST).strftime("%I:%M:%S %p"),
+                    )
 
                     if exit_qty is None or exit_qty >= open_position.quantity:
+                        # User Rule (2026-10-05): Smart Post-StopLoss Re-entry Guard
+                        if pnl < 0 and ("SL" in reason.upper() or "STOP" in reason.upper()):
+                            _stopped_out_positions[sym] = {
+                                "side": open_position.side,
+                                "time": time.monotonic(),
+                                "exit_time_str": datetime.now(_IST).strftime("%H:%M:%S"),
+                            }
+                            logger.info(
+                                "Post-SL Guard Active for %s: %s stopped out. Reversals allowed immediately; same-direction requires 5m cool-off & fresh confirmation.",
+                                sym, "CE" if open_position.side == 1 else "PE"
+                            )
+                        else:
+                            _stopped_out_positions.pop(sym, None)
                         del active_positions[sym]
                     else:
                         open_position.quantity -= exit_qty
@@ -2239,7 +2282,9 @@ async def run_live_bot(symbols: List[str]) -> None:
                         # ── Run selected strategy ──────────────────────────
                         # We run the strategy first before applying the AI gate to avoid spamming logs 
                         # on every tick when no actual signal was generated.
-                        
+                        option_mapping_required: bool = False
+                        option_mapping_succeeded: bool = False
+
                         # ── Premium Strategy: uses engine directly for option selection ──
                         if strategy_name == "premium":
                             # Root-cause fix: this used to derive `instrument`
@@ -2287,6 +2332,30 @@ async def run_live_bot(symbols: List[str]) -> None:
                             lot_size      = 1
                             
                             if latest_signal != 0:
+                                _sl_info = _stopped_out_positions.get(s)
+                                if _sl_info is not None:
+                                    _stopped_side = _sl_info.get("side")
+                                    if latest_signal == _stopped_side:
+                                        _cooldown_s = float(settings.get("post_sl_cooldown_seconds", 300.0))
+                                        _elapsed = time.monotonic() - _sl_info.get("time", 0.0)
+                                        if _elapsed < _cooldown_s:
+                                            _rem = int(_cooldown_s - _elapsed)
+                                            logger.info(
+                                                "Post-SL Guard: Skipping %s %s entry — cool-off active (%ds remaining). Awaiting cooldown or opposite signal.",
+                                                s, "CE" if latest_signal == 1 else "PE", _rem
+                                            )
+                                            continue
+                                        else:
+                                            logger.info(
+                                                "Post-SL Cooldown elapsed (%ds) for %s. Checking fresh confirmations for same-direction (%s) re-entry.",
+                                                int(_elapsed), s, "CE" if latest_signal == 1 else "PE"
+                                            )
+                                    else:
+                                        logger.info(
+                                            "Post-SL Guard: Confirmed OPPOSITE signal for %s (%s -> %s). Cooldown bypassed; validating confirmations.",
+                                            s, "CE" if _stopped_side == 1 else "PE", "CE" if latest_signal == 1 else "PE"
+                                        )
+
                                 if confidence < min_confidence:
                                     logger.info(
                                         "AI rejected %s signal for %s — confidence %.2f < threshold %.2f",
@@ -2357,6 +2426,18 @@ async def run_live_bot(symbols: List[str]) -> None:
 
                         if latest_signal == 0:
                             continue
+
+                        # User Rule (2026-10-05): Smart Post-StopLoss Re-entry Guard
+                        _sl_info = _stopped_out_positions.get(s)
+                        if _sl_info is not None and latest_signal == _sl_info.get("side"):
+                            _cooldown_s = float(settings.get("post_sl_cooldown_seconds", 300.0))
+                            _elapsed = time.monotonic() - _sl_info.get("time", 0.0)
+                            if _elapsed < _cooldown_s:
+                                logger.info(
+                                    "Post-SL Guard: Skipping %s %s entry during cool-off (%ds remaining).",
+                                    s, "CE" if latest_signal == 1 else "PE", int(_cooldown_s - _elapsed)
+                                )
+                                continue
 
                         # Root-cause fix (found 2026-08-07 audit,
                         # docs/STRATEGY_AUDIT_2026-08-07.md §1.1): a failed
@@ -2781,6 +2862,7 @@ async def run_live_bot(symbols: List[str]) -> None:
                         # per-trade policy). See shared/risk/portfolio_guard.py.
                         if is_option_trade:
                             from shared.risk.portfolio_guard import entry_block_reason, option_direction
+                            _sl_info = _stopped_out_positions.get(s)
                             _guard_block = entry_block_reason(
                                 direction=option_direction(entry_symbol),
                                 open_directions=[option_direction(p.symbol) for p in active_positions.values()],
@@ -2789,10 +2871,39 @@ async def run_live_bot(symbols: List[str]) -> None:
                                 trade_risk=actual_risk_amount,
                                 settings=settings,
                                 vix=(await _india_vix(broker)) if settings.get("max_entry_vix") is not None else None,
+                                stopped_out_dir=_sl_info.get("side") if _sl_info else None,
+                                stopped_out_time=_sl_info.get("time") if _sl_info else None,
+                                now_time=time.monotonic(),
                             )
                             if _guard_block:
                                 logger.info("Trade BLOCKED for %s: %s", s, _guard_block)
                                 continue
+
+                            # ── Universal Option Chart Confluence Gate ──
+                            try:
+                                from shared.option_gate import validate_option_entry
+                                _q = _last_option_quote.get(entry_symbol)
+                                _q_obj = _q[1] if _q else None
+                                _opt_check = validate_option_entry(
+                                    symbol=s,
+                                    direction="BUY" if latest_signal == 1 else "SELL",
+                                    opt_info={
+                                        "symbol": entry_symbol,
+                                        "ltp": getattr(_q_obj, "ltp", entry_premium) or entry_premium,
+                                        "bid": getattr(_q_obj, "bid", entry_premium) or entry_premium,
+                                        "ask": getattr(_q_obj, "ask", entry_premium) or entry_premium,
+                                        "high": getattr(_q_obj, "high", None),
+                                        "low": getattr(_q_obj, "low", None),
+                                        "volume": getattr(_q_obj, "volume", 0),
+                                    },
+                                    strategy_name=strategy_name,
+                                    settings=settings,
+                                )
+                                if not _opt_check.passed:
+                                    logger.info("Trade BLOCKED by Option Gate for %s: %s", s, _opt_check.reason)
+                                    continue
+                            except Exception as _gate_err:
+                                logger.warning("Option Gate check warning: %s", _gate_err)
 
                         # An option lot is indivisible: if this is already a
                         # single lot, sizing has no smaller answer to give.
@@ -2826,15 +2937,21 @@ async def run_live_bot(symbols: List[str]) -> None:
                             logger.warning("Entry for %s skipped -- market is closed (%s).", s, _closed)
                             continue
 
+                        # ── Multi-Timeframe Trend Confluence (Ride vs Scalp Mode) ──
+                        from shared.indicators.htf_confluence import detect_htf_trend, get_trade_holding_mode
+                        htf_info = detect_htf_trend(df)
+                        holding_mode = get_trade_holding_mode("BUY" if latest_signal == 1 else "SELL", htf_info)
+
+                        # TGT is deliberately absent for option entries —
+                        # profit management is the trailing stop's and the
+                        # Smart Exit Engine's job, with no cap on upside.
+                        tgt_display = f"{tgt_price:.2f}" if tgt_price > 0 else "NONE (trailing/smart-exit)"
+
                         # ── Execute (Live or Paper) ────────────────────────
                         if is_live:
-                            # TGT is deliberately absent for option entries —
-                            # profit management is the trailing stop's and the
-                            # Smart Exit Engine's job, with no cap on upside.
-                            tgt_display = f"{tgt_price:.2f}" if tgt_price > 0 else "NONE (trailing/smart-exit)"
                             logger.info(
-                                "ENTRY %s %s quantity=%d @ %.2f | SL=%.2f | TGT=%s | AI=%.0f%% [LIVE]",
-                                side_str, entry_symbol, total_quantity, entry_premium, sl_price, tgt_display, confidence * 100
+                                "ENTRY %s %s qty=%d @ %.2f | SL=%.2f | TGT=%s | AI=%.0f%% | Mode: %s [LIVE]",
+                                side_str, entry_symbol, total_quantity, entry_premium, sl_price, tgt_display, confidence * 100, holding_mode["label"]
                             )
                             # Rate-limit guard
                             if not ORDER_LIMITER.allow(broker.BROKER_ID):
@@ -2872,8 +2989,10 @@ async def run_live_bot(symbols: List[str]) -> None:
                                     stop_loss=sl_price,
                                     target=tgt_price,
                                     lot_size=lot_size,
+                                    trade_mode=holding_mode["mode"],
                                 )
                                 active_positions[s] = pos_obj
+                                _stopped_out_positions.pop(s, None)
                                 _save_positions(active_positions)
                                 
                                 asyncio.create_task(background_iceberg_entry(
@@ -2887,8 +3006,8 @@ async def run_live_bot(symbols: List[str]) -> None:
                         else:
                             tgt_display = f"{tgt_price:.2f}" if tgt_price > 0 else "NONE (trailing/smart-exit)"
                             logger.info(
-                                "ENTRY %s %s qty=%d @ %.2f | SL=%.2f | TGT=%s | AI=%.0f%% [PAPER]",
-                                side_str, entry_symbol, total_quantity, entry_premium, sl_price, tgt_display, confidence * 100
+                                "ENTRY %s %s qty=%d @ %.2f | SL=%.2f | TGT=%s | AI=%.0f%% | Mode: %s [PAPER]",
+                                side_str, entry_symbol, total_quantity, entry_premium, sl_price, tgt_display, confidence * 100, holding_mode["label"]
                             )
 
                         # ── Send Telegram Alert ────────────────────────────
@@ -2899,7 +3018,8 @@ async def run_live_bot(symbols: List[str]) -> None:
                             qty=total_quantity // lot_size,
                             price=entry_premium,
                             confidence=confidence,
-                            reason=f"{strat_label} Signal Trigger"
+                            reason=f"{strat_label} Signal Trigger ({holding_mode['label']})",
+                            execution_time=current_time,
                         )
 
                         # ── Track position ─────────────────────────────────
@@ -2916,9 +3036,11 @@ async def run_live_bot(symbols: List[str]) -> None:
                                 stop_loss=sl_price,
                                 target=tgt_price,
                                 lot_size=lot_size,
+                                trade_mode=holding_mode["mode"],
                             )
                             # We MUST key active_positions by the base symbol (INDEX) so that on_tick hits!
                             active_positions[s] = pos_obj
+                            _stopped_out_positions.pop(s, None)
                             _save_positions(active_positions)
                             
                             # Persist Paper Entry to state.db
@@ -3544,7 +3666,6 @@ if __name__ == "__main__":
         )
         raise SystemExit(0)
     logger.info("Starting live bot with symbols: %s", SYMBOLS)
-    import time
     _consecutive_fast_failures = 0
     while True:
         _run_started_at = time.monotonic()

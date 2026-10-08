@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Sequence
 
 import pandas as pd
 
@@ -35,8 +35,9 @@ class Position:
     lot_size: int = 1        # Lot size for quantity rounding
     is_exiting: bool = False # Lock flag: True while background iceberg exit is in flight
     is_scaling: bool = False # Lock flag: True while a background pyramid scale-in is in flight
-    sl_order_id: str = None  # Exchange ID for the active Hard SL order
+    sl_order_id: Optional[str] = None  # Exchange ID for the active Hard SL order
     max_pnl_pct: float = 0.0 # Peak profit % reached since entry, for the percentage-based trailing stop
+    trade_mode: str = "RIDE" # "RIDE" (with HTF trend) or "SCALP" (counter-trend)
 
     # ── Dynamic Fibonacci trail (opt-in; see SmartExitEngine) ─────────
     # All default to "no plan", so a Position constructed anywhere else in
@@ -145,6 +146,9 @@ class SmartExitEngine:
         underlying_price: Optional[float] = None,
         underlying_favourable: Optional[float] = None,
         df: Optional[pd.DataFrame] = None,
+        sr_levels: Optional[Sequence[float]] = None,
+        iv_change_from_peak: Optional[float] = None,
+        oi_resistance_confirmed: Optional[bool] = None,
     ) -> tuple[bool, str, Optional[int]]:
         """Evaluate if the position should be exited or partially booked.
 
@@ -365,17 +369,22 @@ class SmartExitEngine:
                 underlying_direction=position.side if is_option else effective_side,
                 df=df,
                 is_option_premium=is_option,
+                current_time=current_time,
+                underlying_price=underlying_price,
+                sr_levels=sr_levels,
+                iv_change_from_peak=iv_change_from_peak,
+                oi_resistance_confirmed=oi_resistance_confirmed,
             )
-            if analysis.should_exit:
-                logger.info("AI Exit Analyzer triggered for %s: %s", position.symbol, analysis.reason)
-                return True, f"AI Exit Analyzer ({analysis.mode}): {analysis.reason}", None
-
             # Ratchet stop-loss upwards if the agent calculated a tighter trailing lock
             if analysis.suggested_sl is not None:
                 if effective_side == 1 and analysis.suggested_sl > position.stop_loss:
                     position.stop_loss = analysis.suggested_sl
                 elif effective_side == -1 and analysis.suggested_sl < position.stop_loss:
                     position.stop_loss = analysis.suggested_sl
+
+            if analysis.should_exit:
+                logger.info("AI Exit Analyzer triggered for %s: %s", position.symbol, analysis.reason)
+                return True, f"AI Exit Analyzer ({analysis.mode}): {analysis.reason}", None
 
         # 5. ATR Trailing Stop (Activates only after a certain profit percentage)
         if profit_pct >= self.trailing_activation_pct:

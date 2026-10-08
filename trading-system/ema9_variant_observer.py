@@ -520,6 +520,7 @@ def consider_entry(sess: dict, symbol: str, cfg: Ema9RsiMomentumConfig, df, now)
 
     entry = round(leg["ask"], 2)
     vix = (chain.get("indiaVix") or {}).get("value")
+    stopped_info = sess.get("stopped_out", {}).get(symbol)
     block = entry_block_reason(
         vix=vix,
         direction=side,
@@ -528,6 +529,9 @@ def consider_entry(sess: dict, symbol: str, cfg: Ema9RsiMomentumConfig, df, now)
         capital=po.CAPITAL,
         trade_risk=(entry - initial_stop(entry, cfg.initial_sl_pct)) * po.LOT_SIZE.get(symbol, 65),
         settings=RISK_SETTINGS,
+        stopped_out_dir=stopped_info.get("side") if stopped_info else None,
+        stopped_out_time=stopped_info.get("time") if stopped_info else None,
+        now_time=time.time(),
     )
     if block:
         record["action"] = f"skipped: {block}"
@@ -538,6 +542,7 @@ def consider_entry(sess: dict, symbol: str, cfg: Ema9RsiMomentumConfig, df, now)
     pos = new_position(variant, symbol, side, leg, spot, bar_start, now, expiry=chain.get("expiry"))
     pos["entry_vix"] = vix            # with entry_iv, so the VIX gate's threshold can come from data
     sess["open_positions"][symbol] = pos
+    sess.setdefault("stopped_out", {}).pop(symbol, None)
     record["action"] = f"entered {pos['contract']} @ {pos['entry_premium']:.2f}"
     msg = (f"ENTRY {pos['contract']} @ Rs.{pos['entry_premium']:.2f} (ask) | delta {pos['opt_delta']} | "
            f"spot {pos['entry_spot']} | {cfg.timeframe_minutes}-min bar {bar_start:%H:%M} | "
@@ -583,6 +588,14 @@ def manage_position(sess: dict, symbol: str, pos: dict, df, is_new_bar: bool, no
     if detail:
         closed["exit_detail"] = detail
     sess["trades"].append(closed)
+    if closed.get("net_pnl", 0.0) < 0 and ("SL" in reason.upper() or "STOP" in reason.upper()):
+        sess.setdefault("stopped_out", {})[symbol] = {
+            "side": pos["side"],
+            "time": time.time(),
+            "ts": now.strftime("%H:%M:%S")
+        }
+    else:
+        sess.setdefault("stopped_out", {}).pop(symbol, None)
     del sess["open_positions"][symbol]
     card = write_scorecard(sess["variant"])
 

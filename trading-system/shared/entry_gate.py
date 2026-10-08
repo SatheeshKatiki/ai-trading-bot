@@ -112,6 +112,31 @@ def decide(strategy_name: str, df, direction: int, strength: str,
             reason=(f"{strategy_name} grades this setup LOW -- a wick touch "
                     f"with neither trend agreement nor RSI separation"))
 
+    # ── Institutional Exhaustion Filter (RSI Guard) ──
+    # Option buyers must never buy CE into extreme overbought exhaustion (RSI > 75)
+    # or PE into extreme oversold exhaustion (RSI < 25)
+    try:
+        if df is not None and "close" in df.columns and len(df) >= 14:
+            from shared.indicators import rsi as _calc_rsi
+            _rsi_series = _calc_rsi(df["close"], 14)
+            _rsi_val = float(_rsi_series.iloc[-1])
+            _rsi_cap = float(settings.get("rsi_overbought_cap", 75.0))
+            _rsi_floor = float(settings.get("rsi_oversold_floor", 25.0))
+            if direction > 0 and _rsi_val > _rsi_cap:
+                return EntryDecision(
+                    take=False, priority=PRIORITY_LOW, strategy=strategy_name,
+                    timeframe_minutes=minutes,
+                    reason=f"RSI {_rsi_val:.1f} is overbought (> {_rsi_cap:.0f}) -- CE entry blocked to prevent buying at top"
+                )
+            if direction < 0 and _rsi_val < _rsi_floor:
+                return EntryDecision(
+                    take=False, priority=PRIORITY_LOW, strategy=strategy_name,
+                    timeframe_minutes=minutes,
+                    reason=f"RSI {_rsi_val:.1f} is oversold (< {_rsi_floor:.0f}) -- PE entry blocked to prevent selling at bottom"
+                )
+    except Exception:
+        pass
+
     allowed, why = _timing(now, strength, minutes, settings)
     return EntryDecision(take=allowed, priority=priority, reason=why,
                          timeframe_minutes=minutes, strategy=strategy_name)

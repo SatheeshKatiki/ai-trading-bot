@@ -59,10 +59,14 @@ from shared.instruments import DEFAULT_PAPER_TEST_INSTRUMENTS, resolve_paper_tes
 from trading_bot.strategies.premium_selection.options_selector import INSTRUMENT_CONFIG
 from trading_bot.strategies.ema9_rsi_momentum.config import Ema9RsiMomentumConfig
 from trading_bot.strategies.ema9_rsi_momentum.exit_ladder import initial_stop, ratchet_stop, stop_reason
+from shared.exits.exit_analyzer import ExitAnalyzerAgent
+
+_EXIT_ANALYZER = ExitAnalyzerAgent()
 from trading_bot.strategies.ema9_rsi_momentum.signal_engine import (
     classify_momentum_strength,
     entry_timing_gate,
 )
+from shared.indicators.htf_confluence import detect_htf_trend, get_trade_holding_mode
 
 from shared.market_hours import latest_bar_is_fresh
 from shared.entry_gate import decide as entry_decision
@@ -150,24 +154,22 @@ def can_enter():
     return ist_time() < EOD_CUTOFF
 
 
-#: ema9_rsi_momentum's own trading window (09:25-15:00 by default).
+#: ema9_rsi_momentum's trading window (09:20-15:15 normal, up to 15:25 for VERY_STRONG momentum).
 _EMA9_WINDOW = tuple(datetime.time(*map(int, s.split(":"))) for s in (_EMA9_TIME_START, _EMA9_TIME_END))
+_EMA9_LATE_ENTRY_END = datetime.time(15, 25)
 
 
 def entry_window_open(active_strategy, t=None):
     """Whether a NEW position may be opened now.
 
-    Always shut from the EOD cutoff. For ema9_rsi_momentum also shut outside
-    the strategy's own window: its rules exclude 09:15-09:25 (opening-range
-    noise) and after 15:00 (theta crush), but the observer only ever checked
-    the 15:15 cutoff, so it bought at 09:15 -- 7 of the first 20 paper trades
-    were entered before 09:25.
+    Always shut from the EOD cutoff. For ema9_rsi_momentum, allows from 09:20
+    up to 15:25 (signal engine enforces VERY_STRONG momentum requirement after 15:15).
     """
     t = t or ist_time()
     if t >= EOD_CUTOFF:
         return False
     if active_strategy == "ema9_rsi_momentum":
-        return _EMA9_WINDOW[0] <= t <= _EMA9_WINDOW[1]
+        return _EMA9_WINDOW[0] <= t <= _EMA9_LATE_ENTRY_END
     return True
 
 
@@ -415,6 +417,9 @@ def select_best_option(symbol, direction, spot_price):
         "bid": float(bid),
         "ask": float(ask),
         "spread_pct": opt_details.get("spread_pct"),
+        "vwap": opt_details.get("vwap") or opt_details.get("atp"),
+        "atp": opt_details.get("atp") or opt_details.get("vwap"),
+        "volume": opt_details.get("volume", 0),
         "delta": opt_details.get("delta", 0.50 if direction == "BUY" else -0.50),
         # Theta from the chain is per DAY (Black-Scholes convention).
         "theta": opt_details.get("theta", -10.0),
@@ -442,6 +447,14 @@ def analyze_market_state(symbol, direction):
     at   = atr(candles, 14) or (spot * 0.002)
     rs   = rsi(closes, 14)
     
+    # ── Institutional Exhaustion Filter (RSI Guard) ──
+    # Option buyers must never buy CE into extreme overbought exhaustion (RSI > 75)
+    # or PE into extreme oversold exhaustion (RSI < 25)
+    if direction == "BUY" and rs > 75.0:
+        return None
+    if direction == "SELL" and rs < 25.0:
+        return None
+
     bullish_trend = e9 and e21 and (e9 > e21) and (rs >= 48)
     bearish_trend = e9 and e21 and (e9 < e21) and (rs <= 52)
     
@@ -490,7 +503,7 @@ def save_session_atomic(session_log, out_file):
     except Exception as e:
         print(f"  [WARN] Failed to write session file: {e}")
 
-def portfolio_block(symbol, direction, opt, session_log, active_positions, settings):
+def portfolio_block(symbol, direction, opt, session_log, active_positions, settings, stopped_info=None):
     """The portfolio rule every engine shares (shared/risk/portfolio_guard.py):
     daily loss stop, one position per direction across the correlated
     indices, and no trade risking more than the day's whole loss limit.
@@ -500,6 +513,7 @@ def portfolio_block(symbol, direction, opt, session_log, active_positions, setti
     realized = sum(t.get("net_pnl", 0.0) for t in session_log.get("trades", []))
     unrealized = sum((p.get("current_ltp", p["entry_premium"]) - p["entry_premium"]) * p["quantity"]
                      for p in active_positions.values())
+    st_dir = 1 if (stopped_info and stopped_info.get("direction") == "BUY") else (-1 if (stopped_info and stopped_info.get("direction") == "SELL") else None)
     return entry_block_reason(
         direction=1 if direction == "BUY" else -1,
         open_directions=[1 if p["direction"] == "BUY" else -1 for p in active_positions.values()],
@@ -508,6 +522,9 @@ def portfolio_block(symbol, direction, opt, session_log, active_positions, setti
         trade_risk=(entry - initial_stop(entry, _EMA9_CFG.initial_sl_pct)) * qty,
         settings=settings,
         vix=opt.get("vix"),
+        stopped_out_dir=st_dir,
+        stopped_out_time=stopped_info.get("time") if stopped_info else None,
+        now_time=time.time(),
     )
 
 
@@ -624,7 +641,21 @@ def run_session(day_num, date_str, day_name):
     
     active_positions = {}
     prev_signals = {}
+    stopped_out_dir = {}  # Tracks symbol -> "BUY" or "SELL" when stopped out
+    _sl_lock_logged = {}
     daily_trades_count = len(session_log["trades"])
+
+    # Resume post-SL guard state if last trade today was stopped out
+    if session_log["trades"]:
+        last_t = session_log["trades"][-1]
+        if last_t.get("outcome") == "LOSS" and ("SL" in last_t.get("exit_reason", "") or "STOP" in last_t.get("exit_reason", "")):
+            stopped_out_dir[last_t.get("symbol", "NIFTY")] = {
+                "direction": last_t.get("direction"),
+                "time": time.time(),
+                "ts": last_t.get("exit_time", "")
+            }
+            print(f"  [RESUME] 🛡️ Post-SL Guard Active for {last_t.get('symbol', 'NIFTY')}: last trade {last_t.get('direction')} hit SL.")
+
     #: Sent once, when the EOD cutoff has closed the last open position.
     eod_confirmed = False
     
@@ -720,6 +751,11 @@ def run_session(day_num, date_str, day_name):
                         pos["current_ltp"] = est_opt_ltp
                         pos["highest_premium"] = max(pos.get("highest_premium", pos["entry_premium"]), est_opt_ltp)
                         pos["lowest_premium"] = min(pos.get("lowest_premium", pos["entry_premium"]), est_opt_ltp)
+                        if pos.get("mark_iv"):
+                            try:
+                                pos["highest_iv"] = max(float(pos.get("highest_iv", pos["mark_iv"])), float(pos["mark_iv"]))
+                            except Exception:
+                                pass
                         
                         exit_now = False
                         exit_reason = ""
@@ -732,16 +768,64 @@ def run_session(day_num, date_str, day_name):
                             exit_reason = f"{stop_reason(pos['entry_premium'], pos['sl_premium'])} (premium Rs.{est_opt_ltp:.2f})"
                         else:
                             old_sl = pos["sl_premium"]
+                            pos_ladder = pos.get("profit_ladder_pct", _EMA9_CFG.profit_ladder_pct)
+                            pos_init_sl = pos.get("initial_sl_pct", _EMA9_CFG.initial_sl_pct)
                             pos["sl_premium"], pos["tgt_premium"] = ratchet_stop(
                                 pos["entry_premium"], old_sl, pos["highest_premium"],
-                                _EMA9_CFG.profit_ladder_pct, _EMA9_CFG.initial_sl_pct,
+                                pos_ladder, pos_init_sl,
                             )
                             if pos["sl_premium"] > old_sl:
                                 nxt = f"Rs.{pos['tgt_premium']:.2f}" if pos["tgt_premium"] else "none (top rung passed)"
-                                print(f"  [{ts}] 🛡️ Stop ratcheted Rs.{old_sl:.2f} -> Rs.{pos['sl_premium']:.2f} for {pos['contract']} | next rung {nxt}")
+                                mode_tag = f"[{pos.get('trade_mode_label', 'LADDER')}]"
+                                print(f"  [{ts}] 🛡️ {mode_tag} Stop ratcheted Rs.{old_sl:.2f} -> Rs.{pos['sl_premium']:.2f} for {pos['contract']} | next rung {nxt}")
                                 if alerter:
-                                    alerter.send_alert(f"🛡️ Stop ratcheted\n\nContract: {pos['contract']}\nStop: ₹{old_sl:.2f} -> ₹{pos['sl_premium']:.2f}\nNext rung: {nxt}")
+                                    alerter.send_trailing_sl_alert(
+                                        symbol=pos["contract"],
+                                        new_sl=pos["sl_premium"],
+                                        reason=f"{pos.get('trade_mode_label', 'Stop Ratchet')} from ₹{old_sl:.2f} -> ₹{pos['sl_premium']:.2f} (Next rung: {nxt})",
+                                        execution_time=ts,
+                                    )
                                 save_session_atomic(session_log, out_file)
+
+                            # AI Exit Analyzer (4 Pillars: Plan D Adaptive Tightening, S&R, OI/IV, Midday Regime)
+                            if not exit_now and _EMA9_CFG.enable_exit_analyzer and pos.get("highest_premium", 0) > pos["entry_premium"]:
+                                iv_delta = None
+                                if pos.get("mark_iv") and pos.get("highest_iv"):
+                                    try:
+                                        iv_delta = float(pos["mark_iv"]) - float(pos["highest_iv"])
+                                    except Exception:
+                                        pass
+
+                                analysis = _EXIT_ANALYZER.evaluate(
+                                    entry_price=pos["entry_premium"],
+                                    current_price=est_opt_ltp,
+                                    highest_price=pos["highest_premium"],
+                                    lowest_price=pos["lowest_premium"],
+                                    direction=1,
+                                    is_option_premium=True,
+                                    current_time=ts,
+                                    underlying_price=pos.get("entry_spot"),
+                                    iv_change_from_peak=iv_delta,
+                                )
+
+                                # Ratchet stop-loss if Plan D calculated a tighter trailing lock
+                                if analysis.suggested_sl and analysis.suggested_sl > pos["sl_premium"]:
+                                    old_sl = pos["sl_premium"]
+                                    pos["sl_premium"] = round(analysis.suggested_sl, 2)
+                                    print(f"  [{ts}] 🧠 [AI EXIT ANALYZER] Plan D tightened SL: Rs.{old_sl:.2f} -> Rs.{pos['sl_premium']:.2f}")
+                                    if alerter:
+                                        alerter.send_trailing_sl_alert(
+                                            symbol=pos["contract"],
+                                            new_sl=pos["sl_premium"],
+                                            reason=f"AI Exit Analyzer ({analysis.mode}) tightened SL to ₹{pos['sl_premium']:.2f}",
+                                            execution_time=ts,
+                                        )
+                                    save_session_atomic(session_log, out_file)
+
+                                if analysis.should_exit:
+                                    exit_now = True
+                                    exit_reason = f"AI Exit Analyzer ({analysis.mode}): {analysis.reason}"
+                                    print(f"  [{ts}] 🎯 [AI EXIT ANALYZER TRIGGER] {exit_reason}")
                         
                         # Reversal exit -- the strategy's own protective rule.
                         # Ranks below SL and target (both are hard limits) but
@@ -775,6 +859,18 @@ def run_session(day_num, date_str, day_name):
                             session_log["trades"].append(dict(pos))
                             del active_positions[symbol]
                             sync_active_positions(active_positions)
+
+                            # User Rule (2026-10-05): Smart Post-StopLoss Re-entry Guard
+                            if pos.get("outcome") == "LOSS" or "STOP LOSS" in exit_reason or "SL" in exit_reason:
+                                stopped_out_dir[symbol] = {
+                                    "direction": pos["direction"],
+                                    "time": time.time(),
+                                    "ts": ts
+                                }
+                                print(f"  [{ts}] 🛡️ Post-SL Guard ACTIVATED for {symbol} ({pos['direction']} hit SL).")
+                                print(f"       Reversals allowed immediately; same-direction requires 5m cool-off & fresh confirmation.")
+                            else:
+                                stopped_out_dir.pop(symbol, None)
                             
                             # Incremental state save immediately on trade exit!
                             save_session_atomic(session_log, out_file)
@@ -805,7 +901,8 @@ def run_session(day_num, date_str, day_name):
                                     qty=pos["quantity"],
                                     price=est_opt_ltp,
                                     pnl=pos["net_pnl"],
-                                    reason=exit_reason
+                                    reason=exit_reason,
+                                    execution_time=ts,
                                 )
                             
                             icon = "💰 WIN [PROFIT]" if pos["outcome"] == "WIN" else "🛑 LOSS [SL]"
@@ -823,12 +920,49 @@ def run_session(day_num, date_str, day_name):
                 
                 # 2. Check New High-Probability Signal Trigger
                 obs = signal_observation(sig_res)
-                
-                direction = "BUY" if ("BUY" in bias or "BULLISH" in bias) else "SELL" if ("SELL" in bias or "BEARISH" in bias) else None
-                is_high_prob = conf >= 65 and direction is not None
+
+                # Single Source of Truth: require verified strategy trigger ("BUY" or "SELL")
+                trigger = sig_res.get("trigger")
+                strat_sig = sig_res.get("strategy_signal")
+                if trigger in ("BUY", "SELL"):
+                    direction = trigger
+                elif strat_sig == 1:
+                    direction = "BUY"
+                elif strat_sig == -1:
+                    direction = "SELL"
+                elif ("BUY" in bias and "BULLISH" not in bias) and conf >= 80:
+                    direction = "BUY"
+                elif ("SELL" in bias and "BEARISH" not in bias) and conf >= 80:
+                    direction = "SELL"
+                else:
+                    direction = None
+
+                is_high_prob = conf >= 70 and direction is not None
                 is_new_trigger = is_new_entry_trigger(prev_signals.get(symbol), obs)
                 can_take_trade = (symbol not in active_positions) and (daily_trades_count < MAX_TRADES_PER_DAY) and entry_window_open(active_strategy)
-                
+
+                # ── Post-SL Smart Re-entry Guard (User Rule 2026-10-05) ──
+                if is_high_prob and can_take_trade and direction is not None:
+                    locked_sl = stopped_out_dir.get(symbol)
+                    if locked_sl is not None:
+                        locked_dir = locked_sl["direction"]
+                        if direction == locked_dir:
+                            cooldown_sec = 300.0  # 5 minutes
+                            elapsed = time.time() - locked_sl.get("time", 0.0)
+                            if elapsed < cooldown_sec:
+                                rem = int(cooldown_sec - elapsed)
+                                if _sl_lock_logged.get(symbol) != (ts[:5], direction, rem // 30):
+                                    _sl_lock_logged[symbol] = (ts[:5], direction, rem // 30)
+                                    print(f"  [{ts}] ⏳ {symbol} {direction} in Post-SL Cool-off ({rem}s remaining). "
+                                          f"Awaiting cool-off or opposite signal.")
+                                continue
+                            else:
+                                print(f"  [{ts}] 🔄 Post-SL Cool-off elapsed for {symbol}. Evaluating fresh confirmations for {direction}.")
+                        else:
+                            print(f"  [{ts}] 🎯 Confirmed OPPOSITE strategy signal received after SL for {symbol} ({locked_dir} -> {direction})! SL lock cleared.")
+                            stopped_out_dir.pop(symbol, None)
+                            _sl_lock_logged.pop(symbol, None)
+
                 if is_high_prob and is_new_trigger and can_take_trade:
                     state = analyze_market_state(symbol, direction)
                     # No fresh data, no entry. On 2026-09-14 (Ganesh Chaturthi,
@@ -866,11 +1000,27 @@ def run_session(day_num, date_str, day_name):
 
                     if state:
                         opt = select_best_option(symbol, direction, state["spot"])
-                        block = (portfolio_block(symbol, direction, opt, session_log, active_positions, active_settings)
+                        block = (portfolio_block(symbol, direction, opt, session_log, active_positions, active_settings, stopped_out_dir.get(symbol))
                                  if opt and opt["ltp"] > 0 else None)
                         if block:
                             print(f"  [{ts}] ⛔ {symbol} {direction} signal skipped -- {block}")
                         if opt and opt["ltp"] > 0 and not block:
+                            # ── Universal Option Chart Confluence Gate ──
+                            try:
+                                from shared.option_gate import validate_option_entry
+                                opt_verdict = validate_option_entry(
+                                    symbol=symbol,
+                                    direction=direction,
+                                    opt_info=opt,
+                                    strategy_name=active_strategy,
+                                    settings=active_settings,
+                                )
+                                if not opt_verdict.passed:
+                                    print(f"  [{ts}] ⛔ {symbol} {direction} skipped by Option Gate: {opt_verdict.reason}")
+                                    continue
+                            except Exception as _gate_err:
+                                print(f"  [{ts}] ⚠️ Option Gate check warning: {_gate_err}")
+
                             qty = LOT_SIZE.get(symbol, 65)
                             # Fill at the ASK. A buyer does not get the mid --
                             # they pay the offer. Using ltp (or worse, the old
@@ -881,10 +1031,16 @@ def run_session(day_num, date_str, day_name):
                             # premium -- material against a 15% stop and a 33%
                             # target.
                             entry_p = round(opt.get("ask") or opt["ltp"], 2)
-                            sl_p = initial_stop(entry_p, _EMA9_CFG.initial_sl_pct)          # 15% stop
+                            
+                            # Multi-Timeframe (15m/1h) Trend Confluence (Ride vs Scalp Mode)
+                            htf_info = detect_htf_trend(state.get("frame"))
+                            holding_mode = get_trade_holding_mode(direction, htf_info)
+                            pos_sl_pct = holding_mode["initial_sl_pct"]
+                            pos_ladder = holding_mode["profit_ladder_pct"]
+
+                            sl_p = initial_stop(entry_p, pos_sl_pct)
                             # Not an exit: the ladder's next rung, shown as the target.
-                            tgt_p = ratchet_stop(entry_p, 0.0, entry_p, _EMA9_CFG.profit_ladder_pct,
-                                                 _EMA9_CFG.initial_sl_pct)[1]
+                            tgt_p = ratchet_stop(entry_p, 0.0, entry_p, pos_ladder, pos_sl_pct)[1]
                             
                             trade_obj = {
                                 "symbol": symbol,
@@ -898,14 +1054,20 @@ def run_session(day_num, date_str, day_name):
                                 "opt_theta": opt.get("theta", -10.0),
                                 "entry_spot": state["spot"],
                                 "entry_premium": entry_p,
-                                # The quote this fill came from, so a recorded
-                                # trade can be reconciled after the fact.
+                                "trade_mode": holding_mode["mode"],
+                                "trade_mode_label": holding_mode["label"],
+                                "profit_ladder_pct": pos_ladder,
+                                "initial_sl_pct": pos_sl_pct,
+                                "htf_trend_15m": htf_info.get("trend_15m"),
+                                "htf_trend_1h": htf_info.get("trend_1h"),
                                 "entry_ltp": opt["ltp"],
                                 "entry_bid": opt.get("bid", 0.0),
                                 "entry_ask": opt.get("ask", 0.0),
                                 "entry_spread_pct": opt.get("spread_pct"),
                                 "entry_iv": opt.get("iv"),
                                 "entry_vix": opt.get("vix"),
+                                "option_vwap": opt_verdict.vwap if opt_verdict else None,
+                                "option_gate_status": opt_verdict.status if opt_verdict else None,
                                 "current_ltp": entry_p,
                                 "highest_premium": entry_p,
                                 "lowest_premium": entry_p,
@@ -920,6 +1082,8 @@ def run_session(day_num, date_str, day_name):
                             }
                             
                             active_positions[symbol] = trade_obj
+                            stopped_out_dir.pop(symbol, None)
+                            _sl_lock_logged.pop(symbol, None)
                             daily_trades_count += 1
                             sync_active_positions(active_positions)
                             
@@ -940,18 +1104,20 @@ def run_session(day_num, date_str, day_name):
                                     pass
                             
                             # Dispatch real-time Telegram Entry Alert
+                            gate_vwap_str = f" | Option VWAP: Rs.{opt_verdict.vwap:.2f}" if (opt_verdict and opt_verdict.vwap) else ""
                             if alerter:
-                                entry_reason = f"{strat_label} Signal Confirmation (RSI: {state.get('rsi', 'N/A')})"
+                                entry_reason = f"{strat_label} Signal Confirmation ({holding_mode['label']}){gate_vwap_str} | RSI: {state.get('rsi', 'N/A')}"
                                 alerter.send_trade_alert(
                                     symbol=opt["contract"],
                                     side=direction,
                                     qty=qty,
                                     price=entry_p,
                                     confidence=(conf / 100.0) if conf > 1 else conf,
-                                    reason=entry_reason
+                                    reason=entry_reason,
+                                    execution_time=ts,
                                 )
                             
-                            print(f"  [{ts}] 🔵 ENTRY {opt['contract']} (Qty: {qty}) @ Rs.{entry_p:.2f} | Spot: {state['spot']} | Conf: {conf}% | Delta: {opt['delta']} | SL: Rs.{sl_p:.2f} | Tgt: Rs.{tgt_p:.2f}")
+                            print(f"  [{ts}] 🔵 ENTRY {opt['contract']} (Qty: {qty}) @ Rs.{entry_p:.2f} | Mode: {holding_mode['label']}{gate_vwap_str} | Spot: {state['spot']} | Conf: {conf}% | SL: Rs.{sl_p:.2f} | Tgt: Rs.{tgt_p:.2f}")
                 
                 if obs is not None:
                     prev_signals[symbol] = obs

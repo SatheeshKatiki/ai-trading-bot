@@ -18,6 +18,7 @@ import NewsTicker from "@/components/news-ticker";
 import { ErrorBoundary } from "@/components/error-boundary";
 import ChartHeaderToolbar from "@/components/chart-header-toolbar";
 import { isMarketOpenIST } from "@/lib/ist-time";
+import { STRATEGY_PROFILES, getStrategyProfile } from "@/lib/strategy-profiles";
 import { useState, useEffect, useRef, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
@@ -454,12 +455,14 @@ interface LiveMarketChartContainerProps {
     urlSymbol: string;
     timeframe: string;
     showDynamicTrend: boolean;
+    strategy?: string;
 }
 
 function LiveMarketChartContainer({
     urlSymbol,
     timeframe,
     showDynamicTrend,
+    strategy,
 }: LiveMarketChartContainerProps) {
     const mainTicker = useLiveMarketStore(state => state.tickerData[urlSymbol] || state.tickerData[urlSymbol.replace('NSE:', '').replace('BSE:', '').replace('-INDEX', '')]);
     // Both selectors run on EVERY render. The fallback used to sit on the
@@ -480,6 +483,7 @@ function LiveMarketChartContainer({
                     liveVolume={mainLiveVolume}
                     timeframe={timeframe}
                     showDynamicTrend={showDynamicTrend}
+                    strategy={strategy}
                 />
             </ErrorBoundary>
         </div>
@@ -508,6 +512,8 @@ function LiveTradingContent() {
     const [showDynamicTrend, setShowDynamicTrend] = useState(false);
     const [notifications, setNotifications] = useState<Notification[]>([]);
     const [showLiveGuard, setShowLiveGuard] = useState(false);
+    const [showStrategyDropdown, setShowStrategyDropdown] = useState(false);
+    const strategyDropdownRef = useRef<HTMLDivElement>(null);
 
     // Live Settings from Zustand
     const {
@@ -520,6 +526,34 @@ function LiveTradingContent() {
         setScalePct, setMaxScales, maxDailyLossPct, setMaxDailyLossPct, setMaxDailyTrades,
         setTrailTrigger, setTrailOffset
     } = useLiveSettingsStore();
+
+    // Strategy change handler with persistent settings sync and notification
+    const handleStrategySelect = async (newStratId: string) => {
+        setStrategy(newStratId);
+        setShowStrategyDropdown(false);
+        const prof = getStrategyProfile(newStratId);
+        toast.success(`Chart & Bot switched to ${prof.name}`);
+        try {
+            await fetch('/api/settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ active_strategy: newStratId })
+            });
+        } catch (e) {
+            console.error("Failed to update active strategy setting:", e);
+        }
+    };
+
+    // Close strategy dropdown on outside click
+    useEffect(() => {
+        function handleClickOutside(event: MouseEvent) {
+            if (strategyDropdownRef.current && !strategyDropdownRef.current.contains(event.target as Node)) {
+                setShowStrategyDropdown(false);
+            }
+        }
+        document.addEventListener("mousedown", handleClickOutside);
+        return () => document.removeEventListener("mousedown", handleClickOutside);
+    }, []);
     const dismissNotification = (id: number) => {
         setNotifications(prev => prev.filter(n => n.id !== id));
     };
@@ -899,8 +933,64 @@ function LiveTradingContent() {
                                         <p className="text-xs text-muted-foreground">Native Institutional Candlestick Chart (Live Feed)</p>
                                     </div>
 
-                                    {/* Right-aligned Institutional Chart Controls (Toolbar + Timeframe + Toggles) */}
+                                    {/* Right-aligned Institutional Chart Controls (Toolbar + Timeframe + Strategy + Toggles) */}
                                     <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+                                        {/* Institutional Strategy Selector Dropdown - Enforces strict indicator isolation */}
+                                        <div className="relative" ref={strategyDropdownRef}>
+                                            <button
+                                                onClick={() => setShowStrategyDropdown(!showStrategyDropdown)}
+                                                className="cursor-pointer flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg bg-primary/10 border border-primary/20 text-primary hover:bg-primary/20 transition-all shadow-sm"
+                                                title="Switch Active Trading Strategy (Switches Indicators & Signals on Chart)"
+                                            >
+                                                <span className="w-2 h-2 rounded-full bg-primary animate-pulse" />
+                                                <span className="truncate max-w-[130px] sm:max-w-[170px]">{getStrategyProfile(strategy).badge || strategy}</span>
+                                                <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-200 ${showStrategyDropdown ? 'rotate-180' : ''}`} />
+                                            </button>
+
+                                            <AnimatePresence>
+                                                {showStrategyDropdown && (
+                                                    <motion.div
+                                                        initial={{ opacity: 0, y: 8, scale: 0.96 }}
+                                                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                                                        exit={{ opacity: 0, y: 8, scale: 0.96 }}
+                                                        transition={{ duration: 0.15 }}
+                                                        className="absolute right-0 top-full mt-2 w-72 bg-card border border-border/60 rounded-xl shadow-2xl overflow-hidden z-50 p-2 backdrop-blur-md"
+                                                    >
+                                                        <div className="px-2 py-1.5 mb-1 border-b border-border/40">
+                                                            <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Select Active Strategy</span>
+                                                            <p className="text-[10px] text-muted-foreground/80 mt-0.5">Chart indicators & signals isolate automatically</p>
+                                                        </div>
+                                                        <div className="max-h-64 overflow-y-auto space-y-1">
+                                                            {Object.values(STRATEGY_PROFILES).map((prof) => {
+                                                                const isSelected = strategy === prof.id;
+                                                                return (
+                                                                    <button
+                                                                        key={prof.id}
+                                                                        onClick={() => handleStrategySelect(prof.id)}
+                                                                        className={`w-full text-left p-2 rounded-lg transition-all flex flex-col gap-0.5 cursor-pointer ${
+                                                                            isSelected
+                                                                                ? "bg-primary/15 border border-primary/30 text-foreground"
+                                                                                : "hover:bg-muted/60 text-muted-foreground hover:text-foreground"
+                                                                        }`}
+                                                                    >
+                                                                        <div className="flex items-center justify-between">
+                                                                            <span className="text-xs font-semibold">{prof.name}</span>
+                                                                            <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold ${
+                                                                                isSelected ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"
+                                                                            }`}>
+                                                                                {prof.badge}
+                                                                            </span>
+                                                                        </div>
+                                                                        <span className="text-[10px] text-muted-foreground line-clamp-1">{prof.description}</span>
+                                                                    </button>
+                                                                );
+                                                            })}
+                                                        </div>
+                                                    </motion.div>
+                                                )}
+                                            </AnimatePresence>
+                                        </div>
+
                                         <ChartHeaderToolbar />
 
                                         <div className="flex items-center bg-muted/30 rounded-lg p-1 border border-border/50 relative">
@@ -993,6 +1083,7 @@ function LiveTradingContent() {
                                     urlSymbol={urlSymbol}
                                     timeframe={timeframe}
                                     showDynamicTrend={showDynamicTrend}
+                                    strategy={strategy}
                                 />
                             </div>
                         </div>

@@ -29,6 +29,8 @@ RSI_MA_LENGTH: int = 20  # EMA smoothing of the RSI line
 RSI_BAND_NORMAL: float = 40.0
 RSI_BAND_STRONG: float = 50.0
 RSI_BAND_VERY_STRONG: float = 60.0
+RSI_OVERBOUGHT_CAP: float = 75.0   # Hard ceiling: CE entry blocked above this to prevent buying tops
+RSI_OVERSOLD_FLOOR: float = 25.0   # Hard floor: PE entry blocked below this to prevent buying bottoms
 
 # ─────────────────────────────────────────────────────────────────────
 # Premium decay / option-health classification (post-entry monitoring)
@@ -56,146 +58,82 @@ TIME_START: str = "09:20"
 TIME_END: str = "15:15"
 
 # ─────────────────────────────────────────────────────────────────────
-# Expiry-day late entry (owner's rule, 2026-09-22)
+# Late entry (applies to ALL trading days, 15:15 to 15:25)
 # ─────────────────────────────────────────────────────────────────────
-# Nothing is entered after TIME_END -- except on an expiry day, where a
-# genuinely strong signal may still be taken until EXPIRY_LATE_ENTRY_END.
-# 0DTE premium after 15:15 is nearly all delta and no time value, so a real
-# move pays quickly; but the same thinness punishes a marginal signal, which
-# is why this needs VERY_STRONG momentum and nothing less.
-EXPIRY_LATE_ENTRY: bool = True
-EXPIRY_LATE_ENTRY_END: str = "15:25"
-EXPIRY_LATE_ENTRY_MIN_STRENGTH: str = "VERY_STRONG"
+# Between TIME_END (15:15) and LATE_ENTRY_END (15:25), a strong signal
+# may still be taken on ANY trading day (not just expiry) provided momentum
+# is at least LATE_ENTRY_MIN_STRENGTH ("VERY_STRONG").
+LATE_ENTRY_ENABLED: bool = True
+LATE_ENTRY_END: str = "15:25"
+LATE_ENTRY_MIN_STRENGTH: str = "VERY_STRONG"
 
-# ─────────────────────────────────────────────────────────────────────
-# Anticipating a crossover (owner asked 2026-09-22; OFF by default)
-# ─────────────────────────────────────────────────────────────────────
-# "If it has not crossed yet but is about to within the next candle or two,
-# treat it as a signal." Implemented, and OFF, because it was measured as the
-# single most damaging change tried on this strategy:
-#
-#                                        NIFTY net    SENSEX net
-#   exact cross only (today)              +11,150       -37,841
-#   + anticipate within 1 bar             -64,551       -56,247
-#   + anticipate within 2 bars            -98,964       -63,470
-#
-# Tried at three tightness settings (gap < 0.15 / 0.30 / 0.50 x ATR) and with
-# an added RSI-strength requirement; every variant was worse on both indices.
-# The reason is structural: EMA9 approaches EMA20 far more often than it
-# crosses it, so anticipating roughly doubles the trade count (178 -> 350+)
-# and nearly all of the extra trades are the approaches that failed.
-#
-# Set `ema9_rsi_anticipate_cross_bars` to 1 or 2 to enable.
-ANTICIPATE_CROSS_BARS: int = 0
-ANTICIPATE_MAX_GAP_ATR: float = 0.30
+# Backward compatibility aliases
+EXPIRY_LATE_ENTRY: bool = LATE_ENTRY_ENABLED
+EXPIRY_LATE_ENTRY_END: str = LATE_ENTRY_END
+EXPIRY_LATE_ENTRY_MIN_STRENGTH: str = LATE_ENTRY_MIN_STRENGTH
+
 ENABLE_TOUCH_FILTER: bool = True
 
 # How the crossover candle must sit against the EMA cluster.
 #
-#   "body_or_wick"  the owner's rule (2026-09-22): the candle must reach BOTH
+#   "body_or_wick"  the owner's rule: the candle must reach BOTH
 #                   EMAs -- its body preferred, its wick accepted. A signal
 #                   carries which of the two it was, so the books can log it.
 #   "body"          the strict half of that rule: the BODY must reach both.
 #   "legacy"        the pre-2026-09-22 one-sided check (low <= upper EMA +
 #                   0.06% buffer), kept only so an old run can be reproduced.
-#
-# Measured on 675 sessions of NIFTY and SENSEX 5-min (2024-01-01..2026-09-21),
-# costs calibrated from real option premiums, at the 2,136 / 2,226 crossover
-# bars in that history:
-#
-#              passes  NIFTY net  SENSEX net   beats "legacy" in
-#   legacy        90%   -93,739    -1,11,112   --
-#   body_or_wick  38%   -28,982      -53,100   7/11 and 9/11 quarters
-#   body          22%   +17,534      -37,766   10/11 and 8/11 quarters
-#
-# "body" is the better performer on both indices; "body_or_wick" is the
-# owner's literal instruction and stays the default until the owner chooses.
 EMA_TOUCH_MODE: str = "body_or_wick"
 LEGACY_TOUCH_BUFFER_PCT: float = 0.0006  # only read when mode == "legacy"
 
 # ─────────────────────────────────────────────────────────────────────
-# How a wick touch has to earn its entry (owner's rule, 2026-09-22)
+# How a wick touch has to earn its entry
 # ─────────────────────────────────────────────────────────────────────
-# The owner keeps both kinds of touch but wants them weighted: a body touch
-# is first preference, a wick touch second, and the bot decides for itself
-# whether a given wick signal is worth taking rather than taking them all.
-#
-# A body touch is taken on its own (priority HIGH). A wick touch must ALSO
-# agree with the trend and show RSI genuinely separated from its own average
-# (priority MEDIUM); a wick touch that shows neither is skipped (LOW).
-#
-# Measured over 2024-01-01..2026-09-21 on NIFTY and SENSEX 5-min, costs
-# calibrated from real option premiums, on the wick-only signals alone:
-#
-#   wick gate                 NIFTY Rs/trade   SENSEX Rs/trade
-#   take every wick                     -268              -169
-#   trend agrees                         -74               -59
-#   RSI gap >= 3                        -266              -181
-#   trend agrees AND gap >= 3            -17               -44   <- this
-#
-# Against taking every wick, that beat the alternative in 11/11 NIFTY and
-# 7/11 SENSEX quarters, fixed rule, no per-period fitting. It does not make
-# wick trades profitable -- it stops them paying for the body trades.
-
+# A body touch is taken on its own (priority HIGH). A wick touch must
+# ALSO agree with the trend slope (priority MEDIUM); a wick touch that
+# fails trend agreement is skipped (LOW).
 WICK_REQUIRES_CONFIRMATION: bool = True
-WICK_MIN_RSI_GAP: float = 3.0        # |RSI - RSI-MA| the wick signal must show
 TREND_SLOPE_LOOKBACK: int = 6        # bars the EMA20 slope is measured over
 TREND_SLOPE_MIN_PCT: float = 0.02    # slope, as % of price, to count as agreeing
 
 # ─────────────────────────────────────────────────────────────────────
-# Breakaway entries (the 2026-09-22 miss). OFF by default.
+# Chop Box / Compression Filter (Purple "No Trade" Box)
 # ─────────────────────────────────────────────────────────────────────
-# The touch rule refuses a cross whose candle has already left the EMA
-# cluster, because that is usually a chase. On 2026-09-22 it refused a NIFTY
-# PE at 10:30 that was worth 136 points: price fell so fast that by the time
-# EMA9 crossed EMA20 the candle sat 5.82 points clear of both averages. The
-# bar that DID touch the cluster (10:20, graded HIGH) was two bars before the
-# cross -- the two conditions were met, but never on the same candle.
-#
-# The refused group as a whole deserves refusing: 693 NIFTY and 644 SENSEX
-# crossovers, losing Rs.98 and Rs.132 per trade. But inside it there is a
-# separable subset -- a decisive candle, body at least `min_body_atr` x ATR,
-# closing within `max_close_from_extreme` of its own extreme in the trade's
-# direction. That is a market leaving a level, not a trader chasing it:
-#
-#   breakaway subset alone     NIFTY +147/trade PF 1.29   SENSEX +23 PF 1.06
-#   LIVE today                       +11,150   PF 1.12          -9,602 PF 0.71
-#   LIVE + breakaway (1.0x)          +32,231   PF 1.23          -9,767 PF 0.82
-#
-# On NIFTY that is +Rs.21,081 and it beat LIVE in 7 of 11 quarters. On SENSEX
-# it beat LIVE in only 4 of 11 and the total is flat, so there is no evidence
-# for it there. Seven quarters out of eleven on one index is not the standard
-# the other changes here cleared (the touch rule won 10/11 and 8/11, the wick
-# confirmation 11/11 and 7/11), so this ships OFF for the owner to try in the
-# variant book first.
-#
-# UNVERIFIED: the figures above (+Rs.21,081 on NIFTY, 7 of 11 quarters, and
-# the rest of the table) have not been reproduced by an independent run. Do
-# not rely on them.
-#
-# Before this is ever enabled it needs (owner, 2026-10-01): the same
-# confirmations wick entries require -- EMA20 slope agreeing and RSI
-# separated from its average -- available as config options, and a
-# reproduced backtest. Until then it stays OFF.
-#
-# Enable with `ema9_rsi_allow_breakaway_entry`, or per symbol via
-# SYMBOL_OVERRIDES.
-ALLOW_BREAKAWAY_ENTRY: bool = False
-BREAKAWAY_MIN_BODY_ATR: float = 1.0
-BREAKAWAY_MAX_CLOSE_FROM_EXTREME: float = 0.35
-BREAKAWAY_ATR_LENGTH: int = 14
+# Suppresses entries when 9 EMA and 20 EMA are compressed/entangled and flat.
+# Fully dynamic across all instruments (NIFTY, BANKNIFTY, SENSEX, Stocks)
+# by measuring the EMA separation as a multiple of ATR(14).
+ENABLE_CHOP_FILTER: bool = True
+CHOP_ATR_MULT: float = 0.20          # If |EMA9 - EMA20| < CHOP_ATR_MULT * ATR, mark as chop box
+CHOP_SLOPE_THRESHOLD: float = 0.15   # Max normalized EMA20 slope to count as flat
 
 # ─────────────────────────────────────────────────────────────────────
-# Entry timing (owner's rule, 2026-09-22)
+# Dual Entry Engine: Reversals + Pullback / Trend Continuation
+# ─────────────────────────────────────────────────────────────────────
+# Enables Setup B: when trending (EMA9 > EMA20 or EMA9 < EMA20), enters on
+# 9 EMA pullback/retest yellow candle closing in the trend direction.
+ENABLE_PULLBACK_ENTRIES: bool = True
+
+# ─────────────────────────────────────────────────────────────────────
+# Adaptive Dynamic Stop Loss (ATR-Normalized for all instruments)
+# ─────────────────────────────────────────────────────────────────────
+# For Large Candles (range >= LARGE_CANDLE_ATR_MULT * ATR):
+#   Anchor SL to the trigger yellow candle's Low (CE) or High (PE).
+# For Small Candles (range < LARGE_CANDLE_ATR_MULT * ATR):
+#   Anchor SL to 20 EMA +/- (SL_BUFFER_ATR_MULT * ATR).
+ADAPTIVE_SL_ENABLED: bool = True
+LARGE_CANDLE_ATR_MULT: float = 1.0     # Multiplier to distinguish large momentum candle
+SL_BUFFER_ATR_MULT: float = 0.20       # Buffer beyond 20 EMA for small candles
+SL_CANDLE_BUFFER_ATR_MULT: float = 0.05 # Buffer beyond candle extreme for large candles
+
+# ─────────────────────────────────────────────────────────────────────
+# Entry timing
 # ─────────────────────────────────────────────────────────────────────
 # A crossover is only final once its candle closes: intrabar, EMA9 can cross
 # EMA20 and cross back before the bar is done. So an entry is taken in the
 # last `ENTRY_CONFIRM_SECONDS` of the forming candle, when the bar is all but
-# settled. Earlier in the bar an entry is allowed only when momentum is
-# already at least `EARLY_ENTRY_MIN_STRENGTH` (see classify_momentum_strength),
-# i.e. the move is strong enough not to wait for confirmation.
+# settled.
 ENTRY_CONFIRM_SECONDS: int = 10
 EARLY_ENTRY_MIN_STRENGTH: str = "STRONG"
+REQUIRE_BAR_CLOSE_WINDOW: bool = False   # When True, enforces entries strictly in final 10s window
 
 ENABLE_EXIT_ANALYZER: bool = True
 MIN_PEAK_PROFIT_PTS: float = 30.0
@@ -271,6 +209,11 @@ TIMEFRAME_MINUTES: int = 5
 STRIKE_SELECTION: str = "ATM"         # "ATM" | "ITM" -- see strike_selection.py
 ITM_TARGET_DELTA: float = 0.70        # |delta| an ITM pick aims for
 MAX_ENTRY_SPREAD_PCT: float = 1.0     # refuse a leg whose bid/ask spread is wider
+ENABLE_OPTION_CHART_GATE: bool = True
+REQUIRE_OPTION_ABOVE_VWAP: bool = True
+MAX_OPTION_SPREAD_PCT: float = 1.2
+MIN_OPTION_VOLUME: int = 50
+OPTION_WARMUP_MINUTES: int = 3
 
 # ─────────────────────────────────────────────────────────────────────
 # Exits: the owner's ratcheting ladder -- see exit_ladder.py
@@ -306,6 +249,8 @@ class Ema9RsiMomentumConfig:
     rsi_band_normal: float = RSI_BAND_NORMAL
     rsi_band_strong: float = RSI_BAND_STRONG
     rsi_band_very_strong: float = RSI_BAND_VERY_STRONG
+    rsi_overbought_cap: float = RSI_OVERBOUGHT_CAP
+    rsi_oversold_floor: float = RSI_OVERSOLD_FLOOR
     decay_low_pct: float = DECAY_LOW_PCT
     decay_moderate_pct: float = DECAY_MODERATE_PCT
     decay_high_pct: float = DECAY_HIGH_PCT
@@ -317,8 +262,9 @@ class Ema9RsiMomentumConfig:
     enable_touch_filter: bool = ENABLE_TOUCH_FILTER
     ema_touch_mode: str = EMA_TOUCH_MODE
     legacy_touch_buffer_pct: float = LEGACY_TOUCH_BUFFER_PCT
-    anticipate_cross_bars: int = ANTICIPATE_CROSS_BARS
-    anticipate_max_gap_atr: float = ANTICIPATE_MAX_GAP_ATR
+    late_entry_enabled: bool = LATE_ENTRY_ENABLED
+    late_entry_end: str = LATE_ENTRY_END
+    late_entry_min_strength: str = LATE_ENTRY_MIN_STRENGTH
     expiry_late_entry: bool = EXPIRY_LATE_ENTRY
     expiry_late_entry_end: str = EXPIRY_LATE_ENTRY_END
     expiry_late_entry_min_strength: str = EXPIRY_LATE_ENTRY_MIN_STRENGTH
@@ -328,16 +274,20 @@ class Ema9RsiMomentumConfig:
     allow_overnight_carry: bool = ALLOW_OVERNIGHT_CARRY
     overnight_min_gain_pct: float = OVERNIGHT_MIN_GAIN_PCT
     overnight_min_strength: str = OVERNIGHT_MIN_STRENGTH
-    allow_breakaway_entry: bool = ALLOW_BREAKAWAY_ENTRY
-    breakaway_min_body_atr: float = BREAKAWAY_MIN_BODY_ATR
-    breakaway_max_close_from_extreme: float = BREAKAWAY_MAX_CLOSE_FROM_EXTREME
-    breakaway_atr_length: int = BREAKAWAY_ATR_LENGTH
     wick_requires_confirmation: bool = WICK_REQUIRES_CONFIRMATION
-    wick_min_rsi_gap: float = WICK_MIN_RSI_GAP
     trend_slope_lookback: int = TREND_SLOPE_LOOKBACK
     trend_slope_min_pct: float = TREND_SLOPE_MIN_PCT
     entry_confirm_seconds: int = ENTRY_CONFIRM_SECONDS
     early_entry_min_strength: str = EARLY_ENTRY_MIN_STRENGTH
+    require_bar_close_window: bool = REQUIRE_BAR_CLOSE_WINDOW
+    enable_chop_filter: bool = ENABLE_CHOP_FILTER
+    chop_atr_mult: float = CHOP_ATR_MULT
+    chop_slope_threshold: float = CHOP_SLOPE_THRESHOLD
+    enable_pullback_entries: bool = ENABLE_PULLBACK_ENTRIES
+    adaptive_sl_enabled: bool = ADAPTIVE_SL_ENABLED
+    large_candle_atr_mult: float = LARGE_CANDLE_ATR_MULT
+    sl_buffer_atr_mult: float = SL_BUFFER_ATR_MULT
+    sl_candle_buffer_atr_mult: float = SL_CANDLE_BUFFER_ATR_MULT
     enable_exit_analyzer: bool = ENABLE_EXIT_ANALYZER
     min_peak_profit_pts: float = MIN_PEAK_PROFIT_PTS
     max_giveback_pct: float = MAX_GIVEBACK_PCT
@@ -348,6 +298,11 @@ class Ema9RsiMomentumConfig:
     max_entry_spread_pct: float = MAX_ENTRY_SPREAD_PCT
     initial_sl_pct: float = INITIAL_SL_PCT
     profit_ladder_pct: tuple = PROFIT_LADDER_PCT
+    enable_option_chart_gate: bool = ENABLE_OPTION_CHART_GATE
+    require_option_above_vwap: bool = REQUIRE_OPTION_ABOVE_VWAP
+    max_option_spread_pct: float = MAX_OPTION_SPREAD_PCT
+    min_option_volume: int = MIN_OPTION_VOLUME
+    option_warmup_minutes: int = OPTION_WARMUP_MINUTES
 
     @classmethod
     def from_settings(cls, settings: dict | None = None, symbol: str | None = None,

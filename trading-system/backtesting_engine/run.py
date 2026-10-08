@@ -299,7 +299,7 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
         return current_price
 
     if 'datetime' in df.columns:
-        times = df['datetime'].apply(lambda x: str(x)[:16] if isinstance(x, str) else "00:00").to_numpy()
+        times = df['datetime'].astype(str).str[:16].to_numpy()
         total_trading_days = len(set([str(x)[:10] for x in df['datetime']]))
     else:
         times = ["00:00"] * len(df)
@@ -701,6 +701,14 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
                 # ────────────────────────────────────────────────────────────────────
         # Entry condition — skip if daily loss limit or trade cap reached
         if position is None and not daily_limit_hit and not daily_trades_hit:
+            # ── Post-SL Cooldown Guard (User Rule 2026-10-05) ──
+            cooldown_bars = int(kwargs.get("post_sl_cooldown_bars", 2))
+            if last_sl_trade is not None:
+                if signal == last_sl_trade["dir"] and (i - last_sl_trade["idx"]) < cooldown_bars:
+                    signal = 0  # Block same-direction re-entry during cool-off
+                elif signal == -last_sl_trade["dir"]:
+                    last_sl_trade = None  # Opposite reversal clears lock immediately
+
             if signal == 1 and (i == 0 or sig_vals[i-1] != 1):
                 entry_fill = next_bar_fill_price(i, current_price)
                 entry_price = apply_slippage(entry_fill, "BUY")
@@ -739,6 +747,7 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
                     actual_mult = max(1, actual_mult // 2)  # 50% size
 
                 position = {"type": "BUY", "entries": [(entry_price, actual_mult)], "time": current_time, "sl_pct": current_sl_pct, "target_pct": dynamic_target, "score": score, "has_custom_sl": pos_has_custom_sl, "entry_bar": i}
+                last_sl_trade = None
                 capital -= commission_per_trade
                 total_brokerage += commission_per_trade
                 total_slippage += abs(entry_fill - entry_price) * actual_mult * options_delta
@@ -779,6 +788,7 @@ def run_intraday_backtest(df: pd.DataFrame, signals: pd.Series, initial_capital:
                     actual_mult = max(1, actual_mult // 2)  # 50% size
 
                 position = {"type": "SELL", "entries": [(entry_price, actual_mult)], "time": current_time, "sl_pct": current_sl_pct, "target_pct": dynamic_target, "score": score, "has_custom_sl": pos_has_custom_sl, "entry_bar": i}
+                last_sl_trade = None
                 capital -= commission_per_trade
                 total_brokerage += commission_per_trade
                 total_slippage += abs(entry_fill - entry_price) * actual_mult * options_delta

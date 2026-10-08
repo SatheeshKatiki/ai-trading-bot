@@ -115,28 +115,30 @@ def decide_eod(now: _dt.time,
                       f"signal intact -- gap risk is now unhedged")
 
 
-def expiry_late_entry_allowed(now: _dt.time, strength: str, cfg,
-                              is_expiry_day: bool) -> tuple[bool, str]:
-    """Whether a NEW entry may be taken after the normal cutoff.
+def late_entry_allowed(now: _dt.time, strength: str, cfg,
+                       is_expiry_day: bool = True) -> tuple[bool, str]:
+    """Whether a NEW entry may be taken after the normal cutoff (15:15).
 
-    Only on an expiry day, only until `expiry_late_entry_end`, and only on
-    the strongest momentum band. 0DTE premium this late is nearly all delta
-    and almost no time value, so a real move pays quickly -- and the same
-    thinness punishes a marginal signal, which is why nothing below
-    VERY_STRONG qualifies.
+    Applies on ALL days (not just expiry days): allowed until `late_entry_end`
+    (15:25) ONLY on the strongest momentum band (VERY_STRONG).
     """
-    if not is_expiry_day:
-        return False, "not an expiry day"
-    if not bool(getattr(cfg, "expiry_late_entry", True)):
-        return False, "expiry late entry is switched off"
-    end = _as_time(getattr(cfg, "expiry_late_entry_end", "15:25"), _dt.time(15, 25))
+    late_enabled = bool(getattr(cfg, "late_entry_enabled", getattr(cfg, "expiry_late_entry", True)))
+    if not late_enabled:
+        return False, "late entry is switched off"
+    end_str = getattr(cfg, "late_entry_end", getattr(cfg, "expiry_late_entry_end", "15:25"))
+    end = _as_time(end_str, _dt.time(15, 25))
     if now >= end:
-        return False, f"past the expiry-day cutoff of {end:%H:%M}"
-    want = str(getattr(cfg, "expiry_late_entry_min_strength", "VERY_STRONG")).upper()
+        return False, f"past the late entry cutoff of {end:%H:%M}"
+    want = str(getattr(cfg, "late_entry_min_strength", getattr(cfg, "expiry_late_entry_min_strength", "VERY_STRONG"))).upper()
     if str(strength).upper() != want:
-        return False, (f"expiry-day late entry needs {want} momentum, "
+        return False, (f"late entry needs {want} momentum, "
                        f"this is {strength or 'NONE'}")
-    return True, f"expiry-day late entry on {strength} momentum, until {end:%H:%M}"
+    return True, f"late entry permitted on {strength} momentum until {end:%H:%M}"
+
+
+# Backward compatibility alias
+expiry_late_entry_allowed = late_entry_allowed
+
 
 
 def is_expiry_day(symbol: str, day: Optional[_dt.date] = None) -> Optional[bool]:

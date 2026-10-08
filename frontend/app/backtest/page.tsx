@@ -1030,6 +1030,7 @@ export default function Backtest() {
                     initialData={result.candlestickData}
                     markers={result.chartMarkers || result.chart_markers}
                     disableFetch={Boolean(result.candlestickData && result.candlestickData.length > 0)}
+                    strategy={strategy}
                   />
                 </div>
               </div>

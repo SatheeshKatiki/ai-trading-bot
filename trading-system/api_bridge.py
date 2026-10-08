@@ -2991,33 +2991,33 @@ def compute_signals(
             adx_series = calc_adx(df) if len(df) >= 14 else pd.Series(20.0, index=df.index)
 
             for i in range(len(df)):
+                sig_val = int(signals.iloc[i]) if not pd.isna(signals.iloc[i]) else 0
                 ef = float(ind.ema_fast.iloc[i]) if not pd.isna(ind.ema_fast.iloc[i]) else 0
                 es = float(ind.ema_slow.iloc[i]) if not pd.isna(ind.ema_slow.iloc[i]) else 0
                 r = float(ind.rsi.iloc[i]) if not pd.isna(ind.rsi.iloc[i]) else 50
                 rm = float(ind.rsi_ma.iloc[i]) if not pd.isna(ind.rsi_ma.iloc[i]) else 50
                 ax = float(adx_series.iloc[i]) if not pd.isna(adx_series.iloc[i]) else 20
 
-                if ef > es and r > rm:
-                    base = 65
-                    if r >= 60: base += 15
-                    elif r >= 50: base += 10
-                    if ax >= 25: base += 10
-                    elif ax >= 18: base += 5
-                    if signals.iloc[i] == 1: base = min(98, base + 10)
+                # Single Source of Truth: Actionable confidence >= 70 ONLY triggers on genuine strategy signals
+                if sig_val == 1:
+                    base = 85
+                    if 50 <= r <= 70: base += 10
+                    if ax >= 20: base += 3
                     call_scores.iloc[i] = min(98, base)
+                elif ef > es and r > rm:
+                    call_scores.iloc[i] = 45  # Informational background bias only; never triggers trades
                 elif ef > es:
-                    call_scores.iloc[i] = 55
+                    call_scores.iloc[i] = 30
 
-                if ef < es and r < rm:
-                    base = 65
-                    if r <= 40: base += 15
-                    elif r <= 50: base += 10
-                    if ax >= 25: base += 10
-                    elif ax >= 18: base += 5
-                    if signals.iloc[i] == -1: base = min(98, base + 10)
+                if sig_val == -1:
+                    base = 85
+                    if 30 <= r <= 50: base += 10
+                    if ax >= 20: base += 3
                     put_scores.iloc[i] = min(98, base)
+                elif ef < es and r < rm:
+                    put_scores.iloc[i] = 45  # Informational background bias only; never triggers trades
                 elif ef < es:
-                    put_scores.iloc[i] = 55
+                    put_scores.iloc[i] = 30
 
         elif strategy_name == "advanced_ai":
             from trading_bot.strategies.advanced_ai_ml_strategy import generate_signals as advanced_ai_signals
@@ -3093,35 +3093,26 @@ def compute_signals(
             elif recent_trend < 0:
                 last_put_score = min(40, int((abs(recent_trend) / df['close'].iloc[-5]) * 5000))
                 
-        confidence = max(last_call_score, last_put_score)
-        
-        bias = "NEUTRAL"
-        status = f"Scanning {strat_display}..."
-        
-        if last_call_score >= 70:
+        # Determine latest verified strategy trigger on the last closed bar
+        latest_sig = int(signals.iloc[-1]) if len(signals) else 0
+        trigger = "BUY" if latest_sig == 1 else ("SELL" if latest_sig == -1 else "NONE")
+
+        if latest_sig == 1:
             bias = "BUY"
+            confidence = int(call_scores.iloc[-1])
             status = f"{strat_display} Call Setup"
-        elif last_put_score >= 70:
+        elif latest_sig == -1:
             bias = "SELL"
+            confidence = int(put_scores.iloc[-1])
             status = f"{strat_display} Put Setup"
         else:
-            if abs(last_call_score - last_put_score) <= 8 and max(last_call_score, last_put_score) < 65 and len(df) >= 4:
-                recent_trend = df['close'].iloc[-1] - df['close'].iloc[-4]
-                if recent_trend > 0:
-                    bias = "BULLISH"
-                    status = "Mild Bullish Bias"
-                elif recent_trend < 0:
-                    bias = "BEARISH"
-                    status = "Mild Bearish Bias"
-                else:
-                    bias = "NEUTRAL"
-                    status = "Awaiting Setup"
-            elif last_call_score > last_put_score:
+            confidence = max(last_call_score, last_put_score)
+            if last_call_score > last_put_score and last_call_score > 35:
                 bias = "BULLISH"
-                status = "Mild Bullish Bias"
-            elif last_put_score > last_call_score:
+                status = "Mild Bullish Bias (Awaiting Setup)"
+            elif last_put_score > last_call_score and last_put_score > 35:
                 bias = "BEARISH"
-                status = "Mild Bearish Bias"
+                status = "Mild Bearish Bias (Awaiting Setup)"
             else:
                 bias = "NEUTRAL"
                 status = "Awaiting Setup"
@@ -3131,7 +3122,9 @@ def compute_signals(
             "strategy_display": strat_display,
             "confidence": confidence,
             "status": status,
-            "bias": f"{bias} BIAS",
+            "bias": f"{bias} BIAS" if bias in ("BULLISH", "BEARISH") else bias,
+            "trigger": trigger,
+            "strategy_signal": latest_sig,
             "trendData": trend_data,
             "signals": real_signals[-10:][::-1],
             "timestamp": time.time()
@@ -3308,44 +3301,34 @@ async def get_strategy_markers(
     strategy: Optional[str] = Query(None, description="Defaults to active_strategy"),
 ):
     """The chart's BUY CE / BUY PE markers, computed by the live strategy itself.
-
-    Why this exists: until 2026-09-22 the chart computed its own signals in
-    TypeScript (`computeAutoSignalMarkers` in native-chart.tsx). It was a
-    second implementation of the same rules and it disagreed with the engine
-    that actually trades -- it carried no ADX filter at all and used a wider
-    touch buffer (0.08% vs 0.06%). Checked against 2026-09-18 NIFTY: ADX sat
-    at 10.6-16.7 all day, so the real engine produced ZERO signals while the
-    chart drew four. The owner was reading markers the bot would never act on.
-
-    So there is now one implementation. This endpoint runs the same
-    `compute_cross_signals` the books run, over the same candles the chart is
-    drawing, and returns the bars it fired on. If the strategy changes, the
-    chart changes with it -- there is nothing left to drift.
+    Runs the same `compute_cross_signals` the trading engine runs over the candles
+    the chart is drawing, ensuring single source of truth between chart and execution.
     """
     try:
         active = strategy or _load_config_settings().get("active_strategy", "ema9_rsi_momentum")
     except Exception:
         active = strategy or "ema9_rsi_momentum"
 
-    hist = await get_history(symbol=symbol, start_date=start_date,
+    # Prepend a 7-day warmup buffer so the start of start_date has fully converged EMAs and RSI
+    import datetime as _dt
+    req_start_date = None
+    fetch_start_date = start_date
+    try:
+        req_start_date = _dt.date.fromisoformat(start_date)
+        fetch_start_date = (req_start_date - _dt.timedelta(days=7)).isoformat()
+    except Exception:
+        pass
+
+    hist = await get_history(symbol=symbol, start_date=fetch_start_date,
                              end_date=end_date, timeframe=timeframe)
     candles = (hist or {}).get("data") or []
     if not candles:
         return {"symbol": symbol, "strategy": active, "markers": [], "count": 0}
 
-    if active != "ema9_rsi_momentum":
-        # Only this strategy exposes per-bar cross signals today. Say so
-        # plainly rather than quietly drawing nothing that looks like "no
-        # signals today".
-        return {"symbol": symbol, "strategy": active, "markers": [], "count": 0,
-                "unsupported": True,
-                "message": f"{active} does not publish per-bar chart markers"}
-
     try:
+        import numpy as _np
         import pandas as _pd
-        from trading_bot.strategies.ema9_rsi_momentum.config import Ema9RsiMomentumConfig
-        from trading_bot.strategies.ema9_rsi_momentum.signal_engine import (
-            compute_cross_signals, ema_cluster_touch, classify_momentum_strength)
+        from trading_bot.strategies.registry import registry
 
         df = _pd.DataFrame(candles)
         cols = {c.lower(): c for c in df.columns}
@@ -3361,41 +3344,244 @@ async def get_strategy_markers(
         if len(df) < 40:
             return {"symbol": symbol, "strategy": active, "markers": [], "count": 0}
 
-        # The chart's own timeframe wins over settings.json here: the user may
-        # be looking at a 15-minute chart while the books run on 5, and the
-        # markers must describe the bars actually on screen.
-        from shared.timeframes import parse_timeframe
-        # The symbol matters: per-instrument overrides mean SENSEX runs a
-        # different ADX floor from NIFTY, and the chart has to draw the
-        # markers the books would actually act on for THIS instrument.
-        cfg = Ema9RsiMomentumConfig.from_settings(
-            _load_config_settings(), symbol=symbol,
-            timeframe_minutes=parse_timeframe(timeframe, 5))
-        sig = compute_cross_signals(df, cfg)
-        touch = ema_cluster_touch(df, sig.indicators, cfg)
-        rsi = list(sig.indicators.rsi)
-
         markers = []
-        for i, when in enumerate(df.index):
-            if sig.bullish[i]:
-                side, direction = "BUY CE", 1
-            elif sig.bearish[i]:
-                side, direction = "BUY PE", -1
-            else:
-                continue
-            markers.append({
-                "time": when.isoformat(),
-                "epoch": int(when.timestamp()),
-                "text": side,
-                "side": "CE" if direction == 1 else "PE",
-                "touch": "body" if bool(touch.by_body[i]) else "wick",
-                "strength": classify_momentum_strength(float(rsi[i]), direction, cfg),
-                "close": float(df["close"].iloc[i]),
-            })
+        yellow_candles = []
+
+        if active == "ema9_rsi_momentum":
+            from shared.timeframes import parse_timeframe
+            from trading_bot.strategies.ema9_rsi_momentum.config import Ema9RsiMomentumConfig
+            from trading_bot.strategies.ema9_rsi_momentum.signal_engine import (
+                compute_cross_signals, compute_reversal_signals, ema_cluster_touch, classify_momentum_strength)
+
+            cfg = Ema9RsiMomentumConfig.from_settings(
+                _load_config_settings(), symbol=symbol,
+                timeframe_minutes=parse_timeframe(timeframe, 5))
+            sig = compute_cross_signals(df, cfg)
+            rev = compute_reversal_signals(df, cfg)
+            touch = ema_cluster_touch(df, sig.indicators, cfg)
+            rsi = list(sig.indicators.rsi)
+
+            bullish_arr = _np.asarray(sig.bullish, dtype=bool)
+            bearish_arr = _np.asarray(sig.bearish, dtype=bool)
+            rev_bull = _np.asarray(rev.bullish, dtype=bool)
+            rev_bear = _np.asarray(rev.bearish, dtype=bool)
+            touch_body = _np.asarray(touch.by_body, dtype=bool)
+            sl_vals = sig.stop_loss.values if sig.stop_loss is not None else None
+
+            fast_ema = _np.asarray(sig.indicators.ema_fast, dtype=float)
+            slow_ema = _np.asarray(sig.indicators.ema_slow, dtype=float)
+            high_arr = _np.asarray(df["high"], dtype=float)
+            low_arr = _np.asarray(df["low"], dtype=float)
+            close_arr = _np.asarray(df["close"], dtype=float)
+
+            def _to_ist_epoch(ts):
+                try:
+                    if getattr(ts, "tzinfo", None) is None:
+                        return int(ts.tz_localize("Asia/Kolkata").timestamp())
+                    return int(ts.astimezone(_dt.timezone(_dt.timedelta(hours=5, minutes=30))).timestamp())
+                except Exception:
+                    return int(ts.timestamp())
+
+            open_pos = None  # Tracks current simulated trade: {"side": 1|-1, "entry_price": float, "stop_loss": float, "idx": int}
+            prev_date = None  # For intraday session day-boundary reset
+
+            for i, when in enumerate(df.index):
+                in_display_window = not (req_start_date and when.date() < req_start_date)
+
+                # ── Intraday Session Management ──
+                # Reset open position on new trading day (no overnight carry)
+                cur_date = when.date()
+                if prev_date is not None and cur_date != prev_date:
+                    open_pos = None
+                prev_date = cur_date
+
+                # EOD Square-off at 15:20 IST
+                t_str = when.strftime("%H:%M")
+                if open_pos is not None and t_str >= "15:20":
+                    if in_display_window:
+                        pos_side = open_pos["side"]
+                        markers.append({
+                            "time": when.isoformat(),
+                            "epoch": _to_ist_epoch(when),
+                            "text": "EXIT",
+                            "type": "exit",
+                            "side": "CE" if pos_side == 1 else "PE",
+                            "price": round(float(close_arr[i]), 2),
+                            "close": float(close_arr[i]),
+                        })
+                    open_pos = None
+                    continue
+
+                # 1. Check exit if position is currently active
+                if open_pos is not None and i > open_pos["idx"]:
+                    pos_side = open_pos["side"]
+                    pos_sl = open_pos["stop_loss"]
+
+                    # A. Check Stop Loss Hit
+                    sl_hit = False
+                    if pos_side == 1 and low_arr[i] <= pos_sl:
+                        sl_hit = True
+                    elif pos_side == -1 and high_arr[i] >= pos_sl:
+                        sl_hit = True
+
+                    if sl_hit:
+                        if in_display_window:
+                            markers.append({
+                                "time": when.isoformat(),
+                                "epoch": _to_ist_epoch(when),
+                                "text": "SL",
+                                "type": "sl",
+                                "side": "CE" if pos_side == 1 else "PE",
+                                "price": round(float(pos_sl), 2),
+                                "close": float(close_arr[i]),
+                            })
+                        open_pos = None
+
+                    # B. Check Strategy Exit (Reversal cross or opposite momentum trigger)
+                    elif open_pos is not None:
+                        is_exit = False
+                        if pos_side == 1:
+                            if rev_bear[i] or (fast_ema[i] < slow_ema[i] and fast_ema[i-1] >= slow_ema[i-1]) or bearish_arr[i]:
+                                is_exit = True
+                        else:
+                            if rev_bull[i] or (fast_ema[i] > slow_ema[i] and fast_ema[i-1] <= slow_ema[i-1]) or bullish_arr[i]:
+                                is_exit = True
+
+                        if is_exit:
+                            if in_display_window:
+                                markers.append({
+                                    "time": when.isoformat(),
+                                    "epoch": _to_ist_epoch(when),
+                                    "text": "EXIT",
+                                    "type": "exit",
+                                    "side": "CE" if pos_side == 1 else "PE",
+                                    "price": round(float(close_arr[i]), 2),
+                                    "close": float(close_arr[i]),
+                                    })
+                            open_pos = None
+
+                # 2. Check new Entry if no position active (or position closed)
+                if open_pos is None:
+                    if bullish_arr[i]:
+                        direction = 1
+                        sl = float(sl_vals[i]) if (sl_vals is not None and not _pd.isna(sl_vals[i])) else round(float(low_arr[i] * 0.995), 2)
+                        marker_data = {
+                            "time": when.isoformat(),
+                            "epoch": _to_ist_epoch(when),
+                            "text": "CE Buy",
+                            "type": "entry",
+                            "side": "CE",
+                            "touch": "body" if bool(touch_body[i]) else "wick",
+                            "strength": classify_momentum_strength(float(rsi[i]), direction, cfg),
+                            "close": float(close_arr[i]),
+                            "price": float(close_arr[i]),
+                            "stop_loss": sl,
+                        }
+                        if in_display_window:
+                            markers.append(marker_data)
+                        open_pos = {"side": 1, "entry_price": float(close_arr[i]), "stop_loss": sl, "idx": i}
+                    elif bearish_arr[i]:
+                        direction = -1
+                        sl = float(sl_vals[i]) if (sl_vals is not None and not _pd.isna(sl_vals[i])) else round(float(high_arr[i] * 1.005), 2)
+                        marker_data = {
+                            "time": when.isoformat(),
+                            "epoch": _to_ist_epoch(when),
+                            "text": "PE Buy",
+                            "type": "entry",
+                            "side": "PE",
+                            "touch": "body" if bool(touch_body[i]) else "wick",
+                            "strength": classify_momentum_strength(float(rsi[i]), direction, cfg),
+                            "close": float(close_arr[i]),
+                            "price": float(close_arr[i]),
+                            "stop_loss": sl,
+                        }
+                        if in_display_window:
+                            markers.append(marker_data)
+                        open_pos = {"side": -1, "entry_price": float(close_arr[i]), "stop_loss": sl, "idx": i}
+
+            # CM Ultimate MA Yellow candles
+            if sig.indicators.cm_ma is not None:
+                cm = sig.indicators.cm_ma
+                bar_hl = _np.asarray(cm.get("bar_highlight", False), dtype=bool)
+                cr_up = _np.asarray(cm.get("price_cross_ma2_up", False), dtype=bool)
+                cr_dn = _np.asarray(cm.get("price_cross_ma2_down", False), dtype=bool)
+                yellow_mask = bar_hl | cr_up | cr_dn
+                for i, when in enumerate(df.index):
+                    if req_start_date and when.date() < req_start_date:
+                        continue
+                    if yellow_mask[i]:
+                        yellow_candles.append({
+                            "time": when.isoformat(),
+                            "epoch": _to_ist_epoch(when),
+                            "close": float(df["close"].iloc[i]),
+                        })
+        elif active in registry.registered_strategies:
+            # Dynamic execution for any registered strategy!
+            raw_sig = registry.run_strategy(active, df)
+            sig_series = raw_sig[0] if isinstance(raw_sig, tuple) else raw_sig
+            sig_arr = _np.asarray(sig_series)
+            close_arr = _np.asarray(df["close"], dtype=float)
+
+            open_pos = None
+            for i, when in enumerate(df.index):
+                in_display_window = not (req_start_date and when.date() < req_start_date)
+                val = sig_arr[i]
+
+                # Check Exit
+                if open_pos is not None and i > open_pos["idx"]:
+                    pos_side = open_pos["side"]
+                    if (pos_side == 1 and val != 1) or (pos_side == -1 and val != -1):
+                        if in_display_window:
+                            markers.append({
+                                "time": when.isoformat(),
+                                "epoch": _to_ist_epoch(when),
+                                "text": "EXIT",
+                                "type": "exit",
+                                "side": "CE" if pos_side == 1 else "PE",
+                                "price": float(close_arr[i]),
+                                "close": float(close_arr[i]),
+                            })
+                        open_pos = None
+
+                # Check Entry
+                if open_pos is None:
+                    if val == 1:
+                        if in_display_window:
+                            markers.append({
+                                "time": when.isoformat(),
+                                "epoch": _to_ist_epoch(when),
+                                "text": "CE Buy",
+                                "type": "entry",
+                                "side": "CE",
+                                "touch": "body",
+                                "strength": "NORMAL",
+                                "close": float(close_arr[i]),
+                                "price": float(close_arr[i]),
+                            })
+                        open_pos = {"side": 1, "idx": i}
+                    elif val == -1:
+                        if in_display_window:
+                            markers.append({
+                                "time": when.isoformat(),
+                                "epoch": _to_ist_epoch(when),
+                                "text": "PE Buy",
+                                "type": "entry",
+                                "side": "PE",
+                                "touch": "body",
+                                "strength": "NORMAL",
+                                "close": float(close_arr[i]),
+                                "price": float(close_arr[i]),
+                            })
+                        open_pos = {"side": -1, "idx": i}
+        else:
+            return {"symbol": symbol, "strategy": active, "markers": [], "count": 0,
+                    "unsupported": True,
+                    "message": f"{active} is not a recognized registered strategy"}
+
         return {"symbol": symbol, "strategy": active, "timeframe": timeframe,
-                "touch_mode": getattr(cfg, "ema_touch_mode", "body_or_wick"),
-                "min_adx": getattr(cfg, "min_adx", None),
-                "count": len(markers), "markers": markers}
+                "count": len(markers), "markers": markers,
+                "yellow_candles_count": len(yellow_candles),
+                "yellow_candles": yellow_candles}
     except Exception as e:
         logger.warning("strategy-markers failed for %s: %s", symbol, e)
         raise HTTPException(status_code=500, detail=f"Could not compute strategy markers: {e}")
@@ -4365,6 +4551,8 @@ def _chain_leg(row, S, T, r, is_call):
         "chg_pct": round(float(row.get("ltpchp") or 0), 2),
         "symbol": row.get("symbol"),
         "iv": round(iv * 100, 2) if iv else None,
+        "atp": round(float(row.get("atp") or row.get("vwap") or 0), 2) if (row.get("atp") or row.get("vwap")) else None,
+        "vwap": round(float(row.get("vwap") or row.get("atp") or 0), 2) if (row.get("vwap") or row.get("atp")) else None,
     }
     leg.update(_greeks_from_iv(S, K, T, r, iv, is_call))
     return leg

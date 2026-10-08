@@ -231,6 +231,71 @@ export interface ManaIndicatorItem {
 
 export const MANA_INDICATORS_DIRECTORY: ManaIndicatorItem[] = [
   {
+    id: "cm_ma",
+    name: "CM Ultimate Moving Average (9/20 EMA + Yellow Candles)",
+    code: "CM-ULTIMATE-MA",
+    category: "trend",
+    categoryLabel: "Trend & Technicals",
+    author: "ChrisMoody / Mana AI",
+    boosts: "248.5 K",
+    description: "CM Ultimate Dual EMA (9 Fast & 20 Slow) with Yellow Crossing Candle Alerts and Chop Box Compression Filter",
+    isCore: true,
+    hasSettingsModal: false,
+    defaultActive: true,
+    doc: {
+      overview: "CM Ultimate Moving Average pairs a 9-period Fast EMA and a 20-period Slow EMA with automated Yellow Crossing Candle alerts when momentum shifts across the baseline.",
+      theory: "Created by ChrisMoody on TradingView, this benchmark trend-following indicator uses dual exponential smoothing to filter market noise. High-momentum crossover bars are highlighted in yellow, while consolidation periods inside the chop box warn against false breakout entries.",
+      keyFeatures: [
+        "9 EMA Fast Trigger Line for rapid trend capture",
+        "20 EMA Slow Baseline for dynamic support and resistance",
+        "Yellow Crossing Candles alerting to key 9/20 EMA bullish/bearish crossover transitions",
+        "Chop Phase detection filtering low-volatility sideways whipsaws",
+        "Full synergy with RSI 14 (20 EMA Signal Line) momentum confirmation"
+      ],
+      formula: "Fast EMA = EMA(Close, 9); Slow EMA = EMA(Close, 20). Crossing Candle = (Close[t] crosses FastEMA) OR (FastEMA crosses SlowEMA).",
+      parametersExplained: [
+        { param: "Fast EMA Length", description: "Period for fast trigger moving average (default 9)" },
+        { param: "Slow EMA Length", description: "Period for baseline trend moving average (default 20)" },
+        { param: "Smart Trend Colors", description: "Highlights bullish surge (green), bearish surge (red), and crossing candles (yellow)" }
+      ],
+      tradingEdge: "Entering on yellow candle confirmation when RSI crosses its 20 EMA signal line produces high-probability trend continuation entries with minimal drawdown.",
+      docUrl: "/docs?tab=chart-indicators#cm-ultimate-ma"
+    }
+  },
+  {
+    id: "rsi",
+    name: "Relative Strength Index (RSI 14 + 20 EMA Signal)",
+    code: "RSI-14",
+    category: "momentum",
+    categoryLabel: "Momentum & Reversals",
+    author: "Mana AI",
+    boosts: "142.8 K",
+    description: "Wilder RSI (14) with 20 EMA Signal Smoothing Line, Multi-Tier Momentum Bands (40/50/60), and Divergence Detection",
+    isCore: true,
+    hasSettingsModal: true,
+    settingsType: "rsi",
+    defaultActive: true,
+    doc: {
+      overview: "Wilder's 14-period Relative Strength Index paired with a 20-period Exponential Moving Average signal smoothing line and automated divergence detection.",
+      theory: "Price momentum leads price action. When price prints a new extreme but momentum fails to confirm, an exhaustion divergence occurs, signaling a high-probability mean-reversion or trend continuation. The 20 EMA smoothing line eliminates false whipsaws.",
+      keyFeatures: [
+        "Wilder smoothed RSI (14 period) + Signal EMA (20 period) for smooth crossovers",
+        "Regular Bullish & Bearish Divergence engine for counter-trend reversals",
+        "Hidden Bullish & Bearish Divergence engine for strong trend continuation pullback entries",
+        "Multi-bar pivot confirmation window to eliminate false repaint signals",
+        "Multi-tier overbought/oversold zones (Normal 40/60, Strong 30/70, Extreme 20/80)"
+      ],
+      formula: "RSI = 100 - (100 / (1 + RS)), where RS = WilderEMA(Gains, 14) / WilderEMA(Losses, 14). Regular Bearish = Price High > Prev High AND RSI High < Prev RSI High.",
+      parametersExplained: [
+        { param: "RSI Period", description: "Lookback window for gains/losses calculation (default 14)" },
+        { param: "Signal MA Length", description: "Exponential moving average smoothed signal line period (default 20)" },
+        { param: "Pivot Lookback", description: "Number of confirming bars required to lock a swing pivot for divergence calculation" }
+      ],
+      tradingEdge: "Hidden Bullish Divergence during an uptrend pullback provides the tightest risk-to-reward continuation entry in options buying.",
+      docUrl: "/docs?tab=chart-indicators#rsi-divergence"
+    }
+  },
+  {
     id: "rsi_smc",
     name: "RSI SMC Options Buyer (Engine Overlay)",
     code: "RSI_SMC_OPTIONS_BUYER_V1",
@@ -329,39 +394,6 @@ export const MANA_INDICATORS_DIRECTORY: ManaIndicatorItem[] = [
       ],
       tradingEdge: "Trades entering inside the Value Area target POC and opposite value boundary. Clean breakouts past VAH/VAL signify new directional auction expansion.",
       docUrl: "/docs?tab=chart-indicators#volume-profile"
-    }
-  },
-  {
-    id: "rsi",
-    name: "Momentum RSI Divergence Engine (MDE Pro)",
-    code: "MDE-PRO",
-    category: "momentum",
-    categoryLabel: "Momentum & Reversals",
-    author: "Mana AI",
-    boosts: "118.6 K",
-    description: "Wilder RSI (14) + Signal EMA (20), Regular & Hidden Bullish/Bearish Divergence detection with multi-bar pivot confirmation",
-    isCore: true,
-    hasSettingsModal: true,
-    settingsType: "rsi",
-    defaultActive: true,
-    doc: {
-      overview: "MDE Pro combines J. Welles Wilder's smoothed Relative Strength Index with an Exponential Moving Average signal line and automated pivot divergence classification.",
-      theory: "Price momentum leads price action. When price prints a new extreme but momentum fails to confirm, an exhaustion divergence occurs, signaling a high-probability mean-reversion or trend continuation.",
-      keyFeatures: [
-        "Wilder smoothed RSI (14 period) + Signal EMA (20 period) for smooth crossovers",
-        "Regular Bullish & Bearish Divergence engine for counter-trend reversals",
-        "Hidden Bullish & Bearish Divergence engine for strong trend continuation pullback entries",
-        "Multi-bar pivot confirmation window to eliminate false repaint signals",
-        "Multi-tier overbought/oversold zones (Normal 40/60, Strong 30/70, Extreme 20/80)"
-      ],
-      formula: "RSI = 100 - (100 / (1 + RS)), where RS = WilderEMA(Gains, 14) / WilderEMA(Losses, 14). Regular Bearish = Price High > Prev High AND RSI High < Prev RSI High.",
-      parametersExplained: [
-        { param: "RSI Period", description: "Lookback window for gains/losses calculation (default 14)" },
-        { param: "Signal MA Length", description: "Exponential moving average smoothed signal line period (default 20)" },
-        { param: "Pivot Lookback", description: "Number of confirming bars required to lock a swing pivot for divergence calculation" }
-      ],
-      tradingEdge: "Hidden Bullish Divergence during an uptrend pullback provides the tightest risk-to-reward continuation entry in options buying.",
-      docUrl: "/docs?tab=chart-indicators#rsi-divergence"
     }
   },
   {
@@ -581,12 +613,13 @@ export default function IndicatorSettings({ isModal = false, onClose }: Indicato
   const [selectedDocItem, setSelectedDocItem] = useState<ManaIndicatorItem | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [activeCategory, setActiveCategory] = useState<string>("all");
-  const [favorites, setFavorites] = useState<string[]>(["smc", "frvp", "rsi"]);
+  const [favorites, setFavorites] = useState<string[]>(["cm_ma", "rsi", "smc", "frvp"]);
   const [activeIndicators, setActiveIndicators] = useState<Record<string, boolean>>({
+    cm_ma: true,
+    rsi: true,
     rsi_smc: false,
     smc: true,
     frvp: true,
-    rsi: true,
     cpr: true,
     vsc: true,
     etr: true,
@@ -601,15 +634,30 @@ export default function IndicatorSettings({ isModal = false, onClose }: Indicato
         setFavorites(JSON.parse(savedFavs));
       }
 
+      const appliedRaw = localStorage.getItem("mana_applied_indicators");
+      if (appliedRaw) {
+        try {
+          const applied = JSON.parse(appliedRaw);
+          setActiveIndicators((prev) => ({
+            ...prev,
+            cm_ma: applied.ema1 !== undefined ? (Boolean(applied.ema1) || Boolean(applied.smartTrend)) : prev.cm_ma,
+            rsi: applied.rsi !== undefined ? Boolean(applied.rsi) : prev.rsi,
+            smc: applied.smc !== undefined ? Boolean(applied.smc) : prev.smc,
+            frvp: applied.frvp !== undefined ? Boolean(applied.frvp) : prev.frvp,
+            rsi_smc: applied.rsiSmc !== undefined ? Boolean(applied.rsiSmc) : prev.rsi_smc,
+          }));
+        } catch {}
+      }
+
       const local = localStorage.getItem("mana_indicator_settings");
       if (local) {
         const parsed = JSON.parse(local);
         setSettings((prev) => ({ ...prev, ...parsed }));
         setActiveIndicators((prev) => ({
           ...prev,
-          smc: parsed.smc?.color_candles ?? true,
-          frvp: parsed.frvp?.enabled ?? true,
-          rsi: parsed.rsi?.enabled ?? true,
+          smc: parsed.smc?.color_candles ?? prev.smc,
+          frvp: parsed.frvp?.enabled ?? prev.frvp,
+          rsi: parsed.rsi?.enabled ?? prev.rsi,
         }));
       }
 
@@ -641,6 +689,29 @@ export default function IndicatorSettings({ isModal = false, onClose }: Indicato
     e.stopPropagation();
     const newStatus = !activeIndicators[item.id];
     setActiveIndicators((prev) => ({ ...prev, [item.id]: newStatus }));
+
+    if (item.id === "cm_ma") {
+      try {
+        const raw = localStorage.getItem("mana_applied_indicators");
+        const next = { ...(raw ? JSON.parse(raw) : {}), ema1: newStatus, ema2: newStatus, smartTrend: newStatus };
+        localStorage.setItem("mana_applied_indicators", JSON.stringify(next));
+      } catch {}
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("chart:cm-ma-toggled", { detail: { value: newStatus } }));
+      }
+      return;
+    }
+
+    if (item.id === "rsi") {
+      try {
+        const raw = localStorage.getItem("mana_applied_indicators");
+        const next = { ...(raw ? JSON.parse(raw) : {}), rsi: newStatus };
+        localStorage.setItem("mana_applied_indicators", JSON.stringify(next));
+      } catch {}
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("chart:rsi-toggled", { detail: { value: newStatus } }));
+      }
+    }
 
     if (item.id === "rsi_smc") {
       // This one has no settings payload -- it is served whole by the
@@ -826,7 +897,7 @@ export default function IndicatorSettings({ isModal = false, onClose }: Indicato
                   Core Engines
                 </span>
                 <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-[#2a2e39] text-[#787b86]">
-                  3
+                  {MANA_INDICATORS_DIRECTORY.filter((i) => i.isCore).length}
                 </span>
               </button>
             </div>

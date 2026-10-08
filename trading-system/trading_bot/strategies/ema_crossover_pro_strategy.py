@@ -162,9 +162,12 @@ def generate_signals(
         (df_work['adx_14'] >= 20) # ADX Anti-Chop Guard
     )
     
-    # Apply Signals
-    signals[call_type_a | call_type_b] = 1
-    signals[put_type_a | put_type_b] = -1
+    # Apply Signals with Institutional RSI Exhaustion Filter
+    rsi_not_overbought = df_work['rsi_14'] <= float(kwargs.get("rsi_overbought_cap", 75.0))
+    rsi_not_oversold = df_work['rsi_14'] >= float(kwargs.get("rsi_oversold_floor", 25.0))
+
+    signals[(call_type_a | call_type_b) & rsi_not_overbought] = 1
+    signals[(put_type_a | put_type_b) & rsi_not_oversold] = -1
     
     # For UI scoring/debug
     df['call_score'] = np.where(signals == 1, 95, 0)

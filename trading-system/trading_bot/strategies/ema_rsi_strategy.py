@@ -105,8 +105,12 @@ def generate_signals(
     st_df = supertrend(df, period=10, multiplier=3.0)
     st_direction = st_df["direction"]
 
-    bullish = (ema_fast_series > ema_slow_series) & (rsi_series > rsi_buy_thresh) & (st_direction == 1) & _volume_filter(df)
-    bearish = (ema_fast_series < ema_slow_series) & (rsi_series < rsi_sell_thresh) & (st_direction == -1) & _volume_filter(df)
+    # Institutional RSI Exhaustion Filter: Don't buy CE into overbought (>75) or PE into oversold (<25)
+    rsi_cap = float(kwargs.get("rsi_overbought_cap", 75.0))
+    rsi_floor = float(kwargs.get("rsi_oversold_floor", 25.0))
+
+    bullish = (ema_fast_series > ema_slow_series) & (rsi_series > rsi_buy_thresh) & (rsi_series <= rsi_cap) & (st_direction == 1) & _volume_filter(df)
+    bearish = (ema_fast_series < ema_slow_series) & (rsi_series < rsi_sell_thresh) & (rsi_series >= rsi_floor) & (st_direction == -1) & _volume_filter(df)
 
     # Root-cause fix (found live, 2026-08-07): built via np.select rather
     # than incremental boolean-mask Series.__setitem__ calls

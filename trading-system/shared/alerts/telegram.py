@@ -15,6 +15,7 @@ Performance & Security:
 from __future__ import annotations
 
 import atexit
+import datetime
 import json
 import logging
 import os
@@ -27,6 +28,63 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional, Union, Dict, Any
+
+try:
+    import pytz
+    _IST = pytz.timezone("Asia/Kolkata")
+except Exception:
+    _IST = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
+
+
+def _format_alert_time(t: Optional[Union[str, datetime.datetime, datetime.time, float, int]] = None) -> str:
+    """Format execution timestamp to clean 12-hour IST string (e.g., '09:35:12 AM')."""
+    if t is None:
+        try:
+            now = datetime.datetime.now(_IST)
+        except Exception:
+            tz = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
+            now = datetime.datetime.now(tz)
+        return now.strftime("%I:%M:%S %p")
+
+    if isinstance(t, datetime.datetime):
+        if t.tzinfo is None:
+            try:
+                t = _IST.localize(t)
+            except Exception:
+                pass
+        return t.strftime("%I:%M:%S %p")
+    if isinstance(t, datetime.time):
+        return t.strftime("%I:%M:%S %p")
+    if isinstance(t, (int, float)):
+        try:
+            dt = datetime.datetime.fromtimestamp(t, tz=_IST)
+        except Exception:
+            tz = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
+            dt = datetime.datetime.fromtimestamp(t, tz=tz)
+        return dt.strftime("%I:%M:%S %p")
+    if isinstance(t, str):
+        t_clean = t.strip()
+        if not t_clean:
+            return _format_alert_time(None)
+        if re.search(r"(?i)(am|pm)", t_clean):
+            return t_clean
+        for fmt in (
+            "%H:%M:%S",
+            "%H:%M",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d %H:%M:%S.%f",
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%dT%H:%M:%S.%f",
+            "%Y-%m-%dT%H:%M:%S%z",
+            "%Y-%m-%dT%H:%M:%S.%f%z",
+        ):
+            try:
+                parsed = datetime.datetime.strptime(t_clean, fmt)
+                return parsed.strftime("%I:%M:%S %p")
+            except Exception:
+                continue
+        return t_clean
+    return str(t)
 
 from shared.config import CONFIG
 
@@ -389,12 +447,14 @@ class TelegramAlerter:
         confidence: float = 1.0,
         reason: Optional[str] = None,
         language: Optional[str] = None,
+        execution_time: Optional[Union[str, datetime.datetime, datetime.time, float, int]] = None,
     ) -> None:
-        """Enqueue a trade execution alert with detailed technical reason in user's selected language."""
+        """Enqueue a trade execution alert with detailed technical reason and execution timestamp."""
         lang = self._get_lang(language)
         emoji = "🟢" if "BUY" in side.upper() or "CALL" in side.upper() else "🔴"
         conf_pct = round(confidence * 100, 1) if confidence <= 1.0 else round(confidence, 1)
         side_str = side.upper()
+        time_str = _format_alert_time(execution_time)
         if reason:
             reason_str = reason
         else:
@@ -406,6 +466,7 @@ class TelegramAlerter:
                 f"{emoji} *MANA AI | కొత్త ట్రేడ్ ఎంట్రీ (NEW TRADE)*\n\n"
                 f"📌 *సింబల్ (Symbol)*: `{symbol}`\n"
                 f"⚡ *యాక్షన్ (Action)*: *{action_label}*\n"
+                f"⏰ *ఎంట్రీ సమయం (Time)*: `{time_str}`\n"
                 f"📦 *పరిమాణం (Qty)*: `{qty}`\n"
                 f"💰 *ఎంట్రీ ధర (Price)*: ₹`{price:,.2f}`\n"
                 f"🎯 *AI కాన్ఫిడెన్స్*: `{conf_pct}%`\n\n"
@@ -420,6 +481,7 @@ class TelegramAlerter:
                 f"{emoji} *MANA AI | नया ट्रेड निष्पादन (NEW TRADE)*\n\n"
                 f"📌 *प्रतीक (Symbol)*: `{symbol}`\n"
                 f"⚡ *क्रिया (Action)*: *{action_label}*\n"
+                f"⏰ *प्रवेश समय (Time)*: `{time_str}`\n"
                 f"📦 *मात्रा (Qty)*: `{qty}`\n"
                 f"💰 *प्रवेश मूल्य (Price)*: ₹`{price:,.2f}`\n"
                 f"🎯 *AI विश्वास*: `{conf_pct}%`\n\n"
@@ -433,6 +495,7 @@ class TelegramAlerter:
                 f"{emoji} *MANA AI | NEW TRADE ENTRY*\n\n"
                 f"📌 *Symbol*: `{symbol}`\n"
                 f"⚡ *Action*: *{side_str}*\n"
+                f"⏰ *Entry Time*: `{time_str}`\n"
                 f"📦 *Quantity (Qty)*: `{qty}`\n"
                 f"💰 *Entry Price*: ₹`{price:,.2f}`\n"
                 f"🎯 *AI Confidence*: `{conf_pct}%`\n\n"
@@ -452,13 +515,15 @@ class TelegramAlerter:
         pnl: float,
         reason: str,
         language: Optional[str] = None,
+        execution_time: Optional[Union[str, datetime.datetime, datetime.time, float, int]] = None,
     ) -> None:
-        """Enqueue a position-closed alert with full exit reason in user's selected language."""
+        """Enqueue a position-closed alert with full exit reason and exit timestamp."""
         lang = self._get_lang(language)
         emoji = "🎯" if pnl >= 0 else "🛑"
         side_label = "LONG" if side in (1, "BUY", "LONG") else "SHORT"
         pnl_sign = "+" if pnl >= 0 else ""
         pnl_formatted = f"{pnl_sign}₹{pnl:,.2f}"
+        time_str = _format_alert_time(execution_time)
 
         if lang == "te":
             status_emoji = "🟢" if pnl >= 0 else "🔴"
@@ -466,6 +531,7 @@ class TelegramAlerter:
             msg = (
                 f"{emoji} *MANA AI | పొజిషన్ క్లోజ్ చేయబడింది (TRADE CLOSED)*\n\n"
                 f"📌 *సింబల్ (Symbol)*: `{symbol}` ({side_label})\n"
+                f"⏰ *ఎగ్జిట్ సమయం (Time)*: `{time_str}`\n"
                 f"🚪 *ఎగ్జిట్ ధర (Exit Price)*: ₹`{price:,.2f}`\n"
                 f"📦 *పరిమాణం (Quantity)*: `{qty}`\n"
                 f"💵 *నికర లాభం/నష్టం (P&L)*: {status_emoji} *{pnl_formatted}* ({status_text})\n\n"
@@ -480,6 +546,7 @@ class TelegramAlerter:
             msg = (
                 f"{emoji} *MANA AI | स्थिति बंद कर दी गई (TRADE CLOSED)*\n\n"
                 f"📌 *प्रतीक (Symbol)*: `{symbol}` ({side_label})\n"
+                f"⏰ *निकास समय (Time)*: `{time_str}`\n"
                 f"🚪 *निकास मूल्य (Exit Price)*: ₹`{price:,.2f}`\n"
                 f"📦 *मात्रा (Quantity)*: `{qty}`\n"
                 f"💵 *प्राप्त लाभ/हानि (P&L)*: {status_emoji} *{pnl_formatted}* ({status_text})\n\n"
@@ -493,6 +560,7 @@ class TelegramAlerter:
             msg = (
                 f"{emoji} *MANA AI | TRADE CLOSED*\n\n"
                 f"📌 *Symbol*: `{symbol}` ({side_label})\n"
+                f"⏰ *Exit Time*: `{time_str}`\n"
                 f"🚪 *Exit Price*: ₹`{price:,.2f}`\n"
                 f"📦 *Quantity*: `{qty}`\n"
                 f"💵 *Realized P&L*: {status_emoji} *{pnl_formatted}*\n\n"
@@ -509,14 +577,17 @@ class TelegramAlerter:
         new_sl: float,
         reason: Optional[str] = None,
         language: Optional[str] = None,
+        execution_time: Optional[Union[str, datetime.datetime, datetime.time, float, int]] = None,
     ) -> None:
-        """Enqueue trailing stop loss adjustment alert."""
+        """Enqueue trailing stop loss adjustment alert with timestamp."""
         lang = self._get_lang(language)
         reason_str = reason or "Profit reached threshold, locked in Breakeven"
+        time_str = _format_alert_time(execution_time)
         if lang == "te":
             msg = (
                 f"🛡️ *MANA AI | స్టాప్‌లాస్ ట్రైలింగ్ అప్‌డేట్ (TRAILING SL)*\n\n"
                 f"📌 *కాంట్రాక్ట్ (Contract)*: `{symbol}`\n"
+                f"⏰ *సమయం (Time)*: `{time_str}`\n"
                 f"🛡️ *కొత్త స్టాప్‌లాస్ (New SL)*: ₹`{new_sl:,.2f}`\n\n"
                 f"💡 *కారణం (Reason)*:\n"
                 f"> 👉 _{reason_str}_\n"
@@ -527,6 +598,7 @@ class TelegramAlerter:
             msg = (
                 f"🛡️ *MANA AI | ट्रेलिंग स्टॉप लॉस अपडेट (TRAILING SL)*\n\n"
                 f"📌 *अनुबंध (Contract)*: `{symbol}`\n"
+                f"⏰ *समय (Time)*: `{time_str}`\n"
                 f"🛡️ *नया स्टॉप लॉस (New SL)*: ₹`{new_sl:,.2f}`\n\n"
                 f"💡 *कारण (Reason)*:\n"
                 f"> 👉 _{reason_str}_\n"
@@ -537,6 +609,7 @@ class TelegramAlerter:
             msg = (
                 f"🛡️ *MANA AI | TRAILING SL UPDATED*\n\n"
                 f"📌 *Contract*: `{symbol}`\n"
+                f"⏰ *Time*: `{time_str}`\n"
                 f"🛡️ *New Stop Loss*: ₹`{new_sl:,.2f}`\n\n"
                 f"💡 *Reason*:\n"
                 f"> 👉 _{reason_str}_\n"
@@ -545,12 +618,19 @@ class TelegramAlerter:
             )
         self._enqueue(msg)
 
-    def send_risk_off_alert(self, reason: str, language: Optional[str] = None) -> None:
-        """Enqueue a critical risk-off alert (returns instantly)."""
+    def send_risk_off_alert(
+        self,
+        reason: str,
+        language: Optional[str] = None,
+        execution_time: Optional[Union[str, datetime.datetime, datetime.time, float, int]] = None,
+    ) -> None:
+        """Enqueue a critical risk-off alert with timestamp (returns instantly)."""
         lang = self._get_lang(language)
+        time_str = _format_alert_time(execution_time)
         if lang == "te":
             msg = (
                 f"⚠️ *MANA AI | అత్యవసర హెచ్చరిక: రిస్క్-ఆఫ్ ట్రిగ్గర్ అయింది (CRITICAL RISK-OFF)* ⚠️\n\n"
+                f"⏰ *సమయం (Time)*: `{time_str}`\n"
                 f"ట్రేడింగ్ తాత్కాలికంగా నిలిపివేయబడింది (Trading Halted).\n\n"
                 f"📌 *కారణం (Reason)*:\n"
                 f"> 👉 _{reason}_\n"
@@ -560,6 +640,7 @@ class TelegramAlerter:
         elif lang == "hi":
             msg = (
                 f"⚠️ *MANA AI | महत्वपूर्ण सूचना: रिस्क-ऑफ सक्रिय (CRITICAL RISK-OFF)* ⚠️\n\n"
+                f"⏰ *समय (Time)*: `{time_str}`\n"
                 f"ट्रेडिंग स्वचालित रूप से रोक दी गई है (Trading Halted).\n\n"
                 f"📌 *कारण (Reason)*:\n"
                 f"> 👉 _{reason}_\n"
@@ -569,6 +650,7 @@ class TelegramAlerter:
         else:
             msg = (
                 f"⚠️ *MANA AI | CRITICAL: RISK-OFF ACTIVATED* ⚠️\n\n"
+                f"⏰ *Time*: `{time_str}`\n"
                 f"Trading has been automatically halted.\n\n"
                 f"📌 *Reason*:\n"
                 f"> 👉 _{reason}_\n"

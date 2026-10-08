@@ -9,6 +9,7 @@ import { parseBackendDatetimeToEpochSeconds, getISTNowParts, istWallTimeToEpochS
 import TradingViewIndicatorModal, { IndicatorType } from "@/components/tradingview-indicator-modal";
 import IndicatorSettings, { IndicatorSettingsData, defaultIndicatorSettings } from "@/components/indicator-settings";
 import { computeSMC, computeFRVP, computeRSIWithSignal, SMCResult, FRVPResult } from "@/lib/indicators-engine";
+import { getStrategyProfile, STRATEGY_PROFILES } from "@/lib/strategy-profiles";
 
 const SettingGroup = ({ title, active, onToggle, children }: { title: string, active: boolean, onToggle: () => void, children: React.ReactNode }) => (
   <div className="border border-border/50 rounded-lg overflow-hidden bg-background shadow-sm mb-3 transition-all duration-200">
@@ -244,8 +245,8 @@ export interface RsiSmcOverlay {
 export const DEFAULT_APPLIED_INDICATORS: AppliedIndicatorsState = {
   ema1: true,
   ema2: true,
-  smc: true,
-  frvp: true,
+  smc: false,   // Strictly isolated per selected strategy
+  frvp: false,  // Strictly isolated per selected strategy
   rsi: true,
   vol: true,
   // Off by default: a new overlay must not silently appear on charts that
@@ -266,6 +267,7 @@ interface NativeChartProps {
   showAutoSignals?: boolean;
   signalLevels?: SignalLevels | null;
   hideBottomToolbar?: boolean;
+  strategy?: string;
 }
 
 const Toggle = ({ checked, onChange, label }: { checked: boolean, onChange: (c: boolean) => void, label: string }) => (
@@ -289,7 +291,7 @@ const ColorSwatch = ({ color, onChange, label }: { color: string, onChange: (c: 
 // Global cache outside component to persist across unmounts
 const chartDataCache: Record<string, any> = {};
 
-export default function NativeChart({ symbol, livePrice, liveVolume = 0, timeframe = "5 Min", initialData, disableFetch, lastTick = 0, markers, showAutoSignals = true, signalLevels, hideBottomToolbar = true }: NativeChartProps) {
+export default function NativeChart({ symbol, livePrice, liveVolume = 0, timeframe = "5 Min", initialData, disableFetch, lastTick = 0, markers, showAutoSignals = true, signalLevels, hideBottomToolbar = true, strategy = "ema9_rsi_momentum" }: NativeChartProps) {
   const { theme } = useTheme();
   const isDark = theme !== "light";
 
@@ -390,6 +392,32 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
       });
       if (on) setShowRsiSmc(true);
     };
+    const onCmMaToggled = (e: any) => {
+      const on = Boolean(e?.detail?.value);
+      setShowEma1(on);
+      setShowEma2(on);
+      setShowSmartTrend(on);
+      setAppliedIndicators((prev) => {
+        const next = { ...prev, ema1: on, ema2: on };
+        try {
+          localStorage.setItem("mana_applied_indicators", JSON.stringify(next));
+        } catch {}
+        return next;
+      });
+      requestAnimationFrame(redrawCanvasOverlays);
+    };
+    const onRsiToggled = (e: any) => {
+      const on = Boolean(e?.detail?.value);
+      setShowRsi(on);
+      setAppliedIndicators((prev) => {
+        const next = { ...prev, rsi: on };
+        try {
+          localStorage.setItem("mana_applied_indicators", JSON.stringify(next));
+        } catch {}
+        return next;
+      });
+      requestAnimationFrame(redrawCanvasOverlays);
+    };
 
     window.addEventListener("chart:reset-zoom", onResetZoom);
     window.addEventListener("chart:toggle-signals", onToggleSignals as EventListener);
@@ -398,6 +426,8 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
     window.addEventListener("chart:open-settings", onOpenSettings);
     window.addEventListener("chart:open-indicators", onOpenIndicators);
     window.addEventListener("chart:rsi-smc-toggled", onRsiSmcToggled as EventListener);
+    window.addEventListener("chart:cm-ma-toggled", onCmMaToggled as EventListener);
+    window.addEventListener("chart:rsi-toggled", onRsiToggled as EventListener);
 
     // Initial sync
     window.dispatchEvent(new CustomEvent("chart:signals-changed", { detail: { value: showAutoSignalsState } }));
@@ -411,29 +441,32 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
       window.removeEventListener("chart:open-settings", onOpenSettings);
       window.removeEventListener("chart:open-indicators", onOpenIndicators);
       window.removeEventListener("chart:rsi-smc-toggled", onRsiSmcToggled as EventListener);
+      window.removeEventListener("chart:cm-ma-toggled", onCmMaToggled as EventListener);
+      window.removeEventListener("chart:rsi-toggled", onRsiToggled as EventListener);
     };
-  }, [symbol, timeframe, showAutoSignalsState, showMarkers]);
+  }, [symbol, timeframe, showAutoSignalsState, showMarkers, setShowSmartTrend, setShowRsi]);
 
-  // Active Indicators State
-  const [showEma1, setShowEma1] = useState(true);
-  const [showEma2, setShowEma2] = useState(true);
-  const [showSmc, setShowSmc] = useState(true);
-  const [showRsiSmc, setShowRsiSmc] = useState(true);
-  const [showFrvp, setShowFrvp] = useState(true);
+  // Active Indicators State - seeded strictly from the active strategy's profile
+  const initialProfile = getStrategyProfile(strategy);
+  const [showEma1, setShowEma1] = useState(initialProfile.indicators.ema1);
+  const [showEma2, setShowEma2] = useState(initialProfile.indicators.ema2);
+  const [showSmc, setShowSmc] = useState(initialProfile.indicators.smc);
+  const [showRsiSmc, setShowRsiSmc] = useState(initialProfile.indicators.rsiSmc);
+  const [showFrvp, setShowFrvp] = useState(initialProfile.indicators.frvp);
   const [hideAllIndicators, setHideAllIndicators] = useState(false);
   const [collapseAllIndicators, setCollapseAllIndicators] = useState(false);
 
-  // Applied Indicators State (TradingView Style - Indicator can be removed from chart via X or restored)
+  // Applied Indicators State (TradingView Style - Isolated per selected strategy)
   const [appliedIndicators, setAppliedIndicators] = useState<AppliedIndicatorsState>(() => {
-    if (typeof window !== "undefined") {
-      try {
-        const saved = localStorage.getItem("mana_applied_indicators");
-        if (saved) {
-          return { ...DEFAULT_APPLIED_INDICATORS, ...JSON.parse(saved) };
-        }
-      } catch {}
-    }
-    return DEFAULT_APPLIED_INDICATORS;
+    return {
+      ema1: initialProfile.indicators.ema1,
+      ema2: initialProfile.indicators.ema2,
+      rsi: initialProfile.indicators.rsi,
+      smc: initialProfile.indicators.smc,
+      frvp: initialProfile.indicators.frvp,
+      vol: initialProfile.indicators.vol,
+      rsiSmc: initialProfile.indicators.rsiSmc,
+    };
   });
   const appliedIndicatorsRef = useRef(appliedIndicators);
   appliedIndicatorsRef.current = appliedIndicators;
@@ -497,16 +530,26 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
   };
 
   const handleResetAllIndicators = () => {
-    setAppliedIndicators(DEFAULT_APPLIED_INDICATORS);
-    setShowEma1(true);
-    setShowEma2(true);
-    setShowSmc(true);
-    setShowFrvp(true);
-    setShowRsi(true);
-    setShowVolume(true);
-    try {
-      localStorage.setItem("mana_applied_indicators", JSON.stringify(DEFAULT_APPLIED_INDICATORS));
-    } catch {}
+    const profile = getStrategyProfile(strategy);
+    const defaults: AppliedIndicatorsState = {
+      ema1: profile.indicators.ema1,
+      ema2: profile.indicators.ema2,
+      rsi: profile.indicators.rsi,
+      smc: profile.indicators.smc,
+      frvp: profile.indicators.frvp,
+      vol: profile.indicators.vol,
+      rsiSmc: profile.indicators.rsiSmc,
+    };
+    setAppliedIndicators(defaults);
+    setShowEma1(profile.indicators.ema1);
+    setShowEma2(profile.indicators.ema2);
+    setShowSmc(profile.indicators.smc);
+    setShowFrvp(profile.indicators.frvp);
+    setShowRsi(profile.indicators.rsi);
+    setShowVolume(profile.indicators.vol);
+    setShowRsiSmc(profile.indicators.rsiSmc);
+    setShowSmartTrend(profile.indicators.smartTrend);
+    setShowVwap(profile.indicators.vwap);
     requestAnimationFrame(redrawCanvasOverlays);
   };
 
@@ -514,13 +557,13 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
     return Object.values(appliedIndicators).filter(Boolean).length;
   }, [appliedIndicators]);
 
-  /** The six that ship on by default. The engine overlay is opt-in and is
-   *  deliberately not one of them, so "Restore" means "put the defaults
-   *  back", not "turn everything on". */
+  /** Only restores defaults belonging to the CURRENT active strategy profile */
   const missingDefaultIndicator = useMemo(() => {
-    return (["ema1", "ema2", "smc", "frvp", "rsi", "vol"] as const)
-      .some((k) => !appliedIndicators[k]);
-  }, [appliedIndicators]);
+    const profile = getStrategyProfile(strategy);
+    const expectedKeys = (Object.keys(profile.indicators) as (keyof AppliedIndicatorsState)[])
+      .filter(k => k in appliedIndicators && profile.indicators[k as keyof typeof profile.indicators]);
+    return expectedKeys.some((k) => !appliedIndicators[k]);
+  }, [appliedIndicators, strategy]);
 
   // Persistent collapse all state from localStorage
   useEffect(() => {
@@ -575,6 +618,7 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
   showRsiSmcRef.current = showRsiSmc;
   const [frvpStatusText, setFrvpStatusText] = useState<string>("");
   const lastVolumeRef = useRef<number | null>(liveVolume || null);
+  const yellowCandlesRef = useRef<Set<number>>(new Set());
 
   const rsiSignalSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -617,9 +661,10 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
         return next;
       });
 
-      if (p.smc?.enabled !== undefined) setShowSmc(Boolean(p.smc.enabled));
-      if (p.frvp?.enabled !== undefined) setShowFrvp(Boolean(p.frvp.enabled));
-      if (p.rsi?.enabled !== undefined) setShowRsi(Boolean(p.rsi.enabled));
+      const prof = getStrategyProfile(strategy);
+      if (p.smc?.enabled !== undefined && prof.indicators.smc) setShowSmc(Boolean(p.smc.enabled));
+      if (p.frvp?.enabled !== undefined && prof.indicators.frvp) setShowFrvp(Boolean(p.frvp.enabled));
+      if (p.rsi?.enabled !== undefined && prof.indicators.rsi) setShowRsi(Boolean(p.rsi.enabled));
 
       if (p.rsi?.period) setRsiLength(Number(p.rsi.period));
       if (p.rsi?.overbought) setRsiOverbought(Number(p.rsi.overbought));
@@ -644,7 +689,61 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
       window.removeEventListener("indicatorSettingsChanged", onIndicatorSettingsChanged);
       window.removeEventListener("mana_indicators_updated", onIndicatorSettingsChanged);
     };
-  }, [setShowRsi, setRsiLength, setRsiOverbought, setRsiOversold, setRsiColor]);
+  }, [strategy, setShowRsi, setRsiLength, setRsiOverbought, setRsiOversold, setRsiColor]);
+
+  // Strategy-to-Indicator Strict Isolation Enforcer:
+  // Whichever strategy the user selects, ONLY that strategy's indicators and signals
+  // are allowed on the chart. Indicators and signals of other strategies are strictly eliminated.
+  useEffect(() => {
+    const profile = getStrategyProfile(strategy);
+
+    // 1. Enforce indicator toggles based strictly on the selected strategy profile
+    setShowEma1(profile.indicators.ema1);
+    setShowEma2(profile.indicators.ema2);
+    setShowRsi(profile.indicators.rsi);
+    setShowSmc(profile.indicators.smc);
+    setShowFrvp(profile.indicators.frvp);
+    setShowVolume(profile.indicators.vol);
+    setShowRsiSmc(profile.indicators.rsiSmc);
+    setShowSmartTrend(profile.indicators.smartTrend);
+    setShowVwap(profile.indicators.vwap);
+
+    const nextApplied: AppliedIndicatorsState = {
+      ema1: profile.indicators.ema1,
+      ema2: profile.indicators.ema2,
+      rsi: profile.indicators.rsi,
+      smc: profile.indicators.smc,
+      frvp: profile.indicators.frvp,
+      vol: profile.indicators.vol,
+      rsiSmc: profile.indicators.rsiSmc,
+    };
+    setAppliedIndicators(nextApplied);
+    try {
+      localStorage.setItem("mana_applied_indicators", JSON.stringify(nextApplied));
+    } catch {}
+
+    // 2. Enforce parameters from profile
+    if (profile.params) {
+      if (profile.params.ema1Length) setEma1Length(profile.params.ema1Length);
+      if (profile.params.ema2Length) setEma2Length(profile.params.ema2Length);
+      if (profile.params.rsiLength) setRsiLength(profile.params.rsiLength);
+    }
+
+    // 3. Clear existing markers immediately so stale signals vanish instantly
+    if (seriesMarkersPluginRef.current) {
+      try { seriesMarkersPluginRef.current.setMarkers([]); } catch {}
+    }
+    markersRef.current = [];
+
+    // 4. Wipe canvas overlays (SMC boxes, CHOCH, BOS, FRVP profiles)
+    if (overlayCanvasRef.current) {
+      const ctx = overlayCanvasRef.current.getContext('2d');
+      if (ctx) ctx.clearRect(0, 0, overlayCanvasRef.current.width, overlayCanvasRef.current.height);
+    }
+    updateFrvpPriceLines();
+    updateSmcPriceLines();
+    requestAnimationFrame(redrawCanvasOverlays);
+  }, [strategy, setEma1Length, setEma2Length, setRsiLength, setShowRsi, setShowSmartTrend, setShowVolume, setShowVwap]);
 
   /** Draw a label, nudged vertically until it clears everything already
    *  placed. Canvas has no layout, so two indicators writing near the same
@@ -1658,8 +1757,8 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
     });
 
     const candleSeries = chart.addSeries(CandlestickSeries, {
-      upColor: "#10B981", downColor: "#EF4444", borderVisible: false,
-      wickUpColor: "#10B981", wickDownColor: "#EF4444",
+      upColor: "#089981", downColor: "#F23645", borderVisible: false,
+      wickUpColor: "#089981", wickDownColor: "#F23645",
     });
 
     const seriesMarkers = createSeriesMarkers(candleSeries);
@@ -1858,28 +1957,66 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
       const asDate = (epoch: number) => new Date(epoch * 1000).toISOString().split("T")[0];
       const url = `/api/strategy-markers?symbol=${encodeURIComponent(symbol)}`
         + `&start_date=${asDate(firstTs)}&end_date=${asDate(lastTs)}`
-        + `&timeframe=${encodeURIComponent(timeframe)}`;
+        + `&timeframe=${encodeURIComponent(timeframe)}`
+        + (strategy ? `&strategy=${encodeURIComponent(strategy)}` : '');
       const res = await fetch(url);
       if (!res.ok) return [];
       const json = await res.json();
       const raw: any[] = json?.markers || [];
 
+      // Save yellow candle timestamps for CM Ultimate MA Yellow crossing candles
+      if (json?.yellow_candles && Array.isArray(json.yellow_candles)) {
+        yellowCandlesRef.current = new Set(
+          json.yellow_candles.map((y: any) => parseBackendDatetimeToEpochSeconds(y.time) ?? Number(y.epoch))
+        );
+      } else {
+        yellowCandlesRef.current.clear();
+      }
+
       const times = chartData.map(c => c.time as number);
       return raw.map(m => {
-        const target = Number(m.epoch);
+        const parsedT = parseBackendDatetimeToEpochSeconds(m.time);
+        const target = parsedT !== null ? parsedT : Number(m.epoch);
         let snapped = times[0], best = Infinity;
         for (const t of times) {
           const diff = Math.abs(t - target);
           if (diff < best) { best = diff; snapped = t; }
         }
-        const isPe = m.side === "PE";
+
+        const isPe = m.side === "PE" || String(m.text).includes("PE");
+
+        // Stop Loss Hit Marker
+        if (m.type === "sl" || m.text === "SL") {
+          return {
+            time: snapped as Time,
+            position: isPe ? "aboveBar" : "belowBar",
+            color: "#EF4444",
+            shape: "circle",
+            text: `SL ₹${m.price ? Math.round(Number(m.price)) : ''}`,
+            size: 2,
+          };
+        }
+
+        // Strategy Exit Marker
+        if (m.type === "exit" || m.text === "EXIT") {
+          return {
+            time: snapped as Time,
+            position: isPe ? "belowBar" : "aboveBar",
+            color: "#F59E0B",
+            shape: isPe ? "arrowUp" : "arrowDown",
+            text: "EXIT",
+            size: 2,
+          };
+        }
+
+        // Clean Entry Marker: "CE Buy" or "PE Buy" (matching TradingView exactly!)
+        const label = isPe ? "PE Buy" : "CE Buy";
         return {
           time: snapped as Time,
           position: isPe ? "aboveBar" : "belowBar",
-          color: isPe ? "#EF4444" : "#10B981",
+          color: isPe ? "#F23645" : "#089981",
           shape: isPe ? "arrowDown" : "arrowUp",
-          // body touch is the owner's preferred case; wick is the fallback
-          text: m.touch === "wick" ? `${m.text}*` : m.text,
+          text: label,
           size: 2,
         };
       });
@@ -1892,100 +2029,24 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
         if (markers && markers.length > 0) {
           finalMarkers = [...markers];
         } else {
-          // 1. Fetch real executed trade markers from backend state
-          try {
-            const stateRes = await fetch(`/api/state`);
-            if (stateRes.ok) {
-              const stateData = await stateRes.json();
-              if (stateData.trades && stateData.trades.length > 0) {
-                const symClean = symbol.split(':')[1] || symbol;
-                const symbolTrades = stateData.trades.filter((t: any) => {
-                  if (!t.symbol) return false;
-                  const tSym = t.symbol.toUpperCase();
-                  return tSym.includes(symClean.toUpperCase()) || (symClean.toUpperCase().includes('NIFTY') && tSym.includes('NIFTY'));
-                });
-
-                symbolTrades.forEach((trade: any) => {
-                  const dateStr = String(trade.entry_time || trade.time);
-                  if (!dateStr || dateStr === "undefined" || dateStr === "null") return;
-                  const adjustedTime = parseBackendDatetimeToEpochSeconds(dateStr);
-                  if (adjustedTime === null) return;
-
-                  let closestTime = adjustedTime as Time;
-                  let minDiff = Infinity;
-                  for (const candle of chartData) {
-                    const diff = Math.abs((candle.time as number) - (adjustedTime as number));
-                    if (diff < minDiff) { minDiff = diff; closestTime = candle.time; }
-                  }
-
-                  const isPut = trade.type?.includes('PUT') || trade.symbol?.toUpperCase().includes('PE');
-                  const isExit = trade.side === 'SELL' || trade.type?.includes('SELL');
-
-                  if (isExit) {
-                    finalMarkers.push({
-                      time: closestTime,
-                      position: 'aboveBar',
-                      color: '#F59E0B',
-                      shape: 'arrowDown',
-                      text: 'EXIT',
-                      size: 2
-                    });
-                  } else if (isPut) {
-                    finalMarkers.push({
-                      time: closestTime,
-                      position: 'aboveBar',
-                      color: '#EF4444',
-                      shape: 'arrowDown',
-                      text: 'BUY PE',
-                      size: 2
-                    });
-                  } else {
-                    finalMarkers.push({
-                      time: closestTime,
-                      position: 'belowBar',
-                      color: '#10B981',
-                      shape: 'arrowUp',
-                      text: 'BUY CE',
-                      size: 2
-                    });
-                  }
-
-                  // Also add exit marker if exit_time exists
-                  if (trade.exit_time) {
-                    const exitEpoch = parseBackendDatetimeToEpochSeconds(String(trade.exit_time));
-                    if (exitEpoch !== null) {
-                      let closestExitTime = exitEpoch as Time;
-                      let minExitDiff = Infinity;
-                      for (const candle of chartData) {
-                        const diff = Math.abs((candle.time as number) - (exitEpoch as number));
-                        if (diff < minExitDiff) { minExitDiff = diff; closestExitTime = candle.time; }
-                      }
-                      finalMarkers.push({
-                        time: closestExitTime,
-                        position: 'aboveBar',
-                        color: '#F59E0B',
-                        shape: 'arrowDown',
-                        text: 'EXIT',
-                        size: 2
-                      });
-                    }
-                  }
-                });
-              }
-            }
-          } catch { }
-
-          // 2. Ask the ENGINE for its signals. Not recomputed here -- the bot's
-          //    own rules (EMA cluster touch, RSI vs RSI-MA, ADX, entry window)
-          //    decide, so what is drawn is what the bot would actually take.
+          // Strictly use authentic signals computed by the active strategy engine!
+          // Stale / old executed trades from /api/state are completely removed.
           if (showAutoSignals && chartData.length > 20) {
             try {
               const sMarkers = await fetchStrategyMarkers(chartData);
               lastChartDataRef.current = chartData;
-              // The RSI_SMC overlay is fetched by applyAllIndicatorData, which
-              // runs before every call of this function. Fetching it here too
-              // doubled the backend SMC computation on every 15 s poll.
               sMarkers.forEach(m => finalMarkers.push(m));
+
+              // If yellow candles were received, update the candle series colors so yellow crossing candles show instantly
+              if (showSmartTrend && yellowCandlesRef.current.size > 0 && cSeries) {
+                const colored = chartData.map((d: any) => {
+                  const isYellow = yellowCandlesRef.current.has(Number(d.time));
+                  let c = d.close >= d.open ? "#089981" : "#F23645";
+                  if (isYellow) c = "#EAB308";
+                  return { ...d, color: c, wickColor: c, borderColor: c };
+                });
+                cSeries.setData(colored);
+              }
             } catch { /* markers are a view concern; never break the chart */ }
           }
         }
@@ -1999,8 +2060,8 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
           if (!existing) {
             markerMap.set(t, m);
           } else {
-            // New Entry (BUY CE / BUY PE) takes priority over EXIT on the same reversal candle
-            if ((m.text === 'BUY CE' || m.text === 'BUY PE') && existing.text === 'EXIT') {
+            // New Entry (CE Buy / PE Buy) takes priority over EXIT on the same reversal candle
+            if ((m.text === 'CE Buy' || m.text === 'PE Buy' || m.text === 'BUY CE' || m.text === 'BUY PE') && existing.text === 'EXIT') {
               markerMap.set(t, m);
             }
           }
@@ -2152,30 +2213,19 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
           // Apply dynamic colors if enabled
           let dataToSet = uniqueData;
           const ema1Data = calculateEMA(uniqueData, ema1Length);
-          const ema2Data = calculateSMA(uniqueData, ema2Length);
+          const ema2Data = calculateEMA(uniqueData, ema2Length);
           const avgVol20 = calculateAverageVolume(uniqueData, 20);
 
           if (showSmartTrend) {
-            dataToSet = uniqueData.map((d: any, index: number) => {
-              const ema1 = ema1Data[index]?.value;
-              const ema2 = ema2Data[index]?.value;
-              const avgVol = avgVol20[index]?.value;
-              if (!ema1 || !ema2) return d;
-
-              const isChop = Math.abs(ema1 - ema2) / ema2 < 0.0005; // 0.05% difference threshold for chop
-              const isHighVolume = d.volume && avgVol && d.volume > avgVol * 2.0; // 2x average volume
-
+            dataToSet = uniqueData.map((d: any) => {
+              const isYellow = yellowCandlesRef.current.has(Number(d.time));
               let customColor;
-              if (isChop) {
-                customColor = chopColor;
-              } else if (isHighVolume && d.close > ema1) {
-                customColor = bullishSurgeColor;
-              } else if (isHighVolume && d.close < ema1) {
-                customColor = bearishSurgeColor;
-              } else if (d.close >= ema1) {
-                customColor = d.close >= d.open ? bullishNormalColor : "#059669";
+              if (isYellow) {
+                customColor = "#EAB308"; // CM Ultimate MA Yellow crossing candle
+              } else if (d.close >= d.open) {
+                customColor = "#089981"; // TradingView Bullish Green
               } else {
-                customColor = d.close < d.open ? bearishNormalColor : "#991B1B";
+                customColor = "#F23645"; // TradingView Bearish Red
               }
               return { ...d, color: customColor, wickColor: customColor, borderColor: customColor };
             });
@@ -2239,7 +2289,7 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
       isMounted = false;
       if (pollInterval) clearInterval(pollInterval);
     };
-  }, [symbol, timeframe, showAutoSignals]);
+  }, [symbol, timeframe, showAutoSignals, strategy]);
   // We removed showSmartTrend here because we have a dedicated hook now
 
   // 2a. Synchronize Active Signal Price Lines (Entry, SL, Target)
@@ -2307,20 +2357,25 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
   useEffect(() => {
     const effHide = hideAllIndicators;
 
-    // 1. Update visibility and styles on series immediately
-    if (volumeSeriesRef.current) volumeSeriesRef.current.applyOptions({ visible: appliedIndicators.vol && showVolume && !effHide });
-    if (rsiSeriesRef.current) rsiSeriesRef.current.applyOptions({ visible: appliedIndicators.rsi && showRsi && !effHide, color: rsiColor || "#A855F7", lineWidth: rsiLineWidth as any, lineStyle: rsiLineStyle as any });
-    if (rsiSignalSeriesRef.current) rsiSignalSeriesRef.current.applyOptions({ visible: appliedIndicators.rsi && showRsi && !effHide });
-    if (emaSeriesRef.current) emaSeriesRef.current.applyOptions({ visible: appliedIndicators.ema1 && showEma1 && !effHide, color: ema1Color, lineWidth: ema1LineWidth as any, lineStyle: ema1LineStyle as any, lastValueVisible: false });
-    if (smaSeriesRef.current) smaSeriesRef.current.applyOptions({ visible: appliedIndicators.ema2 && showEma2 && !effHide, color: ema2Color, lineWidth: ema2LineWidth as any, lineStyle: ema2LineStyle as any, lastValueVisible: false });
+    const isEma1Vis = Boolean((appliedIndicators.ema1 || showEma1) && !effHide);
+    const isEma2Vis = Boolean((appliedIndicators.ema2 || showEma2) && !effHide);
+    const isRsiVis = Boolean((appliedIndicators.rsi || showRsi) && !effHide);
+    const isVolVis = Boolean((appliedIndicators.vol || showVolume) && !effHide);
 
-    if (rsiObLineRef.current) rsiObLineRef.current.applyOptions({ price: rsiOverbought, axisLabelVisible: appliedIndicators.rsi && showRsi && !effHide });
-    if (rsiOsLineRef.current) rsiOsLineRef.current.applyOptions({ price: rsiOversold, axisLabelVisible: appliedIndicators.rsi && showRsi && !effHide });
+    // 1. Update visibility and styles on series immediately
+    if (volumeSeriesRef.current) volumeSeriesRef.current.applyOptions({ visible: isVolVis });
+    if (rsiSeriesRef.current) rsiSeriesRef.current.applyOptions({ visible: isRsiVis, color: rsiColor || "#A855F7", lineWidth: rsiLineWidth as any, lineStyle: rsiLineStyle as any });
+    if (rsiSignalSeriesRef.current) rsiSignalSeriesRef.current.applyOptions({ visible: isRsiVis });
+    if (emaSeriesRef.current) emaSeriesRef.current.applyOptions({ visible: isEma1Vis, color: ema1Color, lineWidth: ema1LineWidth as any, lineStyle: ema1LineStyle as any, lastValueVisible: false });
+    if (smaSeriesRef.current) smaSeriesRef.current.applyOptions({ visible: isEma2Vis, color: ema2Color, lineWidth: ema2LineWidth as any, lineStyle: ema2LineStyle as any, lastValueVisible: false });
+
+    if (rsiObLineRef.current) rsiObLineRef.current.applyOptions({ price: rsiOverbought, axisLabelVisible: isRsiVis });
+    if (rsiOsLineRef.current) rsiOsLineRef.current.applyOptions({ price: rsiOversold, axisLabelVisible: isRsiVis });
     if (vwapSeriesRef.current) vwapSeriesRef.current.applyOptions({ visible: showVwap && !effHide, color: vwapColor, lineWidth: vwapLineWidth as any, lastValueVisible: false });
 
     if (chartRef.current) {
       chartRef.current.priceScale('rsi').applyOptions({
-        scaleMargins: appliedIndicators.rsi && showRsi && !effHide ? { top: 0.8, bottom: 0 } : { top: 1, bottom: 0 },
+        scaleMargins: isRsiVis ? { top: 0.8, bottom: 0 } : { top: 1, bottom: 0 },
       });
     }
 
@@ -2373,27 +2428,15 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
       // 3. Re-apply Smart Trend colors
       let dataToSet = cachedData;
       if (showSmartTrend) {
-        const avgVol20 = calculateAverageVolume(cachedData, 20);
-        dataToSet = cachedData.map((d: any, index: number) => {
-          const ema1 = ema1Data[index]?.value;
-          const ema2 = ema2Data[index]?.value;
-          const avgVol = avgVol20[index]?.value;
-          if (!ema1 || !ema2) return d;
-
-          const isChop = Math.abs(ema1 - ema2) / ema2 < 0.0005;
-          const isHighVolume = d.volume && avgVol && d.volume > avgVol * 2.0;
-
+        dataToSet = cachedData.map((d: any) => {
+          const isYellow = yellowCandlesRef.current.has(Number(d.time));
           let customColor;
-          if (isChop) {
-            customColor = chopColor;
-          } else if (isHighVolume && d.close > ema1) {
-            customColor = bullishSurgeColor;
-          } else if (isHighVolume && d.close < ema1) {
-            customColor = bearishSurgeColor;
-          } else if (d.close >= ema1) {
-            customColor = d.close >= d.open ? bullishNormalColor : "#059669";
+          if (isYellow) {
+            customColor = "#EAB308"; // CM Ultimate MA Yellow crossing candle
+          } else if (d.close >= d.open) {
+            customColor = "#089981"; // TradingView Bullish Green
           } else {
-            customColor = d.close < d.open ? bearishNormalColor : "#991B1B";
+            customColor = "#F23645"; // TradingView Bearish Red
           }
           return { ...d, color: customColor, wickColor: customColor, borderColor: customColor };
         });
@@ -2666,7 +2709,7 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
           const cache = chartDataCache[`${symbol}_${timeframe}`];
           if (cache.length > 0) {
             const ema1 = calculateEMA(cache, ema1Length).pop()?.value;
-            const ema2 = calculateSMA(cache, ema2Length).pop()?.value;
+            const ema2 = calculateEMA(cache, ema2Length).pop()?.value;
             if (ema1 && ema2) {
               const isChop = Math.abs(ema1 - ema2) / ema2 < 0.0005;
               if (isChop) {
@@ -2708,7 +2751,7 @@ export default function NativeChart({ symbol, livePrice, liveVolume = 0, timefra
           const cache = chartDataCache[`${symbol}_${timeframe}`];
           if (cache.length > 0) {
             const ema1 = calculateEMA(cache, ema1Length).pop()?.value;
-            const ema2 = calculateSMA(cache, ema2Length).pop()?.value;
+            const ema2 = calculateEMA(cache, ema2Length).pop()?.value;
             if (ema1 && ema2) {
               const isChop = Math.abs(ema1 - ema2) / ema2 < 0.0005;
               if (isChop) {

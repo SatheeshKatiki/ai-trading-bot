@@ -33,9 +33,9 @@ def compute_momentum(
     df["rsi_rising"]  = df["rsi"] > df["rsi"].shift(1)
     df["rsi_falling"] = df["rsi"] < df["rsi"].shift(1)
 
-    # Reject RSI in the no-man's land (45–55 = choppy zone)
-    rsi_call_ok = df["rsi"] > rsi_call_thresh
-    rsi_put_ok  = df["rsi"] < rsi_put_thresh
+    # Reject RSI in choppy zone or extreme exhaustion (> 75 overbought, < 25 oversold)
+    rsi_call_ok = (df["rsi"] > rsi_call_thresh) & (df["rsi"] <= 75.0)
+    rsi_put_ok  = (df["rsi"] < rsi_put_thresh) & (df["rsi"] >= 25.0)
     rsi_no_mans_land = (df["rsi"] >= rsi_put_thresh) & (df["rsi"] <= rsi_call_thresh)
 
     # MACD

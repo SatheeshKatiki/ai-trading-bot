@@ -57,22 +57,33 @@ def daily_loss_limit(capital: float, settings: Optional[dict] = None) -> float:
 
 def entry_block_reason(*, direction: int, open_directions: Iterable[int], day_pnl: float,
                        capital: float, trade_risk: float, settings: Optional[dict] = None,
-                       vix: Optional[float] = None) -> Optional[str]:
+                       vix: Optional[float] = None,
+                       stopped_out_dir: Optional[int] = None,
+                       stopped_out_time: Optional[float] = None,
+                       now_time: Optional[float] = None) -> Optional[str]:
     """Why a new option entry must not be taken, or None if it may.
 
     ``direction`` +1 (CE) / -1 (PE); ``open_directions`` the same for every
     open position; ``day_pnl`` realised + unrealised rupees today;
     ``trade_risk`` the rupees lost if this trade hits its opening stop;
-    ``vix`` India VIX now, if known.
-
-    4. **Optional VIX gate** (audit P4). ``max_entry_vix`` is OFF unless the
-       owner sets it: a buyer paying up after a gap open loses to falling IV
-       even when direction is right (2026-09-11's NIFTY CE lost about half of
-       its -20 premium that way), but the threshold must come from data --
-       the paper books record entry VIX and group results by it. When the
-       gate is on and VIX is unknown, the trade is refused, not guessed.
+    ``vix`` India VIX now, if known;
+    ``stopped_out_dir`` / ``stopped_out_time`` last SL hit direction and time.
     """
     settings = settings or {}
+
+    # 5. Post-StopLoss Cooldown Guard (User Rule 2026-10-05)
+    # If the last trade in this symbol stopped out, allow opposite reversal immediately,
+    # but require a cooldown (default 300s / 5m) before same-direction re-entry to stop revenge trades.
+    if stopped_out_dir is not None and stopped_out_time is not None and stopped_out_dir == direction:
+        cooldown = float(settings.get("post_sl_cooldown_seconds", 300.0))
+        import time as _time
+        current_t = now_time if now_time is not None else _time.time()
+        elapsed = current_t - stopped_out_time
+        if elapsed < cooldown:
+            rem = int(cooldown - elapsed)
+            side = "CE" if direction == 1 else "PE"
+            return f"Post-SL cool-off active for {side} ({rem}s remaining -- awaiting cool-off or opposite signal)"
+
     limit = daily_loss_limit(capital, settings)
     if day_pnl <= -limit:
         return f"daily loss limit reached (Rs {day_pnl:,.0f} <= -Rs {limit:,.0f})"

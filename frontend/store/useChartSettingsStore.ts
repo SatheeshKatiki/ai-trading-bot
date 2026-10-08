@@ -71,31 +71,31 @@ export const useChartSettingsStore = create<ChartSettingsState>()(
     persist(
         (set) => ({
             ema1Length: 9,
-            ema1Color: '#2962FF',
+            ema1Color: '#089981',
             ema1LineWidth: 2,
             ema1LineStyle: 0,
 
-            ema2Length: 21,
-            ema2Color: '#FF6D00',
+            ema2Length: 20,
+            ema2Color: '#2563EB',
             ema2LineWidth: 2,
             ema2LineStyle: 0,
 
             showVolume: true,
 
-            showRsi: false,
+            showRsi: true,
             rsiLength: 14,
-            rsiColor: '#7E57C2',
+            rsiColor: '#2563EB',
             rsiLineWidth: 2,
             rsiLineStyle: 0,
             rsiOverbought: 70,
             rsiOversold: 30,
 
-            showSmartTrend: false,
+            showSmartTrend: true,
 
-            bullishSurgeColor: '#7C3AED',
-            bearishSurgeColor: '#FF007F',
-            bullishNormalColor: '#00FF00',
-            bearishNormalColor: '#FF0000',
+            bullishSurgeColor: '#089981',
+            bearishSurgeColor: '#F23645',
+            bullishNormalColor: '#089981',
+            bearishNormalColor: '#F23645',
             chopColor: '#6B7280',
 
             showVwap: false,
