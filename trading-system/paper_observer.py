@@ -789,43 +789,46 @@ def run_session(day_num, date_str, day_name):
 
                             # AI Exit Analyzer (4 Pillars: Plan D Adaptive Tightening, S&R, OI/IV, Midday Regime)
                             if not exit_now and _EMA9_CFG.enable_exit_analyzer and pos.get("highest_premium", 0) > pos["entry_premium"]:
-                                iv_delta = None
-                                if pos.get("mark_iv") and pos.get("highest_iv"):
-                                    try:
-                                        iv_delta = float(pos["mark_iv"]) - float(pos["highest_iv"])
-                                    except Exception:
-                                        pass
+                                try:
+                                    iv_delta = None
+                                    if pos.get("mark_iv") and pos.get("highest_iv"):
+                                        try:
+                                            iv_delta = float(pos["mark_iv"]) - float(pos["highest_iv"])
+                                        except Exception:
+                                            pass
 
-                                analysis = _EXIT_ANALYZER.evaluate(
-                                    entry_price=pos["entry_premium"],
-                                    current_price=est_opt_ltp,
-                                    highest_price=pos["highest_premium"],
-                                    lowest_price=pos["lowest_premium"],
-                                    direction=1,
-                                    is_option_premium=True,
-                                    current_time=ts,
-                                    underlying_price=pos.get("entry_spot"),
-                                    iv_change_from_peak=iv_delta,
-                                )
+                                    analysis = _EXIT_ANALYZER.evaluate(
+                                        entry_price=pos["entry_premium"],
+                                        current_price=est_opt_ltp,
+                                        highest_price=pos["highest_premium"],
+                                        lowest_price=pos["lowest_premium"],
+                                        direction=1,
+                                        is_option_premium=True,
+                                        current_time=ts,
+                                        underlying_price=pos.get("entry_spot"),
+                                        iv_change_from_peak=iv_delta,
+                                    )
 
-                                # Ratchet stop-loss if Plan D calculated a tighter trailing lock
-                                if analysis.suggested_sl and analysis.suggested_sl > pos["sl_premium"]:
-                                    old_sl = pos["sl_premium"]
-                                    pos["sl_premium"] = round(analysis.suggested_sl, 2)
-                                    print(f"  [{ts}] 🧠 [AI EXIT ANALYZER] Plan D tightened SL: Rs.{old_sl:.2f} -> Rs.{pos['sl_premium']:.2f}")
-                                    if alerter:
-                                        alerter.send_trailing_sl_alert(
-                                            symbol=pos["contract"],
-                                            new_sl=pos["sl_premium"],
-                                            reason=f"AI Exit Analyzer ({analysis.mode}) tightened SL to ₹{pos['sl_premium']:.2f}",
-                                            execution_time=ts,
-                                        )
-                                    save_session_atomic(session_log, out_file)
+                                    # Ratchet stop-loss if Plan D calculated a tighter trailing lock
+                                    if analysis.suggested_sl and analysis.suggested_sl > pos["sl_premium"]:
+                                        old_sl = pos["sl_premium"]
+                                        pos["sl_premium"] = round(analysis.suggested_sl, 2)
+                                        print(f"  [{ts}] 🧠 [AI EXIT ANALYZER] Plan D tightened SL: Rs.{old_sl:.2f} -> Rs.{pos['sl_premium']:.2f}")
+                                        if alerter:
+                                            alerter.send_trailing_sl_alert(
+                                                symbol=pos["contract"],
+                                                new_sl=pos["sl_premium"],
+                                                reason=f"AI Exit Analyzer ({analysis.mode}) tightened SL to ₹{pos['sl_premium']:.2f}",
+                                                execution_time=ts,
+                                            )
+                                        save_session_atomic(session_log, out_file)
 
-                                if analysis.should_exit:
-                                    exit_now = True
-                                    exit_reason = f"AI Exit Analyzer ({analysis.mode}): {analysis.reason}"
-                                    print(f"  [{ts}] 🎯 [AI EXIT ANALYZER TRIGGER] {exit_reason}")
+                                    if analysis.should_exit:
+                                        exit_now = True
+                                        exit_reason = f"AI Exit Analyzer ({analysis.mode}): {analysis.reason}"
+                                        print(f"  [{ts}] 🎯 [AI EXIT ANALYZER TRIGGER] {exit_reason}")
+                                except Exception as e:
+                                    print(f"  [{ts}] ⚠️ [AI EXIT ANALYZER] Non-fatal evaluation bypass: {e}")
                         
                         # Reversal exit -- the strategy's own protective rule.
                         # Ranks below SL and target (both are hard limits) but
