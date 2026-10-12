@@ -39,6 +39,7 @@ import logging
 import os
 import pathlib
 import re
+import shutil
 import signal
 import socket
 import subprocess
@@ -46,6 +47,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import webbrowser
 from typing import Dict, List, Optional, Any
 
 import pytz
@@ -164,6 +166,7 @@ def assert_holiday_calendar_current(today: Optional[datetime.date] = None) -> bo
 # Subprocess references
 backend_proc: Optional[subprocess.Popen] = None
 observer_proc: Optional[subprocess.Popen] = None
+frontend_proc: Optional[subprocess.Popen] = None
 is_running = True
 
 # ---------------------------------------------------------------------------
@@ -219,11 +222,19 @@ class ServiceSupervisor:
     is even worth restarting.
     """
 
-    def __init__(self, name: str, launcher, log_filename: str, restart_on_clean_exit: bool = False):
+    def __init__(
+        self,
+        name: str,
+        launcher,
+        log_filename: str,
+        restart_on_clean_exit: bool = False,
+        cwd: Optional[pathlib.Path] = None,
+    ):
         self.name = name
         self._launcher = launcher            # () -> list[str] argv
         self._log_filename = log_filename
         self._restart_on_clean_exit = restart_on_clean_exit
+        self.cwd = cwd or ROOT_DIR
 
         self.proc: Optional[subprocess.Popen] = None
         self._log_handle = None
@@ -250,7 +261,7 @@ class ServiceSupervisor:
             self._log_handle = open(LOG_DIR / self._log_filename, "a", encoding="utf-8")
             self.proc = subprocess.Popen(
                 self._launcher(),
-                cwd=str(ROOT_DIR),
+                cwd=str(self.cwd),
                 stdout=self._log_handle,
                 stderr=subprocess.STDOUT,
             )
@@ -281,10 +292,18 @@ class ServiceSupervisor:
         self.given_up = False
 
     def stop(self, timeout: float = 5.0) -> None:
-        """Terminate the child, escalating to kill, then release its log handle."""
+        """Terminate the child and its process tree, escalating to kill, then release its log handle."""
         if self.proc is not None and self.proc.poll() is None:
             try:
-                self.proc.terminate()
+                import psutil
+                parent = psutil.Process(self.proc.pid)
+                children = parent.children(recursive=True)
+                for child in children:
+                    try:
+                        child.terminate()
+                    except Exception:
+                        pass
+                parent.terminate()
                 self.proc.wait(timeout=timeout)
                 logger.info("%s terminated.", self.name)
             except Exception:
@@ -624,6 +643,22 @@ backend_sv = ServiceSupervisor(
     # is an abnormal condition worth retrying.
     restart_on_clean_exit=True,
 )
+FRONTEND_DIR = ROOT_DIR.parent / "frontend"
+
+
+def _launch_frontend_cmd() -> List[str]:
+    npm_path = shutil.which("npm") or "npm.cmd"
+    return [npm_path, "run", "dev"]
+
+
+frontend_sv = ServiceSupervisor(
+    "Frontend Dashboard",
+    _launch_frontend_cmd,
+    "frontend_stdout.log",
+    # Like the API Bridge, the web frontend is a server: it should stay up throughout the session
+    restart_on_clean_exit=True,
+    cwd=FRONTEND_DIR,
+)
 observer_sv = ServiceSupervisor(
     "Paper Observer",
     lambda: [sys.executable, "-u", str(ROOT_DIR / "paper_observer.py")],
@@ -671,6 +706,15 @@ def live_trading_mode() -> bool:
         return False
 
 
+def get_active_strategy_name() -> str:
+    """Read the active strategy configured in settings.json."""
+    try:
+        with open(ROOT_DIR / "config" / "settings.json", "r", encoding="utf-8") as f:
+            return str(json.load(f).get("active_strategy", "ema9_fibo_smc_momentum"))
+    except Exception:
+        return "ema9_fibo_smc_momentum"
+
+
 def start_live_engine() -> bool:
     """Launch trading_bot/main.py -- the real-order engine."""
     logger.info("==========================================")
@@ -682,6 +726,30 @@ def start_live_engine() -> bool:
             "🔴 [QuantAI] LIVE TRADING ENGINE started — real orders are enabled "
             "for this session. Auto/Manual is set by the dashboard's "
             "auto_trade_enabled toggle."
+        )
+    return started
+
+
+def start_paper_engine() -> bool:
+    """Launch trading_bot/main.py in PAPER TRADING mode (simulated fills)."""
+    logger.info("==========================================")
+    logger.info("STEP 4: Launching Trading Engine in PAPER MODE (Virtual Fills)")
+    logger.info("==========================================")
+    started = engine_sv.start()
+    if started and engine_sv.launches == 1:
+        strat = get_active_strategy_name()
+        strat_display = (
+            "EMA 9 + Fibonacci OTE + SMC Momentum"
+            if strat == "ema9_fibo_smc_momentum"
+            else strat.replace("_", " ").title()
+        )
+        send_telegram_notification(
+            "🚀 [QuantAI Live] Market is OPEN (09:15 IST).\n"
+            "Autonomous Paper Trading Engine is Active.\n"
+            "• Assets: NIFTY & BANKNIFTY Options\n"
+            f"• Strategy: {strat_display}\n"
+            "• Mode: PAPER TRADING (Simulated)\n"
+            "• Capital: ₹1,00,000 (Virtual)"
         )
     return started
 
@@ -797,33 +865,31 @@ def clear_stray_books() -> bool:
 def start_session_books(live: bool) -> None:
     """Start the books for today's mode.
 
-    Live and paper are mutually exclusive by construction -- see engine_sv's
-    note above. The variant books run in EITHER mode: they are isolated
-    research books writing only under paper_obs_logs/variants/ (no state.db,
-    no config/active_positions.json), so they cannot collide with either.
-
-    A book left running from an earlier session is cleared first. If it cannot
-    be (positions open), today's book is not started at all -- and since a
-    supervisor that never started never restarts, the watchdog leaves it off.
+    If live trading is enabled, launches trading_bot/main.py in LIVE mode.
+    If paper trading is active:
+      - For modern strategies (like ema9_fibo_smc_momentum), launches trading_bot/main.py
+        in PAPER mode so the selected strategy is actually executed.
+      - For the legacy 3-session benchmark strategy (ema9_rsi_momentum), launches
+        paper_observer.py and the variant books.
     """
+    strat = get_active_strategy_name()
     if clear_stray_books():
         if live:
             start_live_engine()
-        else:
+        elif strat == "ema9_rsi_momentum":
             start_paper_observer()
-    start_variant_book()
+        else:
+            start_paper_engine()
+    if strat == "ema9_rsi_momentum":
+        start_variant_book()
 
 
 def supervise_session_books(live: bool, curr_t: datetime.time) -> None:
-    """One watchdog tick for whichever book is meant to be running today.
-
-    The book that was never started is never supervised, so its absence is
-    not mistaken for a crash and restarted into the other one's session.
-    """
-    if live:
+    """One watchdog tick for whichever book is meant to be running today."""
+    strat = get_active_strategy_name()
+    if live or strat != "ema9_rsi_momentum":
         engine_sv.supervise()
     elif curr_t < EOD_SQUAREOFF_TIME:
-        # Only keep the observer up while it can still open new positions.
         observer_sv.supervise()
 
 
@@ -855,6 +921,58 @@ def start_backend_service() -> bool:
             time.sleep(1.5)
 
     logger.warning("API Bridge did not return 200 within %ds, proceeding with watchdog.", max_wait)
+    return True
+
+
+def start_frontend_service() -> bool:
+    """Launch Next.js frontend dashboard (Port 3000), verify health, and open in browser."""
+    global frontend_proc
+    logger.info("==========================================")
+    logger.info("STEP 3b: Launching Next.js Frontend Dashboard (Port 3000)")
+    logger.info("==========================================")
+
+    if not FRONTEND_DIR.is_dir():
+        logger.warning("Frontend directory not found at %s. Skipping frontend startup.", FRONTEND_DIR)
+        return False
+
+    if not frontend_sv.start():
+        return False
+    frontend_proc = frontend_sv.proc
+
+    # Wait for Frontend to compile and respond on port 3000
+    max_wait = 35
+    start_wait = time.time()
+    is_up = False
+    while time.time() - start_wait < max_wait:
+        if frontend_sv.proc and frontend_sv.proc.poll() is not None:
+            logger.error("Frontend process exited unexpectedly with code %s", frontend_sv.proc.returncode)
+            return False
+        try:
+            with socket.create_connection(("127.0.0.1", 3000), timeout=1.0):
+                try:
+                    req = urllib.request.Request("http://127.0.0.1:3000", headers={"User-Agent": "QuantAI-Orchestrator"})
+                    with urllib.request.urlopen(req, timeout=5) as resp:
+                        if resp.status in (200, 304, 307, 308):
+                            logger.info("✅ Frontend Dashboard is UP and ready on http://localhost:3000!")
+                            is_up = True
+                            break
+                except Exception:
+                    # Next.js may be compiling the page bundle; retry shortly
+                    pass
+        except OSError:
+            pass
+        time.sleep(2.0)
+
+    if not is_up:
+        logger.warning("Frontend did not return 200 within %ds, proceeding with watchdog.", max_wait)
+
+    # Automatically open the dashboard in user's default browser
+    try:
+        logger.info("Opening Frontend Dashboard in browser: http://localhost:3000")
+        webbrowser.open("http://localhost:3000")
+    except Exception as exc:
+        logger.warning("Could not auto-open browser: %s", exc)
+
     return True
 
 
@@ -1151,20 +1269,22 @@ def generate_and_send_eod_report() -> None:
 
 
 def stop_all_subprocesses() -> None:
-    """Gracefully terminate backend and paper observer subprocesses."""
-    global backend_proc, observer_proc
+    """Gracefully terminate backend, frontend, and paper observer subprocesses."""
+    global backend_proc, observer_proc, frontend_proc
     logger.info("Stopping all background services...")
 
     # Supervisor.stop() terminates (then kills) the child AND closes its
     # stdout handle, which the previous implementation never did.
+    frontend_sv.stop()
     variant_sv.stop()
     engine_sv.stop()
     observer_sv.stop()
     backend_sv.stop()
     observer_proc = observer_sv.proc
     backend_proc = backend_sv.proc
+    frontend_proc = frontend_sv.proc
 
-    kill_process_on_ports([8000])
+    kill_process_on_ports([8000, 3000])
 
 
 def handle_shutdown(signum, frame):
@@ -1215,6 +1335,7 @@ def run_session_flow(force_now: bool = False) -> None:
     # Fresh restart budgets for this trading day (the supervisors are module
     # singletons and outlive a single session in --daemon mode).
     backend_sv.reset()
+    frontend_sv.reset()
     observer_sv.reset()
     variant_sv.reset()
     engine_sv.reset()
@@ -1233,6 +1354,9 @@ def run_session_flow(force_now: bool = False) -> None:
     if not start_backend_service():
         logger.error("Failed to start backend service. Aborting session.")
         return
+
+    # 3b. Boot Frontend Dashboard & Auto-Open in Browser
+    start_frontend_service()
         
     # If before 09:14 AM and not forced, wait until market open
     if not force_now:
@@ -1311,6 +1435,7 @@ def run_session_flow(force_now: bool = False) -> None:
         flush_telegram_outbox()
 
         backend_sv.supervise()
+        frontend_sv.supervise()
         # Supervised through the close: it squares off at 15:15 itself and
         # refuses new entries after it, so a late restart can only finish
         # managing a position, never open one.
@@ -1409,12 +1534,21 @@ def main():
     parser.add_argument("--now", action="store_true", help="Force immediate execution of full session for testing")
     parser.add_argument("--test-login", action="store_true", help="Test Fyers auto-login routine and exit")
     parser.add_argument("--test-eod", action="store_true", help="Test EOD report generation and Telegram dispatch")
+    parser.add_argument("--test-services", action="store_true", help="Test backend and frontend startup with browser launch and exit")
     args = parser.parse_args()
     
     if args.test_login:
         run_auto_auth()
     elif args.test_eod:
         generate_and_send_eod_report()
+    elif args.test_services:
+        kill_process_on_ports([8000, 3000])
+        start_backend_service()
+        start_frontend_service()
+        logger.info("Services live! Testing for 10 seconds before clean shutdown...")
+        time.sleep(10)
+        stop_all_subprocesses()
+        logger.info("Test services completed.")
     elif args.daemon:
         _guard_single_instance()
         run_daemon_loop()

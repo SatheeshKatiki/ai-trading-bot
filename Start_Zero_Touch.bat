@@ -11,8 +11,9 @@ echo   [1] Start 24/7 Daemon Mode (Runs continuously, wakes up at 08:45 AM every
 echo   [2] Run Today's Session Immediately (Test / Live Now)
 echo   [3] Test Auto-Login Only (Fyers Auth)
 echo   [4] Test EOD Telegram Report
+echo   [5] Test Full Stack (Backend + Frontend + Browser Open)
 echo.
-set /p choice="Select an option [1-4] (Default 1): "
+set /p choice="Select an option [1-5] (Default 1): "
 
 if "%choice%"=="2" (
     echo Starting Immediate Session...
@@ -26,6 +27,10 @@ if "%choice%"=="2" (
     echo Testing EOD Report...
     cd /d "%~dp0trading-system"
     .\venv\Scripts\python.exe auto_daily_session.py --test-eod
+) else if "%choice%"=="5" (
+    echo Testing Backend + Frontend Services...
+    cd /d "%~dp0trading-system"
+    .\venv\Scripts\python.exe auto_daily_session.py --test-services
 ) else (
     echo Starting 24/7 Automated Daemon Mode...
     cd /d "%~dp0trading-system"

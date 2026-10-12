@@ -95,8 +95,8 @@ from trading_bot.strategies.premium_selection import (
 )
 from trading_bot.strategies.momentum_strategy import MomentumStrategy
 from trading_bot.strategies.drl_strategy import generate_signals as drl_signals
-from trading_bot.strategies.marl_strategy import generate_signals as marl_signals
 from trading_bot.strategies.ema9_rsi_momentum import STRATEGY_NAME as EMA9_RSI_MOMENTUM_STRATEGY_NAME
+from trading_bot.strategies.ema9_fibo_smc_momentum import STRATEGY_NAME as EMA9_FIBO_SMC_MOMENTUM_STRATEGY_NAME
 #: Name-only import (no strategy code runs) so the two M1/M2 branches below
 #: can be guarded on an exact match rather than a string literal. The
 #: strategy package itself is imported lazily inside those branches, so when
@@ -470,7 +470,7 @@ def _load_settings() -> dict:
     
     
     defaults = {
-        "active_strategy": "ema9_rsi_momentum",
+        "active_strategy": "ema9_fibo_smc_momentum",
         "live_trading_mode": False,
         "ema_fast": 9,
         "ema_slow": 20,
@@ -700,7 +700,7 @@ def positions_needing_eod_exit(active_positions: dict, now_hms: str, eod_time: s
 
 
 def _entry_timing_allows(df, direction: int, settings: dict,
-                         strategy_name: str = "ema9_rsi_momentum") -> tuple[bool, str]:
+                         strategy_name: str = "ema9_fibo_smc_momentum") -> tuple[bool, str]:
     """Whether an entry may be taken at this moment, for the selected strategy.
 
     Two of the owner's rules (2026-09-22) are about when and how well an entry
@@ -722,11 +722,15 @@ def _entry_timing_allows(df, direction: int, settings: dict,
     """
     try:
         from shared.entry_gate import decide
-        from trading_bot.strategies.ema9_rsi_momentum.config import Ema9RsiMomentumConfig
-        from trading_bot.strategies.ema9_rsi_momentum.signal_engine import classify_momentum_strength
+        if strategy_name == EMA9_FIBO_SMC_MOMENTUM_STRATEGY_NAME:
+            from trading_bot.strategies.ema9_fibo_smc_momentum.config import Ema9FiboSmcMomentumConfig as _GateCfg
+            from trading_bot.strategies.ema9_fibo_smc_momentum.signal_engine import classify_momentum_strength
+        else:
+            from trading_bot.strategies.ema9_rsi_momentum.config import Ema9RsiMomentumConfig as _GateCfg
+            from trading_bot.strategies.ema9_rsi_momentum.signal_engine import classify_momentum_strength
         from shared.indicators import rsi as _rsi
 
-        cfg = Ema9RsiMomentumConfig.from_settings(settings or {})
+        cfg = _GateCfg.from_settings(settings or {})
         closes = df["close"] if hasattr(df, "columns") and "close" in df.columns else None
         if closes is None or len(closes) < cfg.rsi_length + 2:
             return True, "strength unknown (short frame) — gate skipped"
@@ -1504,7 +1508,7 @@ async def run_live_bot(symbols: List[str]) -> None:
         # ----------------------------------------------------------------
         # Lazy Strategy Initialization
         # ----------------------------------------------------------------
-        strategy_name = settings.get("active_strategy", "ema9_rsi_momentum")
+        strategy_name = settings.get("active_strategy", "ema9_fibo_smc_momentum")
         if strategy_name == "institutional_momentum" and sym not in momentum_strategies:
             momentum_strategies[sym] = MomentumStrategy(
                 capital=_initial_capital,
@@ -1754,7 +1758,7 @@ async def run_live_bot(symbols: List[str]) -> None:
                             exit_qty = open_position.quantity
 
             if not should_exit:
-                strategy_name = settings.get("active_strategy", "ema9_rsi_momentum")
+                strategy_name = settings.get("active_strategy", "ema9_fibo_smc_momentum")
             
                 if strategy_name == "institutional_momentum" and sym in momentum_strategies:
                     m_strategy = momentum_strategies[sym]
@@ -1828,24 +1832,21 @@ async def run_live_bot(symbols: List[str]) -> None:
                         
                         if open_position.is_partially_booked and qty_pct < 1.0:
                             pass
-                elif strategy_name == EMA9_RSI_MOMENTUM_STRATEGY_NAME and is_opt_pos:
-                    # ── ema9_rsi_momentum option exits: the owner's rules ──
+                elif strategy_name in (EMA9_RSI_MOMENTUM_STRATEGY_NAME, EMA9_FIBO_SMC_MOMENTUM_STRATEGY_NAME) and is_opt_pos:
+                    # ── Option exits: the owner's rules + Pure Price Action exits ──
                     # SL 15% -> breakeven at +15% -> the stop steps up to the
                     # rung below each rung reached, with NO fixed target; the
-                    # EMA/RSI reversal and the EOD square-off end the trade.
-                    # See trading_bot/strategies/ema9_rsi_momentum/exit_ladder.py.
-                    #
-                    # This replaces SmartExitEngine for these positions. Its
-                    # partial booking at 1R is not the strategy's rule, and its
-                    # trail -- fed the dashboard's 0.5 / 0.35 as % of premium --
-                    # closed every winner within a tick or two of turning green.
-                    # The reversal exit (evaluate_protective_exit) was imported
-                    # here and never called.
-                    from trading_bot.strategies.ema9_rsi_momentum import evaluate_protective_exit
-                    from trading_bot.strategies.ema9_rsi_momentum.config import Ema9RsiMomentumConfig
-                    from trading_bot.strategies.ema9_rsi_momentum.exit_ladder import ratchet_stop, stop_reason
+                    # Price Action structure break, exhaustion wick, and EOD square-off end the trade.
+                    if strategy_name == EMA9_FIBO_SMC_MOMENTUM_STRATEGY_NAME:
+                        from trading_bot.strategies.ema9_fibo_smc_momentum import evaluate_protective_exit
+                        from trading_bot.strategies.ema9_fibo_smc_momentum.config import Ema9FiboSmcMomentumConfig as _EmaStratCfg
+                        from trading_bot.strategies.ema9_fibo_smc_momentum.exit_ladder import ratchet_stop, stop_reason
+                    else:
+                        from trading_bot.strategies.ema9_rsi_momentum import evaluate_protective_exit
+                        from trading_bot.strategies.ema9_rsi_momentum.config import Ema9RsiMomentumConfig as _EmaStratCfg
+                        from trading_bot.strategies.ema9_rsi_momentum.exit_ladder import ratchet_stop, stop_reason
 
-                    _ema9_cfg = Ema9RsiMomentumConfig.from_settings(settings)
+                    _ema9_cfg = _EmaStratCfg.from_settings(settings)
                     _t_only = current_time.split(" ")[-1] if " " in current_time else current_time
                     open_position.highest_price = max(open_position.highest_price, exit_check_price)
                     old_stop_loss = open_position.stop_loss
@@ -2218,7 +2219,7 @@ async def run_live_bot(symbols: List[str]) -> None:
                 last_eval_time = current_time_sec
 
                 # Settings already loaded at top of on_tick (cached, no disk I/O)
-                strategy_name = settings.get("active_strategy", "ema9_rsi_momentum")
+                strategy_name = settings.get("active_strategy", "ema9_fibo_smc_momentum")
                 is_live = not broker.paper_mode
                 target_pct = settings.get("target_pct", 500.0) / 100.0
                 sl_pct = settings.get("stoploss_pct", 15.0) / 100.0
@@ -2697,15 +2698,18 @@ async def run_live_bot(symbols: List[str]) -> None:
                                 )
                                 continue
                             sl_price = sl_decision.sl_price
-                            if strategy_name == EMA9_RSI_MOMENTUM_STRATEGY_NAME:
-                                # The owner's opening stop: 15% under entry, then
-                                # the exit ladder takes over (exit_ladder.py). The
-                                # band table above still vetoes an untradeable premium.
-                                from trading_bot.strategies.ema9_rsi_momentum.config import Ema9RsiMomentumConfig
-                                from trading_bot.strategies.ema9_rsi_momentum.exit_ladder import initial_stop
+                            if strategy_name in (EMA9_RSI_MOMENTUM_STRATEGY_NAME, EMA9_FIBO_SMC_MOMENTUM_STRATEGY_NAME):
+                                # The opening stop: 15% under entry, then
+                                # the exit ladder takes over (exit_ladder.py).
+                                if strategy_name == EMA9_FIBO_SMC_MOMENTUM_STRATEGY_NAME:
+                                    from trading_bot.strategies.ema9_fibo_smc_momentum.config import Ema9FiboSmcMomentumConfig as _InitStratCfg
+                                    from trading_bot.strategies.ema9_fibo_smc_momentum.exit_ladder import initial_stop
+                                else:
+                                    from trading_bot.strategies.ema9_rsi_momentum.config import Ema9RsiMomentumConfig as _InitStratCfg
+                                    from trading_bot.strategies.ema9_rsi_momentum.exit_ladder import initial_stop
                                 sl_price = initial_stop(
                                     entry_premium,
-                                    Ema9RsiMomentumConfig.from_settings(settings).initial_sl_pct,
+                                    _InitStratCfg.from_settings(settings).initial_sl_pct,
                                     float(settings.get("option_sl_tick_size", 0.05)),
                                 )
                             elif strategy_name == RSI_SMC_STRATEGY_NAME:
@@ -3011,7 +3015,11 @@ async def run_live_bot(symbols: List[str]) -> None:
                             )
 
                         # ── Send Telegram Alert ────────────────────────────
-                        strat_label = "EMA 9 / RSI Momentum" if strategy_name == "ema9_rsi_momentum" else strategy_name.replace("_", " ").title()
+                        strat_label = (
+                            "EMA 9 / Fibo OTE Pro" if strategy_name == "ema9_fibo_smc_momentum"
+                            else "EMA 9 / RSI Momentum" if strategy_name == "ema9_rsi_momentum"
+                            else strategy_name.replace("_", " ").title()
+                        )
                         alerter.send_trade_alert(
                             symbol=entry_symbol,
                             side=side_str,

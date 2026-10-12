@@ -40,7 +40,7 @@ DEFAULT_MAX_SPREAD_PCT: float = 1.2        # Max acceptable (Ask - Bid) / Ask %
 DEFAULT_REQUIRE_ABOVE_VWAP: bool = True     # Require Option LTP >= Option VWAP
 DEFAULT_MIN_VOLUME: int = 50               # Minimum traded volume for VWAP reliability
 DEFAULT_WARMUP_MINUTES: int = 3            # 09:15 to 09:18 IST warmup window
-DEFAULT_ENABLED_STRATEGIES = ("ema9_rsi_momentum",)
+DEFAULT_ENABLED_STRATEGIES = ("ema9_rsi_momentum", "ema9_fibo_smc_momentum")
 
 
 @dataclass(frozen=True)
