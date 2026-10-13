@@ -159,7 +159,7 @@ _m2m_last_update: float = 0.0
 # Import AI / Risk / Exit / Alert Modules
 from shared.ai import TradeFilterModel, compute_features
 from shared.risk import RiskManager, TradeRecord, resolve_initial_stop, resolve_min_confidence, find_stale_positions, seconds_since_any_tick, resolve_option_atr
-from shared.instruments import normalize_instrument
+from shared.instruments import normalize_instrument, INDEX_BROKER_SYMBOLS
 from shared.market_hours import is_market_open, is_before_eod_cutoff
 from shared.exits import SmartExitEngine, Position, PyramidSizer
 from shared.alerts.telegram import alerter
@@ -325,6 +325,13 @@ def _write_heartbeat(path: Path) -> None:
         raise
 
 
+def _canonical_position_key(key: str) -> str:
+    """The book key for a position: the broker index symbol the entry path
+    uses (``"NIFTY50"``/``"NIFTY"`` -> ``"NSE:NIFTY50-INDEX"``); any other key
+    is returned unchanged."""
+    return INDEX_BROKER_SYMBOLS.get(normalize_instrument(key), key)
+
+
 def _load_positions() -> Dict[str, Position]:
     if _POSITIONS_PATH.exists():
         try:
@@ -360,10 +367,24 @@ def _load_positions() -> Dict[str, Position]:
                     pos.scales_done = p.get("scales_done", 0)
                     pos.sl_order_id = p.get("sl_order_id", None)
                     pos.is_exiting = False  # Always reset on load — no in-flight tasks survive restart
-                    norm_k = normalize_instrument(sym)
-                    loaded[norm_k] = pos
-                    if sym != norm_k:
-                        loaded[sym] = pos
+                    # One key per position, in the form the entry path writes
+                    # (the broker's index symbol). Storing a second alias key
+                    # pointing at the same object made every loop over the
+                    # book see the position twice: emergency flatten and
+                    # reconciliation booked its P&L twice, and a dashboard
+                    # exit removed one key and left the other to be managed.
+                    key = _canonical_position_key(sym)
+                    if key in loaded:
+                        if loaded[key].symbol == pos.symbol:
+                            logger.warning("Dropped duplicate alias %s of position %s (%s).", sym, key, pos.symbol)
+                        else:
+                            logger.warning(
+                                "QUARANTINED POSITION: %s (%s) collides with %s (%s) on the same underlying.",
+                                sym, pos.symbol, key, loaded[key].symbol,
+                            )
+                            quarantined[sym] = p
+                        continue
+                    loaded[key] = pos
 
                 if quarantined:
                     q_path = _POSITIONS_PATH.parent / "quarantined_positions.json"
