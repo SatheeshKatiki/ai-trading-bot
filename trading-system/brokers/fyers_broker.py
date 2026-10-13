@@ -471,10 +471,18 @@ class FyersBroker(BaseBroker):
             resp   = self._fyers_model.orderbook()
             orders = []
             
+            # Fyers API v3 order status codes: 1 Cancelled, 2 Traded/Filled,
+            # 4 Transit (sent to exchange), 5 Rejected (RMS or exchange),
+            # 6 Pending (open in market), 7 Expired.
             def _map_status(fyers_status: int) -> OrderStatus:
-                if fyers_status == 2: return OrderStatus.COMPLETE
-                if fyers_status in (1, 6): return OrderStatus.CANCELLED
-                if fyers_status == 4: return OrderStatus.REJECTED
+                if fyers_status == 2:
+                    return OrderStatus.COMPLETE
+                if fyers_status == 1:
+                    return OrderStatus.CANCELLED
+                if fyers_status == 5:
+                    return OrderStatus.REJECTED
+                if fyers_status in (4, 6):
+                    return OrderStatus.OPEN  # 4 = Transit, 6 = Pending
                 return OrderStatus.OPEN
 
             for o in resp.get("orderBook", []):

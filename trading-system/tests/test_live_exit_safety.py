@@ -92,7 +92,7 @@ def test_restart_then_emergency_stop_books_pnl_once(tmp_path):
 
 import asyncio
 
-from brokers.models import OrderRequest, OrderSide, OrderType
+from brokers.models import OrderRequest, OrderSide, OrderStatus, OrderType
 from tests.fake_broker import FakeBroker
 from trading_bot.iceberg_manager import IcebergManager
 from trading_bot.order_safety import confirm_fills
@@ -733,3 +733,41 @@ def test_a_second_quarantine_keeps_the_first(tmp_path):
     records = _quarantine_file(tmp_path)
     assert len(records) == 2
     assert {r["symbol"] for r in records.values()} == {OPT, "NSE:NIFTY26OCT22400PE"}
+
+
+# ---------------------------------------------------------------------------
+# Fyers v3 order status codes
+# ---------------------------------------------------------------------------
+
+import pytest
+
+
+class _StubFyersModel:
+    def __init__(self, orders):
+        self._orders = orders
+
+    def orderbook(self):
+        return {"s": "ok", "code": 200, "orderBook": self._orders}
+
+
+@pytest.mark.parametrize("code, expected", [
+    (1, OrderStatus.CANCELLED),
+    (2, OrderStatus.COMPLETE),
+    (4, OrderStatus.OPEN),        # transit: sent to the exchange, may still fill
+    (5, OrderStatus.REJECTED),
+    (6, OrderStatus.OPEN),        # pending: open in the market
+])
+def test_fyers_order_status_codes(code, expected):
+    """The old map read 6 (pending) as CANCELLED, 5 (rejected) as OPEN and
+    4 (transit) as REJECTED, so a working order looked finished."""
+    from brokers.fyers_broker import FyersBroker
+
+    broker = FyersBroker({}, paper_mode=False)
+    broker._fyers_model = _StubFyersModel([{
+        "id": "F1", "symbol": OPT, "side": -1, "qty": 75, "filledQty": 25 if code == 6 else 0,
+        "limitPrice": 95.0, "tradedPrice": 95.0, "status": code, "type": 1,
+    }])
+    [entry] = broker.get_order_book()
+    assert entry.status == expected
+    if code == 6:
+        assert entry.filled_qty == 25
