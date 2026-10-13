@@ -88,6 +88,7 @@ _evaluating_symbols: set[str] = set()
 
 # Broker layer — broker-agnostic: trading logic never imports vendor SDKs directly
 from brokers import BrokerFactory, OrderRequest, OrderSide, OrderType
+from brokers.models import OrderStatus
 from trading_bot.reconciliation import compute_reconciliation
 from trading_bot.strategies.registry import registry
 from trading_bot.strategies.premium_selection import (
