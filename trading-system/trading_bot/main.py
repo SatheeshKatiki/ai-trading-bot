@@ -165,7 +165,7 @@ from shared.exits import SmartExitEngine, Position, PyramidSizer
 from shared.alerts.telegram import alerter
 from trading_bot.portfolio_risk import PortfolioRiskEngine
 from trading_bot.iceberg_manager import IcebergManager
-from trading_bot.order_safety import confirm_fills, execute_exit_orders, place_hard_stop, stop_request
+from trading_bot.order_safety import confirm_fills, execute_exit_orders, place_hard_stop, protect_remaining, stop_request
 
 # Security layer
 from shared.security import install_log_sanitizer, audit, validator
@@ -1408,6 +1408,15 @@ async def run_live_bot(symbols: List[str]) -> None:
         except Exception as e:
             logger.error("Failed to place new Trailing SL for %s: %s. Keeping old SL (ID: %s).", pos.symbol, e, old_id)
 
+    async def _restore_exchange_stop(broker, pos: Position) -> None:
+        """The exit cancelled the stop; put one back on the lots still open."""
+        if getattr(broker, "paper_mode", False) or pos.sl_order_id:
+            return
+        if await protect_remaining(broker, pos):
+            _save_positions(active_positions)
+        else:
+            _alert_no_exchange_stop(pos.symbol)
+
     async def background_iceberg_exit(
         broker, exit_req: OrderRequest, sym: str, side: int, entry_price: float,
         exit_price: float, qty_to_close: int, full_exit: bool
@@ -1443,6 +1452,7 @@ async def run_live_bot(symbols: List[str]) -> None:
                     return
                 logger.error("EXIT order completely failed to fill for %s. Resetting is_exiting — will retry next tick.", sym)
                 if pos:
+                    await _restore_exchange_stop(broker, pos)
                     pos.is_exiting = False
                 return
             ltp_actual = fill.avg_price
@@ -1473,6 +1483,11 @@ async def run_live_bot(symbols: List[str]) -> None:
                     pos.is_exiting = bool(unresolved)
                     logger.warning("Partial exit confirmed for %s: closed %d, remaining %d. Position kept alive.",
                                    sym, actual_exit_qty, pos.quantity)
+                    if not unresolved:
+                        # A sell that may still fill would make a full-size
+                        # stop oversell; with unresolved orders the operator
+                        # has already been told to check the terminal.
+                        await _restore_exchange_stop(broker, pos)
                 _save_positions(active_positions)
 
             # ── 2. Book PNL & risk accounting ──

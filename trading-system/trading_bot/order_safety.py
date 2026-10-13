@@ -292,3 +292,22 @@ async def place_hard_stop(broker: Any, pos: Any, qty: int) -> Optional[str]:
         logger.error("Exchange stop for %s returned no order id: %s", pos.symbol, resp)
         return None
     return order_id
+
+
+async def protect_remaining(broker: Any, pos: Any) -> Optional[str]:
+    """Put an exchange stop back on the lots an exit left open.
+
+    An exit cancels the stop before selling; if the sell fills only partly
+    (or not at all) the remaining lots would otherwise have no exchange stop
+    until some later exit succeeds. No-op when a stop is already tracked.
+    """
+    if getattr(broker, "paper_mode", False) or pos is None or pos.quantity <= 0:
+        return None
+    if getattr(pos, "sl_order_id", None):
+        return pos.sl_order_id
+    order_id = await place_hard_stop(broker, pos, pos.quantity)
+    if order_id:
+        pos.sl_order_id = order_id
+        logger.info("Exchange stop restored for %d remaining of %s at %.2f (ID: %s)",
+                    pos.quantity, pos.symbol, pos.stop_loss, order_id)
+    return order_id

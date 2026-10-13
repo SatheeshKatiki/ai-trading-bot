@@ -330,3 +330,54 @@ def test_place_hard_stop_reports_failure_as_none():
     broker.script_next(place_fails=True)
     assert asyncio.run(place_hard_stop(broker, _position(), 75)) is None
     assert asyncio.run(place_hard_stop(broker, _position(), 75)) == "F1"
+
+
+# ---------------------------------------------------------------------------
+# #6 -- lots left open by an exit get an exchange stop back
+# ---------------------------------------------------------------------------
+
+from trading_bot.order_safety import protect_remaining
+
+
+def _exit_then_protect(broker: FakeBroker, pos: Position):
+    async def run():
+        fill = await _exit(broker, pos)
+        pos.quantity -= fill.filled_qty
+        await protect_remaining(broker, pos)
+        return fill
+    return asyncio.run(run())
+
+
+def test_a_partial_exit_restores_a_stop_for_the_remainder():
+    broker = FakeBroker(holdings={OPT: 150})
+    pos = _position(qty=150)
+    _place_stop(broker, pos)
+    broker.script_next(fill_after=0.0, fill_qty=75)     # local sell fills half
+
+    fill = _exit_then_protect(broker, pos)
+    assert fill.local_filled == 75 and pos.quantity == 75
+    stops = broker.live_stops(OPT)
+    assert len(stops) == 1 and stops[0].request.quantity == 75
+    assert pos.sl_order_id == stops[0].order_id
+    broker.trigger(pos.sl_order_id)
+    assert broker.net[OPT] == 0
+
+
+def test_an_unfilled_exit_restores_the_stop():
+    broker = FakeBroker(holdings={OPT: 75})
+    pos = _position()
+    _place_stop(broker, pos)
+    broker.script_next(fill_after=None)                 # local sell never fills
+
+    fill = _exit_then_protect(broker, pos)
+    assert fill.filled_qty == 0
+    stops = broker.live_stops(OPT)
+    assert len(stops) == 1 and stops[0].request.quantity == 75
+
+
+def test_protect_remaining_keeps_an_existing_stop():
+    broker = FakeBroker(holdings={OPT: 75})
+    pos = _position()
+    stop_id = _place_stop(broker, pos)
+    assert asyncio.run(protect_remaining(broker, pos)) == stop_id
+    assert len(broker.live_stops()) == 1
