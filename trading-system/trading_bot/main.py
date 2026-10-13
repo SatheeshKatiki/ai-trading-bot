@@ -165,6 +165,7 @@ from shared.exits import SmartExitEngine, Position, PyramidSizer
 from shared.alerts.telegram import alerter
 from trading_bot.portfolio_risk import PortfolioRiskEngine
 from trading_bot.iceberg_manager import IcebergManager
+from trading_bot.order_safety import confirm_fills
 
 # Security layer
 from shared.security import install_log_sanitizer, audit, validator
@@ -214,6 +215,19 @@ def _track_task(task: asyncio.Task) -> asyncio.Task:
     _active_background_tasks.add(task)
     task.add_done_callback(_active_background_tasks.discard)
     return task
+
+
+def _alert_unresolved_orders(symbol: str, leg: str, order_ids: List[str]) -> None:
+    """Orders whose remainder could not be cancelled may still trade."""
+    logger.critical("UNRESOLVED %s ORDERS for %s: %s may still fill -- check the broker terminal.",
+                    leg.upper(), symbol, order_ids)
+    try:
+        alerter.send_alert(
+            f"🚨 **{leg.upper()} ORDER UNRESOLVED** for {symbol}: order(s) {', '.join(order_ids)} "
+            f"could not be cancelled and may still fill. Check the broker terminal."
+        )
+    except Exception as exc:
+        logger.error("Unresolved-order alert failed: %s", exc)
 
 
 def _save_positions(positions: Dict[str, Position]) -> None:
@@ -1263,49 +1277,17 @@ async def run_live_bot(symbols: List[str]) -> None:
                     halt_check=lambda: portfolio_risk.trading_halted
                 )
             
-            confirmed_qty = 0
-            total_cost = 0.0
-            unfilled_slice_ids = []
-
             if getattr(broker, 'paper_mode', False):
                 confirmed_qty = sum(resp.quantity for resp in executed_slices)
                 total_cost = (entry_req.price if entry_req.price > 0 else pos_obj.entry_price) * confirmed_qty
             else:
-                # Poll order statuses up to 3 seconds for confirmed fill details
-                poll_deadline = time.time() + 3.0
-                for resp in executed_slices:
-                    if not resp or not resp.order_id:
-                        continue
-                    slice_filled = 0
-                    slice_price = 0.0
-                    while time.time() < poll_deadline:
-                        try:
-                            status = await asyncio.to_thread(broker.get_order_status, resp.order_id)
-                            if status:
-                                slice_filled = getattr(status, "filled_qty", 0) or (
-                                    status.quantity if status.status in (OrderStatus.COMPLETE, "COMPLETE", "FILLED", "TRADED") else 0
-                                )
-                                slice_price = getattr(status, "traded_price", 0.0)
-                                if status.status in (OrderStatus.COMPLETE, OrderStatus.CANCELLED, OrderStatus.REJECTED):
-                                    break
-                        except Exception as poll_e:
-                            logger.warning("Error checking entry slice status %s: %s", resp.order_id, poll_e)
-                        await asyncio.sleep(0.5)
-
-                    if slice_filled > 0:
-                        confirmed_qty += slice_filled
-                        p_used = slice_price if slice_price > 0 else pos_obj.entry_price
-                        total_cost += p_used * slice_filled
-
-                    if slice_filled < resp.quantity:
-                        unfilled_slice_ids.append(resp.order_id)
-
-            # Cancel remaining unfilled slice parts to prevent dangling fills
-            for u_id in unfilled_slice_ids:
-                try:
-                    await asyncio.to_thread(broker.cancel_order, u_id)
-                except Exception:
-                    pass
+                # Each slice is settled against its own deadline, its remainder
+                # cancelled, and its fill read back after the cancel.
+                fills = await confirm_fills(broker, executed_slices)
+                confirmed_qty = fills.filled_qty
+                total_cost = fills.avg_price(pos_obj.entry_price) * confirmed_qty
+                if fills.unresolved_order_ids:
+                    _alert_unresolved_orders(pos_obj.symbol, "entry", fills.unresolved_order_ids)
 
             if confirmed_qty == 0:
                 logger.error("Entry order completely failed to fill for %s. Removing ghost position.", s)
@@ -1437,6 +1419,7 @@ async def run_live_bot(symbols: List[str]) -> None:
             actual_exit_qty = 0
             ltp_actual = exit_price
             broker_sl_hit = False
+            unresolved: List[str] = []
 
             async with _iceberg_semaphore:
                 # Re-fetch: active_positions may have changed while waiting
@@ -1479,60 +1462,31 @@ async def run_live_bot(symbols: List[str]) -> None:
                     )
             
             if not broker_sl_hit:
-                confirmed_filled_qty = 0
-                total_value = 0.0
-                unfilled_slices = []
-
                 if getattr(broker, 'paper_mode', False):
                     confirmed_filled_qty = sum(resp.quantity for resp in executed_slices)
                     ltp_actual = exit_price
                 else:
-                    # Poll broker order statuses up to 3 seconds for confirmed fill
-                    poll_deadline = time.time() + 3.0
-                    for resp in executed_slices:
-                        if not resp or not resp.order_id:
-                            continue
-                        slice_filled = 0
-                        slice_price = 0.0
-                        while time.time() < poll_deadline:
-                            try:
-                                status = await asyncio.to_thread(broker.get_order_status, resp.order_id)
-                                if status:
-                                    slice_filled = getattr(status, "filled_qty", 0) or (
-                                        status.quantity if status.status in (OrderStatus.COMPLETE, "COMPLETE", "FILLED", "TRADED") else 0
-                                    )
-                                    slice_price = getattr(status, "traded_price", 0.0)
-                                    if status.status in (OrderStatus.COMPLETE, OrderStatus.CANCELLED, OrderStatus.REJECTED):
-                                        break
-                            except Exception as poll_e:
-                                logger.warning("Error checking exit slice %s: %s", resp.order_id, poll_e)
-                            await asyncio.sleep(0.5)
-
-                        if slice_filled > 0:
-                            confirmed_filled_qty += slice_filled
-                            p_used = slice_price if slice_price > 0 else exit_price
-                            total_value += p_used * slice_filled
-
-                        if slice_filled < resp.quantity:
-                            unfilled_slices.append(resp.order_id)
-
-                # Cancel any remaining unfilled slices
-                for u_id in unfilled_slices:
-                    try:
-                        await asyncio.to_thread(broker.cancel_order, u_id)
-                    except Exception:
-                        pass
+                    fills = await confirm_fills(broker, executed_slices)
+                    confirmed_filled_qty = fills.filled_qty
+                    unresolved = fills.unresolved_order_ids
+                    if confirmed_filled_qty > 0:
+                        ltp_actual = fills.avg_price(exit_price)
+                        logger.info("Actual Exit Price for %s resolved to %.2f (Slippage adjusted)", sym, ltp_actual)
+                    if unresolved:
+                        # A sell that could not be cancelled may still fill.
+                        # Releasing the lock would let the next tick sell the
+                        # same lots again, so the position stays locked.
+                        _alert_unresolved_orders(exit_req.symbol, "exit", unresolved)
 
                 if confirmed_filled_qty == 0:
+                    if unresolved:
+                        return
                     logger.error("EXIT order completely failed to fill for %s. Resetting is_exiting — will retry next tick.", sym)
                     if pos:
                         pos.is_exiting = False
                     return
 
                 actual_exit_qty = confirmed_filled_qty
-                if confirmed_filled_qty > 0 and total_value > 0:
-                    ltp_actual = total_value / confirmed_filled_qty
-                    logger.info("Actual Exit Price for %s resolved to %.2f (Slippage adjusted)", sym, ltp_actual)
 
             # ── 1. STATE MUTATION FIRST: Remove or reduce position in shared state ──
             target_key = None
@@ -1555,7 +1509,7 @@ async def run_live_bot(symbols: List[str]) -> None:
                 else:
                     # Partial fill: only reduce by what actually filled!
                     pos.quantity -= actual_exit_qty
-                    pos.is_exiting = False
+                    pos.is_exiting = bool(unresolved)
                     logger.warning("Partial exit confirmed for %s: closed %d, remaining %d. Position kept alive.",
                                    sym, actual_exit_qty, pos.quantity)
                 _save_positions(active_positions)
