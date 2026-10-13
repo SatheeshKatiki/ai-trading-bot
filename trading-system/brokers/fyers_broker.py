@@ -477,8 +477,8 @@ class FyersBroker(BaseBroker):
             def _map_status(fyers_status: int) -> OrderStatus:
                 if fyers_status == 2:
                     return OrderStatus.COMPLETE
-                if fyers_status == 1:
-                    return OrderStatus.CANCELLED
+                if fyers_status in (1, 7):
+                    return OrderStatus.CANCELLED  # 7 = Expired: can never fill
                 if fyers_status == 5:
                     return OrderStatus.REJECTED
                 if fyers_status in (4, 6):
@@ -486,7 +486,8 @@ class FyersBroker(BaseBroker):
                 return OrderStatus.OPEN
 
             for o in resp.get("orderBook", []):
-                stat = _map_status(o.get("status", 5))
+                # No status: assume pending (possibly live), never finished.
+                stat = _map_status(o.get("status", 6))
                 raw_fq = o.get("filledQty", 0) or o.get("tradedQty", 0)
                 filled_qty = int(raw_fq) if raw_fq else (int(o.get("qty", 0)) if stat == OrderStatus.COMPLETE else 0)
                 orders.append(OrderBookEntry(

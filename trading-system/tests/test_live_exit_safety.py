@@ -756,6 +756,8 @@ class _StubFyersModel:
     (4, OrderStatus.OPEN),        # transit: sent to the exchange, may still fill
     (5, OrderStatus.REJECTED),
     (6, OrderStatus.OPEN),        # pending: open in the market
+    (7, OrderStatus.CANCELLED),   # expired: can never fill
+    (None, OrderStatus.OPEN),     # no status reported: assume possibly live
 ])
 def test_fyers_order_status_codes(code, expected):
     """The old map read 6 (pending) as CANCELLED, 5 (rejected) as OPEN and
@@ -765,7 +767,8 @@ def test_fyers_order_status_codes(code, expected):
     broker = FyersBroker({}, paper_mode=False)
     broker._fyers_model = _StubFyersModel([{
         "id": "F1", "symbol": OPT, "side": -1, "qty": 75, "filledQty": 25 if code == 6 else 0,
-        "limitPrice": 95.0, "tradedPrice": 95.0, "status": code, "type": 1,
+        "limitPrice": 95.0, "tradedPrice": 95.0, "type": 1,
+        **({} if code is None else {"status": code}),
     }])
     [entry] = broker.get_order_book()
     assert entry.status == expected
