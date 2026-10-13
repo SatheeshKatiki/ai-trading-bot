@@ -88,3 +88,43 @@ def acquire_singleton_lock(name: str, script_hint: str) -> None:
             file=sys.stderr,
         )
         sys.exit(1)
+
+
+#: Held for the life of the process that owns config/active_positions.json.
+_held_locks: list = []
+
+#: The processes that write config/active_positions.json. Only one may run.
+BOOK_LOCK_NAME = "positions_book"
+
+
+def hold_book_lock(owner: str) -> None:
+    """Exit unless this process can become the only writer of the positions book.
+
+    main.py and paper_observer.py both write config/active_positions.json and
+    must never run together; each has its own singleton lock, which does not
+    stop the other. This is one OS-level lock both take and hold until the
+    process exits (the OS releases it on a crash too, so there is no stale
+    PID file to clear). `owner` is recorded beside it for the error message.
+    """
+    _LOCK_DIR.mkdir(exist_ok=True)
+    lock = filelock.FileLock(str(_LOCK_DIR / f"{BOOK_LOCK_NAME}.lock"))
+    owner_path = _LOCK_DIR / f"{BOOK_LOCK_NAME}.owner"
+    try:
+        lock.acquire(timeout=0)
+    except filelock.Timeout:
+        try:
+            holder = owner_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            holder = "unknown"
+        print(
+            f"FATAL: the positions book (config/active_positions.json) is already owned by "
+            f"{holder}. {owner} refuses to start beside it -- the two would overwrite each "
+            f"other's positions.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    _held_locks.append(lock)
+    try:
+        owner_path.write_text(f"{owner} (PID {os.getpid()})", encoding="utf-8")
+    except OSError:
+        pass

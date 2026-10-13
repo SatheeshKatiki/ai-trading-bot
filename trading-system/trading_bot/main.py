@@ -3800,8 +3800,9 @@ def _count_trades_already_executed_today(trades: List[Dict[str, Any]], today_str
 
 
 if __name__ == "__main__":
-    from shared.singleton_lock import acquire_singleton_lock
+    from shared.singleton_lock import acquire_singleton_lock, hold_book_lock
     acquire_singleton_lock("main", script_hint="main.py")
+    hold_book_lock("trading_bot/main.py")
 
     # Run automated system maintenance on startup — cleans old logs,
     # truncates unbounded SDK logs, purges __pycache__ and stale .bak files.

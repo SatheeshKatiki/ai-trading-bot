@@ -41,13 +41,6 @@ try:
 except Exception:
     m_res = None
 
-# Process singleton lock (prevents concurrent duplicate paper observers)
-try:
-    from shared.singleton_lock import acquire_singleton_lock
-    acquire_singleton_lock("paper_observer", "paper_observer.py")
-except Exception as lock_err:
-    pass
-
 # Telegram Alerts Integration
 try:
     from shared.alerts.telegram import alerter
@@ -1291,4 +1284,10 @@ def main():
             break
 
 if __name__ == "__main__":
+    # Taken here, not at import: ema9_variant_observer imports this module
+    # for its helpers, and a lock taken on import made that book exit
+    # whenever this observer was already running.
+    from shared.singleton_lock import acquire_singleton_lock, hold_book_lock
+    acquire_singleton_lock("paper_observer", "paper_observer.py")
+    hold_book_lock("paper_observer.py")
     main()

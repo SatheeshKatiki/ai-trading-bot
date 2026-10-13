@@ -613,3 +613,76 @@ def test_an_exit_signal_during_the_entry_fill_waits_for_the_fill():
     assert [r.quantity for r in sells] == [75]          # sold what was bought, once
     assert broker.net[OPT] == 0 and pos.quantity == 0
 
+
+
+# ---------------------------------------------------------------------------
+# #8 -- one owner of config/active_positions.json
+# ---------------------------------------------------------------------------
+
+import ast
+import subprocess
+import sys
+import textwrap
+from pathlib import Path
+
+_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _book_lock_process(lock_dir: Path, owner: str, hold_s: float) -> subprocess.Popen:
+    code = textwrap.dedent(f"""
+        import sys, time
+        from pathlib import Path
+        sys.path.insert(0, {str(_ROOT)!r})
+        import shared.singleton_lock as sl
+        sl._LOCK_DIR = Path({str(lock_dir)!r})
+        sl.hold_book_lock({owner!r})
+        print("HELD", flush=True)
+        time.sleep({hold_s})
+    """)
+    return subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True)
+
+
+def test_a_second_book_refuses_to_start_beside_the_first(tmp_path):
+    first = _book_lock_process(tmp_path, "trading_bot/main.py", hold_s=20)
+    try:
+        assert first.stdout.readline().strip() == "HELD"
+        second = _book_lock_process(tmp_path, "paper_observer.py", hold_s=0)
+        out, err = second.communicate(timeout=30)
+        assert second.returncode == 1
+        assert "already owned by trading_bot/main.py" in err
+        assert "HELD" not in out
+    finally:
+        first.kill()
+        first.communicate()
+
+
+def test_the_book_lock_is_free_again_after_its_owner_exits(tmp_path):
+    first = _book_lock_process(tmp_path, "trading_bot/main.py", hold_s=0)
+    first.communicate(timeout=30)
+    second = _book_lock_process(tmp_path, "paper_observer.py", hold_s=0)
+    out, _ = second.communicate(timeout=30)
+    assert second.returncode == 0 and "HELD" in out
+
+
+def _lock_calls_outside_main_guard(path: Path) -> list[int]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    guarded = set()
+    for node in tree.body:
+        if (isinstance(node, ast.If) and isinstance(node.test, ast.Compare)
+                and getattr(node.test.left, "id", None) == "__name__"):
+            guarded.update(id(n) for n in ast.walk(node))
+    return [n.lineno for n in ast.walk(tree)
+            if isinstance(n, ast.Call) and getattr(n.func, "id", None) in ("acquire_singleton_lock", "hold_book_lock")
+            and id(n) not in guarded]
+
+
+def test_importing_paper_observer_takes_no_lock():
+    """ema9_variant_observer imports paper_observer for its helpers; a lock
+    taken at import made that book exit whenever the observer was running."""
+    assert _lock_calls_outside_main_guard(_ROOT / "paper_observer.py") == []
+
+
+def test_both_books_take_the_shared_book_lock():
+    for script in ("paper_observer.py", "trading_bot/main.py"):
+        assert "hold_book_lock(" in (_ROOT / script).read_text(encoding="utf-8"), script
