@@ -222,16 +222,14 @@ async def execute_exit_orders(
     result = ExitFill()
     held = int(pos.quantity) if pos is not None else int(exit_req.quantity)
 
-    if pos is not None and getattr(pos, "sl_order_id", None):
-        stop = await resolve_stop(broker, pos.sl_order_id)
-        if not stop.cleared:
-            logger.error("Exchange stop %s for %s could not be cancelled -- not selling locally.",
-                         pos.sl_order_id, exit_req.symbol)
-            result.stop_cleared = False
-            return result
-        pos.sl_order_id = None
-        result.stop_filled = min(stop.filled, held)
-        result.stop_price = stop.avg_price if stop.avg_price > 0 else float(getattr(pos, "stop_loss", exit_price))
+    if pos is not None:
+        # Under the stop lock, so a trailing-stop replacement cannot place a
+        # new stop between this resolution and the local sell.
+        async with guard_for(pos).stop_lock:
+            if not await _clear_all_stops(broker, pos, result, held, exit_price):
+                logger.error("Exchange stop %s for %s could not be cancelled -- not selling locally.",
+                             pos.sl_order_id, exit_req.symbol)
+                return result
         if result.stop_filled:
             logger.warning("Exchange stop for %s had already sold %d of %d.",
                            exit_req.symbol, result.stop_filled, held)
@@ -338,6 +336,12 @@ class PositionGuard:
     hold_reason: Optional[str] = None
     #: Entry orders are still being placed or settled.
     entry_pending: bool = False
+    #: Stops other than pos.sl_order_id that may still be live (a replacement
+    #: whose cleanup was refused). An exit must clear these too.
+    extra_stop_ids: List[str] = field(default_factory=list)
+    #: Stops that can no longer trade but sold lots the book has not yet
+    #: booked. The next exit counts their fills.
+    dead_stop_ids: List[str] = field(default_factory=list)
 
 
 # id(pos) -> (pos, guard). Holding `pos` keeps its id from being reused while
@@ -405,3 +409,98 @@ def exit_in_flight(pos: Any, now: Optional[float] = None,
     guard.exit_task = None
     pos.is_exiting = False
     return False
+
+
+async def _clear_all_stops(broker: Any, pos: Any, result: ExitFill, held: int, exit_price: float) -> bool:
+    """Take every exchange stop of `pos` out of play and count what they sold.
+
+    False (with `result.stop_cleared` False) when any stop is still live; the
+    ones that are, stay tracked so a later attempt retries them.
+    """
+    guard = guard_for(pos)
+    candidates = [oid for oid in [pos.sl_order_id, *guard.extra_stop_ids] if oid]
+    still_live: List[str] = []
+    for order_id in candidates:
+        stop = await resolve_stop(broker, order_id)
+        if not stop.cleared:
+            still_live.append(order_id)
+        elif stop.filled > 0 and order_id not in guard.dead_stop_ids:
+            guard.dead_stop_ids.append(order_id)
+    if still_live:
+        pos.sl_order_id, guard.extra_stop_ids = still_live[0], still_live[1:]
+        result.stop_cleared = False
+        return False
+    pos.sl_order_id, guard.extra_stop_ids = None, []
+
+    filled, value = 0, 0.0
+    for order_id in guard.dead_stop_ids:
+        qty, price = filled_of(await read_order(broker, order_id))
+        filled += qty
+        value += qty * (price if price > 0 else float(getattr(pos, "stop_loss", exit_price)))
+    guard.dead_stop_ids = []
+    result.stop_filled = min(filled, held)
+    result.stop_price = value / filled if filled else 0.0
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Trailing-stop replacement
+# ---------------------------------------------------------------------------
+
+async def replace_stop(broker: Any, pos: Any, still_open: Callable[[], bool]) -> str:
+    """Move `pos`'s exchange stop to `pos.stop_loss`, keeping at most one live stop.
+
+    New stop first, then the old one cancelled. If the old one will not
+    cancel, the new one is cancelled instead so the old stop stays the only
+    one. Runs under the position's stop lock, and does nothing once an exit
+    has started or the position has left the book, so it can never leave a
+    stop behind a closed position.
+
+    Returns "replaced", "placed", "skipped", "kept_old" (the old stop is
+    still the live one), "stop_fired" (the old stop had sold lots) or
+    "two_live" (both could be live; tracked for the exit to clear).
+    """
+    guard = guard_for(pos)
+    async with guard.stop_lock:
+        if exit_running(pos) or not still_open() or pos.quantity <= 0:
+            return "skipped"
+        old_id = pos.sl_order_id
+        new_id = await place_hard_stop(broker, pos, pos.quantity)
+        if not new_id:
+            return "kept_old"
+        if not old_id:
+            pos.sl_order_id = new_id
+            return "placed"
+
+        if await cancel_order(broker, old_id):
+            sold, _ = filled_of(await read_order(broker, old_id))
+            pos.sl_order_id = new_id
+            if sold <= 0:
+                return "replaced"
+            # The old stop sold lots before the cancel landed; the new stop
+            # covers the full quantity and would oversell. Shrink it.
+            guard.dead_stop_ids.append(old_id)
+            await _shrink_stop(broker, pos, guard, pos.quantity - sold)
+            return "stop_fired"
+
+        old = await read_order(broker, old_id)
+        if old is not None and old.status == OrderStatus.COMPLETE:
+            # The old stop has closed the position; the new one must go.
+            pos.sl_order_id = old_id
+            if not await cancel_order(broker, new_id):
+                guard.extra_stop_ids.append(new_id)
+            return "stop_fired"
+        if await cancel_order(broker, new_id):
+            return "kept_old"
+        pos.sl_order_id = new_id
+        guard.extra_stop_ids.append(old_id)
+        return "two_live"
+
+
+async def _shrink_stop(broker: Any, pos: Any, guard: PositionGuard, qty: int) -> None:
+    current = pos.sl_order_id
+    if not await cancel_order(broker, current):
+        return
+    pos.sl_order_id = None
+    if qty > 0:
+        pos.sl_order_id = await place_hard_stop(broker, pos, qty)

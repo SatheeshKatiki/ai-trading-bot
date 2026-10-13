@@ -443,3 +443,120 @@ def test_a_held_position_stays_locked_after_its_task_ends():
 
     pos = asyncio.run(run())
     assert exit_in_flight(pos) is True
+
+
+# ---------------------------------------------------------------------------
+# #3 -- trailing-stop replacement keeps at most one live stop
+# ---------------------------------------------------------------------------
+
+from trading_bot.order_safety import replace_stop
+
+
+def _open(pos):
+    return lambda: True
+
+
+def test_two_rungs_in_quick_succession_leave_one_stop():
+    async def run():
+        broker = FakeBroker(holdings={OPT: 75})
+        broker.place_delay = 0.05
+        pos = _position()
+        _place_stop(broker, pos)
+        pos.stop_loss = 100.0
+        t1 = asyncio.create_task(replace_stop(broker, pos, _open(pos)))
+        await asyncio.sleep(0.01)
+        pos.stop_loss = 115.0                       # next rung lands mid-replacement
+        t2 = asyncio.create_task(replace_stop(broker, pos, _open(pos)))
+        return broker, pos, await asyncio.gather(t1, t2)
+
+    broker, pos, outcomes = asyncio.run(run())
+    assert outcomes == ["replaced", "replaced"]
+    stops = broker.live_stops(OPT)
+    assert [s.order_id for s in stops] == [pos.sl_order_id]
+    assert stops[0].request.trigger_price == 115.0 and stops[0].request.quantity == 75
+
+
+def test_a_refused_cancel_of_the_old_stop_cancels_the_new_one():
+    broker = FakeBroker(holdings={OPT: 75})
+    pos = _position()
+    old_id = _place_stop(broker, pos, cancel_fail_count=1)
+    pos.stop_loss = 100.0
+
+    outcome = asyncio.run(replace_stop(broker, pos, _open(pos)))
+    assert outcome == "kept_old"
+    assert [s.order_id for s in broker.live_stops()] == [old_id] == [pos.sl_order_id]
+
+
+def test_two_live_stops_are_both_cleared_before_the_exit_sells():
+    broker = FakeBroker(holdings={OPT: 75})
+    pos = _position()
+    _place_stop(broker, pos, cancel_fail_count=1)
+    broker.script_next(cancel_fail_count=1)         # the new stop's cleanup fails once too
+    pos.stop_loss = 100.0
+
+    assert asyncio.run(replace_stop(broker, pos, _open(pos))) == "two_live"
+    assert len(broker.live_stops()) == 2
+    fill = asyncio.run(_exit(broker, pos))
+    assert fill.local_filled == 75
+    assert broker.live_stops() == [] and broker.net[OPT] == 0
+
+
+def test_a_stop_update_queued_behind_an_exit_places_nothing():
+    """The update would otherwise place a fresh stop after the exit had
+    closed the position: a live sell order against no holdings."""
+    async def run():
+        broker = FakeBroker(holdings={OPT: 75})
+        broker.place_delay = 0.05
+        pos = _position()
+        _place_stop(broker, pos)
+        pos.is_exiting = True
+        start_exit(pos, asyncio.create_task(_exit(broker, pos)))
+        await asyncio.sleep(0)                      # the exit takes the stop lock first
+        pos.stop_loss = 100.0
+        outcome = await replace_stop(broker, pos, _open(pos))
+        await guard_for(pos).exit_task
+        return broker, outcome
+
+    broker, outcome = asyncio.run(run())
+    assert outcome == "skipped"
+    assert broker.live_stops() == [] and broker.net[OPT] == 0
+
+
+def test_an_exit_waits_for_an_in_flight_stop_update():
+    async def run():
+        broker = FakeBroker(holdings={OPT: 75})
+        broker.place_delay = 0.05
+        pos = _position()
+        _place_stop(broker, pos)
+        pos.stop_loss = 100.0
+        update = asyncio.create_task(replace_stop(broker, pos, _open(pos)))
+        await asyncio.sleep(0.01)                   # the update is placing its new stop
+        fill = await _exit(broker, pos)
+        return broker, await update, fill
+
+    broker, outcome, fill = asyncio.run(run())
+    assert outcome == "replaced"
+    assert fill.local_filled == 75
+    assert broker.live_stops() == [] and broker.net[OPT] == 0
+
+
+def test_an_update_after_the_position_closed_places_nothing():
+    broker = FakeBroker(holdings={OPT: 75})
+    pos = _position()
+    assert asyncio.run(replace_stop(broker, pos, lambda: False)) == "skipped"
+    assert broker.place_calls == []
+
+
+def test_an_old_stop_that_sold_during_replacement_shrinks_the_new_one():
+    broker = FakeBroker(holdings={OPT: 75})
+    pos = _position()
+    _place_stop(broker, pos, fill_on_cancel=25, fill_price=84.0)
+    pos.stop_loss = 100.0
+
+    assert asyncio.run(replace_stop(broker, pos, _open(pos))) == "stop_fired"
+    stops = broker.live_stops(OPT)
+    assert len(stops) == 1 and stops[0].request.quantity == 50
+
+    fill = asyncio.run(_exit(broker, pos))
+    assert (fill.stop_filled, fill.local_filled) == (25, 50)
+    assert broker.live_stops() == [] and broker.net[OPT] == 0

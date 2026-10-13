@@ -166,7 +166,7 @@ from trading_bot.portfolio_risk import PortfolioRiskEngine
 from trading_bot.iceberg_manager import IcebergManager
 from trading_bot.order_safety import (
     confirm_fills, execute_exit_orders, exit_in_flight, forget, guard_for, place_hard_stop,
-    protect_remaining, start_exit, stop_request,
+    protect_remaining, replace_stop, start_exit,
 )
 
 # Security layer
@@ -1390,35 +1390,34 @@ async def run_live_bot(symbols: List[str]) -> None:
                 _save_positions(active_positions)
 
     async def update_exchange_sl(broker, pos: Position):
-        """Places updated Trailing SL at the Exchange first, then cancels the old one."""
-        old_id = getattr(pos, 'sl_order_id', None)
-        new_sl_req = stop_request(pos, pos.quantity)
-        sl_limit_price = new_sl_req.price
+        """Move the exchange stop to pos.stop_loss, keeping at most one live stop.
 
+        Serialised per position with the exit's own stop handling, and a no-op
+        once an exit has started or the position has closed (see
+        order_safety.replace_stop for every outcome)."""
         try:
-            sl_resp = await broker.place_order_async(new_sl_req)
-            if sl_resp and sl_resp.order_id:
-                new_id = sl_resp.order_id
-                pos.sl_order_id = new_id
-                logger.info("New Trailing SL placed at Exchange for %s at %.2f (Limit: %.2f, ID: %s)", 
-                            pos.symbol, pos.stop_loss, sl_limit_price, new_id)
-                _save_positions(active_positions)
-                
-                # Cancel the old stop order only AFTER the new one is active
-                if old_id:
-                    try:
-                        await asyncio.to_thread(broker.cancel_order, old_id)
-                        logger.info("Cancelled old Trailing SL (ID: %s) for %s", old_id, pos.symbol)
-                    except Exception as cancel_e:
-                        logger.warning("Failed to cancel old SL (ID: %s) for %s: %s", old_id, pos.symbol, cancel_e)
-            else:
-                logger.error("CRITICAL: Failed to place new Trailing SL for %s (no order_id). Keeping old SL (ID: %s).", pos.symbol, old_id)
-                try:
-                    alerter.send_alert(f"⚠️ Trailing SL update returned no ID for {pos.symbol}. Old SL remains active.")
-                except Exception:
-                    pass
+            outcome = await replace_stop(
+                broker, pos, still_open=lambda: any(p is pos for p in active_positions.values()))
         except Exception as e:
-            logger.error("Failed to place new Trailing SL for %s: %s. Keeping old SL (ID: %s).", pos.symbol, e, old_id)
+            logger.error("Trailing SL update failed for %s: %s", pos.symbol, e)
+            return
+        if outcome in ("replaced", "placed"):
+            logger.info("Trailing SL at Exchange for %s now %.2f (ID: %s)", pos.symbol, pos.stop_loss, pos.sl_order_id)
+            _save_positions(active_positions)
+            return
+        if outcome == "skipped":
+            return
+        _save_positions(active_positions)
+        message = {
+            "kept_old": f"⚠️ Trailing SL update for {pos.symbol} did not go through; the previous stop (ID {pos.sl_order_id}) is still the live one.",
+            "stop_fired": f"🚨 **STOP FIRED DURING UPDATE** for {pos.symbol}: the previous exchange stop sold lots while being replaced. The next exit will account for them; check the broker terminal.",
+            "two_live": f"🚨 **TWO LIVE STOPS** for {pos.symbol}: the previous stop could not be cancelled and neither could the new one. Cancel one on the broker terminal.",
+        }.get(outcome, f"⚠️ Trailing SL update for {pos.symbol}: {outcome}")
+        logger.error("Trailing SL update for %s: %s", pos.symbol, outcome)
+        try:
+            alerter.send_alert(message)
+        except Exception as exc:
+            logger.error("Trailing SL alert failed: %s", exc)
 
     async def _restore_exchange_stop(broker, pos: Position) -> None:
         """The exit cancelled the stop; put one back on the lots still open."""
@@ -2043,7 +2042,7 @@ async def run_live_bot(symbols: List[str]) -> None:
                         )
                         _save_positions(active_positions)
                         if not broker.paper_mode:
-                            asyncio.create_task(update_exchange_sl(broker, open_position))
+                            _track_task(asyncio.create_task(update_exchange_sl(broker, open_position)))
                 elif strategy_name == RSI_SMC_STRATEGY_NAME and is_opt_pos:
                     # ── M1: rsi_smc_options_buyer option exits ──────────────
                     # EOD square-off first, then the premium ladder, then the
@@ -2105,7 +2104,7 @@ async def run_live_bot(symbols: List[str]) -> None:
                             )
                             _save_positions(active_positions)
                             if not broker.paper_mode:
-                                asyncio.create_task(update_exchange_sl(broker, open_position))
+                                _track_task(asyncio.create_task(update_exchange_sl(broker, open_position)))
                     except Exception as _rsi_smc_exc:
                         logger.error(
                             "rsi_smc_options_buyer: exit evaluation failed for %s "
@@ -2180,7 +2179,7 @@ async def run_live_bot(symbols: List[str]) -> None:
                             execution_time=datetime.now(_IST).strftime("%I:%M:%S %p"),
                         )
                         if not broker.paper_mode:
-                            asyncio.create_task(update_exchange_sl(broker, open_position))
+                            _track_task(asyncio.create_task(update_exchange_sl(broker, open_position)))
 
             if should_exit:
                 qty_to_close = exit_qty if exit_qty else open_position.quantity

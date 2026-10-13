@@ -36,6 +36,7 @@ class Script:
     fill_on_cancel: fill this much the instant a cancel arrives, before the
     cancel is applied -- the fill-versus-cancel race.
     cancel_fails: the cancel raises (True) or returns an error dict ("dict").
+    cancel_fail_count: the first N cancels raise, later ones work.
     place_fails: placement raises.
     """
     fill_after: Optional[float] = 0.0
@@ -43,6 +44,7 @@ class Script:
     fill_price: Optional[float] = None
     fill_on_cancel: int = 0
     cancel_fails: object = False
+    cancel_fail_count: int = 0
     place_fails: bool = False
 
 
@@ -171,6 +173,9 @@ class FakeBroker:
         if order.script.fill_on_cancel:
             self._fill(order, order.script.fill_on_cancel,
                        order.script.fill_price or order.request.price or self.default_price)
+        if order.script.cancel_fail_count > 0:
+            order.script.cancel_fail_count -= 1
+            raise RuntimeError("scripted transient cancel failure")
         if order.script.cancel_fails == "dict":
             return {"s": "error", "code": -52, "message": "scripted cancel failure"}
         if order.script.cancel_fails:
