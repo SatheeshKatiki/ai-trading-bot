@@ -16,7 +16,7 @@ import dataclasses
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Iterable, List, Optional
+from typing import Any, Callable, Iterable, List, Optional
 
 from brokers.models import OrderStatus
 
@@ -311,3 +311,97 @@ async def protect_remaining(broker: Any, pos: Any) -> Optional[str]:
         logger.info("Exchange stop restored for %d remaining of %s at %.2f (ID: %s)",
                     pos.quantity, pos.symbol, pos.stop_loss, order_id)
     return order_id
+
+
+# ---------------------------------------------------------------------------
+# Per-position runtime guards
+# ---------------------------------------------------------------------------
+# Kept here, not on shared.exits.Position: they are facts about this running
+# process (a lock, a task), never persisted, and Position is shared with code
+# that serialises a fixed set of fields.
+
+#: An exit task still running after this long is reported, never released:
+#: its orders may still fill, so a second exit could sell the same lots.
+EXIT_STUCK_AFTER_S = 60.0
+
+
+@dataclass
+class PositionGuard:
+    #: Serialises everything that touches this position's exchange stop:
+    #: trailing-stop replacement and the stop resolution inside an exit.
+    stop_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    exit_task: Optional[asyncio.Task] = None
+    exit_started: float = 0.0
+    stuck_reported: bool = False
+    #: Set when an exit left orders that may still fill. The position stays
+    #: locked until the operator resolves it (or the engine restarts).
+    hold_reason: Optional[str] = None
+    #: Entry orders are still being placed or settled.
+    entry_pending: bool = False
+
+
+# id(pos) -> (pos, guard). Holding `pos` keeps its id from being reused while
+# the guard exists; forget() releases both once the position is closed.
+_GUARDS: dict[int, tuple[Any, PositionGuard]] = {}
+
+
+def guard_for(pos: Any) -> PositionGuard:
+    entry = _GUARDS.get(id(pos))
+    if entry is None or entry[0] is not pos:
+        entry = (pos, PositionGuard())
+        _GUARDS[id(pos)] = entry
+    return entry[1]
+
+
+def forget(pos: Any) -> None:
+    entry = _GUARDS.get(id(pos))
+    if entry is not None and entry[0] is pos:
+        del _GUARDS[id(pos)]
+
+
+def start_exit(pos: Any, task: asyncio.Task, now: Optional[float] = None) -> None:
+    """Record the exit task that now owns `pos` (`pos.is_exiting` is set by the caller)."""
+    guard = guard_for(pos)
+    guard.exit_task = task
+    guard.exit_started = time.monotonic() if now is None else now
+    guard.stuck_reported = False
+
+
+def exit_running(pos: Any) -> bool:
+    """An exit task for `pos` exists and has not finished."""
+    entry = _GUARDS.get(id(pos))
+    task = entry[1].exit_task if entry is not None and entry[0] is pos else None
+    return task is not None and not task.done()
+
+
+def exit_in_flight(pos: Any, now: Optional[float] = None,
+                   stuck_after: float = EXIT_STUCK_AFTER_S,
+                   on_stuck: Optional[Callable[[float], None]] = None) -> bool:
+    """True while `pos` must not be exited again.
+
+    The lock is released only when the exit task that took it has finished
+    and left nothing that may still trade. A slow task is never timed out:
+    its orders could still fill, so starting a second exit is how a position
+    gets sold twice. A lock with no tracked task (e.g. the dashboard close
+    path) is left alone, as before.
+    """
+    if not getattr(pos, "is_exiting", False):
+        return False
+    guard = guard_for(pos)
+    task = guard.exit_task
+    if task is None:
+        return True
+    if not task.done():
+        now = time.monotonic() if now is None else now
+        if now - guard.exit_started > stuck_after and not guard.stuck_reported:
+            guard.stuck_reported = True
+            logger.critical("Exit for %s has been running %.0fs -- still waiting for it, not retrying.",
+                            getattr(pos, "symbol", "?"), now - guard.exit_started)
+            if on_stuck is not None:
+                on_stuck(now - guard.exit_started)
+        return True
+    if guard.hold_reason:
+        return True
+    guard.exit_task = None
+    pos.is_exiting = False
+    return False

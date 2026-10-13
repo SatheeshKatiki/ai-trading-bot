@@ -88,7 +88,6 @@ _evaluating_symbols: set[str] = set()
 
 # Broker layer — broker-agnostic: trading logic never imports vendor SDKs directly
 from brokers import BrokerFactory, OrderRequest, OrderSide, OrderType
-from brokers.models import OrderStatus
 from trading_bot.reconciliation import compute_reconciliation
 from trading_bot.strategies.registry import registry
 from trading_bot.strategies.premium_selection import (
@@ -165,7 +164,10 @@ from shared.exits import SmartExitEngine, Position, PyramidSizer
 from shared.alerts.telegram import alerter
 from trading_bot.portfolio_risk import PortfolioRiskEngine
 from trading_bot.iceberg_manager import IcebergManager
-from trading_bot.order_safety import confirm_fills, execute_exit_orders, place_hard_stop, protect_remaining, stop_request
+from trading_bot.order_safety import (
+    confirm_fills, execute_exit_orders, exit_in_flight, forget, guard_for, place_hard_stop,
+    protect_remaining, start_exit, stop_request,
+)
 
 # Security layer
 from shared.security import install_log_sanitizer, audit, validator
@@ -239,6 +241,16 @@ def _alert_no_exchange_stop(symbol: str) -> None:
         )
     except Exception as exc:
         logger.error("No-exchange-stop alert failed: %s", exc)
+
+
+def _alert_exit_stuck(symbol: str, seconds: float) -> None:
+    try:
+        alerter.send_alert(
+            f"⚠️ **EXIT STILL RUNNING** for {symbol} after {seconds:.0f}s. Not retrying "
+            f"(its orders may still fill). Check the broker terminal."
+        )
+    except Exception as exc:
+        logger.error("Exit-stuck alert failed: %s", exc)
 
 
 _STOP_ALERT_INTERVAL_S = 60.0
@@ -1445,6 +1457,8 @@ async def run_live_bot(symbols: List[str]) -> None:
                 # Releasing the lock would let the next tick sell the
                 # same lots again, so the position stays locked.
                 _alert_unresolved_orders(exit_req.symbol, "exit", unresolved)
+                if pos:
+                    guard_for(pos).hold_reason = f"unresolved exit orders {unresolved}"
 
             actual_exit_qty = fill.filled_qty
             if actual_exit_qty == 0:
@@ -1472,6 +1486,7 @@ async def run_live_bot(symbols: List[str]) -> None:
             if target_key and target_key in active_positions:
                 pos = active_positions[target_key]
                 if actual_exit_qty >= pos.quantity:
+                    forget(pos)
                     active_positions.pop(target_key, None)
                     active_positions.pop(sym, None)
                     for k in list(active_positions.keys()):
@@ -1682,14 +1697,11 @@ async def run_live_bot(symbols: List[str]) -> None:
 
         if open_position:
             # ── Safety gate: skip if a background exit is already in flight ──
-            if open_position.is_exiting:
-                exiting_since = getattr(open_position, "_exiting_since", 0.0)
-                if exiting_since and (time.monotonic() - exiting_since > 30.0):
-                    logger.warning("Exit lock timeout (30s) exceeded for %s. Resetting is_exiting to allow retry.", open_position.symbol)
-                    open_position.is_exiting = False
-                    open_position._exiting_since = 0.0
-                else:
-                    return
+            # Released only when the exit task has finished; a slow exit is
+            # reported, never timed out (its orders may still fill).
+            if exit_in_flight(open_position,
+                              on_stuck=lambda secs: _alert_exit_stuck(open_position.symbol, secs)):
+                return
 
             is_opt_pos = is_option_symbol(open_position.symbol)
 
@@ -2205,12 +2217,11 @@ async def run_live_bot(symbols: List[str]) -> None:
                             exit_req = validator.validator.validate(exit_req)
                             # Lock the position: prevents duplicate exit signals while iceberg executes
                             open_position.is_exiting = True
-                            open_position._exiting_since = time.monotonic()
                             full_exit = (exit_qty is None or exit_qty >= open_position.quantity)
-                            _track_task(asyncio.create_task(background_iceberg_exit(
+                            start_exit(open_position, _track_task(asyncio.create_task(background_iceberg_exit(
                                 broker, exit_req, base_symbol_key or sym, open_position.side, open_position.entry_price,
                                 exit_price=exit_check_price, qty_to_close=qty_to_close, full_exit=full_exit
-                            )))
+                            ))))
                         except ValidationError as ve:
                             logger.error("EXIT order validation failed for %s: %s", base_symbol_key, ve)
                             audit.log(AuditEvent.VALIDATION_ERROR,

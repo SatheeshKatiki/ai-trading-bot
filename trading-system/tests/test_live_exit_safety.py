@@ -8,18 +8,6 @@ exchange, not about which functions were called.
 """
 from __future__ import annotations
 
-from brokers.models import OrderStatus
-
-
-def test_main_imports_order_status():
-    """main.py's fill polling and hard-stop checks compare against
-    OrderStatus. Without the import every live exit raised NameError inside
-    the stop interceptor, which the broad except swallowed, so the market
-    exit went out with the exchange stop still live."""
-    from trading_bot import main as bot_main
-
-    assert bot_main.OrderStatus is OrderStatus
-
 
 # ---------------------------------------------------------------------------
 # #1 -- one book key per position across a restart
@@ -381,3 +369,77 @@ def test_protect_remaining_keeps_an_existing_stop():
     stop_id = _place_stop(broker, pos)
     assert asyncio.run(protect_remaining(broker, pos)) == stop_id
     assert len(broker.live_stops()) == 1
+
+
+# ---------------------------------------------------------------------------
+# #2 -- the exit lock is released by the exit finishing, not by a timer
+# ---------------------------------------------------------------------------
+
+from trading_bot.order_safety import exit_in_flight, guard_for, start_exit
+
+
+async def _tick_loop(broker: FakeBroker, pos: Position, ticks: int, stuck_after: float, on_stuck=None):
+    """What on_tick does with the exit gate: skip while an exit is in flight,
+    otherwise start one (the exit condition is assumed true on every tick)."""
+    mgr = IcebergManager(max_slice_qty=500, min_delay_sec=0.0, max_delay_sec=0.0)
+
+    async def exit_task():
+        fill = await execute_exit_orders(broker, mgr, pos, _sell(pos.quantity), 84.0, **FAST)
+        pos.quantity -= fill.filled_qty
+        pos.is_exiting = False
+
+    with patch("trading_bot.iceberg_manager.ORDER_LIMITER.allow", return_value=True):
+        for _ in range(ticks):
+            if pos.quantity > 0 and not exit_in_flight(pos, stuck_after=stuck_after, on_stuck=on_stuck):
+                pos.is_exiting = True
+                start_exit(pos, asyncio.create_task(exit_task()))
+            await asyncio.sleep(0.01)
+        task = guard_for(pos).exit_task
+        if task is not None:
+            await task
+
+
+def test_a_slow_exit_is_never_restarted_by_the_lock_timer():
+    """The 30s reset let the next tick start a second exit while the first
+    was still working; both sold. Here the exit takes far longer than the
+    stuck threshold and ticks keep arriving."""
+    broker = FakeBroker(holdings={OPT: 75})
+    broker.place_delay = 0.3                       # the exit is slow at the broker
+    pos = _position()
+    stuck = []
+
+    asyncio.run(_tick_loop(broker, pos, ticks=40, stuck_after=0.05, on_stuck=stuck.append))
+    sells = [r for r in broker.place_calls if r.side == OrderSide.SELL]
+    assert len(sells) == 1
+    assert broker.net[OPT] == 0
+    assert len(stuck) == 1                         # reported once, not retried
+
+
+def test_the_lock_is_released_when_the_exit_finishes_unfilled():
+    broker = FakeBroker(holdings={OPT: 75})
+    broker.set_default(fill_after=None)            # nothing ever fills
+    pos = _position()
+
+    asyncio.run(_tick_loop(broker, pos, ticks=5, stuck_after=60.0))
+    assert pos.is_exiting is False
+    assert not exit_in_flight(pos)
+
+
+def test_a_lock_with_no_tracked_task_is_kept():
+    """The dashboard close path sets is_exiting itself, with no task."""
+    pos = _position()
+    pos.is_exiting = True
+    assert exit_in_flight(pos) is True and pos.is_exiting is True
+
+
+def test_a_held_position_stays_locked_after_its_task_ends():
+    async def run():
+        pos = _position()
+        pos.is_exiting = True
+        start_exit(pos, asyncio.create_task(asyncio.sleep(0)))
+        guard_for(pos).hold_reason = "unresolved exit orders ['F1']"
+        await asyncio.sleep(0.01)
+        return pos
+
+    pos = asyncio.run(run())
+    assert exit_in_flight(pos) is True
