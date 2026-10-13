@@ -95,6 +95,7 @@ from trading_bot.strategies.premium_selection import (
 )
 from trading_bot.strategies.momentum_strategy import MomentumStrategy
 from trading_bot.strategies.drl_strategy import generate_signals as drl_signals
+from trading_bot.strategies.marl_strategy import generate_signals as marl_signals
 from trading_bot.strategies.ema9_rsi_momentum import STRATEGY_NAME as EMA9_RSI_MOMENTUM_STRATEGY_NAME
 from trading_bot.strategies.ema9_fibo_smc_momentum import STRATEGY_NAME as EMA9_FIBO_SMC_MOMENTUM_STRATEGY_NAME
 #: Name-only import (no strategy code runs) so the two M1/M2 branches below
@@ -2126,19 +2127,24 @@ async def run_live_bot(symbols: List[str]) -> None:
 
                     if exit_qty is None or exit_qty >= open_position.quantity:
                         # User Rule (2026-10-05): Smart Post-StopLoss Re-entry Guard
+                        guard_key = base_symbol_key or sym
                         if pnl < 0 and ("SL" in reason.upper() or "STOP" in reason.upper()):
-                            _stopped_out_positions[sym] = {
+                            _stopped_out_positions[guard_key] = {
                                 "side": open_position.side,
                                 "time": time.monotonic(),
                                 "exit_time_str": datetime.now(_IST).strftime("%H:%M:%S"),
                             }
                             logger.info(
                                 "Post-SL Guard Active for %s: %s stopped out. Reversals allowed immediately; same-direction requires 5m cool-off & fresh confirmation.",
-                                sym, "CE" if open_position.side == 1 else "PE"
+                                guard_key, "CE" if open_position.side == 1 else "PE"
                             )
                         else:
+                            _stopped_out_positions.pop(guard_key, None)
                             _stopped_out_positions.pop(sym, None)
-                        del active_positions[sym]
+
+                        pos_key = base_symbol_key if (base_symbol_key and base_symbol_key in active_positions) else sym
+                        active_positions.pop(pos_key, None)
+                        active_positions.pop(sym, None)
                     else:
                         open_position.quantity -= exit_qty
 
@@ -2147,8 +2153,9 @@ async def run_live_bot(symbols: List[str]) -> None:
             # ----------------------------------------------------------------
             # 1.5. Pyramiding (Scaling In) for remaining positions
             # ----------------------------------------------------------------
-            if sym in active_positions:
-                pos = active_positions[sym]
+            pos_key = base_symbol_key if (base_symbol_key and base_symbol_key in active_positions) else sym
+            if pos_key in active_positions:
+                pos = active_positions[pos_key]
                 
                 # Dynamically apply settings
                 should_scale = False
