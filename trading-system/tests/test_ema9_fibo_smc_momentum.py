@@ -153,3 +153,93 @@ def test_generate_signals_execution():
     df_bear = _make_test_df(100, trend="bearish")
     sig_bear = generate_signals(df_bear, price_action_primary=True)
     assert set(sig_bear.unique()).issubset({-1, 0, 1})
+
+
+def test_config_fields_and_from_settings():
+    """Verify that Ema9FiboSmcMomentumConfig has all required execution fields and handles settings dicts cleanly."""
+    cfg = Ema9FiboSmcMomentumConfig.from_settings({
+        "timeframe": "15 Min",
+        "initial_sl_pct": 12.5,
+        "decay_low_pct": -8.0,
+    })
+    assert cfg.initial_sl_pct == 12.5
+    assert cfg.timeframe_minutes == 15
+    assert cfg.decay_low_pct == -8.0
+    assert hasattr(cfg, "profit_ladder_pct")
+    assert hasattr(cfg, "decay_moderate_pct")
+    assert hasattr(cfg, "decay_high_pct")
+
+
+def test_evaluate_protective_exit_with_dict_and_decay():
+    """Verify that evaluate_protective_exit accepts a raw settings dictionary and evaluates cleanly without AttributeError."""
+    df = _make_test_df(60, trend="bullish")
+    raw_settings = {
+        "timeframe": "5 Min",
+        "price_action_primary": True,
+        "initial_sl_pct": 15.0,
+    }
+    # Test CE side
+    res_ce = evaluate_protective_exit(
+        df=df,
+        side=1,
+        entry_premium=100.0,
+        current_premium=95.0,
+        settings=raw_settings,
+    )
+    assert res_ce is not None
+    assert isinstance(res_ce.should_exit, bool)
+
+    # Test PE side
+    res_pe = evaluate_protective_exit(
+        df=df,
+        side=-1,
+        entry_premium=100.0,
+        current_premium=95.0,
+        settings=raw_settings,
+    )
+    assert res_pe is not None
+    assert isinstance(res_pe.should_exit, bool)
+
+
+def test_ladder_ratchet_stop():
+    """Verify the exit ladder ratchet stops correctly step up and never move backwards."""
+    from trading_bot.strategies.ema9_fibo_smc_momentum.exit_ladder import initial_stop, ratchet_stop
+    entry = 100.0
+    sl = initial_stop(entry, initial_sl_pct=15.0, tick=0.05)
+    assert sl == 85.0
+
+    # Premium moves to 120 (+20% -> hits 15% rung -> SL moves to breakeven 100.0)
+    ladder = (15.0, 33.0, 50.0, 75.0, 100.0)
+    new_sl, next_rung = ratchet_stop(entry, current_stop=sl, best_price=120.0, rungs=ladder, initial_sl_pct=15.0)
+    assert new_sl == 100.0
+    assert next_rung == 133.0
+
+    # Premium moves to 140 (+40% -> hits 33% rung -> SL moves to 115.0)
+    new_sl, next_rung = ratchet_stop(entry, current_stop=new_sl, best_price=140.0, rungs=ladder, initial_sl_pct=15.0)
+    assert new_sl == 115.0
+    assert next_rung == 150.0
+
+
+def test_position_key_normalization_and_safe_pop():
+    """Verify that normalized instrument matching catches aliases and pop() removes cleanly without KeyError."""
+    from shared.instruments import normalize_instrument
+
+    active_positions = {
+        "NIFTY50": {"symbol": "NSE:NIFTY26OCT22500CE", "qty": 65},
+    }
+
+    sym = "NSE:NIFTY50-INDEX"
+    # Key lookup simulation
+    found_key = None
+    for k in active_positions:
+        if k == sym or normalize_instrument(k) == normalize_instrument(sym):
+            found_key = k
+            break
+
+    assert found_key == "NIFTY50"
+
+    # Safe removal
+    active_positions.pop(found_key, None)
+    active_positions.pop(sym, None)
+    assert len(active_positions) == 0
+

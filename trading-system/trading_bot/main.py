@@ -896,7 +896,7 @@ async def _close_requested_positions(broker, active_positions, risk_manager, por
                 "DASHBOARD EXIT: closed %s at %.2f%s.", result.symbol, result.exit_price,
                 " (ESTIMATE — no live quote)" if result.is_estimate else "",
             )
-            del active_positions[result.local_key]
+            active_positions.pop(result.local_key, None)
 
         _save_positions(active_positions)
 
@@ -988,7 +988,7 @@ async def _reconcile_broker_state(broker, active_positions, risk_manager, portfo
             # be found again.
             _cancel_orphaned_stop(broker, active_positions.get(result.local_key), result.symbol, order_book)
 
-            del active_positions[result.local_key]
+            active_positions.pop(result.local_key, None)
             _save_positions(active_positions)
     except Exception as e:
         logger.error("Failed to sync broker state: %s", e)
@@ -1210,7 +1210,7 @@ async def run_live_bot(symbols: List[str]) -> None:
             if actual_qty == 0:
                 logger.error("Entry order completely failed to execute for %s. Removing ghost position.", s)
                 if s in active_positions:
-                    del active_positions[s]
+                    active_positions.pop(s, None)
                     _save_positions(active_positions)
             else:
                 pos_obj.quantity = actual_qty
@@ -1260,7 +1260,7 @@ async def run_live_bot(symbols: List[str]) -> None:
         except Exception as e:
             logger.error("Background Iceberg Entry Failed for %s: %s", s, e)
             if s in active_positions:
-                del active_positions[s]
+                active_positions.pop(s, None)
                 _save_positions(active_positions)
 
     async def update_exchange_sl(broker, pos: Position):
@@ -1400,10 +1400,23 @@ async def run_live_bot(symbols: List[str]) -> None:
                         broker=broker.BROKER_ID, pnl=pnl)
 
             # ── Remove or reduce position in shared state ──
+            target_key = None
             if sym in active_positions:
-                pos = active_positions[sym]
+                target_key = sym
+            else:
+                for k, p in list(active_positions.items()):
+                    if k == sym or getattr(p, "symbol", "") == sym or normalize_instrument(k) == normalize_instrument(sym):
+                        target_key = k
+                        break
+
+            if target_key and target_key in active_positions:
+                pos = active_positions[target_key]
                 if full_exit or actual_exit_qty >= pos.quantity:
-                    del active_positions[sym]
+                    active_positions.pop(target_key, None)
+                    active_positions.pop(sym, None)
+                    for k in list(active_positions.keys()):
+                        if normalize_instrument(k) == normalize_instrument(sym):
+                            active_positions.pop(k, None)
                 else:
                     pos.quantity -= actual_exit_qty
                     pos.is_exiting = False  # Partial exit: allow further management
@@ -1541,7 +1554,7 @@ async def run_live_bot(symbols: List[str]) -> None:
             # trailing/anything else (root-caused 2026-08-03: a position
             # sat unmanaged for a full session while its premium round-
             # tripped through both target and stop-loss within 5 minutes).
-            if base_sym == sym:
+            if base_sym == sym or normalize_instrument(base_sym) == normalize_instrument(sym):
                 open_position = position
                 base_symbol_key = base_sym
                 break
@@ -1879,7 +1892,7 @@ async def run_live_bot(symbols: List[str]) -> None:
                                 _EMA9_REVERSAL_CHECKED[open_position.symbol] = last_closed
                                 rev = evaluate_protective_exit(
                                     rev_df, 1 if open_position.symbol.upper().endswith("CE") else -1,
-                                    open_position.entry_price, exit_check_price, settings,
+                                    open_position.entry_price, exit_check_price, _ema9_cfg,
                                 )
                                 if rev.should_exit:
                                     should_exit = True
@@ -2145,6 +2158,11 @@ async def run_live_bot(symbols: List[str]) -> None:
                         pos_key = base_symbol_key if (base_symbol_key and base_symbol_key in active_positions) else sym
                         active_positions.pop(pos_key, None)
                         active_positions.pop(sym, None)
+                        if open_position:
+                            active_positions.pop(open_position.symbol, None)
+                        for k in list(active_positions.keys()):
+                            if normalize_instrument(k) == normalize_instrument(sym):
+                                active_positions.pop(k, None)
                     else:
                         open_position.quantity -= exit_qty
 
@@ -3221,7 +3239,7 @@ async def run_live_bot(symbols: List[str]) -> None:
                 "pnl": result.pnl, "is_estimate": result.is_estimate, "reason": reason,
             }, severity="WARNING")
 
-            del active_positions[result.local_key]
+            active_positions.pop(result.local_key, None)
 
         _save_positions(active_positions)
 

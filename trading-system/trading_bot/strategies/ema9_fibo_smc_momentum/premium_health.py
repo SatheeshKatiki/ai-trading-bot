@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Optional, Union
 
 import pandas as pd
 
@@ -37,7 +37,7 @@ def evaluate_protective_exit(
     side: int,
     entry_premium: float,
     current_premium: float,
-    cfg: Ema9FiboSmcMomentumConfig,
+    cfg: Optional[Union[Ema9FiboSmcMomentumConfig, dict]] = None,
     dte: Optional[int] = None,
     iv: Optional[float] = None,
     bid: Optional[float] = None,
@@ -46,6 +46,11 @@ def evaluate_protective_exit(
     """Evaluates Pure Price Action exit first (MSS break, target exhaustion, RSI divergence),
     falling back to base reversal check.
     """
+    if isinstance(cfg, dict):
+        cfg = Ema9FiboSmcMomentumConfig.from_settings(cfg)
+    elif cfg is None:
+        cfg = Ema9FiboSmcMomentumConfig()
+
     if df is None or len(df) < 2 or side not in (1, -1):
         return ProtectiveExitResult()
 

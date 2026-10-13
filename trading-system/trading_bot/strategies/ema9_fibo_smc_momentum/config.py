@@ -130,6 +130,29 @@ EOD_REVIEW_TIME: str = "15:15"
 EOD_HARD_TIME: str = "15:25"
 EOD_RUNNER_GIVEBACK_PCT: float = 5.0
 ALLOW_OVERNIGHT_CARRY: bool = False
+OVERNIGHT_MIN_GAIN_PCT: float = 40.0
+OVERNIGHT_MIN_STRENGTH: str = "VERY_STRONG"
+
+# Option execution, decay & exit ladder defaults
+DECAY_LOW_PCT: float = -10.0
+DECAY_MODERATE_PCT: float = -20.0
+DECAY_HIGH_PCT: float = -35.0
+
+TIMEFRAME_MINUTES: int = 5
+INITIAL_SL_PCT: float = 15.0
+PROFIT_LADDER_PCT: tuple = (15.0, 33.0, 50.0, 75.0, 100.0, 150.0, 200.0)
+STRIKE_SELECTION: str = "ATM"
+ITM_TARGET_DELTA: float = 0.70
+MAX_ENTRY_SPREAD_PCT: float = 1.0
+ENABLE_OPTION_CHART_GATE: bool = True
+REQUIRE_OPTION_ABOVE_VWAP: bool = True
+MAX_OPTION_SPREAD_PCT: float = 1.2
+MIN_OPTION_VOLUME: int = 50
+OPTION_WARMUP_MINUTES: int = 3
+LEGACY_TOUCH_BUFFER_PCT: float = 0.05
+EXPIRY_LATE_ENTRY: bool = True
+EXPIRY_LATE_ENTRY_END: str = "15:25"
+EXPIRY_LATE_ENTRY_MIN_STRENGTH: str = "VERY_STRONG"
 
 
 @dataclass
@@ -154,6 +177,9 @@ class Ema9FiboSmcMomentumConfig:
     rsi_band_very_strong: float = RSI_BAND_VERY_STRONG
     rsi_overbought_cap: float = RSI_OVERBOUGHT_CAP
     rsi_oversold_floor: float = RSI_OVERSOLD_FLOOR
+    decay_low_pct: float = DECAY_LOW_PCT
+    decay_moderate_pct: float = DECAY_MODERATE_PCT
+    decay_high_pct: float = DECAY_HIGH_PCT
     enable_adx_filter: bool = ENABLE_ADX_FILTER
     min_adx: float = MIN_ADX
     enable_time_filter: bool = ENABLE_TIME_FILTER
@@ -163,8 +189,12 @@ class Ema9FiboSmcMomentumConfig:
     late_entry_enabled: bool = LATE_ENTRY_ENABLED
     late_entry_end: str = LATE_ENTRY_END
     late_entry_min_strength: str = LATE_ENTRY_MIN_STRENGTH
+    expiry_late_entry: bool = EXPIRY_LATE_ENTRY
+    expiry_late_entry_end: str = EXPIRY_LATE_ENTRY_END
+    expiry_late_entry_min_strength: str = EXPIRY_LATE_ENTRY_MIN_STRENGTH
     enable_touch_filter: bool = ENABLE_TOUCH_FILTER
     ema_touch_mode: str = EMA_TOUCH_MODE
+    legacy_touch_buffer_pct: float = LEGACY_TOUCH_BUFFER_PCT
     wick_requires_confirmation: bool = WICK_REQUIRES_CONFIRMATION
     trend_slope_lookback: int = TREND_SLOPE_LOOKBACK
     trend_slope_min_pct: float = TREND_SLOPE_MIN_PCT
@@ -196,19 +226,44 @@ class Ema9FiboSmcMomentumConfig:
     min_peak_profit_pts: float = MIN_PEAK_PROFIT_PTS
     max_giveback_pct: float = MAX_GIVEBACK_PCT
     urgency_threshold: float = URGENCY_THRESHOLD
-    eOD_review_time: str = EOD_REVIEW_TIME
-    eOD_hard_time: str = EOD_HARD_TIME
-    eOD_runner_giveback_pct: float = EOD_RUNNER_GIVEBACK_PCT
+    timeframe_minutes: int = TIMEFRAME_MINUTES
+    strike_selection: str = STRIKE_SELECTION
+    itm_target_delta: float = ITM_TARGET_DELTA
+    max_entry_spread_pct: float = MAX_ENTRY_SPREAD_PCT
+    initial_sl_pct: float = INITIAL_SL_PCT
+    profit_ladder_pct: tuple = PROFIT_LADDER_PCT
+    enable_option_chart_gate: bool = ENABLE_OPTION_CHART_GATE
+    require_option_above_vwap: bool = REQUIRE_OPTION_ABOVE_VWAP
+    max_option_spread_pct: float = MAX_OPTION_SPREAD_PCT
+    min_option_volume: int = MIN_OPTION_VOLUME
+    option_warmup_minutes: int = OPTION_WARMUP_MINUTES
+    eod_review_time: str = EOD_REVIEW_TIME
+    eod_hard_time: str = EOD_HARD_TIME
+    eod_runner_giveback_pct: float = EOD_RUNNER_GIVEBACK_PCT
     allow_overnight_carry: bool = ALLOW_OVERNIGHT_CARRY
+    overnight_min_gain_pct: float = OVERNIGHT_MIN_GAIN_PCT
+    overnight_min_strength: str = OVERNIGHT_MIN_STRENGTH
 
     @classmethod
-    def from_settings(cls, settings: Optional[dict] = None, **overrides) -> Ema9FiboSmcMomentumConfig:
-        """Construct config from dictionary or keyword overrides."""
+    def from_settings(cls, settings: Optional[dict] = None, symbol: Optional[str] = None, **overrides) -> Ema9FiboSmcMomentumConfig:
+        """Construct config from dictionary or keyword overrides with full prefix support."""
         cfg = cls()
-        if settings:
-            for k, v in settings.items():
-                if hasattr(cfg, k):
-                    setattr(cfg, k, v)
+        settings = settings or {}
+
+        # 1. Direct field matches or prefixed matches
+        for field_name in cls.__dataclass_fields__:
+            for prefix in ("", "ema9_fibo_", "ema9_rsi_", "ema9_"):
+                candidate = f"{prefix}{field_name}"
+                if candidate in settings:
+                    setattr(cfg, field_name, settings[candidate])
+                    break
+
+        # 2. General application timeframe mapping
+        if "timeframe" in settings and "timeframe_minutes" not in overrides:
+            from shared.timeframes import parse_timeframe
+            cfg.timeframe_minutes = parse_timeframe(settings["timeframe"], TIMEFRAME_MINUTES)
+
+        # 3. Explicit overrides
         for k, v in overrides.items():
             if hasattr(cfg, k):
                 setattr(cfg, k, v)
