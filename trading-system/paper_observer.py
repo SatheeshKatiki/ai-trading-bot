@@ -41,6 +41,13 @@ try:
 except Exception:
     m_res = None
 
+# Process singleton lock (prevents concurrent duplicate paper observers)
+try:
+    from shared.singleton_lock import acquire_singleton_lock
+    acquire_singleton_lock("paper_observer", "paper_observer.py")
+except Exception as lock_err:
+    pass
+
 # Telegram Alerts Integration
 try:
     from shared.alerts.telegram import alerter

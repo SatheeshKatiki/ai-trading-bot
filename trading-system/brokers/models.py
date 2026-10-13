@@ -155,6 +155,7 @@ class OrderBookEntry:
     status:     OrderStatus
     order_type: OrderType
     traded_price: float = 0.0
+    filled_qty:   int   = 0
     placed_at:  Optional[datetime] = None
     raw:        Dict[str, Any]     = field(default_factory=dict)
 

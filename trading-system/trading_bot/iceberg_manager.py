@@ -28,16 +28,19 @@ class IcebergManager:
         total_qty = order.quantity
         if total_qty <= self.max_slice_qty:
             # Standard execution, no slicing needed
-            if ORDER_LIMITER.allow(broker.BROKER_ID):
-                try:
-                    resp = await broker.place_order_async(order)
-                    return [resp]
-                except Exception as e:
-                    logger.error("Standard Order failed: %s", e)
-                    return []
-            else:
-                logger.warning("Order rate limit reached for %s", order.symbol)
-                return []
+            for retry in range(3):
+                if ORDER_LIMITER.allow(broker.BROKER_ID):
+                    try:
+                        resp = await broker.place_order_async(order)
+                        return [resp]
+                    except Exception as e:
+                        logger.error("Standard Order failed: %s", e)
+                        return []
+                else:
+                    logger.warning("Order rate limit reached for %s (attempt %d/3). Sleeping 0.5s...", order.symbol, retry + 1)
+                    await asyncio.sleep(0.5)
+            logger.error("Order for %s failed to submit due to rate limit after retries.", order.symbol)
+            return []
 
         # Iceberg Slicing logic
         slices = []
@@ -62,19 +65,28 @@ class IcebergManager:
                 trigger_price=order.trigger_price
             )
             
-            if ORDER_LIMITER.allow(broker.BROKER_ID):
-                try:
-                    resp = await broker.place_order_async(slice_order)
-                    executed_orders.append(resp)
-                    logger.info("Iceberg Slice %d/%d: Executed %d qty for %s", 
-                                i+1, len(slices), chunk_qty, order.symbol)
-                except Exception as e:
-                    logger.error("Iceberg Slice %d failed: %s", i+1, e)
-                    if "InsufficientFunds" in str(type(e).__name__) or "margin" in str(e).lower() or "rejected" in str(e).lower():
-                        logger.warning("Broker rejection/Margin shortfall detected! Halting remaining iceberg slices.")
+            placed = False
+            for retry in range(3):
+                if ORDER_LIMITER.allow(broker.BROKER_ID):
+                    try:
+                        resp = await broker.place_order_async(slice_order)
+                        executed_orders.append(resp)
+                        placed = True
+                        logger.info("Iceberg Slice %d/%d: Executed %d qty for %s", 
+                                    i+1, len(slices), chunk_qty, order.symbol)
                         break
-            else:
-                logger.warning("Iceberg Slice %d delayed due to rate limit.", i+1)
+                    except Exception as e:
+                        logger.error("Iceberg Slice %d failed: %s", i+1, e)
+                        if "InsufficientFunds" in str(type(e).__name__) or "margin" in str(e).lower() or "rejected" in str(e).lower():
+                            logger.warning("Broker rejection/Margin shortfall detected! Halting remaining iceberg slices.")
+                            return executed_orders
+                        break
+                else:
+                    logger.warning("Iceberg Slice %d delayed due to rate limit (attempt %d/3). Sleeping 0.5s...", i+1, retry + 1)
+                    await asyncio.sleep(0.5)
+            
+            if not placed:
+                logger.error("Iceberg Slice %d/%d for %s failed to submit due to rate limit after retries.", i+1, len(slices), order.symbol)
             
             # TWAP Random Delay between slices (unless it's the last one)
             if i < len(slices) - 1:
@@ -82,6 +94,7 @@ class IcebergManager:
                 await asyncio.sleep(delay)
                 
                 # Halt Execution if system panic exited or reached max drawdown during the sleep!
+                # (Caller must pass halt_check=None for exits to prevent closing being blocked)
                 if halt_check and halt_check():
                     logger.warning("System HALT detected during Iceberg execution! Stopping remaining slices.")
                     break

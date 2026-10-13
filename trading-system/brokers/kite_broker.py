@@ -264,19 +264,29 @@ class KiteBroker(BaseBroker):
             return []
         try:
             orders = self._kite.orders()
-            return [
-                OrderBookEntry(
-                    order_id=o.get("order_id", ""),
-                    symbol=o.get("tradingsymbol", ""),
-                    side=OrderSide.BUY if o.get("transaction_type") == "BUY" else OrderSide.SELL,
-                    quantity=int(o.get("quantity", 0)),
-                    price=float(o.get("price", 0)),
-                    status=OrderStatus.OPEN,
-                    order_type=OrderType.MARKET if o.get("order_type") == "MARKET" else OrderType.LIMIT,
-                    raw=o,
+            res = []
+            for o in orders:
+                k_stat = OrderStatus.COMPLETE if o.get("status") == "COMPLETE" else (
+                    OrderStatus.CANCELLED if o.get("status") in ("CANCELLED", "REJECTED") else OrderStatus.OPEN
                 )
-                for o in orders
-            ]
+                k_fq = int(o.get("filled_quantity", 0)) if o.get("filled_quantity") is not None else (
+                    int(o.get("quantity", 0)) if k_stat == OrderStatus.COMPLETE else 0
+                )
+                res.append(
+                    OrderBookEntry(
+                        order_id=o.get("order_id", ""),
+                        symbol=o.get("tradingsymbol", ""),
+                        side=OrderSide.BUY if o.get("transaction_type") == "BUY" else OrderSide.SELL,
+                        quantity=int(o.get("quantity", 0)),
+                        price=float(o.get("price", 0)),
+                        traded_price=float(o.get("average_price", 0.0)),
+                        filled_qty=k_fq,
+                        status=k_stat,
+                        order_type=OrderType.MARKET if o.get("order_type") == "MARKET" else OrderType.LIMIT,
+                        raw=o,
+                    )
+                )
+            return res
         except Exception as exc:
             raise MarketDataError(
                 f"Kite get_order_book failed: {exc}", broker_id=self.BROKER_ID

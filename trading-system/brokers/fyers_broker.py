@@ -478,6 +478,9 @@ class FyersBroker(BaseBroker):
                 return OrderStatus.OPEN
 
             for o in resp.get("orderBook", []):
+                stat = _map_status(o.get("status", 5))
+                raw_fq = o.get("filledQty", 0) or o.get("tradedQty", 0)
+                filled_qty = int(raw_fq) if raw_fq else (int(o.get("qty", 0)) if stat == OrderStatus.COMPLETE else 0)
                 orders.append(OrderBookEntry(
                     order_id=o.get("id", ""),
                     symbol=o.get("symbol", ""),
@@ -485,7 +488,8 @@ class FyersBroker(BaseBroker):
                     quantity=int(o.get("qty", 0)),
                     price=float(o.get("limitPrice", 0)),
                     traded_price=float(o.get("tradedPrice", 0.0)),
-                    status=_map_status(o.get("status", 5)),
+                    filled_qty=filled_qty,
+                    status=stat,
                     order_type=OrderType.MARKET if o.get("type", 2) == 2 else OrderType.LIMIT,
                     raw=o,
                 ))
@@ -810,8 +814,18 @@ class FyersBroker(BaseBroker):
                             continue
                             
                         for sym, val in raw_ticks.items():
-                            # Emit ALL raw ticks so both base indices and options reach the aggregator!
-                            await on_tick({"symbol": sym, "ltp": val["lp"], "timestamp": int(time.time()), "volume": 0})
+                            if not isinstance(val, dict) or "lp" not in val or val["lp"] is None:
+                                continue
+                            try:
+                                ltp_val = float(val["lp"])
+                                if ltp_val <= 0:
+                                    continue
+                                # Timestamp from tick payload or current time
+                                tick_ts = int(val.get("ts", time.time()))
+                                # Emit ALL raw ticks so both base indices and options reach the aggregator!
+                                await on_tick({"symbol": sym, "ltp": ltp_val, "timestamp": tick_ts, "volume": val.get("v", 0)})
+                            except Exception as tick_err:
+                                logger.exception("Unhandled error processing tick for %s: %s (WebSocket kept alive)", sym, tick_err)
             except Exception as e:
                 retry_count += 1
                 now = time.time()

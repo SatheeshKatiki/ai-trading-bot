@@ -270,13 +270,22 @@ class AngelBroker(BaseBroker):
             resp   = self._smart.orderBook()
             orders = []
             for o in (resp.get("data") or []):
+                ostatus = str(o.get("orderstatus", "")).lower()
+                a_stat = OrderStatus.COMPLETE if ostatus == "complete" else (
+                    OrderStatus.CANCELLED if ostatus in ("cancelled", "rejected") else OrderStatus.OPEN
+                )
+                a_fq = int(o.get("filledshares", 0)) if o.get("filledshares") is not None else (
+                    int(o.get("quantity", 0)) if a_stat == OrderStatus.COMPLETE else 0
+                )
                 orders.append(OrderBookEntry(
                     order_id=o.get("orderid", ""),
                     symbol=o.get("tradingsymbol", ""),
                     side=OrderSide.BUY if o.get("transactiontype") == "BUY" else OrderSide.SELL,
                     quantity=int(o.get("quantity", 0)),
                     price=float(o.get("price", 0)),
-                    status=OrderStatus.OPEN,
+                    traded_price=float(o.get("averageprice", 0.0)),
+                    filled_qty=a_fq,
+                    status=a_stat,
                     order_type=OrderType.MARKET if o.get("ordertype") == "MARKET" else OrderType.LIMIT,
                     raw=o,
                 ))
