@@ -253,3 +253,42 @@ async def execute_exit_orders(
     result.local_price = fills.avg_price(exit_price)
     result.unresolved_order_ids = fills.unresolved_order_ids
     return result
+
+
+# ---------------------------------------------------------------------------
+# Placing an exchange stop
+# ---------------------------------------------------------------------------
+
+#: Limit price of an option stop-limit, as a fraction of its trigger.
+STOP_LIMIT_FRACTION = 0.90
+
+
+def stop_request(pos: Any, qty: int) -> Any:
+    """The exchange stop for `qty` of `pos`: stop-limit for options (limit
+    10% under the trigger), stop-market otherwise."""
+    from brokers.models import OrderRequest, OrderSide, OrderType
+    from shared.instruments import is_option_symbol
+
+    is_opt = is_option_symbol(pos.symbol)
+    return OrderRequest(
+        symbol=pos.symbol,
+        quantity=int(qty),
+        side=OrderSide.SELL if pos.side == 1 or is_opt else OrderSide.BUY,
+        order_type=OrderType.SL if is_opt else OrderType.SL_M,
+        trigger_price=round(pos.stop_loss, 2),
+        price=round(pos.stop_loss * STOP_LIMIT_FRACTION, 2) if is_opt else 0.0,
+    )
+
+
+async def place_hard_stop(broker: Any, pos: Any, qty: int) -> Optional[str]:
+    """Place the exchange stop for `qty` of `pos`; its order id, or None."""
+    try:
+        resp = await broker.place_order_async(stop_request(pos, qty))
+    except Exception as exc:
+        logger.error("Exchange stop placement failed for %s: %s", pos.symbol, exc)
+        return None
+    order_id = getattr(resp, "order_id", None) if resp else None
+    if not order_id:
+        logger.error("Exchange stop for %s returned no order id: %s", pos.symbol, resp)
+        return None
+    return order_id

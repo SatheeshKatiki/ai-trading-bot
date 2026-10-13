@@ -165,7 +165,7 @@ from shared.exits import SmartExitEngine, Position, PyramidSizer
 from shared.alerts.telegram import alerter
 from trading_bot.portfolio_risk import PortfolioRiskEngine
 from trading_bot.iceberg_manager import IcebergManager
-from trading_bot.order_safety import confirm_fills, execute_exit_orders
+from trading_bot.order_safety import confirm_fills, execute_exit_orders, place_hard_stop, stop_request
 
 # Security layer
 from shared.security import install_log_sanitizer, audit, validator
@@ -228,6 +228,17 @@ def _alert_unresolved_orders(symbol: str, leg: str, order_ids: List[str]) -> Non
         )
     except Exception as exc:
         logger.error("Unresolved-order alert failed: %s", exc)
+
+
+def _alert_no_exchange_stop(symbol: str) -> None:
+    logger.critical("NO EXCHANGE STOP for %s -- place one manually on the broker terminal.", symbol)
+    try:
+        alerter.send_alert(
+            f"⚠️ **CRITICAL WARNING**: no exchange stop is in place for {symbol}. "
+            f"Please place a manual stop loss on the broker terminal."
+        )
+    except Exception as exc:
+        logger.error("No-exchange-stop alert failed: %s", exc)
 
 
 _STOP_ALERT_INTERVAL_S = 60.0
@@ -1329,39 +1340,15 @@ async def run_live_bot(symbols: List[str]) -> None:
                     pos_obj.stop_loss = round(pos_obj.entry_price * sl_ratio, 2)
                     logger.info("Adjusted Stop Loss for %s to %.2f reflecting actual fill price", s, pos_obj.stop_loss)
 
-            # Place Hard Stop-Loss at Exchange
-            # NSE/BSE banned SL-M on options in Sept 2021; must use OrderType.SL (Stop Loss Limit)
-            is_opt = is_option_trade or is_option_symbol(pos_obj.symbol)
-            sl_order_type = OrderType.SL if is_opt else OrderType.SL_M
-            # For option Sell SL, limit price is set 10% below trigger to guarantee execution without being market-rejected
-            sl_limit_price = round(pos_obj.stop_loss * 0.90, 2) if is_opt else 0.0
-
-            sl_req = OrderRequest(
-                symbol=pos_obj.symbol,
-                quantity=confirmed_qty,
-                side=OrderSide.SELL if pos_obj.side == 1 else OrderSide.BUY,
-                order_type=sl_order_type,
-                trigger_price=round(pos_obj.stop_loss, 2),
-                price=sl_limit_price,
-            )
-            try:
-                sl_resp = await broker.place_order_async(sl_req)
-                if sl_resp and sl_resp.order_id:
-                    pos_obj.sl_order_id = sl_resp.order_id
-                    logger.info("Hard SL placed at Exchange for %s at %.2f (Limit: %.2f, ID: %s)", 
-                                pos_obj.symbol, pos_obj.stop_loss, sl_limit_price, sl_resp.order_id)
-                else:
-                    logger.error("CRITICAL: Hard SL order returned no order_id for %s! Response: %s", pos_obj.symbol, sl_resp)
-                    try:
-                        alerter.send_alert(f"⚠️ **CRITICAL WARNING**: Hard SL order returned no ID for {pos_obj.symbol}! Please place manual stop loss on broker terminal.")
-                    except Exception:
-                        pass
-            except Exception as sl_e:
-                logger.error("CRITICAL: Failed to place Hard SL for %s: %s", pos_obj.symbol, sl_e)
-                try:
-                    alerter.send_alert(f"⚠️ **CRITICAL WARNING**: Failed to place Hard SL for {pos_obj.symbol}: {sl_e}! Please place manual stop loss on broker terminal.")
-                except Exception:
-                    pass
+            # Place Hard Stop-Loss at Exchange (stop-limit for options; a bought
+            # option -- CE or PE -- is always closed by a SELL).
+            sl_id = await place_hard_stop(broker, pos_obj, confirmed_qty)
+            if sl_id:
+                pos_obj.sl_order_id = sl_id
+                logger.info("Hard SL placed at Exchange for %s at %.2f (ID: %s)",
+                            pos_obj.symbol, pos_obj.stop_loss, sl_id)
+            else:
+                _alert_no_exchange_stop(pos_obj.symbol)
 
             _save_positions(active_positions)
             
@@ -1393,18 +1380,8 @@ async def run_live_bot(symbols: List[str]) -> None:
     async def update_exchange_sl(broker, pos: Position):
         """Places updated Trailing SL at the Exchange first, then cancels the old one."""
         old_id = getattr(pos, 'sl_order_id', None)
-        is_opt = is_option_symbol(pos.symbol)
-        sl_order_type = OrderType.SL if is_opt else OrderType.SL_M
-        sl_limit_price = round(pos.stop_loss * 0.90, 2) if is_opt else 0.0
-
-        new_sl_req = OrderRequest(
-            symbol=pos.symbol,
-            quantity=pos.quantity,
-            side=OrderSide.SELL if pos.side == 1 else OrderSide.BUY,
-            order_type=sl_order_type,
-            trigger_price=round(pos.stop_loss, 2),
-            price=sl_limit_price,
-        )
+        new_sl_req = stop_request(pos, pos.quantity)
+        sl_limit_price = new_sl_req.price
 
         try:
             sl_resp = await broker.place_order_async(new_sl_req)

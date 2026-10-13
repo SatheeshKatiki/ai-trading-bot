@@ -290,3 +290,43 @@ def test_a_partial_local_exit_never_exceeds_holdings():
     fill = asyncio.run(_exit(broker, pos, qty=150))
     assert fill.filled_qty == 150
     assert broker.net[OPT] == 0
+
+
+# ---------------------------------------------------------------------------
+# Exchange stop side: a bought option is always closed by a SELL
+# ---------------------------------------------------------------------------
+
+from trading_bot.order_safety import place_hard_stop, stop_request
+
+PE = "NSE:NIFTY26OCT22500PE"
+
+
+def test_the_stop_for_a_bought_pe_sells():
+    """Position.side is the directional bet (PE = -1), not long/short the
+    contract. The old `SELL if side == 1 else BUY` placed a BUY stop for
+    every PE position: a falling premium would have bought more lots."""
+    pe = Position(symbol=PE, side=-1, entry_price=100.0, quantity=75, entry_time=_today(),
+                  highest_price=100.0, lowest_price=100.0, stop_loss=85.0, target=0.0)
+    req = stop_request(pe, 75)
+    assert req.side == OrderSide.SELL
+    assert req.order_type == OrderType.SL
+    assert (req.trigger_price, req.price) == (85.0, 76.5)
+
+
+def test_the_stop_for_a_bought_ce_sells():
+    assert stop_request(_position(), 75).side == OrderSide.SELL
+
+
+def test_the_stop_for_a_short_underlying_buys():
+    short = Position(symbol="NSE:RELIANCE-EQ", side=-1, entry_price=100.0, quantity=10,
+                     entry_time=_today(), highest_price=100.0, lowest_price=100.0,
+                     stop_loss=105.0, target=0.0)
+    req = stop_request(short, 10)
+    assert (req.side, req.order_type, req.price) == (OrderSide.BUY, OrderType.SL_M, 0.0)
+
+
+def test_place_hard_stop_reports_failure_as_none():
+    broker = FakeBroker()
+    broker.script_next(place_fails=True)
+    assert asyncio.run(place_hard_stop(broker, _position(), 75)) is None
+    assert asyncio.run(place_hard_stop(broker, _position(), 75)) == "F1"
