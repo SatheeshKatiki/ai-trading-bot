@@ -165,7 +165,7 @@ from shared.exits import SmartExitEngine, Position, PyramidSizer
 from shared.alerts.telegram import alerter
 from trading_bot.portfolio_risk import PortfolioRiskEngine
 from trading_bot.iceberg_manager import IcebergManager
-from trading_bot.order_safety import confirm_fills
+from trading_bot.order_safety import confirm_fills, execute_exit_orders
 
 # Security layer
 from shared.security import install_log_sanitizer, audit, validator
@@ -228,6 +228,27 @@ def _alert_unresolved_orders(symbol: str, leg: str, order_ids: List[str]) -> Non
         )
     except Exception as exc:
         logger.error("Unresolved-order alert failed: %s", exc)
+
+
+_STOP_ALERT_INTERVAL_S = 60.0
+_last_stop_alert: Dict[str, float] = {}
+
+
+def _alert_stop_not_cleared(symbol: str, order_id: Optional[str]) -> None:
+    """An exit is held back because the exchange stop would not cancel.
+    Retried every tick, so the alert is rate-limited per symbol."""
+    logger.error("EXIT HELD for %s: exchange stop %s could not be cancelled and is still live.", symbol, order_id)
+    now = time.monotonic()
+    if now - _last_stop_alert.get(symbol, -_STOP_ALERT_INTERVAL_S) < _STOP_ALERT_INTERVAL_S:
+        return
+    _last_stop_alert[symbol] = now
+    try:
+        alerter.send_alert(
+            f"⚠️ **EXIT HELD** for {symbol}: exchange stop {order_id} could not be cancelled, "
+            f"so no local sell was sent. The stop is still live; retrying."
+        )
+    except Exception as exc:
+        logger.error("Stop-not-cleared alert failed: %s", exc)
 
 
 def _save_positions(positions: Dict[str, Position]) -> None:
@@ -1415,78 +1436,41 @@ async def run_live_bot(symbols: List[str]) -> None:
         exit_price: float, qty_to_close: int, full_exit: bool
     ):
         pos = active_positions.get(sym)
+        unresolved: List[str] = []
         try:
-            actual_exit_qty = 0
-            ltp_actual = exit_price
-            broker_sl_hit = False
-            unresolved: List[str] = []
-
             async with _iceberg_semaphore:
                 # Re-fetch: active_positions may have changed while waiting
                 pos = active_positions.get(sym)
-                if pos and getattr(pos, 'sl_order_id', None):
-                    sl_id = pos.sl_order_id
-                    try:
-                        # Interceptor: Check if the Broker SL already executed natively
-                        status = await asyncio.to_thread(broker.get_order_status, sl_id)
-                        if status and status.status in (OrderStatus.COMPLETE, "COMPLETE", "FILLED", "TRADED"):
-                            logger.warning("Broker Hard SL already executed for %s! Skipping local Market order.", sym)
-                            broker_sl_hit = True
-                            actual_exit_qty = pos.quantity
-                            ltp_actual = status.traded_price if status.traded_price > 0 else exit_price
-                        else:
-                            try:
-                                await asyncio.to_thread(broker.cancel_order, sl_id)
-                                logger.info("Cancelled Hard SL order (ID: %s) for %s before exit", sl_id, sym)
-                            except Exception as cancel_err:
-                                # Cancel failed: check if it filled right at that moment!
-                                status_after = await asyncio.to_thread(broker.get_order_status, sl_id)
-                                if status_after and status_after.status in (OrderStatus.COMPLETE, "COMPLETE", "FILLED", "TRADED"):
-                                    logger.warning("Hard SL filled during cancel attempt for %s! Skipping Market order.", sym)
-                                    broker_sl_hit = True
-                                    actual_exit_qty = pos.quantity
-                                    ltp_actual = status_after.traded_price if status_after.traded_price > 0 else exit_price
-                                else:
-                                    logger.error("Failed to cancel Hard SL for %s: %s", sym, cancel_err)
-                        pos.sl_order_id = None
-                    except Exception as e:
-                        logger.error("Failed to check/cancel Hard SL for %s: %s", sym, e)
-                
-                executed_slices: list = []
-                if not broker_sl_hit:
-                    # Pass halt_check=None: drawdown halts must NEVER block closing open positions!
-                    executed_slices = await iceberg_manager.execute_iceberg(
-                        broker, 
-                        exit_req,
-                        halt_check=None
-                    )
-            
-            if not broker_sl_hit:
-                if getattr(broker, 'paper_mode', False):
-                    confirmed_filled_qty = sum(resp.quantity for resp in executed_slices)
-                    ltp_actual = exit_price
-                else:
-                    fills = await confirm_fills(broker, executed_slices)
-                    confirmed_filled_qty = fills.filled_qty
-                    unresolved = fills.unresolved_order_ids
-                    if confirmed_filled_qty > 0:
-                        ltp_actual = fills.avg_price(exit_price)
-                        logger.info("Actual Exit Price for %s resolved to %.2f (Slippage adjusted)", sym, ltp_actual)
-                    if unresolved:
-                        # A sell that could not be cancelled may still fill.
-                        # Releasing the lock would let the next tick sell the
-                        # same lots again, so the position stays locked.
-                        _alert_unresolved_orders(exit_req.symbol, "exit", unresolved)
+                # Exchange stop first (it may have sold some or all lots, or
+                # refuse to cancel), then the local sell for what is left.
+                fill = await execute_exit_orders(broker, iceberg_manager, pos, exit_req, exit_price)
 
-                if confirmed_filled_qty == 0:
-                    if unresolved:
-                        return
-                    logger.error("EXIT order completely failed to fill for %s. Resetting is_exiting — will retry next tick.", sym)
-                    if pos:
-                        pos.is_exiting = False
+            if not fill.stop_cleared:
+                # The stop is still live and protecting the lots; selling now
+                # would let both sell. Retry on a later tick.
+                _alert_stop_not_cleared(exit_req.symbol, pos.sl_order_id if pos else None)
+                if pos:
+                    pos.is_exiting = False
+                return
+
+            unresolved = fill.unresolved_order_ids
+            if unresolved:
+                # A sell that could not be cancelled may still fill.
+                # Releasing the lock would let the next tick sell the
+                # same lots again, so the position stays locked.
+                _alert_unresolved_orders(exit_req.symbol, "exit", unresolved)
+
+            actual_exit_qty = fill.filled_qty
+            if actual_exit_qty == 0:
+                if unresolved:
                     return
-
-                actual_exit_qty = confirmed_filled_qty
+                logger.error("EXIT order completely failed to fill for %s. Resetting is_exiting — will retry next tick.", sym)
+                if pos:
+                    pos.is_exiting = False
+                return
+            ltp_actual = fill.avg_price
+            logger.info("Exit for %s filled %d (stop %d + local %d) at %.2f",
+                        sym, actual_exit_qty, fill.stop_filled, fill.local_filled, ltp_actual)
 
             # ── 1. STATE MUTATION FIRST: Remove or reduce position in shared state ──
             target_key = None

@@ -12,6 +12,7 @@ still trade, and the caller must not act as if it cannot.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import time
 from dataclasses import dataclass, field
@@ -148,3 +149,107 @@ async def confirm_fills(
             await settle_order(broker, resp.order_id, int(resp.quantity), timeout, poll_interval)
         )
     return summary
+
+
+# ---------------------------------------------------------------------------
+# The exchange stop, before any local exit
+# ---------------------------------------------------------------------------
+
+@dataclass
+class StopResolution:
+    filled: int
+    avg_price: float
+    #: True when the stop can trade no further (complete, or cancel accepted).
+    cleared: bool
+
+
+async def resolve_stop(broker: Any, order_id: str) -> StopResolution:
+    """Take an exchange stop out of play, reporting how much of it traded.
+
+    A stop-limit can fill partly in a gap, so a stop that is not COMPLETE may
+    still have sold lots. If the cancel is refused and the order is not
+    complete, the stop is still live: `cleared` is False and nothing may be
+    sold locally, or the stop and the local exit would both sell.
+    """
+    entry = await read_order(broker, order_id)
+    filled, price = filled_of(entry)
+    if entry is not None and entry.status == OrderStatus.COMPLETE:
+        return StopResolution(filled, price, cleared=True)
+    cancelled = await cancel_order(broker, order_id)
+    final = await read_order(broker, order_id)
+    if final is not None:
+        filled, price = filled_of(final)
+        if final.status == OrderStatus.COMPLETE:
+            return StopResolution(filled, price, cleared=True)
+    return StopResolution(filled, price, cleared=cancelled)
+
+
+@dataclass
+class ExitFill:
+    #: False: the exchange stop is still live and nothing was sold.
+    stop_cleared: bool = True
+    stop_filled: int = 0
+    stop_price: float = 0.0
+    local_filled: int = 0
+    local_price: float = 0.0
+    unresolved_order_ids: List[str] = field(default_factory=list)
+
+    @property
+    def filled_qty(self) -> int:
+        return self.stop_filled + self.local_filled
+
+    @property
+    def avg_price(self) -> float:
+        qty = self.filled_qty
+        if qty <= 0:
+            return 0.0
+        return (self.stop_filled * self.stop_price + self.local_filled * self.local_price) / qty
+
+
+async def execute_exit_orders(
+    broker: Any,
+    iceberg: Any,
+    pos: Any,
+    exit_req: Any,
+    exit_price: float,
+    timeout: float = SLICE_FILL_TIMEOUT_S,
+    poll_interval: float = POLL_INTERVAL_S,
+) -> ExitFill:
+    """The order side of an exit: clear the exchange stop, sell what the stop
+    did not, and report what actually traded. Changes nothing in the book
+    except `pos.sl_order_id`, which is cleared once the stop is out of play.
+    """
+    result = ExitFill()
+    held = int(pos.quantity) if pos is not None else int(exit_req.quantity)
+
+    if pos is not None and getattr(pos, "sl_order_id", None):
+        stop = await resolve_stop(broker, pos.sl_order_id)
+        if not stop.cleared:
+            logger.error("Exchange stop %s for %s could not be cancelled -- not selling locally.",
+                         pos.sl_order_id, exit_req.symbol)
+            result.stop_cleared = False
+            return result
+        pos.sl_order_id = None
+        result.stop_filled = min(stop.filled, held)
+        result.stop_price = stop.avg_price if stop.avg_price > 0 else float(getattr(pos, "stop_loss", exit_price))
+        if result.stop_filled:
+            logger.warning("Exchange stop for %s had already sold %d of %d.",
+                           exit_req.symbol, result.stop_filled, held)
+
+    to_sell = min(int(exit_req.quantity), held - result.stop_filled)
+    if to_sell <= 0:
+        return result
+    if to_sell != exit_req.quantity:
+        exit_req = dataclasses.replace(exit_req, quantity=to_sell)
+
+    responses = await iceberg.execute_iceberg(broker, exit_req, halt_check=None)
+    if getattr(broker, "paper_mode", False):
+        result.local_filled = sum(int(r.quantity) for r in responses if r)
+        result.local_price = exit_price
+        return result
+
+    fills = await confirm_fills(broker, responses, timeout, poll_interval)
+    result.local_filled = fills.filled_qty
+    result.local_price = fills.avg_price(exit_price)
+    result.unresolved_order_ids = fills.unresolved_order_ids
+    return result

@@ -189,3 +189,104 @@ def test_an_unfilled_slice_is_cancelled_and_resolved():
     assert fills.filled_qty == 0
     assert fills.unresolved_order_ids == []
     assert broker.live_orders() == []
+
+
+# ---------------------------------------------------------------------------
+# #5 -- the exchange stop is resolved before any local sell
+# ---------------------------------------------------------------------------
+
+from shared.exits import Position
+from trading_bot.order_safety import execute_exit_orders
+
+
+def _position(qty: int = 75, stop: float = 85.0) -> Position:
+    return Position(symbol=OPT, side=1, entry_price=100.0, quantity=qty, entry_time=_today(),
+                    highest_price=100.0, lowest_price=100.0, stop_loss=stop, target=0.0)
+
+
+def _place_stop(broker: FakeBroker, pos: Position, **script) -> str:
+    broker.script_next(**script)
+    resp = broker.place_order(OrderRequest(symbol=OPT, quantity=pos.quantity, side=OrderSide.SELL,
+                                           order_type=OrderType.SL, trigger_price=pos.stop_loss,
+                                           price=round(pos.stop_loss * 0.9, 2)))
+    pos.sl_order_id = resp.order_id
+    return resp.order_id
+
+
+async def _exit(broker: FakeBroker, pos: Position, qty: int | None = None):
+    mgr = IcebergManager(max_slice_qty=500, min_delay_sec=0.0, max_delay_sec=0.0)
+    with patch("trading_bot.iceberg_manager.ORDER_LIMITER.allow", return_value=True):
+        return await execute_exit_orders(broker, mgr, pos, _sell(qty or pos.quantity), 84.0, **FAST)
+
+
+def test_a_partly_filled_stop_reduces_the_local_sell():
+    """The stop-limit sold 25 of 75 in a gap; selling the full 75 locally
+    would have left the account short 25."""
+    broker = FakeBroker(holdings={OPT: 75})
+    pos = _position()
+    stop_id = _place_stop(broker, pos)
+    broker.trigger(stop_id, qty=25, price=80.0)
+
+    fill = asyncio.run(_exit(broker, pos))
+    assert broker.net[OPT] == 0
+    assert (fill.stop_filled, fill.local_filled) == (25, 50)
+    assert broker.place_calls[-1].quantity == 50
+    assert fill.avg_price == (25 * 80.0 + 50 * 95.0) / 75
+    assert pos.sl_order_id is None and broker.live_stops() == []
+
+
+def test_a_fully_filled_stop_sends_no_local_sell():
+    broker = FakeBroker(holdings={OPT: 75})
+    pos = _position()
+    broker.trigger(_place_stop(broker, pos), price=84.0)
+    placed = len(broker.place_calls)
+
+    fill = asyncio.run(_exit(broker, pos))
+    assert len(broker.place_calls) == placed
+    assert fill.filled_qty == 75 and fill.local_filled == 0
+    assert broker.net[OPT] == 0
+
+
+def test_a_stop_that_will_not_cancel_blocks_the_local_sell():
+    broker = FakeBroker(holdings={OPT: 75})
+    pos = _position()
+    stop_id = _place_stop(broker, pos, cancel_fails=True)
+    placed = len(broker.place_calls)
+
+    fill = asyncio.run(_exit(broker, pos))
+    assert fill.stop_cleared is False
+    assert len(broker.place_calls) == placed
+    assert pos.sl_order_id == stop_id
+    assert [o.order_id for o in broker.live_stops()] == [stop_id]
+    # The stop still protects the lots and is the only order that can sell them.
+    broker.trigger(stop_id)
+    assert broker.net[OPT] == 0
+
+
+def test_a_stop_refused_by_error_reply_blocks_the_local_sell():
+    broker = FakeBroker(holdings={OPT: 75})
+    pos = _position()
+    _place_stop(broker, pos, cancel_fails="dict")
+    fill = asyncio.run(_exit(broker, pos))
+    assert fill.stop_cleared is False and broker.sold(OPT) == 0
+
+
+def test_a_stop_that_fills_during_the_cancel_is_counted():
+    broker = FakeBroker(holdings={OPT: 75})
+    pos = _position()
+    _place_stop(broker, pos, fill_on_cancel=75, fill_price=83.0)
+
+    fill = asyncio.run(_exit(broker, pos))
+    assert fill.stop_filled == 75 and fill.local_filled == 0
+    assert broker.net[OPT] == 0
+
+
+def test_a_partial_local_exit_never_exceeds_holdings():
+    broker = FakeBroker(holdings={OPT: 150})
+    pos = _position(qty=150)
+    stop_id = _place_stop(broker, pos)
+    broker.trigger(stop_id, qty=75, price=80.0)
+
+    fill = asyncio.run(_exit(broker, pos, qty=150))
+    assert fill.filled_qty == 150
+    assert broker.net[OPT] == 0
