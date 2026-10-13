@@ -34,12 +34,13 @@ def _pos_record(symbol: str, qty: int = 75, entry: float = 100.0, stop: float = 
     }
 
 
-def _load_from(tmp_path, data: dict):
+def _load_from(tmp_path, data: dict, alerts: list | None = None):
     from trading_bot import main as bot_main
 
     pos_file = tmp_path / "active_positions.json"
     pos_file.write_text(json.dumps(data), encoding="utf-8")
-    with patch.object(bot_main, "_POSITIONS_PATH", pos_file):
+    sink = alerts if alerts is not None else []
+    with patch.object(bot_main, "_POSITIONS_PATH", pos_file),             patch.object(bot_main.alerter, "send_alert", side_effect=sink.append):
         return bot_main._load_positions(), pos_file
 
 
@@ -686,3 +687,49 @@ def test_importing_paper_observer_takes_no_lock():
 def test_both_books_take_the_shared_book_lock():
     for script in ("paper_observer.py", "trading_bot/main.py"):
         assert "hold_book_lock(" in (_ROOT / script).read_text(encoding="utf-8"), script
+
+
+# ---------------------------------------------------------------------------
+# #9 -- quarantine: undated positions, operator alert, history kept
+# ---------------------------------------------------------------------------
+
+def _quarantine_file(tmp_path) -> dict:
+    return json.loads((tmp_path / "quarantined_positions.json").read_text(encoding="utf-8"))
+
+
+def test_a_position_with_no_entry_date_is_quarantined(tmp_path):
+    """Today's incident: a hand-written test position. With no entry_time it
+    skipped the date check entirely."""
+    rec = _pos_record(OPT)
+    del rec["entry_time"]
+    loaded, _ = _load_from(tmp_path, {"NSE:NIFTY50-INDEX": rec})
+    assert loaded == {}
+    assert "NSE:NIFTY50-INDEX" in _quarantine_file(tmp_path)
+
+
+def test_quarantine_alerts_the_operator(tmp_path):
+    rec = _pos_record(OPT)
+    rec["entry_time"] = "2026-10-12 14:00:00"
+    alerts: list = []
+    _load_from(tmp_path, {"NSE:NIFTY50-INDEX": rec}, alerts)
+    assert len(alerts) == 1
+    assert "QUARANTINED" in alerts[0] and OPT in alerts[0]
+
+
+def test_no_alert_when_nothing_is_quarantined(tmp_path):
+    alerts: list = []
+    _load_from(tmp_path, {"NSE:NIFTY50-INDEX": _pos_record(OPT)}, alerts)
+    assert alerts == []
+
+
+def test_a_second_quarantine_keeps_the_first(tmp_path):
+    old = _pos_record(OPT)
+    old["entry_time"] = "2026-10-12 14:00:00"
+    _load_from(tmp_path, {"NSE:NIFTY50-INDEX": old})
+    older = _pos_record("NSE:NIFTY26OCT22400PE")
+    older["entry_time"] = "2026-10-09 10:00:00"
+    _load_from(tmp_path, {"NSE:NIFTY50-INDEX": older})
+
+    records = _quarantine_file(tmp_path)
+    assert len(records) == 2
+    assert {r["symbol"] for r in records.values()} == {OPT, "NSE:NIFTY26OCT22400PE"}

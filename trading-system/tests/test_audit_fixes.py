@@ -128,7 +128,7 @@ def test_stale_position_quarantine(tmp_path):
     }
     pos_file.write_text(json.dumps(data), encoding="utf-8")
 
-    with patch.object(bot_main, "_POSITIONS_PATH", pos_file):
+    with patch.object(bot_main, "_POSITIONS_PATH", pos_file),             patch.object(bot_main.alerter, "send_alert"):
         loaded = bot_main._load_positions()
         # Today's position is loaded
         assert "NSE:NIFTY50-INDEX" in loaded

@@ -391,6 +391,39 @@ def _canonical_position_key(key: str) -> str:
     return INDEX_BROKER_SYMBOLS.get(normalize_instrument(key), key)
 
 
+def _record_quarantine(quarantined: Dict[str, dict]) -> None:
+    """Add set-aside positions to config/quarantined_positions.json, keeping
+    any already there, and tell the operator: a quarantined position may be
+    real and open at the broker, with nothing managing it."""
+    q_path = _POSITIONS_PATH.parent / "quarantined_positions.json"
+    stamp = datetime.now(_IST).strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        existing = json.loads(q_path.read_text(encoding="utf-8")) if q_path.exists() else {}
+        if not isinstance(existing, dict):
+            existing = {"_unreadable_previous_content": existing}
+    except Exception as exc:
+        logger.error("Could not read %s, starting a new one beside it: %s", q_path, exc)
+        existing = {}
+        q_path = q_path.with_name(f"quarantined_positions_{stamp.replace(':', '').replace(' ', '_')}.json")
+    for key, record in quarantined.items():
+        slot = key if key not in existing else f"{key} @ {stamp}"
+        existing[slot] = {**record, "quarantined_at": stamp}
+    try:
+        q_path.write_text(json.dumps(existing, indent=4), encoding="utf-8")
+        logger.info("Saved %d quarantined positions to %s", len(quarantined), q_path)
+    except Exception as qe:
+        logger.error("Failed to write quarantined positions: %s", qe)
+    try:
+        listed = ", ".join(f"{k} ({r.get('symbol', '?')})" for k, r in quarantined.items())
+        alerter.send_alert(
+            f"⚠️ **POSITIONS QUARANTINED ON STARTUP**: {listed}. They were not loaded because "
+            f"they are not from today. If any is still open at the broker, close it manually. "
+            f"Details: {q_path.name}"
+        )
+    except Exception as exc:
+        logger.error("Quarantine alert failed: %s", exc)
+
+
 def _load_positions() -> Dict[str, Position]:
     if _POSITIONS_PATH.exists():
         try:
@@ -400,13 +433,16 @@ def _load_positions() -> Dict[str, Position]:
                 quarantined = {}
                 today_str = datetime.now(_IST).strftime("%Y-%m-%d")
                 for sym, p in data.items():
-                    entry_time = p.get("entry_time", p.get("timestamp", ""))
-                    # Position date verification: intraday bot must never trade prior-day stale positions!
-                    if entry_time and entry_time[:10] != today_str:
+                    entry_time = str(p.get("entry_time") or p.get("timestamp") or "")
+                    # Position date verification: intraday bot must never trade
+                    # prior-day stale positions. A position with no entry date
+                    # cannot be shown to be today's (a hand-written test
+                    # position looks exactly like that), so it is set aside too.
+                    if entry_time[:10] != today_str:
                         logger.warning(
                             "QUARANTINED STALE POSITION: %s (symbol: %s) entered on %s (today is %s). "
                             "Setting aside to prevent unintended execution.",
-                            sym, p.get("symbol", ""), entry_time, today_str
+                            sym, p.get("symbol", ""), entry_time or "an unknown date", today_str
                         )
                         quarantined[sym] = p
                         continue
@@ -446,13 +482,7 @@ def _load_positions() -> Dict[str, Position]:
                     loaded[key] = pos
 
                 if quarantined:
-                    q_path = _POSITIONS_PATH.parent / "quarantined_positions.json"
-                    try:
-                        with open(q_path, "w", encoding="utf-8") as qf:
-                            json.dump(quarantined, qf, indent=4)
-                        logger.info("Saved %d quarantined stale positions to %s", len(quarantined), q_path)
-                    except Exception as qe:
-                        logger.error("Failed to write quarantined positions: %s", qe)
+                    _record_quarantine(quarantined)
 
                 return loaded
         except Exception as e:
