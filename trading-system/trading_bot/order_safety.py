@@ -504,3 +504,23 @@ async def _shrink_stop(broker: Any, pos: Any, guard: PositionGuard, qty: int) ->
     pos.sl_order_id = None
     if qty > 0:
         pos.sl_order_id = await place_hard_stop(broker, pos, qty)
+
+
+# ---------------------------------------------------------------------------
+# Entries still being filled
+# ---------------------------------------------------------------------------
+
+def begin_entry(pos: Any) -> None:
+    """`pos` is in the book but its entry orders are not settled yet."""
+    guard_for(pos).entry_pending = True
+
+
+def end_entry(pos: Any) -> None:
+    guard_for(pos).entry_pending = False
+
+
+def entry_pending(pos: Any) -> bool:
+    """True while the entry is filling: the book's quantity is the requested
+    one, not what the account holds, so nothing may sell against it yet."""
+    entry = _GUARDS.get(id(pos))
+    return entry is not None and entry[0] is pos and entry[1].entry_pending

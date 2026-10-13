@@ -165,7 +165,8 @@ from shared.alerts.telegram import alerter
 from trading_bot.portfolio_risk import PortfolioRiskEngine
 from trading_bot.iceberg_manager import IcebergManager
 from trading_bot.order_safety import (
-    confirm_fills, execute_exit_orders, exit_in_flight, forget, guard_for, place_hard_stop,
+    begin_entry, confirm_fills, end_entry, entry_pending, execute_exit_orders, exit_in_flight,
+    forget, guard_for, place_hard_stop,
     protect_remaining, replace_stop, start_exit,
 )
 
@@ -1388,6 +1389,8 @@ async def run_live_bot(symbols: List[str]) -> None:
             if s in active_positions:
                 active_positions.pop(s, None)
                 _save_positions(active_positions)
+        finally:
+            end_entry(pos_obj)
 
     async def update_exchange_sl(broker, pos: Position):
         """Move the exchange stop to pos.stop_loss, keeping at most one live stop.
@@ -1700,6 +1703,11 @@ async def run_live_bot(symbols: List[str]) -> None:
             # reported, never timed out (its orders may still fill).
             if exit_in_flight(open_position,
                               on_stuck=lambda secs: _alert_exit_stuck(open_position.symbol, secs)):
+                return
+            # Entry still filling: its quantity is the requested one, so an
+            # exit now could sell lots not yet bought, and the entry task
+            # would then place a stop behind a closed position.
+            if entry_pending(open_position):
                 return
 
             is_opt_pos = is_option_symbol(open_position.symbol)
@@ -3170,6 +3178,9 @@ async def run_live_bot(symbols: List[str]) -> None:
                                 active_positions[s] = pos_obj
                                 _stopped_out_positions.pop(s, None)
                                 _save_positions(active_positions)
+                                # Not managed by the exit path until the entry
+                                # task has settled what actually filled.
+                                begin_entry(pos_obj)
                                 
                                 _track_task(asyncio.create_task(background_iceberg_entry(
                                     broker, entry_req, pos_obj, s, is_option_trade

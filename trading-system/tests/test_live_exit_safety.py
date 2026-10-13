@@ -560,3 +560,56 @@ def test_an_old_stop_that_sold_during_replacement_shrinks_the_new_one():
     fill = asyncio.run(_exit(broker, pos))
     assert (fill.stop_filled, fill.local_filled) == (25, 50)
     assert broker.live_stops() == [] and broker.net[OPT] == 0
+
+
+# ---------------------------------------------------------------------------
+# #7 -- no exit while the entry is still filling
+# ---------------------------------------------------------------------------
+
+from trading_bot.order_safety import begin_entry, end_entry, entry_pending
+
+
+def test_an_exit_signal_during_the_entry_fill_waits_for_the_fill():
+    """The position is in the book at its requested 150 the moment the entry
+    is sent. An exit then would sell lots not yet bought."""
+    async def run():
+        broker = FakeBroker()
+        broker.script_next(fill_after=0.15, fill_qty=75)       # entry: half fills, slowly
+        mgr = IcebergManager(max_slice_qty=500, min_delay_sec=0.0, max_delay_sec=0.0)
+        pos = _position(qty=150)
+        begin_entry(pos)
+
+        async def entry():
+            try:
+                buy = OrderRequest(symbol=OPT, quantity=150, side=OrderSide.BUY,
+                                   order_type=OrderType.LIMIT, price=105.0)
+                responses = await mgr.execute_iceberg(broker, buy, halt_check=None)
+                pos.quantity = (await confirm_fills(broker, responses, **FAST)).filled_qty
+            finally:
+                end_entry(pos)
+
+        async def exit_task():
+            fill = await execute_exit_orders(broker, mgr, pos, _sell(pos.quantity), 84.0, **FAST)
+            pos.quantity -= fill.filled_qty
+            pos.is_exiting = False
+
+        with patch("trading_bot.iceberg_manager.ORDER_LIMITER.allow", return_value=True):
+            entry_task = asyncio.create_task(entry())
+            for _ in range(60):                       # exit condition true on every tick
+                if pos.quantity > 0 and not exit_in_flight(pos):
+                    if entry_pending(pos):
+                        await asyncio.sleep(0.01)
+                        continue
+                    pos.is_exiting = True
+                    start_exit(pos, asyncio.create_task(exit_task()))
+                await asyncio.sleep(0.01)
+            await entry_task
+            if guard_for(pos).exit_task:
+                await guard_for(pos).exit_task
+        return broker, pos
+
+    broker, pos = asyncio.run(run())
+    sells = [r for r in broker.place_calls if r.side == OrderSide.SELL]
+    assert [r.quantity for r in sells] == [75]          # sold what was bought, once
+    assert broker.net[OPT] == 0 and pos.quantity == 0
+
