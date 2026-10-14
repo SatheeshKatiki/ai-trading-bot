@@ -3874,12 +3874,12 @@ if __name__ == "__main__":
         except Exception:
             pass
 
-    # Only the indices the owner selected in the UI (Strategy Settings ->
-    # Trading Indices). This used to fall back to all four indices whenever
-    # "symbols" was missing; the owner's rule is that the engine never
-    # trades an index nobody chose. No selection, no trading.
-    from shared.instruments import resolve_trading_symbols
-    SYMBOLS: List[str] = resolve_trading_symbols(_boot_settings)
+    # Live: only the indices the owner selected in the UI (Strategy Settings
+    # -> Trading Indices); no selection, no trading -- this never falls back
+    # to every index. Paper: the paper test set (NIFTY, BANKNIFTY, SENSEX, or
+    # settings "paper_test_instruments"). See resolve_engine_symbols.
+    from shared.instruments import resolve_engine_symbols
+    SYMBOLS: List[str] = resolve_engine_symbols(_boot_settings)
     if not SYMBOLS:
         logger.error(
             "No trading indices selected (settings 'symbols' is empty or missing). "

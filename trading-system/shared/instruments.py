@@ -118,3 +118,19 @@ def resolve_trading_symbols(settings: dict | None) -> list[str]:
         if symbol and symbol not in out:
             out.append(symbol)
     return out
+
+
+def resolve_engine_symbols(settings: dict | None) -> list[str]:
+    """Broker symbols for trading_bot/main.py, by mode.
+
+    Live (``live_trading_mode`` true): only the UI selection, via
+    :func:`resolve_trading_symbols`. Paper: the paper test set, via
+    :func:`resolve_paper_test_instruments` -- the owner's rule (2026-09-11)
+    is that paper testing covers NIFTY, BANKNIFTY and SENSEX. Since v3.17.0
+    paper sessions for the newer strategies run main.py rather than the
+    paper observer, and main.py applied the live rule to them, so a paper
+    session tested only the UI selection.
+    """
+    if (settings or {}).get("live_trading_mode", False):
+        return resolve_trading_symbols(settings)
+    return [INDEX_BROKER_SYMBOLS[key] for key in resolve_paper_test_instruments(settings)]
