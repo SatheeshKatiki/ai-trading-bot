@@ -83,6 +83,99 @@ def _mount_default_timeout(fyers_model: Any, timeout: float = _DEFAULT_REQUEST_T
     session.mount("http://", adapter)
 
 
+
+#: Keepalive for the engine's connection to api_bridge's /ws/live.
+BRIDGE_PING_INTERVAL_S = 20
+BRIDGE_PING_TIMEOUT_S = 20
+#: How often consume_bridge_frames() logs its throughput line.
+BRIDGE_STATS_INTERVAL_S = 60.0
+
+
+async def _dispatch_frame(data: Any, on_tick: Callable[[Dict[str, Any]], Awaitable[None]]) -> None:
+    """Turn one /ws/live frame into on_tick() calls, one per tradeable tick."""
+    msg = json.loads(data)
+    raw_ticks = msg.get("raw_ticks", {})
+    for sym, val in raw_ticks.items():
+        if not isinstance(val, dict) or "lp" not in val or val["lp"] is None:
+            continue
+        try:
+            ltp_val = float(val["lp"])
+            if ltp_val <= 0:
+                continue
+            # Timestamp from tick payload or current time
+            tick_ts = int(val.get("ts", time.time()))
+            # Emit ALL raw ticks so both base indices and options reach the aggregator!
+            await on_tick({"symbol": sym, "ltp": ltp_val, "timestamp": tick_ts, "volume": val.get("v", 0)})
+        except Exception as tick_err:
+            logger.exception("Unhandled error processing tick for %s: %s (WebSocket kept alive)", sym, tick_err)
+
+
+async def consume_bridge_frames(
+    ws: Any,
+    on_tick: Callable[[Dict[str, Any]], Awaitable[None]],
+    stats_interval: float = BRIDGE_STATS_INTERVAL_S,
+) -> None:
+    """Read /ws/live frames continuously and act on the newest one.
+
+    Root-cause fix (2026-10-14: 116 disconnects, one every ~97s, and the
+    same pattern back to August): api_bridge sends a full snapshot 20 times
+    a second, and this loop used to process every frame in turn before
+    reading the next. Whenever on_tick() took longer than 50ms per frame the
+    unread frames piled up, the bridge's sends blocked on the slow reader,
+    and its reply to our keepalive ping could not get through: the
+    connection died with 1011 on a steady ~100s cycle, and every frame acted
+    on in between was up to 20s old.
+
+    A reader task now drains the socket the whole time, so pings are
+    answered however slow processing is, and only the latest frame is
+    processed. Each frame is a complete price snapshot, so a frame that has
+    already been superseded carries nothing the next one does not.
+    Returns (by raising) when the connection closes.
+    """
+    latest: list = [None]
+    arrived = asyncio.Event()
+    received = processed = 0
+    slowest = 0.0
+    window_start = time.monotonic()
+
+    async def reader() -> None:
+        nonlocal received
+        try:
+            while True:
+                latest[0] = await ws.recv()
+                received += 1
+                arrived.set()
+        finally:
+            arrived.set()
+
+    reader_task = asyncio.create_task(reader())
+    try:
+        while True:
+            if latest[0] is None:
+                if reader_task.done():
+                    reader_task.result()  # re-raises why the connection ended
+                    raise ConnectionError("API Bridge WebSocket reader stopped")
+                await arrived.wait()
+                arrived.clear()
+                continue
+            data, latest[0] = latest[0], None
+            started = time.monotonic()
+            await _dispatch_frame(data, on_tick)
+            processed += 1
+            slowest = max(slowest, time.monotonic() - started)
+
+            now = time.monotonic()
+            if now - window_start >= stats_interval:
+                superseded = received - processed
+                log = logger.info if superseded or slowest > 1.0 else logger.debug
+                log("API Bridge feed: %d frames in %.0fs, %d processed, %d superseded; slowest %.0f ms",
+                    received, now - window_start, processed, superseded, slowest * 1000)
+                received = processed = 0
+                slowest = 0.0
+                window_start = now
+    finally:
+        reader_task.cancel()
+
 class FyersBroker(BaseBroker):
     """Fyers broker adapter (fyers-api SDK)."""
 
@@ -809,32 +902,12 @@ class FyersBroker(BaseBroker):
                     await on_reconnect()
                 async with websockets.connect(
                     ws_url,
-                    ping_interval=20,
-                    ping_timeout=20
+                    ping_interval=BRIDGE_PING_INTERVAL_S,
+                    ping_timeout=BRIDGE_PING_TIMEOUT_S,
                 ) as ws:
                     logger.info("Connected to API Bridge WebSocket!")
                     retry_count = 0  # reset on successful connect
-                    while True:
-                        data = await ws.recv()
-                        msg = json.loads(data)
-                        
-                        raw_ticks = msg.get("raw_ticks", {})
-                        if not raw_ticks:
-                            continue
-                            
-                        for sym, val in raw_ticks.items():
-                            if not isinstance(val, dict) or "lp" not in val or val["lp"] is None:
-                                continue
-                            try:
-                                ltp_val = float(val["lp"])
-                                if ltp_val <= 0:
-                                    continue
-                                # Timestamp from tick payload or current time
-                                tick_ts = int(val.get("ts", time.time()))
-                                # Emit ALL raw ticks so both base indices and options reach the aggregator!
-                                await on_tick({"symbol": sym, "ltp": ltp_val, "timestamp": tick_ts, "volume": val.get("v", 0)})
-                            except Exception as tick_err:
-                                logger.exception("Unhandled error processing tick for %s: %s (WebSocket kept alive)", sym, tick_err)
+                    await consume_bridge_frames(ws, on_tick)
             except Exception as e:
                 retry_count += 1
                 now = time.time()
