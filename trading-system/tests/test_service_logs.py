@@ -125,3 +125,34 @@ def test_bridge_log_lines_are_timestamped_and_polling_is_quiet():
     assert any('"GET /api/quote?symbol=NIFTY' in line and " 500" in line for line in lines)  # error: kept
     assert any('"GET /api/journal' in line for line in lines)                # not a polled path: kept
 
+
+# ── session-start Telegram ──────────────────────────────────────────────────
+
+from auto_daily_session import _format_inr, paper_session_message
+
+
+def test_the_engine_message_lists_what_paper_actually_trades():
+    """2026-10-14 said "NIFTY & BANKNIFTY"; the engine traded NIFTY only."""
+    msg = paper_session_message({"active_strategy": "ema9_fibo_smc_momentum",
+                                 "symbols": ["NSE:NIFTY50-INDEX"]})
+    assert "• Assets: NIFTY, BANKNIFTY & SENSEX Options" in msg
+    assert "EMA 9 + Fibonacci OTE + SMC Momentum" in msg
+    assert "• Capital: ₹1,00,000 (Virtual)" in msg
+
+
+def test_the_engine_message_follows_the_paper_override_and_capital():
+    msg = paper_session_message({"paper_test_instruments": ["NIFTY"], "initial_capital": 250000})
+    assert "• Assets: NIFTY Options" in msg
+    assert "• Capital: ₹2,50,000 (Virtual)" in msg
+
+
+def test_the_observer_message_lists_its_indices():
+    msg = paper_session_message({"active_strategy": "ema9_rsi_momentum"}, book="observer")
+    assert "Paper Trading Observer" in msg
+    assert "• Assets: NIFTY, BANKNIFTY & SENSEX Options" in msg
+    assert "EMA 9 / RSI Momentum" in msg
+
+
+def test_indian_digit_grouping():
+    assert [_format_inr(v) for v in (950, 100000, 1250000, 12345678)] == \
+        ["950", "1,00,000", "12,50,000", "1,23,45,678"]

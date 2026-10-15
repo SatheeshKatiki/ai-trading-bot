@@ -759,6 +759,83 @@ def get_active_strategy_name() -> str:
         return "ema9_fibo_smc_momentum"
 
 
+def _read_settings() -> dict:
+    try:
+        with open(ROOT_DIR / "config" / "settings.json", "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _format_inr(amount: float) -> str:
+    """Indian digit grouping: 100000 -> 1,00,000."""
+    whole = str(int(round(amount)))
+    if len(whole) <= 3:
+        return whole
+    head, tail = whole[:-3], whole[-3:]
+    groups = []
+    while len(head) > 2:
+        groups.insert(0, head[-2:])
+        head = head[:-2]
+    if head:
+        groups.insert(0, head)
+    return ",".join(groups) + "," + tail
+
+
+def _strategy_display(strat: str) -> str:
+    return {
+        "ema9_fibo_smc_momentum": "EMA 9 + Fibonacci OTE + SMC Momentum",
+        "ema9_rsi_momentum": "EMA 9 / RSI Momentum",
+    }.get(strat, strat.replace("_", " ").title())
+
+
+def paper_session_message(settings: dict, book: str = "engine") -> str:
+    """The session-start Telegram for a paper session.
+
+    Built from the same settings the book itself reads, so it states what is
+    actually traded: the indices from resolve_engine_symbols() (the paper
+    observer uses the same paper test set) and, for the engine, its
+    "initial_capital" (the observer's capital is fixed at 1,00,000 in
+    paper_observer.CAPITAL). Both messages used to say "NIFTY & BANKNIFTY"
+    whatever was traded -- on 2026-10-14 the engine traded NIFTY only.
+    """
+    from shared.instruments import INDEX_BROKER_SYMBOLS, resolve_engine_symbols
+
+    names = {broker: key for key, broker in INDEX_BROKER_SYMBOLS.items()}
+    assets = [names.get(sym, sym) for sym in resolve_engine_symbols({**settings, "live_trading_mode": False})]
+    if not assets:
+        asset_text = "none selected (nothing will be traded)"
+    elif len(assets) == 1:
+        asset_text = f"{assets[0]} Options"
+    else:
+        asset_text = f"{', '.join(assets[:-1])} & {assets[-1]} Options"
+
+    if book == "observer":
+        strat = str(settings.get("active_strategy", "ema9_rsi_momentum"))
+        return (
+            "🚀 [QuantAI Live] Market is OPEN (09:15 IST).\n"
+            "Institutional Paper Trading Observer is Active.\n"
+            f"• Assets: {asset_text}\n"
+            f"• Strategy: {_strategy_display(strat)}\n"
+            "• Capital: ₹1,00,000 (Virtual)"
+        )
+
+    strat = str(settings.get("active_strategy", "ema9_fibo_smc_momentum"))
+    try:
+        capital = float(settings.get("initial_capital", 100_000.0))
+    except (TypeError, ValueError):
+        capital = 100_000.0
+    return (
+        "🚀 [QuantAI Live] Market is OPEN (09:15 IST).\n"
+        "Autonomous Paper Trading Engine is Active.\n"
+        f"• Assets: {asset_text}\n"
+        f"• Strategy: {_strategy_display(strat)}\n"
+        "• Mode: PAPER TRADING (Simulated)\n"
+        f"• Capital: ₹{_format_inr(capital)} (Virtual)"
+    )
+
+
 def start_live_engine() -> bool:
     """Launch trading_bot/main.py -- the real-order engine."""
     logger.info("==========================================")
@@ -781,20 +858,7 @@ def start_paper_engine() -> bool:
     logger.info("==========================================")
     started = engine_sv.start()
     if started and engine_sv.launches == 1:
-        strat = get_active_strategy_name()
-        strat_display = (
-            "EMA 9 + Fibonacci OTE + SMC Momentum"
-            if strat == "ema9_fibo_smc_momentum"
-            else strat.replace("_", " ").title()
-        )
-        send_telegram_notification(
-            "🚀 [QuantAI Live] Market is OPEN (09:15 IST).\n"
-            "Autonomous Paper Trading Engine is Active.\n"
-            "• Assets: NIFTY & BANKNIFTY Options\n"
-            f"• Strategy: {strat_display}\n"
-            "• Mode: PAPER TRADING (Simulated)\n"
-            "• Capital: ₹1,00,000 (Virtual)"
-        )
+        send_telegram_notification(paper_session_message(_read_settings(), book="engine"))
     return started
 
 
@@ -1048,24 +1112,7 @@ def start_paper_observer() -> bool:
     # "Market is OPEN" Telegram messages -- enough noise to bury the one
     # alert that actually mattered.
     if observer_sv.launches == 1:
-        strat_display = "EMA 9 / RSI Momentum"
-        try:
-            settings_path = ROOT_DIR / "config" / "settings.json"
-            if settings_path.exists():
-                with open(settings_path, "r", encoding="utf-8") as f:
-                    s_data = json.load(f)
-                    act = s_data.get("active_strategy", "ema9_rsi_momentum")
-                    strat_display = "EMA 9 / RSI Momentum" if act == "ema9_rsi_momentum" else act.replace("_", " ").title()
-        except Exception:
-            pass
-
-        send_telegram_notification(
-            "🚀 [QuantAI Live] Market is OPEN (09:15 IST).\n"
-            "Institutional Paper Trading Observer is Active.\n"
-            "• Assets: NIFTY & BANKNIFTY Options\n"
-            f"• Strategy: {strat_display}\n"
-            "• Capital: ₹1,00,000 (Virtual)"
-        )
+        send_telegram_notification(paper_session_message(_read_settings(), book="observer"))
     return True
 
 
