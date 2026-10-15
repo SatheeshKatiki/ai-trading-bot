@@ -100,6 +100,7 @@ def generate_signals(
     price_action_primary: bool = True,
     require_rejection_wick: bool = True,
     min_rejection_wick_ratio: float = 0.30,
+    enable_momentum_breakout: bool = True,
     **kwargs,
 ) -> pd.Series:
     """Registry entry point for EMA 9 / Fibo OTE Momentum Pro (Price Action Primary).
@@ -128,6 +129,7 @@ def generate_signals(
         price_action_primary=price_action_primary,
         require_rejection_wick=require_rejection_wick,
         min_rejection_wick_ratio=min_rejection_wick_ratio,
+        enable_momentum_breakout=enable_momentum_breakout,
         **{k: v for k, v in kwargs.items() if k in Ema9FiboSmcMomentumConfig.__dataclass_fields__},
     )
 

@@ -246,13 +246,11 @@ def compute_cross_signals(
             pass
 
     # ── Trend Strength Filter (ADX >= min_adx) ──
-    if cfg.enable_adx_filter and len(df) >= 14:
-        try:
-            adx_series = adx(df, window=14)
-            adx_ok = np.asarray(adx_series >= cfg.min_adx, dtype=bool)
-        except Exception:
-            adx_ok = np.ones(len(df), dtype=bool)
-    else:
+    try:
+        adx_series = adx(df, window=14)
+        adx_ok = np.asarray(adx_series >= cfg.min_adx, dtype=bool)
+    except Exception:
+        adx_series = pd.Series(25.0, index=df.index)
         adx_ok = np.ones(len(df), dtype=bool)
 
     # ── Price Action Pillar: Swing Structure & Rejection Wicks ──
@@ -321,14 +319,46 @@ def compute_cross_signals(
         cm_breakdown_pe = np.zeros(len(df), dtype=bool)
         cm_breakout_ce = np.zeros(len(df), dtype=bool)
 
+    # ── Setup 4: High-Velocity Momentum Breakout Expansion (Runaway Trend) ──
+    # When market enters a vertical runaway expansion (like a 400-pt trend day),
+    # price never retraces to Fibo OTE and RSI surges into 75-85+.
+    # This setup catches the expansion when ADX is strong and price breaks structure.
+    if getattr(cfg, "enable_momentum_breakout", True):
+        prev_swing_high = np.r_[high_arr[0], swing_high[:-1]]
+        prev_swing_low = np.r_[low_arr[0], swing_low[:-1]]
+        min_b_adx = float(getattr(cfg, "min_breakout_adx", 20.0))
+        min_b_rsi = float(getattr(cfg, "min_breakout_rsi", 55.0))
+
+        breakout_ce = (
+            (bos_bull | (close_arr > prev_swing_high))
+            & (close_arr > np.asarray(ind.ema_fast))
+            & (np.asarray(ind.ema_fast) >= np.asarray(ind.ema_slow))
+            & (rsi_vals >= min_b_rsi)
+            & (close_arr >= open_arr)
+            & (adx_ok & (adx_series >= min_b_adx))
+            & not_chop
+        )
+        breakout_pe = (
+            (bos_bear | (close_arr < prev_swing_low))
+            & (close_arr < np.asarray(ind.ema_fast))
+            & (np.asarray(ind.ema_fast) <= np.asarray(ind.ema_slow))
+            & (rsi_vals <= (100.0 - min_b_rsi))
+            & (close_arr <= open_arr)
+            & (adx_ok & (adx_series >= min_b_adx))
+            & not_chop
+        )
+    else:
+        breakout_ce = np.zeros(len(df), dtype=bool)
+        breakout_pe = np.zeros(len(df), dtype=bool)
+
     # Combine setups
     if getattr(cfg, "price_action_primary", True):
-        # When Price Action is primary, prioritize OTE + Rejection Wick, or breakout with rejection wick
-        candidate_ce = (pa_entry_ce | ((crossover_ce | cm_breakout_ce) & (rejection_ce | yellow_ce))) & not_overbought
-        candidate_pe = (pa_entry_pe | ((crossover_pe | cm_breakdown_pe) & (rejection_pe | yellow_pe))) & not_oversold
+        # When Price Action is primary, prioritize OTE + Rejection Wick, or breakout with rejection wick, plus runaway breakout
+        candidate_ce = ((pa_entry_ce | ((crossover_ce | cm_breakout_ce) & (rejection_ce | yellow_ce))) & not_overbought) | breakout_ce
+        candidate_pe = ((pa_entry_pe | ((crossover_pe | cm_breakdown_pe) & (rejection_pe | yellow_pe))) & not_oversold) | breakout_pe
     else:
-        candidate_ce = (crossover_ce | cm_breakout_ce) & not_overbought
-        candidate_pe = (crossover_pe | cm_breakdown_pe) & not_oversold
+        candidate_ce = ((crossover_ce | cm_breakout_ce) & not_overbought) | breakout_ce
+        candidate_pe = ((crossover_pe | cm_breakdown_pe) & not_oversold) | breakout_pe
 
     bullish = np.array(candidate_ce & time_ok_ce, dtype=bool, copy=True)
     bearish = np.array(candidate_pe & time_ok_pe, dtype=bool, copy=True)

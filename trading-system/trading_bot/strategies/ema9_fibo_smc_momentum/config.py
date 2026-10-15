@@ -113,6 +113,13 @@ FIBO_EXTENSION_TP2: float = 1.272      # First external liquidity extension
 FIBO_EXTENSION_TP3: float = 1.618      # Golden extension full target
 
 # ─────────────────────────────────────────────────────────────────────
+# Momentum Breakout Expansion Setup (Catches Runaway Trend Days)
+# ─────────────────────────────────────────────────────────────────────
+ENABLE_MOMENTUM_BREAKOUT: bool = True
+MIN_BREAKOUT_ADX: float = 20.0
+MIN_BREAKOUT_RSI: float = 55.0
+
+# ─────────────────────────────────────────────────────────────────────
 # Dual Entry Engine Setup Configuration
 # ─────────────────────────────────────────────────────────────────────
 ENABLE_PULLBACK_ENTRIES: bool = True
@@ -218,6 +225,9 @@ class Ema9FiboSmcMomentumConfig:
     fibo_extension_tp1: float = FIBO_EXTENSION_TP1
     fibo_extension_tp2: float = FIBO_EXTENSION_TP2
     fibo_extension_tp3: float = FIBO_EXTENSION_TP3
+    enable_momentum_breakout: bool = ENABLE_MOMENTUM_BREAKOUT
+    min_breakout_adx: float = MIN_BREAKOUT_ADX
+    min_breakout_rsi: float = MIN_BREAKOUT_RSI
     enable_pullback_entries: bool = ENABLE_PULLBACK_ENTRIES
     entry_confirm_seconds: int = ENTRY_CONFIRM_SECONDS
     early_entry_min_strength: str = EARLY_ENTRY_MIN_STRENGTH

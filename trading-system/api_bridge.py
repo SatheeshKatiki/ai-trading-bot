@@ -134,12 +134,16 @@ from trading_bot.strategies.ema_crossover_pro_strategy import generate_signals a
 from trading_bot.strategies.meta_agent_strategy import generate_signals as meta_agent_signals
 from trading_bot.strategies.buy_the_dip_strategy import generate_signals as buy_dip_signals
 from trading_bot.strategies.ema9_rsi_momentum import generate_signals as ema9_rsi_signals
+from trading_bot.strategies.ema9_fibo_smc_momentum import generate_signals as ema9_fibo_signals
+from trading_bot.strategies.structure_break import generate_signals as structure_break_signals
 from trading_bot.strategies.marl_strategy import generate_signals as marl_signals
 from shared.instruments import is_option_symbol, normalize_instrument
 
 # Register strategies for the API
 registry.register("ema_rsi",      ema_rsi_signals)
 registry.register("ema9_rsi_momentum", ema9_rsi_signals)
+registry.register("ema9_fibo_smc_momentum", ema9_fibo_signals)
+registry.register("structure_break", structure_break_signals)
 registry.register("enhanced_ai",  enhanced_signals)
 registry.register("premium",      premium_signals)
 registry.register("advanced_ai", advanced_ai_signals)
@@ -3292,6 +3296,9 @@ async def get_risk_overview():
     }
 
 
+_STRATEGY_MARKERS_CACHE: dict = {}
+_STRATEGY_MARKERS_TTL: float = 30.0
+
 @app.get("/api/strategy-markers")
 async def get_strategy_markers(
     symbol: str = Query(..., description="Index or ticker, e.g. NSE:NIFTY50-INDEX"),
@@ -3308,6 +3315,13 @@ async def get_strategy_markers(
         active = strategy or _load_config_settings().get("active_strategy", "ema9_rsi_momentum")
     except Exception:
         active = strategy or "ema9_rsi_momentum"
+
+    cache_key = (symbol, start_date, end_date, timeframe, active)
+    now_ts = time.time()
+    if cache_key in _STRATEGY_MARKERS_CACHE:
+        cached_time, cached_val = _STRATEGY_MARKERS_CACHE[cache_key]
+        if now_ts - cached_time < _STRATEGY_MARKERS_TTL:
+            return cached_val
 
     # Prepend a 7-day warmup buffer so the start of start_date has fully converged EMAs and RSI
     import datetime as _dt
@@ -3344,6 +3358,17 @@ async def get_strategy_markers(
         if len(df) < 40:
             return {"symbol": symbol, "strategy": active, "markers": [], "count": 0}
 
+        def _to_ist_epoch(ts):
+            try:
+                if getattr(ts, "tzinfo", None) is None:
+                    return int(ts.tz_localize("Asia/Kolkata").timestamp())
+                return int(ts.astimezone(_dt.timezone(_dt.timedelta(hours=5, minutes=30))).timestamp())
+            except Exception:
+                try:
+                    return int(ts.timestamp())
+                except Exception:
+                    return 0
+
         markers = []
         yellow_candles = []
 
@@ -3373,14 +3398,6 @@ async def get_strategy_markers(
             high_arr = _np.asarray(df["high"], dtype=float)
             low_arr = _np.asarray(df["low"], dtype=float)
             close_arr = _np.asarray(df["close"], dtype=float)
-
-            def _to_ist_epoch(ts):
-                try:
-                    if getattr(ts, "tzinfo", None) is None:
-                        return int(ts.tz_localize("Asia/Kolkata").timestamp())
-                    return int(ts.astimezone(_dt.timezone(_dt.timedelta(hours=5, minutes=30))).timestamp())
-                except Exception:
-                    return int(ts.timestamp())
 
             open_pos = None  # Tracks current simulated trade: {"side": 1|-1, "entry_price": float, "stop_loss": float, "idx": int}
             prev_date = None  # For intraday session day-boundary reset
@@ -3578,10 +3595,18 @@ async def get_strategy_markers(
                     "unsupported": True,
                     "message": f"{active} is not a recognized registered strategy"}
 
-        return {"symbol": symbol, "strategy": active, "timeframe": timeframe,
-                "count": len(markers), "markers": markers,
-                "yellow_candles_count": len(yellow_candles),
-                "yellow_candles": yellow_candles}
+        res = {
+            "symbol": symbol, "strategy": active, "timeframe": timeframe,
+            "count": len(markers), "markers": markers,
+            "yellow_candles_count": len(yellow_candles),
+            "yellow_candles": yellow_candles
+        }
+        _STRATEGY_MARKERS_CACHE[cache_key] = (time.time(), res)
+        # Prevent unbounded growth
+        if len(_STRATEGY_MARKERS_CACHE) > 50:
+            oldest_k = next(iter(_STRATEGY_MARKERS_CACHE))
+            _STRATEGY_MARKERS_CACHE.pop(oldest_k, None)
+        return res
     except Exception as e:
         logger.warning("strategy-markers failed for %s: %s", symbol, e)
         raise HTTPException(status_code=500, detail=f"Could not compute strategy markers: {e}")

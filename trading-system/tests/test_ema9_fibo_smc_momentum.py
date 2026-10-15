@@ -243,3 +243,28 @@ def test_position_key_normalization_and_safe_pop():
     active_positions.pop(sym, None)
     assert len(active_positions) == 0
 
+
+def test_momentum_breakout_expansion():
+    """Verify that vertical runaway breakouts trigger with enable_momentum_breakout."""
+    # Synthetic runaway bull trend
+    n = 60
+    dates = pd.date_range("2026-10-15 09:15", periods=n, freq="5min")
+    # Base starts at 22500 and moves sharply up
+    base = 22500.0 + np.linspace(0, 400, n)
+    df = pd.DataFrame({
+        "open": base - 2.0,
+        "high": base + 5.0,
+        "low": base - 3.0,
+        "close": base + 4.0,
+        "volume": np.full(n, 50000),
+    }, index=dates)
+
+    # With momentum breakout enabled (default), signals must fire on runaway trend
+    sigs_on = generate_signals(df, enable_momentum_breakout=True)
+    assert (sigs_on == 1).any(), "Momentum breakout expansion failed to fire on vertical runaway trend!"
+
+    # With momentum breakout disabled, OTE pullback is required so runaway trend should not fire
+    sigs_off = generate_signals(df, enable_momentum_breakout=False)
+    assert not (sigs_off == 1).any(), "Disabled breakout should not fire without OTE pullback!"
+
+
