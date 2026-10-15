@@ -5431,4 +5431,6 @@ if __name__ == "__main__":
 
     _setup_log_rotation()
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    from shared.bridge_logging import uvicorn_log_config
+    # Timestamped lines, and no line per successful dashboard poll.
+    uvicorn.run(app, host="0.0.0.0", port=8000, log_config=uvicorn_log_config())

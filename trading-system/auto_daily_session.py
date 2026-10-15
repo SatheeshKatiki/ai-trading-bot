@@ -213,6 +213,49 @@ _SESSION_RETRY_COOLDOWN_S = 300
 _session_attempts: Dict[datetime.date, int] = {}
 
 
+#: Each service's console output is appended to logs/<name>_stdout.log across
+#: every launch, and nothing else ever trims those files (the age-based log
+#: cleanup never fires on a file written daily): api_bridge_stdout.log had
+#: reached 373 MB by 2026-10-14. Past STDOUT_LOG_MAX_BYTES the next launch
+#: moves the newest STDOUT_LOG_KEEP_BYTES into <name>.1 and empties the file.
+STDOUT_LOG_MAX_BYTES = 20 * 1024 * 1024
+STDOUT_LOG_KEEP_BYTES = 5 * 1024 * 1024
+
+
+def rotate_stdout_log(path: pathlib.Path, max_bytes: int = STDOUT_LOG_MAX_BYTES,
+                      keep_bytes: int = STDOUT_LOG_KEEP_BYTES) -> bool:
+    """Rotate `path` if it is over `max_bytes`. True if it was rotated.
+
+    Keeps the newest `keep_bytes` (from a line start) in `<path>.1`,
+    replacing any earlier backup, then empties `path` in place -- truncation
+    works even if a stray process still has the file open, where a rename
+    would fail on Windows. Never raises: a log problem must not stop a launch.
+    """
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return False
+    if size <= max_bytes:
+        return False
+    backup = path.with_name(path.name + ".1")
+    try:
+        with open(path, "rb") as src:
+            src.seek(max(0, size - keep_bytes))
+            tail = src.read()
+        newline = tail.find(b"\n")
+        if newline >= 0:
+            tail = tail[newline + 1:]
+        backup.write_bytes(tail)
+        with open(path, "r+b") as fh:
+            fh.truncate(0)
+    except OSError as exc:
+        logger.warning("Could not rotate %s (%.0f MB): %s", path.name, size / 1048576, exc)
+        return False
+    logger.info("Rotated %s: was %.0f MB, newest %.0f MB kept in %s",
+                path.name, size / 1048576, len(tail) / 1048576, backup.name)
+    return True
+
+
 class ServiceSupervisor:
     """Supervises one long-running child process for a trading session.
 
@@ -257,6 +300,7 @@ class ServiceSupervisor:
     def start(self) -> bool:
         """Launch the child. Returns True if the process object was created."""
         self._close_log()
+        rotate_stdout_log(LOG_DIR / self._log_filename)
         try:
             self._log_handle = open(LOG_DIR / self._log_filename, "a", encoding="utf-8")
             self.proc = subprocess.Popen(
